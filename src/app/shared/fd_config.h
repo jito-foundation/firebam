@@ -383,6 +383,14 @@ struct fd_config {
     } bundle;
 
     struct {
+      int  enabled;
+      char url[ 256 ];
+      char tls_domain_name[ 256 ];
+      ulong keepalive_interval_millis;
+      int   tls_cert_verify;
+    } bam;
+
+    struct {
       uint max_pending_transactions;
       int  use_consumed_cus;
       char schedule_strategy[ 16 ];

@@ -225,7 +225,21 @@ struct fd_topo_tile {
       ulong ssl_heap_sz;
       ulong keepalive_interval_nanos;
       uchar tls_cert_verify : 1;
+      int   mode;
     } bundle;
+
+    struct {
+      char  url[ 256 ];
+      ulong url_len;
+      char  sni[ 256 ];
+      ulong sni_len;
+      char  identity_key_path[ PATH_MAX ];
+      char  key_log_path[ PATH_MAX ];
+      ulong buf_sz;
+      ulong ssl_heap_sz;
+      ulong keepalive_interval_nanos;
+      uchar tls_cert_verify : 1;
+    } bam;
 
     struct {
       ulong max_pending_transactions;

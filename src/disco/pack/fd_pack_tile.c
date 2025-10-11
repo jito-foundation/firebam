@@ -1,4 +1,5 @@
 #include "../tiles.h"
+#include "../bam/fd_bam_types.h"
 
 #include "generated/fd_pack_tile_seccomp.h"
 
@@ -11,6 +12,7 @@
 #include "../pack/fd_pack_pacing.h"
 
 #include <linux/unistd.h>
+#include <limits.h>
 #include <string.h>
 
 /* fd_pack is responsible for taking verified transactions, and
@@ -60,6 +62,16 @@ const float VOTE_FRACTION = 1.0f; /* schedule all available votes first */
 const float VOTE_FRACTION = 0.75f; /* TODO: Is this the right value? */
 #define EFFECTIVE_TXN_PER_MICROBLOCK MAX_TXN_PER_MICROBLOCK
 #endif
+
+typedef struct {
+  ulong tick_height;
+  ulong ticks_per_slot;
+  ulong block_cost;
+  ulong block_cost_limit;
+} fd_ext_bank_leader_stats_t;
+
+extern int fd_ext_bank_get_leader_stats( void const * bank,
+                                         fd_ext_bank_leader_stats_t * out );
 
 /* There's overhead associated with each microblock the bank tile tries
    to execute it, so the optimal strategy is not to produce a microblock
@@ -112,6 +124,9 @@ static char const * const schedule_strategy_strings[3] = { "PRF", "BAL", "BUN" }
 typedef struct {
   fd_acct_addr_t commission_pubkey[1];
   ulong          commission;
+  ulong          bundle_id;
+  ulong          bundle_txn_cnt;
+  ulong          max_schedule_slot;
 } block_builder_info_t;
 
 typedef struct {
@@ -119,6 +134,14 @@ typedef struct {
   ulong       chunk0;
   ulong       wmark;
 } fd_pack_in_ctx_t;
+
+typedef struct {
+  fd_wksp_t * mem;
+  ulong       chunk0;
+  ulong       wmark;
+  ulong       chunk;
+  ulong       idx;
+} fd_pack_out_ctx_t;
 
 typedef struct {
   fd_pack_t *  pack;
@@ -253,6 +276,12 @@ typedef struct {
   ulong       poh_out_wmark;
   ulong       poh_out_chunk;
 
+  fd_pack_out_ctx_t     bundle_out;
+  fd_pack_out_ctx_t     bam_out;
+  fd_bam_leader_state_t pending_leader_state;
+  int                   leader_state_pending;
+  long                  last_leader_state_ns;
+
   ulong      insert_result[ FD_PACK_INSERT_RETVAL_CNT ];
   fd_histf_t schedule_duration[ 1 ];
   fd_histf_t no_sched_duration[ 1 ];
@@ -275,11 +304,17 @@ typedef struct {
     ulong txn_cnt;
     ulong txn_received;
     ulong min_blockhash_slot;
+    ulong max_schedule_slot;
     fd_txn_e_t * _txn[ FD_PACK_MAX_TXN_PER_BUNDLE ];
     fd_txn_e_t * const * bundle; /* points to _txn when non-NULL */
   } current_bundle[1];
 
   block_builder_info_t blk_engine_cfg[1];
+
+  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ];
+  ulong                  bam_results_head;
+  ulong                  bam_results_tail;
+  ulong                  bam_results_pending;
 
   struct {
     int                   enabled;
@@ -305,7 +340,7 @@ typedef struct {
   union{ fd_pack_rebate_t rebate[1]; uchar footprint[USHORT_MAX]; } rebate[1];
 } fd_pack_ctx_t;
 
-#define BUNDLE_META_SZ 40UL
+#define BUNDLE_META_SZ 64UL
 FD_STATIC_ASSERT( sizeof(block_builder_info_t)==BUNDLE_META_SZ, blk_engine_cfg );
 
 #define FD_PACK_METRIC_STATE_TRANSACTIONS 0
@@ -326,6 +361,138 @@ update_metric_state( fd_pack_ctx_t * ctx,
     ctx->metric_state_begin = effective_as_of;
     ctx->metric_state = current_state;
   }
+}
+
+static inline int
+fd_pack_out_valid( fd_pack_out_ctx_t const * out ) {
+  return FD_LIKELY( out->mem ) && FD_LIKELY( out->idx!=ULONG_MAX );
+}
+
+static inline int
+fd_pack_has_builder_outputs( fd_pack_ctx_t const * ctx ) {
+  return fd_pack_out_valid( &ctx->bundle_out ) || fd_pack_out_valid( &ctx->bam_out );
+}
+
+static inline void
+fd_pack_enqueue_bam_result( fd_pack_ctx_t * ctx,
+                            fd_bam_bundle_result_t const * res ) {
+  if( FD_UNLIKELY( !fd_pack_has_builder_outputs( ctx ) ) ) return;
+  if( FD_UNLIKELY( ctx->bam_results_pending>=FD_BAM_MAX_PENDING_RESULTS ) ) {
+    FD_LOG_WARNING(( "Dropping BAM bundle result (pack queue full)" ));
+    return;
+  }
+  ctx->bam_results[ ctx->bam_results_tail ] = *res;
+  ctx->bam_results_tail = (ctx->bam_results_tail + 1UL) % FD_BAM_MAX_PENDING_RESULTS;
+  ctx->bam_results_pending++;
+}
+
+static inline int
+fd_pack_publish_result_to_out( fd_pack_out_ctx_t *       out,
+                               fd_stem_context_t *       stem,
+                               fd_bam_bundle_result_t const * res,
+                               ulong                     tspub ) {
+  if( FD_UNLIKELY( !fd_pack_out_valid( out ) ) ) return 0;
+  fd_bam_bundle_result_t * dst = fd_chunk_to_laddr( out->mem, out->chunk );
+  *dst = *res;
+  fd_stem_publish( stem,
+                   out->idx,
+                   res->bundle_id,
+                   out->chunk,
+                   sizeof(fd_bam_bundle_result_t),
+                   0UL,
+                   0UL,
+                   tspub );
+  out->chunk = fd_dcache_compact_next( out->chunk,
+                                       sizeof(fd_bam_bundle_result_t),
+                                       out->chunk0,
+                                       out->wmark );
+  return 1;
+}
+
+static inline int
+fd_pack_publish_leader_state_to_out( fd_pack_out_ctx_t *          out,
+                                     fd_stem_context_t *          stem,
+                                     fd_bam_leader_state_t const * state,
+                                     ulong                        tspub ) {
+  if( FD_UNLIKELY( !fd_pack_out_valid( out ) ) ) return 0;
+  fd_bam_leader_state_t * msg = fd_chunk_to_laddr( out->mem, out->chunk );
+  *msg = *state;
+  fd_stem_publish( stem,
+                   out->idx,
+                   state->slot,
+                   out->chunk,
+                   sizeof(fd_bam_leader_state_t),
+                   0UL,
+                   0UL,
+                   tspub );
+  out->chunk = fd_dcache_compact_next( out->chunk,
+                                       sizeof(fd_bam_leader_state_t),
+                                       out->chunk0,
+                                       out->wmark );
+  return 1;
+}
+
+static inline void
+fd_pack_publish_bam_results( fd_pack_ctx_t *     ctx,
+                             fd_stem_context_t * stem,
+                             int *               charge_busy ) {
+  if( FD_UNLIKELY( !fd_pack_has_builder_outputs( ctx ) ) ) return;
+  while( ctx->bam_results_pending ) {
+    fd_bam_bundle_result_t const * res = &ctx->bam_results[ ctx->bam_results_head ];
+    ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
+    int published = 0;
+    published |= fd_pack_publish_result_to_out( &ctx->bundle_out, stem, res, tspub );
+    published |= fd_pack_publish_result_to_out( &ctx->bam_out,     stem, res, tspub );
+    ctx->bam_results_head = (ctx->bam_results_head + 1UL) % FD_BAM_MAX_PENDING_RESULTS;
+    ctx->bam_results_pending--;
+    if( FD_LIKELY( published ) ) *charge_busy = 1;
+  }
+}
+
+static void
+fd_pack_tile_drop_expired_bundles( fd_pack_ctx_t * ctx,
+                                   ulong           slot ) {
+  if( FD_UNLIKELY( slot==ULONG_MAX ) ) return;
+  for(;;) {
+    block_builder_info_t const * meta = fd_pack_peek_bundle_meta( ctx->pack );
+    if( FD_UNLIKELY( !meta ) ) return;
+    ulong max_slot = meta->max_schedule_slot ? meta->max_schedule_slot : ULONG_MAX;
+    if( FD_LIKELY( slot <= max_slot ) ) return;
+
+    ulong bundle_id      = meta->bundle_id;
+    ulong bundle_txn_cnt = meta->bundle_txn_cnt;
+
+    ulong removed = fd_pack_drop_best_bundle( ctx->pack );
+    if( FD_UNLIKELY( !removed ) ) return;
+
+    fd_bam_bundle_result_t res = {
+      .bundle_id         = bundle_id,
+      .slot              = slot,
+      .bundle_txn_cnt    = bundle_txn_cnt,
+      .txn_cnt           = (uint)fd_ulong_min( bundle_txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ),
+      .execution_success = 0U,
+      .scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT
+    };
+    for( uint i=0U; i<res.txn_cnt; i++ ) {
+      res.transaction_err[i]  = 0U;
+      res.consumed_cus[i]     = 0U;
+      res.sanitize_success[i] = 1U;
+    }
+    fd_pack_enqueue_bam_result( ctx, &res );
+  }
+}
+
+FD_FN_CONST static inline uint
+fd_pack_result_sched_error( int result ) {
+  switch( result ) {
+  case FD_PACK_INSERT_REJECT_PRIORITY:
+    return FD_BAM_SCHED_ERR_CONTAINER_FULL;
+  case FD_PACK_INSERT_REJECT_EXPIRED:
+    return FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
+  default:
+    break;
+  }
+  return FD_BAM_SCHED_ERR_NONE;
 }
 
 static inline void
@@ -400,15 +567,39 @@ metrics_write( fd_pack_ctx_t * ctx ) {
   fd_pack_metrics_write( ctx->pack );
 }
 
-static inline void
-during_housekeeping( fd_pack_ctx_t * ctx ) {
-  ctx->approx_wallclock_ns = fd_log_wallclock();
-  ctx->approx_tickcount = fd_tickcount();
+ static inline void
+ during_housekeeping( fd_pack_ctx_t * ctx ) {
+   ctx->approx_wallclock_ns = fd_log_wallclock();
+   ctx->approx_tickcount = fd_tickcount();
 
-  if( FD_UNLIKELY( ctx->crank->enabled && fd_keyswitch_state_query( ctx->crank->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
-    fd_memcpy( ctx->crank->identity_pubkey, ctx->crank->keyswitch->bytes, 32UL );
-    fd_keyswitch_state( ctx->crank->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
-  }
+   if( FD_UNLIKELY( ctx->crank->enabled && fd_keyswitch_state_query( ctx->crank->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
+     fd_memcpy( ctx->crank->identity_pubkey, ctx->crank->keyswitch->bytes, 32UL );
+     fd_keyswitch_state( ctx->crank->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
+   }
+
+  if( FD_LIKELY( fd_pack_has_builder_outputs( ctx ) ) ) {
+     if( FD_LIKELY( ( ctx->leader_slot!=ULONG_MAX ) & !!ctx->leader_bank ) ) {
+       long now = ctx->approx_wallclock_ns;
+       long interval = (long)5e6; /* 5 ms */
+       if( FD_UNLIKELY( ( ctx->last_leader_state_ns==0L ) | ( now - ctx->last_leader_state_ns >= interval ) ) ) {
+         fd_ext_bank_leader_stats_t stats;
+         if( FD_LIKELY( !fd_ext_bank_get_leader_stats( ctx->leader_bank, &stats ) ) ) {
+           ulong ticks_per_slot = stats.ticks_per_slot ? stats.ticks_per_slot : 1UL;
+           ulong tick_mod = stats.tick_height % ticks_per_slot;
+           ulong remaining = stats.block_cost_limit > stats.block_cost ? ( stats.block_cost_limit - stats.block_cost ) : 0UL;
+
+           ctx->pending_leader_state.slot = ctx->leader_slot;
+           ctx->pending_leader_state.tick = (uint)fd_ulong_min( tick_mod, (ulong)UINT_MAX );
+           ctx->pending_leader_state.slot_cu_budget_remaining = (uint)fd_ulong_min( remaining, (ulong)UINT_MAX );
+           ctx->leader_state_pending = 1;
+           ctx->last_leader_state_ns = now;
+         }
+       }
+     } else {
+       ctx->leader_state_pending = 0;
+       ctx->last_leader_state_ns = 0L;
+     }
+   }
 }
 
 static inline void
@@ -481,6 +672,21 @@ after_credit( fd_pack_ctx_t *     ctx,
   if( FD_UNLIKELY( (ctx->skip_cnt--)>0L ) ) return; /* It would take ages for this to hit LONG_MIN */
 
   long now = fd_tickcount();
+
+  if( FD_LIKELY( ctx->leader_state_pending && fd_pack_has_builder_outputs( ctx ) ) ) {
+    ulong tspub = (ulong)fd_frag_meta_ts_comp( now );
+    int published = 0;
+    published |= fd_pack_publish_leader_state_to_out( &ctx->bundle_out, stem, &ctx->pending_leader_state, tspub );
+    published |= fd_pack_publish_leader_state_to_out( &ctx->bam_out,     stem, &ctx->pending_leader_state, tspub );
+    if( FD_LIKELY( published ) ) {
+      ctx->leader_state_pending = 0;
+      *charge_busy = 1;
+    }
+  }
+
+  if( FD_LIKELY( ctx->bam_results_pending ) ) {
+    fd_pack_publish_bam_results( ctx, stem, charge_busy );
+  }
 
   int pacing_bank_cnt = (int)fd_pack_pacing_enabled_bank_cnt( ctx->pacer, now );
 
@@ -674,6 +880,8 @@ after_credit( fd_pack_ctx_t *     ctx,
 
     int i = fd_ulong_find_lsb( ctx->bank_idle_bitset );
 
+    fd_pack_tile_drop_expired_bundles( ctx, ctx->leader_slot );
+
     int flags;
 
     switch( ctx->strategy ) {
@@ -697,6 +905,10 @@ after_credit( fd_pack_ctx_t *     ctx,
         break;
     }
 
+    block_builder_info_t const * bundle_meta = fd_pack_peek_bundle_meta( ctx->pack );
+    ulong bundle_meta_id  = bundle_meta ? bundle_meta->bundle_id     : 0UL;
+    ulong bundle_meta_cnt = bundle_meta ? bundle_meta->bundle_txn_cnt : 0UL;
+
     fd_txn_p_t * microblock_dst = fd_chunk_to_laddr( ctx->bank_out_mem, ctx->bank_out_chunk );
     long schedule_duration = -fd_tickcount();
     ulong schedule_cnt = fd_pack_schedule_next_microblock( ctx->pack, CUS_PER_MICROBLOCK, VOTE_FRACTION, (ulong)i, flags, microblock_dst );
@@ -716,6 +928,13 @@ after_credit( fd_pack_ctx_t *     ctx,
       trailer->pack_idx = ctx->pack_idx;
       trailer->pack_txn_idx = ctx->pack_txn_cnt;
       trailer->is_bundle = !!(microblock_dst->flags & FD_TXN_P_FLAGS_BUNDLE);
+      if( FD_LIKELY( trailer->is_bundle ) ) {
+        trailer->bundle_id      = bundle_meta_id;
+        trailer->bundle_txn_cnt = bundle_meta_cnt;
+      } else {
+        trailer->bundle_id      = 0UL;
+        trailer->bundle_txn_cnt = 0UL;
+      }
 
       ulong sig = fd_disco_poh_sig( ctx->leader_slot, POH_PKT_TYPE_MICROBLOCK, (ulong)i );
       fd_stem_publish( stem, 0UL, sig, chunk, msg_sz+sizeof(fd_microblock_bank_trailer_t), 0UL, tsorig, tspub );
@@ -861,19 +1080,31 @@ during_frag( fd_pack_ctx_t * ctx,
         ctx->current_bundle->id                 = bundle_id;
         ctx->current_bundle->txn_cnt            = txnm->block_engine.bundle_txn_cnt;
         ctx->current_bundle->min_blockhash_slot = ULONG_MAX;
+        ctx->current_bundle->max_schedule_slot  = txnm->block_engine.max_schedule_slot
+                                                  ? txnm->block_engine.max_schedule_slot
+                                                  : ULONG_MAX;
         ctx->current_bundle->txn_received       = 0UL;
 
         if( FD_UNLIKELY( ctx->current_bundle->txn_cnt==0UL ) ) {
           FD_MCNT_INC( PACK, TRANSACTION_DROPPED_PARTIAL_BUNDLE, 1UL );
           ctx->current_bundle->id = 0UL;
+          ctx->current_bundle->max_schedule_slot = ULONG_MAX;
           return;
         }
         ctx->blk_engine_cfg->commission = txnm->block_engine.commission;
         memcpy( ctx->blk_engine_cfg->commission_pubkey->b, txnm->block_engine.commission_pubkey, 32UL );
+        ctx->blk_engine_cfg->bundle_id     = bundle_id;
+        ctx->blk_engine_cfg->bundle_txn_cnt = ctx->current_bundle->txn_cnt;
+        ctx->blk_engine_cfg->max_schedule_slot = ctx->current_bundle->max_schedule_slot;
 
         ctx->current_bundle->bundle = fd_pack_insert_bundle_init( ctx->pack, ctx->current_bundle->_txn, ctx->current_bundle->txn_cnt );
       }
       ctx->cur_spot                           = ctx->current_bundle->bundle[ ctx->current_bundle->txn_received ];
+      ulong bundle_max_slot = txnm->block_engine.max_schedule_slot
+                              ? txnm->block_engine.max_schedule_slot
+                              : ULONG_MAX;
+      ctx->current_bundle->max_schedule_slot = fd_ulong_min( ctx->current_bundle->max_schedule_slot,
+                                                            bundle_max_slot );
       ctx->current_bundle->min_blockhash_slot = fd_ulong_min( ctx->current_bundle->min_blockhash_slot, sig );
     } else {
       ctx->is_bundle = 0;
@@ -1047,7 +1278,27 @@ after_frag( fd_pack_ctx_t *     ctx,
         FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
         ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
         fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
+        if( FD_UNLIKELY( result<0 && ctx->current_bundle->id ) ) {
+          fd_bam_bundle_result_t res;
+          memset( &res, 0, sizeof(res) );
+          ulong slot = ctx->leader_slot;
+          if( FD_UNLIKELY( slot==ULONG_MAX ) ) slot = ctx->current_bundle->min_blockhash_slot;
+          if( FD_UNLIKELY( slot==ULONG_MAX ) ) slot = 0UL;
+          res.bundle_id        = ctx->current_bundle->id;
+          res.slot             = slot;
+          res.bundle_txn_cnt   = ctx->current_bundle->txn_cnt;
+          res.txn_cnt          = (uint)fd_ulong_min( ctx->current_bundle->txn_received, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
+          res.execution_success = 0U;
+          res.scheduling_error  = fd_pack_result_sched_error( result );
+          for( uint i=0U; i<res.txn_cnt; i++ ) res.sanitize_success[ i ] = 1U;
+          fd_pack_enqueue_bam_result( ctx, &res );
+        }
         ctx->current_bundle->bundle = NULL;
+        ctx->current_bundle->id      = 0UL;
+        ctx->current_bundle->txn_cnt = 0UL;
+        ctx->current_bundle->txn_received = 0UL;
+        ctx->current_bundle->min_blockhash_slot = ULONG_MAX;
+        ctx->current_bundle->max_schedule_slot  = ULONG_MAX;
       }
     } else {
       ulong blockhash_slot = sig;
@@ -1281,6 +1532,36 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->poh_out_chunk0 = fd_dcache_compact_chunk0( ctx->poh_out_mem, topo->links[ tile->out_link_id[ 1 ] ].dcache );
   ctx->poh_out_wmark  = fd_dcache_compact_wmark ( ctx->poh_out_mem, topo->links[ tile->out_link_id[ 1 ] ].dcache, topo->links[ tile->out_link_id[ 1 ] ].mtu );
   ctx->poh_out_chunk  = ctx->poh_out_chunk0;
+
+  ctx->bundle_out = (fd_pack_out_ctx_t){ .mem=NULL, .chunk0=0UL, .wmark=0UL, .chunk=0UL, .idx=ULONG_MAX };
+  ctx->bam_out    = (fd_pack_out_ctx_t){ .mem=NULL, .chunk0=0UL, .wmark=0UL, .chunk=0UL, .idx=ULONG_MAX };
+
+  ulong bundle_out_idx = fd_topo_find_tile_out_link( topo, tile, "pack_bundle", tile->kind_id );
+  if( bundle_out_idx!=ULONG_MAX ) {
+    fd_topo_link_t const * bundle_link = &topo->links[ tile->out_link_id[ bundle_out_idx ] ];
+    ctx->bundle_out.idx    = bundle_out_idx;
+    ctx->bundle_out.mem    = topo->workspaces[ topo->objs[ bundle_link->dcache_obj_id ].wksp_id ].wksp;
+    ctx->bundle_out.chunk0 = fd_dcache_compact_chunk0( ctx->bundle_out.mem, bundle_link->dcache );
+    ctx->bundle_out.wmark  = fd_dcache_compact_wmark ( ctx->bundle_out.mem, bundle_link->dcache, bundle_link->mtu );
+    ctx->bundle_out.chunk  = ctx->bundle_out.chunk0;
+  }
+
+  ulong bam_out_idx = fd_topo_find_tile_out_link( topo, tile, "pack_bam", tile->kind_id );
+  if( bam_out_idx!=ULONG_MAX ) {
+    fd_topo_link_t const * bam_link = &topo->links[ tile->out_link_id[ bam_out_idx ] ];
+    ctx->bam_out.idx    = bam_out_idx;
+    ctx->bam_out.mem    = topo->workspaces[ topo->objs[ bam_link->dcache_obj_id ].wksp_id ].wksp;
+    ctx->bam_out.chunk0 = fd_dcache_compact_chunk0( ctx->bam_out.mem, bam_link->dcache );
+    ctx->bam_out.wmark  = fd_dcache_compact_wmark ( ctx->bam_out.mem, bam_link->dcache, bam_link->mtu );
+    ctx->bam_out.chunk  = ctx->bam_out.chunk0;
+  }
+
+  ctx->bam_results_head    = 0UL;
+  ctx->bam_results_tail    = 0UL;
+  ctx->bam_results_pending = 0UL;
+  memset( ctx->bam_results, 0, sizeof( ctx->bam_results ) );
+  ctx->leader_state_pending = 0;
+  ctx->last_leader_state_ns = 0L;
 
   /* Initialize metrics storage */
   memset( ctx->insert_result, '\0', FD_PACK_INSERT_RETVAL_CNT * sizeof(ulong) );

@@ -7,6 +7,7 @@
 #define IN_KIND_BUNDLE (1UL)
 #define IN_KIND_GOSSIP (2UL)
 #define IN_KIND_SEND   (3UL)
+#define IN_KIND_BAM    (4UL)
 
 FD_FN_CONST static inline ulong
 scratch_align( void ) {
@@ -41,11 +42,12 @@ before_frag( fd_verify_ctx_t * ctx,
      regular transaction and should be round-robined between verify
      tiles, while bundles need to go through verify:0 currently to
      prevent interleaving of bundle streams. */
-  int is_bundle_packet = (ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE && !sig);
+  ulong in_kind = ctx->in_kind[ in_idx ];
+  int is_bundle_packet = ((in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_BAM) && !sig);
 
-  if( FD_LIKELY( is_bundle_packet || ctx->in_kind[ in_idx ]==IN_KIND_QUIC || ctx->in_kind[ in_idx ]==IN_KIND_GOSSIP ) ) {
+  if( FD_LIKELY( is_bundle_packet || in_kind==IN_KIND_QUIC || in_kind==IN_KIND_GOSSIP ) ) {
     return (seq % ctx->round_robin_cnt) != ctx->round_robin_idx;
-  } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE ) ) {
+  } else if( FD_LIKELY( in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_BAM ) ) {
     return ctx->round_robin_idx!=0UL;
   }
 
@@ -66,7 +68,7 @@ during_frag( fd_verify_ctx_t * ctx,
              ulong             ctl FD_PARAM_UNUSED ) {
 
   ulong in_kind = ctx->in_kind[ in_idx ];
-  if( FD_UNLIKELY( in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_QUIC || in_kind==IN_KIND_GOSSIP || in_kind==IN_KIND_SEND ) ) {
+  if( FD_UNLIKELY( in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_BAM || in_kind==IN_KIND_QUIC || in_kind==IN_KIND_GOSSIP || in_kind==IN_KIND_SEND ) ) {
     if( FD_UNLIKELY( chunk<ctx->in[in_idx].chunk0 || chunk>ctx->in[in_idx].wmark || sz>FD_TPU_RAW_MTU ) )
       FD_LOG_ERR(( "chunk %lu %lu corrupt, not in range [%lu,%lu,%lu]", chunk, sz, ctx->in[in_idx].chunk0, ctx->in[in_idx].wmark, FD_TPU_RAW_MTU ));
 
@@ -191,6 +193,7 @@ unprivileged_init( fd_topo_t *      topo,
 
     if(      !strcmp( link->name, "quic_verify"  ) ) ctx->in_kind[ i ] = IN_KIND_QUIC;
     else if( !strcmp( link->name, "bundle_verif" ) ) ctx->in_kind[ i ] = IN_KIND_BUNDLE;
+    else if( !strcmp( link->name, "bam_verif"    ) ) ctx->in_kind[ i ] = IN_KIND_BAM;
     else if( !strcmp( link->name, "gossip_verif" ) ) ctx->in_kind[ i ] = IN_KIND_GOSSIP;
     else if( !strcmp( link->name, "send_txns"    ) ) ctx->in_kind[ i ] = IN_KIND_SEND;
     else FD_LOG_ERR(( "unexpected link name %s", link->name ));

@@ -1,6 +1,7 @@
 #include "fd_bank_abi.h"
 
 #include "../../disco/tiles.h"
+#include "../../disco/bam/fd_bam_types.h"
 #include "../../disco/pack/fd_pack.h"
 #include "../../disco/pack/fd_pack_cost.h"
 #include "../../ballet/blake3/fd_blake3.h"
@@ -26,6 +27,8 @@ typedef struct {
   ulong _pack_idx;
   ulong _txn_idx;
   int _is_bundle;
+  ulong _bundle_id;
+  ulong _bundle_txn_cnt;
 
   ulong * busy_fseq;
 
@@ -44,6 +47,12 @@ typedef struct {
   ulong       rebate_chunk;
   ulong       rebates_for_slot;
   fd_pack_rebate_sum_t rebater[ 1 ];
+
+  fd_wksp_t * bam_out_mem;
+  ulong       bam_out_chunk0;
+  ulong       bam_out_wmark;
+  ulong       bam_out_chunk;
+  int         bam_out_enabled;
 
   struct {
     ulong txn_load_address_lookup_tables[ 6 ];
@@ -126,6 +135,8 @@ during_frag( fd_bank_ctx_t * ctx,
   ctx->_pack_idx = trailer->pack_idx;
   ctx->_txn_idx = trailer->pack_txn_idx;
   ctx->_is_bundle = trailer->is_bundle;
+  ctx->_bundle_id = trailer->bundle_id;
+  ctx->_bundle_txn_cnt = trailer->bundle_txn_cnt;
 }
 
 static void
@@ -147,6 +158,18 @@ hash_transactions( void *       mem,
   }
   uchar * root = fd_bmtree_commit_fini( bmtree );
   fd_memcpy( mixin, root, 32UL );
+}
+
+static void
+publish_bundle_result( fd_bank_ctx_t * ctx,
+                       fd_bam_bundle_result_t const * result,
+                       fd_stem_context_t * stem ) {
+  if( FD_UNLIKELY( !ctx->bam_out_enabled ) ) return;
+  const ulong sz = sizeof(fd_bam_bundle_result_t);
+  fd_memcpy( fd_chunk_to_laddr( ctx->bam_out_mem, ctx->bam_out_chunk ), result, sz );
+  ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
+  fd_stem_publish( stem, 2UL, result->bundle_id, ctx->bam_out_chunk, sz, 0UL, 0UL, tspub );
+  ctx->bam_out_chunk = fd_dcache_compact_next( ctx->bam_out_chunk, sz, ctx->bam_out_chunk0, ctx->bam_out_wmark );
 }
 
 static inline void
@@ -447,6 +470,21 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     }
   }
 
+  fd_bam_bundle_result_t result = {
+    .bundle_id          = ctx->_bundle_id,
+    .slot               = slot,
+    .bundle_txn_cnt     = ctx->_bundle_txn_cnt ? ctx->_bundle_txn_cnt : txn_cnt,
+    .txn_cnt            = (uint)txn_cnt,
+    .execution_success  = (uint)execution_success,
+    .scheduling_error   = FD_BAM_SCHED_ERR_NONE
+  };
+  for( ulong i=0UL; i<txn_cnt; i++ ) {
+    result.transaction_err[i]  = (uint)transaction_err[i];
+    result.consumed_cus[i]     = consumed_cus[i];
+    result.sanitize_success[i] = (uchar)((txns[i].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS)!=0);
+  }
+  publish_bundle_result( ctx, &result, stem );
+
   fd_pack_rebate_sum_add_txn( ctx->rebater, txns, writable_alt, txn_cnt );
 
   /* We need to publish each transaction separately into its own
@@ -567,6 +605,22 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->rebate_chunk0 = fd_dcache_compact_chunk0( ctx->rebate_mem, topo->links[ tile->out_link_id[ 1 ] ].dcache );
   ctx->rebate_wmark  = fd_dcache_compact_wmark ( ctx->rebate_mem, topo->links[ tile->out_link_id[ 1 ] ].dcache, topo->links[ tile->out_link_id[ 1 ] ].mtu );
   ctx->rebate_chunk  = ctx->rebate_chunk0;
+
+  ulong bam_out_idx = fd_topo_find_tile_out_link( topo, tile, "bank_bam", tile->kind_id );
+  if( FD_LIKELY( bam_out_idx!=ULONG_MAX ) ) {
+    fd_topo_link_t const * bam_out = &topo->links[ tile->out_link_id[ bam_out_idx ] ];
+    ctx->bam_out_mem    = topo->workspaces[ topo->objs[ bam_out->dcache_obj_id ].wksp_id ].wksp;
+    ctx->bam_out_chunk0 = fd_dcache_compact_chunk0( ctx->bam_out_mem, bam_out->dcache );
+    ctx->bam_out_wmark  = fd_dcache_compact_wmark ( ctx->bam_out_mem, bam_out->dcache, bam_out->mtu );
+    ctx->bam_out_chunk  = ctx->bam_out_chunk0;
+    ctx->bam_out_enabled = 1;
+  } else {
+    ctx->bam_out_mem    = NULL;
+    ctx->bam_out_chunk0 = 0UL;
+    ctx->bam_out_wmark  = 0UL;
+    ctx->bam_out_chunk  = 0UL;
+    ctx->bam_out_enabled = 0;
+  }
 }
 
 /* For a bundle, one bundle might burst into at most 5 separate PoH mixins, since the

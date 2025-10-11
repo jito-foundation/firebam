@@ -2,6 +2,8 @@ NANOPB_GEN?=nanopb_generator.py
 
 PROTOS:=
 PROTOS+=auth
+PROTOS+=bam_types
+PROTOS+=bam_api
 PROTOS+=block_engine
 PROTOS+=bundle
 PROTOS+=packet

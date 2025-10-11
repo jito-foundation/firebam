@@ -6,6 +6,7 @@
 #include "../../ballet/base58/fd_base58.h"
 #include "../../disco/metrics/fd_metrics.h"
 #include <math.h>
+#include <string.h>
 
 #if FD_USING_GCC && __GNUC__ >= 15
 #pragma GCC diagnostic ignored "-Wunterminated-string-initialization"
@@ -57,10 +58,11 @@ pack_outcome_t outcome;
 
 
 static fd_pack_t *
-init_all( ulong pack_depth,
-          ulong bank_tile_cnt,
-          ulong max_txn_per_microblock,
-          pack_outcome_t * outcome     ) {
+init_all_with_meta( ulong pack_depth,
+                    ulong bank_tile_cnt,
+                    ulong max_txn_per_microblock,
+                    ulong bundle_meta_sz,
+                    pack_outcome_t * outcome ) {
   fd_pack_limits_t limits[1] = { {
     .max_cost_per_block        = FD_PACK_TEST_MAX_COST_PER_BLOCK,
     .max_vote_cost_per_block   = FD_PACK_TEST_MAX_VOTE_COST_PER_BLOCK,
@@ -69,14 +71,14 @@ init_all( ulong pack_depth,
     .max_txn_per_microblock    = max_txn_per_microblock,
     .max_microblocks_per_block = MAX_TEST_TXNS,
   } };
-  ulong footprint = fd_pack_footprint( pack_depth, 1UL, bank_tile_cnt, limits );
+  ulong footprint = fd_pack_footprint( pack_depth, bundle_meta_sz, bank_tile_cnt, limits );
 
   if( footprint>PACK_SCRATCH_SZ ) FD_LOG_ERR(( "Test required %lu bytes, but scratch was only %lu", footprint, PACK_SCRATCH_SZ ));
 #if DETAILED_STATUS_MESSAGES
   else                         FD_LOG_NOTICE(( "Test required %lu bytes of %lu available bytes",    footprint, PACK_SCRATCH_SZ ));
 #endif
 
-  fd_pack_t * pack = fd_pack_join( fd_pack_new( pack_scratch, pack_depth, 1UL, bank_tile_cnt, limits, rng ) );
+  fd_pack_t * pack = fd_pack_join( fd_pack_new( pack_scratch, pack_depth, bundle_meta_sz, bank_tile_cnt, limits, rng ) );
 #define MAX_BANKING_THREADS 64
 
   outcome->microblock_cnt = 0UL;
@@ -86,6 +88,14 @@ init_all( ulong pack_depth,
   }
 
   return pack;
+}
+
+static fd_pack_t *
+init_all( ulong pack_depth,
+          ulong bank_tile_cnt,
+          ulong max_txn_per_microblock,
+          pack_outcome_t * outcome ) {
+  return init_all_with_meta( pack_depth, bank_tile_cnt, max_txn_per_microblock, 1UL, outcome );
 }
 
 
@@ -1465,6 +1475,57 @@ test_bundle_nonce_conflict_detect( fd_pack_t * pack,
 }
 
 static void
+test_bundle_drop_expired( void ) {
+  typedef struct {
+    fd_acct_addr_t commission_pubkey[1];
+    ulong          commission;
+    ulong          bundle_id;
+    ulong          bundle_txn_cnt;
+    ulong          max_schedule_slot;
+  } test_block_builder_info_t;
+
+  pack_outcome_t outcome;
+  fd_pack_t * pack = init_all_with_meta( 8UL, 1UL, 4UL, sizeof(test_block_builder_info_t), &outcome );
+
+  FD_TEST( fd_pack_drop_best_bundle( pack )==0UL );
+
+  fd_txn_e_t * _bundle[1];
+  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
+  make_transaction1( bundle[0]->txnp, 0UL, 2000U, 32U, 1.0, "a", "", NULL, NULL );
+
+  ulong deleted = 0UL;
+  int result = fd_pack_insert_bundle_fini( pack, bundle, 1UL, 60UL, 1, NULL, &deleted );
+  FD_TEST( result>=0 );
+  FD_TEST( deleted==0UL );
+  FD_TEST( fd_pack_drop_best_bundle( pack )==0UL );
+  fd_pack_clear_all( pack );
+
+  bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
+  make_transaction1( bundle[0]->txnp, 0UL, 2000U, 32U, 1.0, "a", "", NULL, NULL );
+
+  test_block_builder_info_t meta;
+  memset( &meta, 0, sizeof(meta) );
+  meta.bundle_id         = 1234UL;
+  meta.bundle_txn_cnt    = 1UL;
+  meta.max_schedule_slot = 77UL;
+
+  deleted = 0UL;
+  result = fd_pack_insert_bundle_fini( pack, bundle, 1UL, 60UL, 0, &meta, &deleted );
+  FD_TEST( result>=0 );
+  FD_TEST( deleted==0UL );
+
+  test_block_builder_info_t const * stored = (test_block_builder_info_t const *)fd_pack_peek_bundle_meta( pack );
+  FD_TEST( stored );
+  FD_TEST( stored->bundle_id==meta.bundle_id );
+  FD_TEST( stored->max_schedule_slot==meta.max_schedule_slot );
+
+  FD_TEST( fd_pack_drop_best_bundle( pack )==1UL );
+  FD_TEST( fd_pack_peek_bundle_meta( pack )==NULL );
+
+  fd_pack_delete( fd_pack_leave( pack ) );
+}
+
+static void
 test_bundle_nonce( void ) {
   ulong const pack_depth = 32UL;
   fd_pack_t * pack = init_all( pack_depth, 1UL, 32UL, &outcome );
@@ -1617,6 +1678,7 @@ main( int     argc,
   test_reject();
   test_duplicate_sig();
   test_nonce();
+  test_bundle_drop_expired();
   test_bundle_nonce();
   performance_test( extra_benchmark );
   performance_test2();

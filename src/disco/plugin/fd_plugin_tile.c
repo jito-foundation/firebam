@@ -13,6 +13,7 @@
 #define IN_KIND_VOTEL  (6)
 #define IN_KIND_BUNDLE (7)
 #define IN_KIND_VALCFG (8)
+#define IN_KIND_BAM    (9)
 
 typedef struct {
   fd_wksp_t * mem;
@@ -122,7 +123,8 @@ after_frag( fd_plugin_ctx_t *   ctx,
       FD_TEST( sig==FD_PLUGIN_MSG_SLOT_OPTIMISTICALLY_CONFIRMED );
       break;
     }
-    case IN_KIND_BUNDLE: {
+    case IN_KIND_BUNDLE:
+    case IN_KIND_BAM: {
       FD_TEST( sig==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE );
       break;
     }
@@ -165,6 +167,7 @@ unprivileged_init( fd_topo_t *      topo,
     else if( !strcmp( link->name, "startp_plugi" ) ) ctx->in_kind[ i ] = IN_KIND_STARTP;
     else if( !strcmp( link->name, "votel_plugin" ) ) ctx->in_kind[ i ] = IN_KIND_VOTEL;
     else if( !strcmp( link->name, "bundle_plugi" ) ) ctx->in_kind[ i ] = IN_KIND_BUNDLE;
+    else if( !strcmp( link->name, "bam_plugi" ) )     ctx->in_kind[ i ] = IN_KIND_BAM;
     else if( !strcmp( link->name, "valcfg_plugi" ) ) ctx->in_kind[ i ] = IN_KIND_VALCFG;
     else FD_LOG_ERR(( "unexpected link name %s", link->name ));
   }

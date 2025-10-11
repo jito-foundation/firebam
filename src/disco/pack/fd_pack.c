@@ -1725,6 +1725,20 @@ fd_pack_peek_bundle_meta( fd_pack_t const * pack ) {
   return (void const *)((uchar const *)pack->bundle_meta + (ulong)_cur * pack->bundle_meta_sz);
 }
 
+ulong
+fd_pack_drop_best_bundle( fd_pack_t * pack ) {
+  int ib_state = pack->initializer_bundle_state;
+  if( FD_UNLIKELY( (ib_state==FD_PACK_IB_STATE_PENDING) | (ib_state==FD_PACK_IB_STATE_FAILED) ) ) return 0UL;
+
+  treap_rev_iter_t _cur = treap_rev_iter_init( pack->pending_bundles, pack->pool );
+  if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return 0UL;
+
+  fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pack->pool );
+  if( FD_UNLIKELY( cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE ) ) return 0UL;
+
+  return delete_transaction( pack, cur, 1, 0 );
+}
+
 void
 fd_pack_set_initializer_bundles_ready( fd_pack_t * pack ) {
   pack->initializer_bundle_state = FD_PACK_IB_STATE_READY;

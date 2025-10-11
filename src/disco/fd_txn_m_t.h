@@ -56,6 +56,8 @@ struct fd_txn_m {
     uchar commission;
     uchar commission_pubkey[ 32 ];
 
+    ulong max_schedule_slot;
+
     /* alignof is 8, so 7 bytes of padding here */
 
   } block_engine;
