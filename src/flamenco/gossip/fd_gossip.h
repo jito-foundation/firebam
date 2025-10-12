@@ -87,6 +87,14 @@ fd_gossip_update_tpu_addr( fd_gossip_t * glob,
 /* Update the tpu vote addr */
 int fd_gossip_update_tpu_vote_addr( fd_gossip_t * glob, const fd_gossip_peer_addr_t * tpu_vote );
 
+/* Force the current contact info to be republished with updated socket
+   metadata (e.g. when BAM overrides TPU ports). */
+void fd_gossip_force_contact_info_push( fd_gossip_t * glob );
+
+/* Returns the contact info maintained for this validator. */
+fd_contact_info_t const *
+fd_gossip_get_my_contact( fd_gossip_t const * glob );
+
 /* Set the shred version (after receiving a contact info msg) */
 void fd_gossip_set_shred_version( fd_gossip_t * glob, ushort shred_version );
 

@@ -732,6 +732,37 @@ fd_gossip_update_tpu_vote_addr( fd_gossip_t * glob, const fd_gossip_peer_addr_t 
   return fd_gossip_update_addr_internal( glob, tpu_vote, FD_GOSSIP_SOCKET_TAG_TPU_VOTE );
 }
 
+static void fd_gossip_push_updated_contact( fd_gossip_t * glob );
+
+void
+fd_gossip_force_contact_info_push( fd_gossip_t * glob ) {
+  if( FD_UNLIKELY( !glob ) ) return;
+
+  fd_gossip_lock( glob );
+
+  long const now = glob->now;
+  if( FD_UNLIKELY( !now ) ) {
+    fd_gossip_unlock( glob );
+    return;
+  }
+
+  long const prev_last_contact = glob->last_contact_time;
+  long const target_last_contact = ( now>(long)1e9 ) ? ( now - (long)1e9 - 1L ) : 0L;
+  glob->last_contact_time = target_last_contact;
+
+  fd_gossip_push_updated_contact( glob );
+
+  if( FD_UNLIKELY( glob->last_contact_time==target_last_contact ) )
+    glob->last_contact_time = prev_last_contact;
+
+  fd_gossip_unlock( glob );
+}
+
+fd_contact_info_t const *
+fd_gossip_get_my_contact( fd_gossip_t const * glob ) {
+  return FD_LIKELY( glob ) ? &glob->my_contact : NULL;
+}
+
 ushort
 fd_gossip_get_shred_version( fd_gossip_t const * glob ) {
   return fd_contact_info_get_shred_version( &glob->my_contact);
@@ -2424,4 +2455,3 @@ fd_gossip_is_allowed_entrypoint( fd_gossip_t * gossip, fd_gossip_peer_addr_t * a
   }
   return 0;
 }
-

@@ -309,10 +309,12 @@ fd_topo_initialize( config_t * config ) {
     fd_topob_wksp( topo, "bam_sign"  );
     fd_topob_wksp( topo, "sign_bam"  );
     fd_topob_wksp( topo, "bam"       );
+    fd_topob_wksp( topo, "bam_gossip" );
 
     /**/                 fd_topob_link( topo, "bam_verif", "bam_verif", config->tiles.verify.receive_buffer_size, FD_TPU_PARSED_MTU, 1UL );
     /**/                 fd_topob_link( topo, "bam_sign",  "bam_sign",  65536UL,                                  9UL,               1UL );
     /**/                 fd_topob_link( topo, "sign_bam",  "sign_bam",  128UL,                                    64UL,              1UL );
+    /**/                 fd_topob_link( topo, "bam_gossip","bam_gossip", 16UL,                                      sizeof(fd_bam_contact_update_t), 1UL );
 
     /**/                 fd_topob_tile( topo, "bam",  "bam",  "metric_in", tile_to_cpu[ topo->tile_cnt ], 0, 1 );
 
@@ -325,6 +327,8 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_out( topo, "bam", 0UL,            "bam_sign", 0UL                                                );
     /**/                 fd_topob_tile_in(  topo, "bam", 0UL, "metric_in", "sign_bam", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
     /**/                 fd_topob_tile_out( topo, "sign", 0UL,            "sign_bam", 0UL                                                );
+    /**/                 fd_topob_tile_out( topo, "bam", 0UL,            "bam_gossip", 0UL                                             );
+    /**/                 fd_topob_tile_in(  topo, "gossip", 0UL,         "metric_in", "bam_gossip", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
 
     if( plugins_enabled ) {
       fd_topob_wksp( topo, "bam_plugi" );

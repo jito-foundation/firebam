@@ -597,6 +597,54 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
       ctx->builder_info_valid_until  = fd_bam_now() + (long)( 60e9 * 5. );
     }
   }
+
+  if( FD_LIKELY( resp.has_bam_config ) ) {
+    bam_types_BamConfig const * cfg = &resp.bam_config;
+
+    fd_ip4_port_t new_tpu_addr = ctx->bam_tpu_addr;
+    fd_ip4_port_t new_tpu_quic_addr = ctx->bam_tpu_quic_addr;
+    int have_tpu = 0;
+    int have_tpu_quic = 0;
+
+    if( cfg->has_tpu_sock ) {
+      uint ip4;
+      if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_sock.ip, &ip4 ) ) &&
+          FD_LIKELY( cfg->tpu_sock.port>0 && cfg->tpu_sock.port<=USHORT_MAX ) ) {
+        new_tpu_addr.addr = ip4;
+        new_tpu_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_sock.port );
+        have_tpu = 1;
+      } else {
+        FD_LOG_WARNING(( "Invalid BAM TPU socket in ConfigResponse (ip=%s port=%ld)",
+                         cfg->tpu_sock.ip,
+                         cfg->tpu_sock.port ));
+      }
+    }
+
+    if( cfg->has_tpu_fwd_sock ) {
+      uint ip4;
+      if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_fwd_sock.ip, &ip4 ) ) &&
+          FD_LIKELY( cfg->tpu_fwd_sock.port>0 && cfg->tpu_fwd_sock.port<=USHORT_MAX ) ) {
+        new_tpu_quic_addr.addr = ip4;
+        new_tpu_quic_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_fwd_sock.port );
+        have_tpu_quic = 1;
+      } else {
+        FD_LOG_WARNING(( "Invalid BAM TPU forward socket in ConfigResponse (ip=%s port=%ld)",
+                         cfg->tpu_fwd_sock.ip,
+                         cfg->tpu_fwd_sock.port ));
+      }
+    }
+
+    if( FD_LIKELY( have_tpu ) ) {
+      int quic_changed = have_tpu_quic ? ( ctx->bam_tpu_quic_addr.l!=new_tpu_quic_addr.l )
+                                       : ( ctx->bam_tpu_quic_addr.l!=0UL );
+      if( FD_UNLIKELY( !ctx->bam_contact_avail || ctx->bam_tpu_addr.l!=new_tpu_addr.l || quic_changed ) ) {
+        ctx->bam_contact_dirty = 1U;
+      }
+      ctx->bam_tpu_addr      = new_tpu_addr;
+      ctx->bam_tpu_quic_addr = have_tpu_quic ? new_tpu_quic_addr : (fd_ip4_port_t){ .l = 0UL };
+      ctx->bam_contact_avail = 1U;
+    }
+  }
 }
 
 static void

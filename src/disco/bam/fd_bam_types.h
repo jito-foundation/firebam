@@ -7,6 +7,7 @@
 #include "../pack/fd_pack.h" /* FD_PACK_MAX_TXN_PER_BUNDLE */
 #include "../bundle/proto/bam_types.pb.h"
 #include "../../flamenco/types/fd_types.h"
+#include "../../util/net/fd_net_headers.h"
 
 #define FD_BAM_MAX_PENDING_RESULTS 64UL
 
@@ -27,6 +28,17 @@ typedef struct {
   uint  tick;
   uint  slot_cu_budget_remaining;
 } fd_bam_leader_state_t;
+
+typedef struct {
+  fd_ip4_port_t tpu_addr;
+  fd_ip4_port_t tpu_quic_addr;
+  uint          use_bam;
+} fd_bam_contact_update_t;
+
+#define FD_BAM_CONTACT_USE_DEFAULT ((uint)0U)
+#define FD_BAM_CONTACT_USE_BAM     ((uint)1U)
+
+#define FD_BAM_STEM_SIG_GOSSIP_UPDATE (5UL)
 
 #define FD_BAM_SCHED_ERR_NONE            ((uint)UINT_MAX)
 #define FD_BAM_SCHED_ERR_POH_TIMEOUT     ((uint)bam_types_SchedulingError_POH_TIMEOUT)

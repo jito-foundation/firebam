@@ -76,6 +76,59 @@ metrics_write( fd_bam_tile_t * ctx ) {
   ctx->bundle_status_recent = (uchar)bundle_status;
 }
 
+static void
+fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
+                              fd_stem_context_t * stem,
+                              uint                use_bam ) {
+  if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
+
+  fd_bam_contact_update_t * msg =
+      fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
+  fd_memset( msg, 0, sizeof(fd_bam_contact_update_t) );
+  msg->use_bam = use_bam ? FD_BAM_CONTACT_USE_BAM : FD_BAM_CONTACT_USE_DEFAULT;
+  if( FD_LIKELY( use_bam ) ) {
+    msg->tpu_addr      = ctx->bam_tpu_addr;
+    msg->tpu_quic_addr = ctx->bam_tpu_quic_addr;
+  }
+
+  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_bam_now() );
+  fd_stem_publish( stem,
+                   ctx->gossip_out.idx,
+                   FD_BAM_STEM_SIG_GOSSIP_UPDATE,
+                   ctx->gossip_out.chunk,
+                   sizeof(fd_bam_contact_update_t),
+                   0UL,
+                   0UL,
+                   tspub );
+  ctx->gossip_out.chunk = fd_dcache_compact_next( ctx->gossip_out.chunk,
+                                                  sizeof(fd_bam_contact_update_t),
+                                                  ctx->gossip_out.chunk0,
+                                                  ctx->gossip_out.wmark );
+}
+
+static void
+fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
+                            fd_stem_context_t * stem,
+                            int                 status ) {
+  if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
+
+  int connected = ( status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+
+  if( FD_UNLIKELY( connected && ctx->bam_contact_avail ) ) {
+    if( FD_UNLIKELY( ctx->bam_contact_dirty || !ctx->bam_contact_active ) ) {
+      fd_bam_publish_gossip_update( ctx, stem, 1U );
+      ctx->bam_contact_active = 1U;
+      ctx->bam_contact_dirty  = 0U;
+    }
+    return;
+  }
+
+  if( FD_UNLIKELY( ctx->bam_contact_active ) ) {
+    fd_bam_publish_gossip_update( ctx, stem, 0U );
+    ctx->bam_contact_active = 0U;
+  }
+}
+
 static inline void
 fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
                        fd_bam_bundle_result_t const * res ) {
@@ -203,6 +256,10 @@ after_credit( fd_bam_tile_t *  ctx,
   (void)opt_poll_in;
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
   fd_bam_client_step( ctx, charge_busy );
+
+  int bundle_status = fd_bam_client_status( ctx );
+  ctx->bundle_status_recent = (uchar)bundle_status;
+  fd_bam_update_contact_info( ctx, stem, bundle_status );
 
   if( ctx->plugin_out.mem ) {
     if( FD_UNLIKELY( ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
@@ -634,6 +691,13 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->plugin_out = (fd_bam_out_ctx_t){ .idx=ULONG_MAX };
   }
 
+  ulong gossip_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_gossip", tile->kind_id );
+  if( gossip_out_idx!=ULONG_MAX ) {
+    ctx->gossip_out = bam_out_link( topo, &topo->links[ tile->out_link_id[ gossip_out_idx ] ], gossip_out_idx );
+  } else {
+    ctx->gossip_out = (fd_bam_out_ctx_t){ .idx=ULONG_MAX };
+  }
+
   /* Set socket receive buffer size */
   ulong so_rcvbuf = tile->bam.buf_sz;
   if( FD_UNLIKELY( so_rcvbuf < 2048UL  ) ) FD_LOG_ERR(( "Invalid [development.bundle.buffer_size_kib]: too small" ));
@@ -646,6 +710,12 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bundle_status_plugin = 127;
   ctx->bundle_status_recent = FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_DISCONNECTED;
   ctx->last_bundle_status_log_nanos = fd_log_wallclock();
+
+  ctx->bam_tpu_addr.l       = 0UL;
+  ctx->bam_tpu_quic_addr.l  = 0UL;
+  ctx->bam_contact_avail    = 0U;
+  ctx->bam_contact_active   = 0U;
+  ctx->bam_contact_dirty    = 0U;
 
   fd_bam_tile_parse_endpoint( ctx, tile );
 

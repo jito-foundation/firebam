@@ -166,6 +166,7 @@ struct fd_bam_tile {
   fd_stem_context_t * stem;
   fd_bam_out_ctx_t verify_out;
   fd_bam_out_ctx_t plugin_out;
+  fd_bam_out_ctx_t gossip_out;
 
   /* App metrics */
   fd_bam_metrics_t metrics;
@@ -175,6 +176,13 @@ struct fd_bam_tile {
   uchar bundle_status_plugin;  /* last 'plugin' update written */
   uchar bundle_status_logged;
   long  last_bundle_status_log_nanos;
+
+  /* Bam contact info */
+  fd_ip4_port_t bam_tpu_addr;
+  fd_ip4_port_t bam_tpu_quic_addr;
+  uint          bam_contact_avail : 1;
+  uint          bam_contact_active : 1;
+  uint          bam_contact_dirty : 1;
 };
 
 typedef struct fd_bam_tile fd_bam_tile_t;
