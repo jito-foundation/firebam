@@ -73,6 +73,7 @@ fd_topo_initialize( config_t * config ) {
   if( FD_UNLIKELY( bam_tile_enabled ) ) {
     fd_topob_wksp( topo, "pack_bam" );
     fd_topob_wksp( topo, "bank_bam" );
+    fd_topob_wksp( topo, "bam_status" );
   }
 
   fd_topob_wksp( topo, "shred_sign"   );
@@ -430,6 +431,20 @@ fd_topo_initialize( config_t * config ) {
     fd_topob_tile_uses( topo, poh_tile, busy_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
     fd_topob_tile_uses( topo, pack_tile, busy_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
     FD_TEST( fd_pod_insertf_ulong( topo->props, busy_obj->id, "bank_busy.%lu", i ) );
+  }
+
+  if( FD_UNLIKELY( bam_tile_enabled ) ) {
+    fd_topo_obj_t * bam_status_obj = fd_topob_obj( topo, "fseq", "bam_status" );
+
+    fd_topo_tile_t * bam_tile = &topo->tiles[ fd_topo_find_tile( topo, "bam", 0UL ) ];
+    fd_topob_tile_uses( topo, bam_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+
+    for( ulong i=0UL; i<verify_tile_cnt; i++ ) {
+      fd_topo_tile_t * verify_tile = &topo->tiles[ fd_topo_find_tile( topo, "verify", i ) ];
+      fd_topob_tile_uses( topo, verify_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
+    }
+
+    FD_TEST( fd_pod_insert_ulong( topo->props, "bam_status", bam_status_obj->id ) );
   }
 
   /* There's another special fseq that's used to communicate the shred

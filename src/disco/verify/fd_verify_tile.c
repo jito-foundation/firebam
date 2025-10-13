@@ -2,6 +2,8 @@
 #include "../fd_txn_m_t.h"
 #include "../metrics/fd_metrics.h"
 #include "generated/fd_verify_tile_seccomp.h"
+#include "../../tango/fseq/fd_fseq.h"
+#include "../../util/pod/fd_pod_format.h"
 
 #define IN_KIND_QUIC   (0UL)
 #define IN_KIND_BUNDLE (1UL)
@@ -43,6 +45,12 @@ before_frag( fd_verify_ctx_t * ctx,
      tiles, while bundles need to go through verify:0 currently to
      prevent interleaving of bundle streams. */
   ulong in_kind = ctx->in_kind[ in_idx ];
+  if( FD_UNLIKELY( ctx->bam_status_fseq!=NULL ) ) {
+    ulong bam_preferred = fd_fseq_query( ctx->bam_status_fseq );
+    if( FD_UNLIKELY( bam_preferred==1UL && (in_kind==IN_KIND_QUIC || in_kind==IN_KIND_BUNDLE) ) ) {
+      return 1;
+    }
+  }
   int is_bundle_packet = ((in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_BAM) && !sig);
 
   if( FD_LIKELY( is_bundle_packet || in_kind==IN_KIND_QUIC || in_kind==IN_KIND_GOSSIP ) ) {
@@ -203,6 +211,14 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->out_chunk0 = fd_dcache_compact_chunk0( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache );
   ctx->out_wmark  = fd_dcache_compact_wmark ( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache, topo->links[ tile->out_link_id[ 0 ] ].mtu );
   ctx->out_chunk  = ctx->out_chunk0;
+
+  ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
+  if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
+    ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
+    if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "verify tile missing bam_status fseq" ));
+  } else {
+    ctx->bam_status_fseq = NULL;
+  }
 
   ulong scratch_top = FD_SCRATCH_ALLOC_FINI( l, 1UL );
   if( FD_UNLIKELY( scratch_top > (ulong)scratch + scratch_footprint( tile ) ) )

@@ -167,6 +167,7 @@ struct fd_bam_tile {
   fd_bam_out_ctx_t verify_out;
   fd_bam_out_ctx_t plugin_out;
   fd_bam_out_ctx_t gossip_out;
+  ulong *           bam_status_fseq; /* Shared latch written with BAM status (0=inactive,1=active) */
 
   /* App metrics */
   fd_bam_metrics_t metrics;

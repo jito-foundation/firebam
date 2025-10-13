@@ -5,6 +5,8 @@
 #include "../keyguard/fd_keyload.h"
 #include "../plugin/fd_plugin.h"
 #include "../../waltz/http/fd_url.h"
+#include "../../tango/fseq/fd_fseq.h"
+#include "../../util/pod/fd_pod_format.h"
 
 #include <errno.h>
 #include <dirent.h> /* opendir */
@@ -259,6 +261,10 @@ after_credit( fd_bam_tile_t *  ctx,
 
   int bundle_status = fd_bam_client_status( ctx );
   ctx->bundle_status_recent = (uchar)bundle_status;
+  if( FD_LIKELY( ctx->bam_status_fseq ) ) {
+    ulong is_connected = (ulong)( bundle_status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+    fd_fseq_update( ctx->bam_status_fseq, is_connected );
+  }
   fd_bam_update_contact_info( ctx, stem, bundle_status );
 
   if( ctx->plugin_out.mem ) {
@@ -716,6 +722,15 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_contact_avail    = 0U;
   ctx->bam_contact_active   = 0U;
   ctx->bam_contact_dirty    = 0U;
+
+  ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
+  if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
+    ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
+    if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "bam tile missing bam_status fseq" ));
+    fd_fseq_update( ctx->bam_status_fseq, 0UL );
+  } else {
+    ctx->bam_status_fseq = NULL;
+  }
 
   fd_bam_tile_parse_endpoint( ctx, tile );
 
