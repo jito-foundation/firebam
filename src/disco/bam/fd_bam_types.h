@@ -5,7 +5,7 @@
 
 #include "../pack/fd_microblock.h"
 #include "../pack/fd_pack.h" /* FD_PACK_MAX_TXN_PER_BUNDLE */
-#include "../bundle/proto/bam_types.pb.h"
+#include "proto/bam_types.pb.h"
 #include "../../flamenco/types/fd_types.h"
 #include "../../util/net/fd_net_headers.h"
 

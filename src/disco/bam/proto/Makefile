@@ -1,12 +1,8 @@
 NANOPB_GEN?=nanopb_generator.py
 
 PROTOS:=
-PROTOS+=auth
-PROTOS+=block_engine
-PROTOS+=bundle
-PROTOS+=packet
-PROTOS+=shared
-PROTOS+=timestamp
+PROTOS+=bam_types
+PROTOS+=bam_api
 
 .PHONY: generate
 generate: $(addsuffix .pb.h,$(PROTOS)) $(addsuffix .pb.c,$(PROTOS))
