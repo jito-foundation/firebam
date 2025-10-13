@@ -30,9 +30,9 @@ typedef struct {
 } fd_bam_leader_state_t;
 
 typedef struct {
-  fd_ip4_port_t tpu_addr;
-  fd_ip4_port_t tpu_quic_addr;
-  uint          use_bam;
+  fd_ip4_port_t tpu_addr;      /* TPU socket (TCP) advertised by BAM */
+  fd_ip4_port_t tpu_quic_addr; /* QUIC forwarding socket advertised by BAM */
+  uint          use_bam;       /* `FD_BAM_CONTACT_USE_*` selector */
 } fd_bam_contact_update_t;
 
 #define FD_BAM_CONTACT_USE_DEFAULT ((uint)0U)

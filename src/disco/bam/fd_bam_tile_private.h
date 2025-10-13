@@ -58,72 +58,76 @@ typedef struct fd_bam_metrics fd_bam_metrics_t;
 /* fd_bam_tile_t is the context object provided to callbacks from
    stem, and contains all state needed to progress the tile. */
 
+/* fd_bam_tile aggregates the long-lived state required to operate the BAM
+   scheduler client: networking, authentication, subscriptions, result queues,
+   and topology bindings. */
+
 struct fd_bam_tile {
   /* Key switch */
-  fd_keyswitch_t * keyswitch;
+  fd_keyswitch_t * keyswitch;                     /* Joined keyswitch exposing signer material */
 
   /* Key guard */
-  fd_keyguard_client_t keyguard_client[1];
+  fd_keyguard_client_t keyguard_client[1];        /* Keyguard client used to request signatures */
 
-  ulong            bank_bam_in_idx;
-  ulong            pack_leader_in_idx;
-  fd_bam_in_ctx_t  bank_in;
-  fd_bam_in_ctx_t  leader_in;
+  ulong            bank_bam_in_idx;               /* Topology link index for bank->bam input */
+  ulong            pack_leader_in_idx;            /* Topology link index for leader->bam input */
+  fd_bam_in_ctx_t  bank_in;                       /* Bank bundle ingress dcache context */
+  fd_bam_in_ctx_t  leader_in;                     /* Pack tile ingress for leader state/results */
 
-  uint is_ssl : 1;
-  int  keylog_fd;
+  uint is_ssl : 1;                                /* Non-zero when TLS is negotiated */
+  int  keylog_fd;                                 /* TLS key log output fd (-1 when disabled) */
 # if FD_HAS_OPENSSL
   /* OpenSSL */
-  SSL_CTX *    ssl_ctx;
-  SSL *        ssl;
-  fd_alloc_t * ssl_alloc;
+  SSL_CTX *    ssl_ctx;                           /* Owning TLS context for BAM connection */
+  SSL *        ssl;                               /* TLS session bound to tcp_sock */
+  fd_alloc_t * ssl_alloc;                         /* Allocator backing OpenSSL init */
 # endif /* FD_HAS_OPENSSL */
 
   /* Config */
-  char   server_fqdn[ 256 ]; /* cstr */
-  ulong  server_fqdn_len;
-  char   server_sni[ 256 ]; /* cstr */
-  ulong  server_sni_len;
-  ushort server_tcp_port;
+  char   server_fqdn[ 256 ]; /* cstr; hostname configured for BAM endpoint */
+  ulong  server_fqdn_len;                         /* Length of server_fqdn (no terminator) */
+  char   server_sni[ 256 ]; /* cstr; optional override for TLS SNI */
+  ulong  server_sni_len;                          /* Length of server_sni (no terminator) */
+  ushort server_tcp_port;                         /* Remote TCP port for gRPC */
 
   /* Resolver */
-  fd_netdb_fds_t netdb_fds[1];
-  uint server_ip4_addr; /* last DNS lookup result */
+  fd_netdb_fds_t netdb_fds[1];                    /* fd_netdb handles for async DNS lookups */
+  uint server_ip4_addr; /* last DNS lookup result; cached IPv4 addr from most recent resolve */
 
   /* TCP socket */
-  int  tcp_sock;
-  int  so_rcvbuf;
-  uint tcp_sock_connected : 1;
-  uint defer_reset : 1;
-  long cached_ts;
+  int  tcp_sock;                                  /* Non-blocking socket for gRPC transport */
+  int  so_rcvbuf;                                 /* Desired receive buffer size */
+  uint tcp_sock_connected : 1;                    /* Set once connect handshake completes */
+  uint defer_reset        : 1;                    /* Delay reset until after current iteration */
+  long cached_ts;                                  /* Last fd_bam_now() sample for metrics */
 
   /* Keepalive via HTTP/2 PINGs (randomized) */
-  long              keepalive_interval;
-  fd_keepalive_t    keepalive[1];
-  fd_rtt_estimate_t rtt[1];
+  long              keepalive_interval;           /* Target interval for PING dispatch */
+  fd_keepalive_t    keepalive[1];                 /* HTTP/2 keepalive state machine */
+  fd_rtt_estimate_t rtt[1];                       /* RTT estimator fed by keepalive replies */
 
   /* gRPC client */
-  void *                   grpc_client_mem;
-  ulong                    grpc_buf_max;
-  fd_grpc_client_t *       grpc_client;
-  fd_grpc_client_metrics_t grpc_metrics[1];
-  ulong                    map_seed;
+  void *                   grpc_client_mem;       /* Scratch backing storage for fd_grpc_client */
+  ulong                    grpc_buf_max;          /* Maximum payload size allocated for gRPC */
+  fd_grpc_client_t *       grpc_client;           /* Active gRPC client driving HTTP/2 */
+  fd_grpc_client_metrics_t grpc_metrics[1];       /* Per-client metrics exported to fd_metrics */
+  ulong                    map_seed;              /* Random seed used for header hashing */
 
   /* Bundle authenticator */
-  fd_bundle_auther_t auther;
+  fd_bundle_auther_t auther;                      /* Tracks identity and signs bundle requests */
 
   /* Bundle block builder info */
-  uchar builder_pubkey[ 32 ];
+  uchar builder_pubkey[ 32 ];                     /* Builder identity fetched from BAM */
   uchar builder_commission;  /* in [0,100] (percent) */
   uchar builder_info_avail : 1;  /* Block builder info available? (potentially stale) */
   uchar builder_info_wait  : 1;  /* Request already in-flight? */
-  long  builder_info_valid_until;
+  long  builder_info_valid_until;                 /* Expiry timestamp for builder info */
 
   /* Bundle subscriptions */
-  uchar packet_subscription_live : 1;  /* Want to subscribe to a stream? */
-  uchar packet_subscription_wait : 1;  /* Request already in-flight? */
-  uchar bundle_subscription_live : 1;
-  uchar bundle_subscription_wait : 1;
+  uchar packet_subscription_live : 1;  /* Packet stream is currently subscribed */
+  uchar packet_subscription_wait : 1;  /* Packet subscription RPC in-flight */
+  uchar bundle_subscription_live : 1;  /* Bundle stream is currently subscribed */
+  uchar bundle_subscription_wait : 1;  /* Bundle subscription RPC in-flight */
 
   /* Bundle state */
   ulong bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).
@@ -135,42 +139,42 @@ struct fd_bam_tile {
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler */
 
   /* BAM specific */
-  fd_grpc_h2_stream_t * bam_stream;
-  long                  bam_last_builder_heartbeat_ns;
-  long                  bam_last_validator_heartbeat_ns;
-  long                  bam_last_config_poll_ns;
-  ulong                 bam_pending_results;
-  ulong                 bam_results_head;
-  ulong                 bam_results_tail;
-  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ];
-  fd_bam_leader_state_t  bam_leader_state;
-  uchar                 bam_url_pubkey[ 32 ];
-  char                  bam_validator_pubkey[ FD_BASE58_ENCODED_32_SZ ];
-  char                  bam_auth_challenge[ 256 ];
-  uint                  bam_auth_challenge_len;
-  char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ];
-  uint                  bam_stream_live : 1;
-  uint                  bam_stream_connecting : 1;
-  uint                  bam_auth_ready : 1;
-  uint                  bam_auth_inflight : 1;
-  uint                  bam_config_inflight : 1;
-  uint                  bam_leader_pending : 1;
+  fd_grpc_h2_stream_t * bam_stream;               /* Active scheduler stream when subscribed */
+  long                  bam_last_builder_heartbeat_ns;  /* Last heartbeat ts from builders */
+  long                  bam_last_validator_heartbeat_ns;/* Last heartbeat ts from validator */
+  long                  bam_last_config_poll_ns;         /* Last config fetch attempt */
+  ulong                 bam_pending_results;             /* Count of buffered bundle results */
+  ulong                 bam_results_head;                /* FIFO head for bam_results ring */
+  ulong                 bam_results_tail;                /* FIFO tail for bam_results ring */
+  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Ring of pending bundle outcomes */
+  fd_bam_leader_state_t  bam_leader_state;        /* Latest scheduler slot budget info */
+  uchar                 bam_url_pubkey[ 32 ];   /* Ed25519 pubkey derived from identity file */
+  char                  bam_validator_pubkey[ FD_BASE58_ENCODED_32_SZ ]; /* Base58 validator key */
+  char                  bam_auth_challenge[ 256 ];        /* Challenge text from BAM */
+  uint                  bam_auth_challenge_len;           /* Length of auth challenge string */
+  char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Latest auth response */
+  uint                  bam_stream_live       : 1;        /* Stream established and receiving */
+  uint                  bam_stream_connecting : 1;        /* Stream handshake in progress */
+  uint                  bam_auth_ready        : 1;        /* Challenge ready to be signed */
+  uint                  bam_auth_inflight     : 1;        /* Auth request currently outstanding */
+  uint                  bam_config_inflight   : 1;        /* Config RPC currently in flight */
+  uint                  bam_leader_pending    : 1;        /* Waiting on leader state response */
 
   /* Error backoff */
-  fd_rng_t rng[1];
-  uint     backoff_iter;
-  long     backoff_until;
-  long     backoff_reset;
+  fd_rng_t rng[1];                                /* RNG used to randomize reconnects */
+  uint     backoff_iter;                          /* Backoff iteration counter */
+  long     backoff_until;                         /* Earliest ts to retry connection */
+  long     backoff_reset;                         /* Errors before this ts reset backoff_iter */
 
   /* Stem publish */
-  fd_stem_context_t * stem;
-  fd_bam_out_ctx_t verify_out;
-  fd_bam_out_ctx_t plugin_out;
-  fd_bam_out_ctx_t gossip_out;
-  ulong *           bam_status_fseq; /* Shared latch written with BAM status (0=inactive,1=active) */
+  fd_stem_context_t * stem;                          /* Cached stem context handed to callbacks */
+  fd_bam_out_ctx_t    verify_out;                    /* Output ring for transaction verification */
+  fd_bam_out_ctx_t    plugin_out;                    /* Output ring for plugin status updates */
+  fd_bam_out_ctx_t    gossip_out;       /* Stem output buffer used for BAM gossip updates */
+  ulong *             bam_status_fseq; /* Shared latch written with BAM status (0=inactive,1=active) */
 
   /* App metrics */
-  fd_bam_metrics_t metrics;
+  fd_bam_metrics_t metrics;                         /* Tile-local counters flushed to metrics */
 
   /* Check engine light */
   uchar bundle_status_recent;  /* most recently observed 'check engine light' */
@@ -179,11 +183,11 @@ struct fd_bam_tile {
   long  last_bundle_status_log_nanos;
 
   /* Bam contact info */
-  fd_ip4_port_t bam_tpu_addr;
-  fd_ip4_port_t bam_tpu_quic_addr;
-  uint          bam_contact_avail : 1;
-  uint          bam_contact_active : 1;
-  uint          bam_contact_dirty : 1;
+  fd_ip4_port_t bam_tpu_addr;      /* Latest TPU endpoint advertised by BAM */
+  fd_ip4_port_t bam_tpu_quic_addr; /* Latest QUIC TPU endpoint advertised by BAM */
+  uint          bam_contact_avail  : 1; /* BAM provided contact info at least once */
+  uint          bam_contact_active : 1; /* Contact info currently published to gossip */
+  uint          bam_contact_dirty  : 1; /* Gossip needs refresh with latest contact info */
 };
 
 typedef struct fd_bam_tile fd_bam_tile_t;
