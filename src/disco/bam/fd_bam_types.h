@@ -31,8 +31,8 @@ typedef struct {
 
 typedef struct {
   fd_ip4_port_t tpu_addr;      /* TPU socket (TCP) advertised by BAM */
-  fd_ip4_port_t tpu_quic_addr; /* QUIC forwarding socket advertised by BAM */
-  uint          use_bam;       /* `FD_BAM_CONTACT_USE_*` selector */
+  fd_ip4_port_t tpu_quic_addr; /* QUIC forwarding socket advertised by BAM. Optional override; zeroed if unused */
+  uint          use_bam;       /* `FD_BAM_CONTACT_USE_*` selector. Non-zero when BAM overrides contact info */
 } fd_bam_contact_update_t;
 
 #define FD_BAM_CONTACT_USE_DEFAULT ((uint)0U)

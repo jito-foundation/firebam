@@ -748,11 +748,16 @@ fd_gossip_force_contact_info_push( fd_gossip_t * glob ) {
 
   long const prev_last_contact = glob->last_contact_time;
   long const target_last_contact = ( now>(long)1e9 ) ? ( now - (long)1e9 - 1L ) : 0L;
+  /* Force a refresh by rewinding the last-contact timestamp.  This triggers
+     the regular gossip heartbeat path even if our public endpoints are
+     unchanged but auxiliary metadata (e.g. TPU override) is. */
   glob->last_contact_time = target_last_contact;
 
   fd_gossip_push_updated_contact( glob );
 
   if( FD_UNLIKELY( glob->last_contact_time==target_last_contact ) )
+    /* Restore previous timestamp when the override path did not advance it;
+       prevents permanently skewing the clock if push failed. */
     glob->last_contact_time = prev_last_contact;
 
   fd_gossip_unlock( glob );

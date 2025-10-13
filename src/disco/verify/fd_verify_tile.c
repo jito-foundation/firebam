@@ -47,6 +47,9 @@ before_frag( fd_verify_ctx_t * ctx,
   ulong in_kind = ctx->in_kind[ in_idx ];
   if( FD_UNLIKELY( ctx->bam_status_fseq!=NULL ) ) {
     ulong bam_preferred = fd_fseq_query( ctx->bam_status_fseq );
+    /* When BAM is connected its TPU feed replaces QUIC/bundle inputs.
+       Drop those fragments early so we do not waste verify capacity on
+       transactions the block engine already ran. */
     if( FD_UNLIKELY( bam_preferred==1UL && (in_kind==IN_KIND_QUIC || in_kind==IN_KIND_BUNDLE) ) ) {
       return 1;
     }
@@ -216,6 +219,8 @@ unprivileged_init( fd_topo_t *      topo,
   if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
     ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
     if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "verify tile missing bam_status fseq" ));
+    /* The BAM tile toggles this latch; staying joined keeps us responsive
+       to live hand-offs without round-tripping to the control plane. */
   } else {
     ctx->bam_status_fseq = NULL;
   }

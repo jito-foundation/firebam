@@ -84,6 +84,9 @@ fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
                               uint                use_bam ) {
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
 
+  /* The gossip tile reads these control messages and mutates its local
+     contact-info state.  Keep the payload minimal so the reliable bus
+     round-trips quickly. */
   fd_bam_contact_update_t * msg =
       fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
   fd_memset( msg, 0, sizeof(fd_bam_contact_update_t) );
@@ -117,6 +120,9 @@ fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
   int connected = ( status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
 
   if( FD_UNLIKELY( connected && ctx->bam_contact_avail ) ) {
+    /* When the client hands us live TPU endpoints we only publish once per
+       connection or when the config actually changes.  The gossip tile
+       handles refreshing timers after we poke it. */
     if( FD_UNLIKELY( ctx->bam_contact_dirty || !ctx->bam_contact_active ) ) {
       fd_bam_publish_gossip_update( ctx, stem, 1U );
       ctx->bam_contact_active = 1U;
@@ -126,6 +132,8 @@ fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
   }
 
   if( FD_UNLIKELY( ctx->bam_contact_active ) ) {
+    /* A disconnect means Firedancer should resume advertising its local
+       TPU ports so TPU clients do not get stuck targeting the BAM host. */
     fd_bam_publish_gossip_update( ctx, stem, 0U );
     ctx->bam_contact_active = 0U;
   }
@@ -262,6 +270,9 @@ after_credit( fd_bam_tile_t *  ctx,
   int bundle_status = fd_bam_client_status( ctx );
   ctx->bundle_status_recent = (uchar)bundle_status;
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
+    /* Expose BAM connectivity via a shared latch.  The verify tile uses
+       this to pause QUIC/bundle traffic when BAM has taken over leader
+       duties. */
     ulong is_connected = (ulong)( bundle_status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
     fd_fseq_update( ctx->bam_status_fseq, is_connected );
   }
@@ -727,6 +738,8 @@ unprivileged_init( fd_topo_t *      topo,
   if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
     ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
     if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "bam tile missing bam_status fseq" ));
+    /* Start disconnected so a late BAM connect transitions the flag to 1
+       and wakes up peers waiting for the override. */
     fd_fseq_update( ctx->bam_status_fseq, 0UL );
   } else {
     ctx->bam_status_fseq = NULL;

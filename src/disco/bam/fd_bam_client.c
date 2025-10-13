@@ -637,11 +637,17 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     if( FD_LIKELY( have_tpu ) ) {
       int quic_changed = have_tpu_quic ? ( ctx->bam_tpu_quic_addr.l!=new_tpu_quic_addr.l )
                                        : ( ctx->bam_tpu_quic_addr.l!=0UL );
+      /* Signal the tile loop to republish once the connection comes up.
+         We keep the active flag separate so a reconnect without new
+         config still reuses the last good endpoints. */
       if( FD_UNLIKELY( !ctx->bam_contact_avail || ctx->bam_tpu_addr.l!=new_tpu_addr.l || quic_changed ) ) {
         ctx->bam_contact_dirty = 1U;
       }
       ctx->bam_tpu_addr      = new_tpu_addr;
       ctx->bam_tpu_quic_addr = have_tpu_quic ? new_tpu_quic_addr : (fd_ip4_port_t){ .l = 0UL };
+      /* Record that BAM supplied usable endpoints.  The tile clears
+         bam_contact_dirty after it republishes, so reconnects without new
+         config continue advertising the last known override. */
       ctx->bam_contact_avail = 1U;
     }
   }

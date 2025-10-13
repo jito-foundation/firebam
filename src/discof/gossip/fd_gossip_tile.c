@@ -139,11 +139,11 @@ struct fd_gossip_tile_ctx {
   fd_gossip_peer_addr_t tpu_quic_my_addr;
   fd_gossip_peer_addr_t tpu_vote_my_addr;
   fd_gossip_peer_addr_t repair_serve_addr;
-  fd_bam_contact_update_t pending_bam_update;
-  fd_ip4_port_t           default_tpu_addr;
-  fd_ip4_port_t           default_tpu_quic_addr;
-  uint                    bam_update_pending : 1;
-  uint                    bam_override_active : 1;
+  fd_bam_contact_update_t pending_bam_update; /* Snapshot delivered by BAM tile */
+  fd_ip4_port_t           default_tpu_addr;   /* Firedancer bootstrap TPU address */
+  fd_ip4_port_t           default_tpu_quic_addr; /* Firedancer bootstrap QUIC address */
+  uint                    bam_update_pending : 1;  /* BAM update waiting for post-processing */
+  uint                    bam_override_active : 1; /* Whether BAM currently overrides TPU contact */
   ushort                gossip_listen_port;
 
   fd_frag_meta_t * net_out_mcache;
@@ -347,6 +347,9 @@ during_frag( fd_gossip_tile_ctx_t * ctx,
   }
 
   if( in_kind == IN_KIND_BAM ) {
+    /* Messages from the BAM tile are small control updates.  Defer the
+       actual mutation to after_frag so we can reuse the tile's existing
+       single-threaded update path and avoid holding onto the chunk. */
     if( FD_UNLIKELY( sz!=sizeof(fd_bam_contact_update_t) ) ) {
       FD_LOG_WARNING(( "Unexpected BAM contact update size %lu", sz ));
       return;
@@ -384,6 +387,9 @@ fd_gossip_refresh_self_contact_info( fd_gossip_tile_ctx_t * ctx ) {
   fd_contact_info_t const * my_contact = fd_gossip_get_my_contact( ctx->gossip );
   if( FD_UNLIKELY( !my_contact ) ) return;
 
+  /* fd_gossip maintains the canonical contact-info struct.  Mirror it back
+     into the CRDS table so later lookups (e.g. repair) observe the same
+     ports the cluster will hear about. */
   fd_contact_info_from_ci_v2( &my_contact->ci_crd, &self->contact_info );
 }
 
@@ -396,8 +402,13 @@ fd_gossip_apply_bam_update( fd_gossip_tile_ctx_t *             ctx,
 
   fd_ip4_port_t desired_tpu      = ctx->default_tpu_addr;
   fd_ip4_port_t desired_tpu_quic = ctx->default_tpu_quic_addr;
+  /* Start from the Firedancer defaults; BAM selectively overrides these
+     when it wants us to point the cluster at the block engine. */
 
   if( FD_LIKELY( use_bam ) ) {
+    /* Reject overrides that drop the TPU socket entirely; fall back to the
+       Firedancer defaults so listeners are never pointed at an unusable
+       address. */
     if( FD_UNLIKELY( !update->tpu_addr.addr || !update->tpu_addr.port ) ) {
       FD_LOG_WARNING(( "Received BAM contact update with empty TPU address" ));
       return;
@@ -405,6 +416,8 @@ fd_gossip_apply_bam_update( fd_gossip_tile_ctx_t *             ctx,
 
     desired_tpu = update->tpu_addr;
 
+    /* QUIC is optional; keep advertising the Firedancer port unless BAM
+       provides a full override so we do not emit zeroed sockets. */
     if( FD_LIKELY( update->tpu_quic_addr.addr && update->tpu_quic_addr.port ) )
       desired_tpu_quic = update->tpu_quic_addr;
   }
@@ -413,6 +426,8 @@ fd_gossip_apply_bam_update( fd_gossip_tile_ctx_t *             ctx,
   int const tpu_changed      = ctx->tpu_my_addr.l != desired_tpu.l;
   int const quic_changed     = ctx->tpu_quic_my_addr.l != desired_tpu_quic.l;
 
+  /* Avoid redundant rebroadcasts; upstream sends periodic refreshes so we
+     only react when the effective contact info actually is different. */
   if( FD_UNLIKELY( !( override_changed | tpu_changed | quic_changed ) ) )
     return;
 
@@ -431,8 +446,12 @@ fd_gossip_apply_bam_update( fd_gossip_tile_ctx_t *             ctx,
   if( FD_UNLIKELY( rc ) )
     FD_LOG_WARNING(( "Failed to update gossip TPU contact info (rc=%d)", rc ));
 
+  /* A BAM override might only change the metadata in our local CRDS entry;
+     make sure the table reflects the new values before we rebroadcast. */
   fd_gossip_refresh_self_contact_info( ctx );
 
+  /* Force a contact-info push so peers hear about the override immediately
+     instead of waiting for the normal heartbeat timer. */
   fd_gossip_force_contact_info_push( ctx->gossip );
 }
 
@@ -449,6 +468,8 @@ after_frag( fd_gossip_tile_ctx_t * ctx,
 
   if( in_kind==IN_KIND_BAM ) {
     if( FD_LIKELY( ctx->bam_update_pending ) ) {
+      /* Only mutate gossip state once per input event so we keep the
+         usual ordering guarantees relative to other network traffic. */
       fd_gossip_apply_bam_update( ctx, &ctx->pending_bam_update );
       ctx->bam_update_pending = 0U;
     }
@@ -886,6 +907,8 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->repair_serve_addr.addr = tile->gossip.ip_addr;
   ctx->repair_serve_addr.port = fd_ushort_bswap( tile->gossip.repair_serve_port );
 
+  /* Remember the Firedancer-provided ports so we can fall back when the
+     BAM connection drops or asks us to relinquish the override. */
   ctx->default_tpu_addr      = ctx->tpu_my_addr;
   ctx->default_tpu_quic_addr = ctx->tpu_quic_my_addr;
   ctx->bam_update_pending    = 0U;
