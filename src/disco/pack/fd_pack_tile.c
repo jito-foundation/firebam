@@ -63,16 +63,6 @@ const float VOTE_FRACTION = 0.75f; /* TODO: Is this the right value? */
 #define EFFECTIVE_TXN_PER_MICROBLOCK MAX_TXN_PER_MICROBLOCK
 #endif
 
-typedef struct {
-  ulong tick_height;
-  ulong ticks_per_slot;
-  ulong block_cost;
-  ulong block_cost_limit;
-} fd_ext_bank_leader_stats_t;
-
-extern int fd_ext_bank_get_leader_stats( void const * bank,
-                                         fd_ext_bank_leader_stats_t * out );
-
 /* There's overhead associated with each microblock the bank tile tries
    to execute it, so the optimal strategy is not to produce a microblock
    with a single transaction as soon as we receive it.  Basically, if we
@@ -221,6 +211,9 @@ typedef struct {
      after_frag in case the tile gets overrun. */
   long _slot_end_ns;
   long slot_end_ns;
+  long slot_start_ns;
+  ulong slot_duration_ns;
+  ulong leader_ticks_per_slot;
 
   /* pacer and ticks_per_ns are used for pacing CUs through the slot,
      i.e. deciding when to schedule a microblock given the number of CUs
@@ -582,18 +575,31 @@ metrics_write( fd_pack_ctx_t * ctx ) {
        long now = ctx->approx_wallclock_ns;
        long interval = (long)5e6; /* 5 ms */
        if( FD_UNLIKELY( ( ctx->last_leader_state_ns==0L ) | ( now - ctx->last_leader_state_ns >= interval ) ) ) {
-         fd_ext_bank_leader_stats_t stats;
-         if( FD_LIKELY( !fd_ext_bank_get_leader_stats( ctx->leader_bank, &stats ) ) ) {
-           ulong ticks_per_slot = stats.ticks_per_slot ? stats.ticks_per_slot : 1UL;
-           ulong tick_mod = stats.tick_height % ticks_per_slot;
-           ulong remaining = stats.block_cost_limit > stats.block_cost ? ( stats.block_cost_limit - stats.block_cost ) : 0UL;
+         ulong ticks_per_slot = ctx->leader_ticks_per_slot ? ctx->leader_ticks_per_slot : 1UL;
+         ulong tick_mod = 0UL;
 
-           ctx->pending_leader_state.slot = ctx->leader_slot;
-           ctx->pending_leader_state.tick = (uint)fd_ulong_min( tick_mod, (ulong)UINT_MAX );
-           ctx->pending_leader_state.slot_cu_budget_remaining = (uint)fd_ulong_min( remaining, (ulong)UINT_MAX );
-           ctx->leader_state_pending = 1;
-           ctx->last_leader_state_ns = now;
+         if( FD_LIKELY( ticks_per_slot ) ) {
+           ulong duration_ns = ctx->slot_duration_ns;
+           if( FD_LIKELY( duration_ns>0UL ) ) {
+             long raw_elapsed = now - ctx->slot_start_ns;
+             if( raw_elapsed < 0L ) raw_elapsed = 0L;
+             ulong elapsed_ns = (ulong)raw_elapsed;
+             if( elapsed_ns > duration_ns ) elapsed_ns = duration_ns;
+             ulong denom = duration_ns ? duration_ns : 1UL;
+             tick_mod = ( elapsed_ns * ticks_per_slot ) / denom;
+             if( tick_mod >= ticks_per_slot ) tick_mod = ticks_per_slot - 1UL;
+           }
          }
+
+         ulong limit     = ctx->limits.slot_max_cost;
+         ulong consumed  = fd_pack_current_block_cost( ctx->pack );
+         ulong remaining = limit>consumed ? ( limit - consumed ) : 0UL;
+
+         ctx->pending_leader_state.slot = ctx->leader_slot;
+         ctx->pending_leader_state.tick = (uint)fd_ulong_min( tick_mod, (ulong)UINT_MAX );
+         ctx->pending_leader_state.slot_cu_budget_remaining = (uint)fd_ulong_min( remaining, (ulong)UINT_MAX );
+         ctx->leader_state_pending = 1;
+         ctx->last_leader_state_ns = now;
        }
      } else {
        ctx->leader_state_pending = 0;
@@ -757,9 +763,12 @@ after_credit( fd_pack_ctx_t *     ctx,
     ctx->pack_idx++;
 
     log_end_block_metrics( ctx, now, "time" );
-    ctx->drain_banks         = 1;
-    ctx->leader_slot         = ULONG_MAX;
-    ctx->slot_microblock_cnt = 0UL;
+    ctx->drain_banks           = 1;
+    ctx->leader_slot           = ULONG_MAX;
+    ctx->leader_ticks_per_slot = 1UL;
+    ctx->slot_start_ns         = 0L;
+    ctx->slot_duration_ns      = 0UL;
+    ctx->slot_microblock_cnt   = 0UL;
     fd_pack_end_block( ctx->pack );
     remove_ib( ctx );
 
@@ -989,9 +998,12 @@ after_credit( fd_pack_ctx_t *     ctx,
     ctx->poh_out_chunk = fd_dcache_compact_next( ctx->poh_out_chunk, sizeof(fd_done_packing_t), ctx->poh_out_chunk0, ctx->poh_out_wmark );
     ctx->pack_idx++;
 
-    ctx->drain_banks         = 1;
-    ctx->leader_slot         = ULONG_MAX;
-    ctx->slot_microblock_cnt = 0UL;
+    ctx->drain_banks           = 1;
+    ctx->leader_slot           = ULONG_MAX;
+    ctx->leader_ticks_per_slot = 1UL;
+    ctx->slot_start_ns         = 0L;
+    ctx->slot_duration_ns      = 0UL;
+    ctx->slot_microblock_cnt   = 0UL;
     fd_pack_end_block( ctx->pack );
     remove_ib( ctx );
 
@@ -1192,11 +1204,18 @@ after_frag( fd_pack_ctx_t *     ctx,
       log_end_block_metrics( ctx, now_ticks, "switch" );
       ctx->drain_banks         = 1;
       ctx->leader_slot         = ULONG_MAX;
+      ctx->leader_ticks_per_slot = 1UL;
+      ctx->slot_start_ns       = 0L;
+      ctx->slot_duration_ns    = 0UL;
       ctx->slot_microblock_cnt = 0UL;
       fd_pack_end_block( ctx->pack );
       remove_ib( ctx );
     }
     ctx->leader_slot = fd_disco_poh_sig_slot( sig );
+    ctx->slot_start_ns    = ctx->_became_leader->slot_start_ns;
+    long duration_ns      = ctx->_became_leader->slot_end_ns - ctx->_became_leader->slot_start_ns;
+    ctx->slot_duration_ns = duration_ns>0L ? (ulong)duration_ns : 0UL;
+    ctx->leader_ticks_per_slot = ctx->_became_leader->ticks_per_slot ? ctx->_became_leader->ticks_per_slot : 1UL;
 
     ulong exp_cnt = fd_pack_expire_before( ctx->pack, fd_ulong_max( ctx->leader_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS );
     FD_MCNT_INC( PACK, TRANSACTION_EXPIRED, exp_cnt );
@@ -1471,6 +1490,9 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->max_pending_transactions      = tile->pack.max_pending_transactions;
   ctx->leader_slot                   = ULONG_MAX;
   ctx->leader_bank                   = NULL;
+  ctx->leader_ticks_per_slot         = 1UL;
+  ctx->slot_start_ns                 = 0L;
+  ctx->slot_duration_ns              = 0UL;
   ctx->pack_idx                      = 0UL;
   ctx->slot_microblock_cnt           = 0UL;
   ctx->pack_txn_cnt                  = 0UL;
