@@ -92,7 +92,7 @@ typedef struct _bam_types_ValidatorHeartBeat {
 
 typedef struct _bam_types_Socket {
     char ip[64];
-    int64_t port;
+    uint32_t port;
 } bam_types_Socket;
 
 /* Sent by the validator to the builder when it becomes the leader
@@ -194,13 +194,14 @@ typedef struct _bam_types_TransactionCommittedResult {
 /* Configuration for the block-engine builder */
 typedef struct _bam_types_BlockEngineBuilderConfig {
     char builder_pubkey[64];
-    uint64_t builder_commission;
+    /* commission as a percentage (0-100) */
+    uint32_t builder_commission;
 } bam_types_BlockEngineBuilderConfig;
 
 /* Configuration for the BAM node */
 typedef struct _bam_types_BamConfig {
     char prio_fee_recipient_pubkey[64]; /* Recipient pubkey of the priority fee commission */
-    uint64_t commission_bps; /* Commission in basis points */
+    uint32_t commission_bps; /* Commission in basis points */
     bool has_tpu_sock;
     bam_types_Socket tpu_sock; /* Socket for the TPU connection */
     bool has_tpu_fwd_sock;
@@ -360,7 +361,7 @@ X(a, STATIC,   SINGULAR, UINT64,   time_sent_microseconds,   1)
 
 #define bam_types_Socket_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   ip,                1) \
-X(a, STATIC,   SINGULAR, INT64,    port,              2)
+X(a, STATIC,   SINGULAR, UINT32,   port,              2)
 #define bam_types_Socket_CALLBACK NULL
 #define bam_types_Socket_DEFAULT NULL
 
@@ -469,13 +470,13 @@ X(a, STATIC,   SINGULAR, BOOL,     execution_success,   4)
 
 #define bam_types_BlockEngineBuilderConfig_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   builder_pubkey,    1) \
-X(a, STATIC,   SINGULAR, UINT64,   builder_commission,   2)
+X(a, STATIC,   SINGULAR, UINT32,   builder_commission,   2)
 #define bam_types_BlockEngineBuilderConfig_CALLBACK NULL
 #define bam_types_BlockEngineBuilderConfig_DEFAULT NULL
 
 #define bam_types_BamConfig_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   prio_fee_recipient_pubkey,   1) \
-X(a, STATIC,   SINGULAR, UINT64,   commission_bps,    2) \
+X(a, STATIC,   SINGULAR, UINT32,   commission_bps,    2) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  tpu_sock,          3) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  tpu_fwd_sock,      4)
 #define bam_types_BamConfig_CALLBACK NULL
@@ -536,8 +537,8 @@ extern const pb_msgdesc_t bam_types_BamConfig_msg;
 /* bam_types_Committed_size depends on runtime parameters */
 #define BAM_TYPES_BAM_TYPES_PB_H_MAX_SIZE        bam_types_Packet_size
 #define bam_types_AuthProof_size                 453
-#define bam_types_BamConfig_size                 232
-#define bam_types_BlockEngineBuilderConfig_size  76
+#define bam_types_BamConfig_size                 217
+#define bam_types_BlockEngineBuilderConfig_size  71
 #define bam_types_BuilderHeartBeat_size          11
 #define bam_types_DeserializationError_size      8
 #define bam_types_GenericInvalid_size            258
@@ -547,7 +548,7 @@ extern const pb_msgdesc_t bam_types_BamConfig_msg;
 #define bam_types_PacketFlags_size               4
 #define bam_types_Packet_size                    2070
 #define bam_types_PohTimeout_size                0
-#define bam_types_Socket_size                    76
+#define bam_types_Socket_size                    71
 #define bam_types_TransactionCommittedResult_size 25
 #define bam_types_TransactionError_size          8
 #define bam_types_ValidatorHeartBeat_size        11

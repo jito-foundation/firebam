@@ -113,7 +113,7 @@ static char const * const schedule_strategy_strings[3] = { "PRF", "BAL", "BUN" }
 
 typedef struct {
   fd_acct_addr_t commission_pubkey[1];
-  ulong          commission;
+  uint           commission;
   ulong          bundle_id;
   ulong          bundle_txn_cnt;
   ulong          max_schedule_slot;

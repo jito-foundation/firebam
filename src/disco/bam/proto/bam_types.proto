@@ -24,7 +24,7 @@ message ValidatorHeartBeat {
 
 message Socket {
   string ip = 1;
-  int64 port = 2;
+  uint32 port = 2;
 }
 
 // Sent by the validator to the builder when it becomes the leader
@@ -179,13 +179,14 @@ message TransactionCommittedResult {
 // Configuration for the block-engine builder
 message BlockEngineBuilderConfig {
   string builder_pubkey = 1;
-  uint64 builder_commission = 2;
+  // commission as a percentage (0-100)
+  uint32 builder_commission = 2;
 }
 
 // Configuration for the BAM node
 message BamConfig {
   string prio_fee_recipient_pubkey = 1; // Recipient pubkey of the priority fee commission
-  uint64 commission_bps = 2; // Commission in basis points
+  uint32 commission_bps = 2; // Commission in basis points
   bam_types.Socket tpu_sock = 3; // Socket for the TPU connection
   bam_types.Socket tpu_fwd_sock = 4; // Socket for the TPU forward connection
 }

@@ -272,7 +272,7 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   pubkey[4] = 5U;
   FD_TEST( fd_base58_encode_32( pubkey, NULL, resp.pubkey ) );
   resp.pubkey[ FD_BASE58_ENCODED_32_SZ-1 ] = '\0';
-  resp.commission = 5UL;
+  resp.commission = 5U;
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
   if( FD_UNLIKELY( !pb_encode( &ostream, &block_engine_BlockBuilderFeeInfoResponse_msg, &resp ) ) ) {
     FD_LOG_ERR(( "pb_encode fee info failed: %s", PB_GET_ERROR( &ostream ) ));

@@ -1478,7 +1478,7 @@ static void
 test_bundle_drop_expired( void ) {
   typedef struct {
     fd_acct_addr_t commission_pubkey[1];
-    ulong          commission;
+    uint           commission;
     ulong          bundle_id;
     ulong          bundle_txn_cnt;
     ulong          max_schedule_slot;

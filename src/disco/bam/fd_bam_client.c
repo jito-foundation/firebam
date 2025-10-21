@@ -583,7 +583,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   if( FD_LIKELY( resp.has_block_engine_config ) ) {
     bam_types_BlockEngineBuilderConfig const * cfg = &resp.block_engine_config;
     if( FD_UNLIKELY( cfg->builder_commission > 100UL ) ) {
-      FD_LOG_WARNING(( "BlockEngine builder commission out of range (0-100): %lu", cfg->builder_commission ));
+      FD_LOG_WARNING(( "BlockEngine builder commission out of range (0-100): %u", cfg->builder_commission ));
     } else {
       ctx->builder_commission = (uchar)cfg->builder_commission;
     }
@@ -614,7 +614,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
         new_tpu_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_sock.port );
         have_tpu = 1;
       } else {
-        FD_LOG_WARNING(( "Invalid BAM TPU socket in ConfigResponse (ip=%s port=%ld)",
+        FD_LOG_WARNING(( "Invalid BAM TPU socket in ConfigResponse (ip=%s port=%u)",
                          cfg->tpu_sock.ip,
                          cfg->tpu_sock.port ));
       }
@@ -628,7 +628,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
         new_tpu_quic_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_fwd_sock.port );
         have_tpu_quic = 1;
       } else {
-        FD_LOG_WARNING(( "Invalid BAM TPU forward socket in ConfigResponse (ip=%s port=%ld)",
+        FD_LOG_WARNING(( "Invalid BAM TPU forward socket in ConfigResponse (ip=%s port=%u)",
                          cfg->tpu_fwd_sock.ip,
                          cfg->tpu_fwd_sock.port ));
       }
