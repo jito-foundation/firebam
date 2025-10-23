@@ -123,7 +123,9 @@ fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
   if( FD_UNLIKELY( connected && ctx->bam_contact_avail ) ) {
     /* When the client hands us live TPU endpoints we only publish once per
        connection or when the config actually changes.  The gossip tile
-       handles refreshing timers after we poke it. */
+       handles refreshing timers after we poke it.  bam_contact_dirty acts
+       as an edge detector so reconnects without new sockets do not spam
+       gossip, while a changed TPU tuple triggers an immediate update. */
     if( FD_UNLIKELY( ctx->bam_contact_dirty || !ctx->bam_contact_active ) ) {
       fd_bam_publish_gossip_update( ctx, stem, 1U );
       ctx->bam_contact_active = 1U;
@@ -277,7 +279,10 @@ after_credit( fd_bam_tile_t *  ctx,
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
     /* Expose BAM connectivity via a shared latch.  The verify tile uses
        this to pause QUIC/bundle traffic when BAM has taken over leader
-       duties. */
+       duties.  fd_bam_client_status only returns CONNECTED once the
+       transport, auth, and scheduler stream are fully live, so toggling
+       the latch here guarantees peers see a consistent "BAM owns TPU"
+       window. */
     ulong is_connected = (ulong)( bundle_status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
     fd_fseq_update( ctx->bam_status_fseq, is_connected );
   }
@@ -517,6 +522,9 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
       ctx->backoff_iter  = 0U;
     }
     if( FD_UNLIKELY( !ctx->runtime_enabled && ctx->bam_status_fseq ) )
+      /* Force the shared status latch low immediately when BAM is
+         disabled so downstream tiles resume QUIC/bundle input without
+         waiting for TCP timeouts. */
       fd_fseq_update( ctx->bam_status_fseq, 0UL );
   }
 

@@ -78,6 +78,9 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
     ctx->tcp_sock = -1;
     ctx->tcp_sock_connected = 0;
   }
+  /* Leave the last good BAM contact info intact here; the tile decides
+     when to fall back to the default ports after seeing the status
+     transition so gossip never advertises a half-cleared override. */
   ctx->defer_reset = 0;
 
   ctx->builder_info_avail       = 0;
@@ -635,6 +638,9 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     }
 
     if( FD_LIKELY( have_tpu ) ) {
+      /* Treat the QUIC tuple as optional: if BAM stops advertising it we
+         revert to the Firedancer default (0) and still flag the contact
+         info as changed so gossip releases the override cleanly. */
       int quic_changed = have_tpu_quic ? ( ctx->bam_tpu_quic_addr.l!=new_tpu_quic_addr.l )
                                        : ( ctx->bam_tpu_quic_addr.l!=0UL );
       /* Signal the tile loop to republish once the connection comes up.
@@ -1611,6 +1617,11 @@ fd_grpc_client_callbacks_t fd_bam_client_grpc_callbacks = {
 
 int
 fd_bam_client_status( fd_bam_tile_t const * ctx ) {
+  /* Treat the connection as "owned" only when every layer (TCP socket,
+     HTTP/2 session, bundle auth, scheduler stream, and keepalive) is
+     healthy.  Downstream tiles key off this switch to stop ingesting
+     QUIC/bundle traffic, so any premature CONNECTED state would cause a
+     data gap. */
   if( FD_UNLIKELY( ( !ctx->tcp_sock_connected ) |
                    ( !ctx->grpc_client        ) ) ) {
     return DISCONNECTED;
