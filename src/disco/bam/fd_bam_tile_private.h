@@ -7,6 +7,7 @@
 #include "../keyguard/fd_keyswitch.h"
 #include "../keyguard/fd_keyguard_client.h"
 #include "../bam/fd_bam_types.h"
+#include "fd_bam_ctrl.h"
 #include "../../waltz/grpc/fd_grpc_client.h"
 #include "../../waltz/resolv/fd_netdb.h"
 #include "../../waltz/fd_rtt_est.h"
@@ -84,6 +85,8 @@ struct fd_bam_tile {
 # endif /* FD_HAS_OPENSSL */
 
   /* Config */
+  fd_bam_ctrl_t * ctrl;                           /* Runtime control shared object (NULL when tile launched without admin support) */
+  int   runtime_enabled;                          /* Whether BAM runtime connectivity is enabled */
   char   server_fqdn[ 256 ]; /* cstr; hostname configured for BAM endpoint */
   ulong  server_fqdn_len;                         /* Length of server_fqdn (no terminator) */
   char   server_sni[ 256 ]; /* cstr; optional override for TLS SNI */

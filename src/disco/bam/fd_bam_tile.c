@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <dirent.h> /* opendir */
 #include <stdio.h> /* snprintf */
+#include <string.h>
 #include <fcntl.h> /* F_SETFL */
 #include <unistd.h> /* close */
 #include <sys/mman.h> /* PROT_READ (seccomp) */
@@ -151,8 +152,12 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
   ctx->bam_pending_results++;
 }
 
+static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
+
 void
 fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
+  fd_bam_tile_handle_ctrl( ctx );
+
   long log_interval_ns = (long)30e9;
   int  status          = fd_bam_client_status( ctx );
   long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
@@ -287,12 +292,14 @@ after_credit( fd_bam_tile_t *  ctx,
   }
 }
 
-static void
+static int
 parse_url( fd_url_t *   url_,
            char const * url_str,
            ulong        url_str_len,
            ushort *     tcp_port,
-           _Bool *      is_ssl ) {
+           _Bool *      is_ssl,
+           char const * context,
+           int          fatal ) {
 
   /* Parse URL */
 
@@ -302,13 +309,19 @@ parse_url( fd_url_t *   url_,
     switch( *url_err ) {
     scheme_err:
     case FD_URL_ERR_SCHEME:
-      FD_LOG_ERR(( "Invalid [tiles.bundle.url] `%.*s`: must start with `http://` or `https://`", (int)url_str_len, url_str ));
+      if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`: must start with `http://` or `https://`", context, (int)url_str_len, url_str ));
+      FD_LOG_WARNING(( "Invalid %s `%.*s`: must start with `http://` or `https://`", context, (int)url_str_len, url_str ));
+      return -1;
       break;
     case FD_URL_ERR_HOST_OVERSZ:
-      FD_LOG_ERR(( "Invalid [tiles.bundle.url] `%.*s`: domain name is too long", (int)url_str_len, url_str ));
+      if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`: domain name is too long", context, (int)url_str_len, url_str ));
+      FD_LOG_WARNING(( "Invalid %s `%.*s`: domain name is too long", context, (int)url_str_len, url_str ));
+      return -1;
       break;
     default:
-      FD_LOG_ERR(( "Invalid [tiles.bundle.url] `%.*s`", (int)url_str_len, url_str ));
+      if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`", context, (int)url_str_len, url_str ));
+      FD_LOG_WARNING(( "Invalid %s `%.*s`", context, (int)url_str_len, url_str ));
+      return -1;
       break;
     }
   }
@@ -328,7 +341,9 @@ parse_url( fd_url_t *   url_,
   if( url->port_len ) {
     if( FD_UNLIKELY( url->port_len > 5 ) ) {
     invalid_port:
-      FD_LOG_ERR(( "Invalid [tiles.bundle.url] `%.*s`: invalid port number", (int)url_str_len, url_str ));
+      if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`: invalid port number", context, (int)url_str_len, url_str ));
+      FD_LOG_WARNING(( "Invalid %s `%.*s`: invalid port number", context, (int)url_str_len, url_str ));
+      return -1;
     }
 
     char port_cstr[6];
@@ -342,10 +357,205 @@ parse_url( fd_url_t *   url_,
   /* Resolve domain */
 
   if( FD_UNLIKELY( url->host_len > 255 ) ) {
-    FD_LOG_CRIT(( "Invalid url->host_len" )); /* unreachable */
+    if( fatal ) FD_LOG_CRIT(( "Invalid url->host_len" )); /* unreachable */
+    FD_LOG_WARNING(( "Invalid %s `%.*s`: domain name is too long", context, (int)url_str_len, url_str ));
+    return -1;
   }
-  char host_cstr[ 256 ];
-  fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( host_cstr ), url->host, url->host_len ) );
+  return 0;
+}
+
+static int
+fd_bam_tile_parse_runtime_endpoint( char const * url_cstr,
+                                    ushort *     tcp_port,
+                                    int *        is_ssl,
+                                    char *       host_buf,
+                                    ulong *      host_len,
+                                    char *       err,
+                                    ulong        err_sz ) {
+  ulong url_len = strlen( url_cstr );
+  if( FD_UNLIKELY( !url_len ) ) {
+    if( err_sz ) fd_cstr_printf( err, err_sz, NULL, "BAM URL must be non-empty" );
+    return -1;
+  }
+
+  fd_url_t url[1];
+  ushort tmp_port = *tcp_port;
+  _Bool tmp_ssl = (_Bool)(*is_ssl);
+  if( FD_UNLIKELY( parse_url( url, url_cstr, url_len, &tmp_port, &tmp_ssl, "runtime BAM url", 0 ) ) ) {
+    if( err_sz ) fd_cstr_printf( err, err_sz, NULL, "Invalid BAM URL `%s`", url_cstr );
+    return -1;
+  }
+  if( FD_UNLIKELY( !url->host_len ) ) {
+    if( err_sz ) fd_cstr_printf( err, err_sz, NULL, "BAM URL `%s` missing host", url_cstr );
+    return -1;
+  }
+  if( FD_UNLIKELY( url->host_len >= FD_BAM_CTRL_URL_MAX ) ) {
+    if( err_sz ) fd_cstr_printf( err, err_sz, NULL, "BAM host name too long" );
+    return -1;
+  }
+
+  fd_memcpy( host_buf, url->host, url->host_len );
+  host_buf[ url->host_len ] = '\0';
+  *host_len = url->host_len;
+  *tcp_port = tmp_port;
+  *is_ssl   = (int)tmp_ssl;
+  return 0;
+}
+
+static void
+fd_bam_tile_format_url( fd_bam_tile_t const * ctx,
+                        char *                dst,
+                        ulong                 dst_sz ) {
+  if( FD_UNLIKELY( !dst || !dst_sz ) ) return;
+  if( FD_UNLIKELY( ctx->server_fqdn_len >= dst_sz ) ) {
+    fd_memset( dst, 0, dst_sz );
+    return;
+  }
+  int n = snprintf( dst, dst_sz, "%s://%.*s:%u",
+                    ctx->is_ssl ? "https" : "http",
+                    (int)ctx->server_fqdn_len,
+                    ctx->server_fqdn,
+                    (uint)ctx->server_tcp_port );
+  if( FD_UNLIKELY( n<0 ) ) dst[0] = '\0';
+}
+
+static void
+fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
+  if( FD_UNLIKELY( !ctx->ctrl ) ) return;
+  ctx->ctrl->current_enable = (uint)!!ctx->runtime_enabled;
+  ctx->ctrl->enable         = (uint)!!ctx->runtime_enabled;
+  char url_buf[ FD_BAM_CTRL_URL_MAX + FD_BAM_CTRL_URL_FORMAT_OVERHEAD ];
+  fd_bam_tile_format_url( ctx, url_buf, sizeof(url_buf) );
+  fd_bam_ctrl_copy_str( ctx->ctrl->current_url, FD_BAM_CTRL_URL_MAX, url_buf );
+  fd_bam_ctrl_copy_str( ctx->ctrl->current_sni, FD_BAM_CTRL_SNI_MAX, ctx->server_sni );
+}
+
+static int
+fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
+                                uint            command,
+                                uint            enable,
+                                char const *    url,
+                                char const *    sni,
+                                char *          err,
+                                ulong           err_sz ) {
+  if( FD_UNLIKELY( !command ) ) {
+    if( err_sz ) fd_cstr_printf( err, err_sz, NULL, "No BAM update requested" );
+    return -1;
+  }
+
+  ushort new_port = ctx->server_tcp_port;
+  int    new_ssl  = ctx->is_ssl;
+  char   new_host[ 256 ];
+  ulong  new_host_len = ctx->server_fqdn_len;
+  fd_memcpy( new_host, ctx->server_fqdn, fd_ulong_min( sizeof(new_host)-1UL, new_host_len ) );
+  new_host[ new_host_len ] = '\0';
+
+  if( command & FD_BAM_CTRL_CMD_URL ) {
+    if( FD_UNLIKELY( fd_bam_tile_parse_runtime_endpoint( url, &new_port, &new_ssl, new_host, &new_host_len, err, err_sz ) ) ) {
+      return -1;
+    }
+#if !FD_HAS_OPENSSL
+    if( FD_UNLIKELY( new_ssl ) ) {
+      /* CLI can introduce TLS endpoints at runtime; without OpenSSL we must refuse early
+         so the live tile stays on its previous HTTP configuration instead of flailing. */
+      if( err_sz )
+        fd_cstr_printf( err, err_sz, NULL,
+                        "This build does not include OpenSSL. Re-run ./deps.sh and rebuild before using https URLs." );
+      return -1;
+    }
+#endif
+  }
+
+  char new_sni[ FD_BAM_CTRL_SNI_MAX ];
+  if( command & FD_BAM_CTRL_CMD_SNI ) {
+    fd_bam_ctrl_copy_str( new_sni, sizeof(new_sni), sni );
+    if( FD_UNLIKELY( !new_sni[0] ) )
+      fd_bam_ctrl_copy_str( new_sni, sizeof(new_sni), new_host );
+  } else if( command & FD_BAM_CTRL_CMD_URL ) {
+    fd_bam_ctrl_copy_str( new_sni, sizeof(new_sni), new_host );
+  } else {
+    fd_bam_ctrl_copy_str( new_sni, sizeof(new_sni), ctx->server_sni );
+  }
+
+  int new_enable = ctx->runtime_enabled;
+  if( command & FD_BAM_CTRL_CMD_ENABLE )
+    new_enable = !!enable;
+
+  int need_reset = 0;
+  int clear_backoff_after_reset = 0; /* Track whether we should nuke backoff state after reset so re-enable connects immediately. */
+  if( command & FD_BAM_CTRL_CMD_URL ) {
+    fd_memset( ctx->server_fqdn, 0, sizeof(ctx->server_fqdn) );
+    fd_memcpy( ctx->server_fqdn, new_host, new_host_len );
+    ctx->server_fqdn_len = new_host_len;
+    ctx->server_tcp_port = new_port;
+    ctx->is_ssl          = !!new_ssl;
+    need_reset = 1;
+  }
+
+  if( command & (FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI) ) {
+    fd_memset( ctx->server_sni, 0, sizeof(ctx->server_sni) );
+    ulong sni_len = strlen( new_sni );
+    fd_memcpy( ctx->server_sni, new_sni, sni_len );
+    ctx->server_sni_len = sni_len;
+    fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
+    need_reset = 1;
+  }
+
+  if( (command & FD_BAM_CTRL_CMD_ENABLE) && (new_enable!=ctx->runtime_enabled) ) {
+    ctx->runtime_enabled = new_enable;
+    need_reset = 1;
+    if( new_enable ) clear_backoff_after_reset = 1;
+  }
+
+  if( need_reset ) {
+    fd_bam_client_reset( ctx );
+    if( FD_UNLIKELY( clear_backoff_after_reset ) ) {
+      /* The reset routine re-establishes the randomized pause. Clearing it post-reset lets
+         admin-triggered re-enables take effect immediately instead of waiting out the old backoff. */
+      ctx->backoff_until = 0L;
+      ctx->backoff_reset = 0L;
+      ctx->backoff_iter  = 0U;
+    }
+    if( FD_UNLIKELY( !ctx->runtime_enabled && ctx->bam_status_fseq ) )
+      fd_fseq_update( ctx->bam_status_fseq, 0UL );
+  }
+
+  fd_bam_tile_ctrl_update_current( ctx );
+  if( err_sz ) err[0] = '\0';
+  return 0;
+}
+
+static void
+fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
+  if( FD_UNLIKELY( !ctx->ctrl ) ) return;
+
+  for( ;; ) {
+    long state = FD_VOLATILE_CONST( ctx->ctrl->state );
+    if( FD_LIKELY( state!=FD_BAM_CTRL_STATE_REQUEST ) ) return;
+    if( FD_ATOMIC_CAS( &ctx->ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_APPLYING )==FD_BAM_CTRL_STATE_REQUEST )
+      break;
+  }
+
+  uint command = ctx->ctrl->command;
+  uint enable  = ctx->ctrl->enable;
+  char url[ FD_BAM_CTRL_URL_MAX ];
+  char sni[ FD_BAM_CTRL_SNI_MAX ];
+  fd_memcpy( url, ctx->ctrl->url, sizeof(url) );
+  fd_memcpy( sni, ctx->ctrl->sni, sizeof(sni) );
+
+  char err[ FD_BAM_CTRL_ERR_MAX ];
+  err[0] = '\0';
+  int rc = fd_bam_tile_apply_ctrl_request( ctx, command, enable, url, sni, err, sizeof(err) );
+  if( FD_UNLIKELY( rc ) ) {
+    fd_bam_ctrl_copy_str( ctx->ctrl->error, FD_BAM_CTRL_ERR_MAX, err );
+    FD_COMPILER_MFENCE();
+    FD_VOLATILE( ctx->ctrl->state ) = FD_BAM_CTRL_STATE_ERROR;
+    return;
+  }
+
+  fd_bam_ctrl_copy_str( ctx->ctrl->error, FD_BAM_CTRL_ERR_MAX, "" );
+  FD_COMPILER_MFENCE();
+  FD_VOLATILE( ctx->ctrl->state ) = FD_BAM_CTRL_STATE_SUCCESS;
 }
 
 static void
@@ -357,7 +567,9 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
       url,
       tile->bam.url, tile->bam.url_len,
       &ctx->server_tcp_port,
-      &is_ssl
+      &is_ssl,
+      "[tiles.bam.url]",
+      1
   );
   if( FD_UNLIKELY( url->host_len > 255 ) ) {
     FD_LOG_CRIT(( "Invalid url->host_len" )); /* unreachable */
@@ -379,6 +591,7 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
     FD_LOG_ERR(( "This build does not include OpenSSL. To install OpenSSL, re-run ./deps.sh and do a clean re build." ));
   }
 #endif
+  fd_bam_tile_ctrl_update_current( ctx );
 }
 
 #if FD_HAS_OPENSSL
@@ -632,6 +845,20 @@ privileged_init( fd_topo_t *      topo,
   }
   if( FD_UNLIKELY( !fd_rng_join( fd_rng_new( &ctx->rng, rng_seed, 0UL ) ) ) ) {
     FD_LOG_CRIT(( "fd_rng_join failed" )); /* unreachable */
+  }
+
+  ctx->runtime_enabled = 1;
+  ulong bam_ctrl_obj_id = fd_pod_query_ulong( topo->props, "bam_ctrl", ULONG_MAX );
+  if( FD_LIKELY( bam_ctrl_obj_id!=ULONG_MAX ) ) {
+    ctx->ctrl = fd_topo_obj_laddr( topo, bam_ctrl_obj_id );
+    fd_memset( ctx->ctrl, 0, sizeof(fd_bam_ctrl_t) );
+    ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
+    ctx->ctrl->enable         = 1U;
+    ctx->ctrl->current_enable = 1U;
+    fd_bam_ctrl_copy_str( ctx->ctrl->current_url, FD_BAM_CTRL_URL_MAX, tile->bam.url );
+    fd_bam_ctrl_copy_str( ctx->ctrl->current_sni, FD_BAM_CTRL_SNI_MAX, tile->bam.sni );
+  } else {
+    ctx->ctrl = NULL;
   }
 }
 

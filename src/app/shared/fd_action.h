@@ -2,6 +2,7 @@
 #define HEADER_fd_src_app_shared_fd_action_h
 
 #include "../platform/fd_cap_chk.h"
+#include "../../disco/bam/fd_bam_ctrl.h"
 
 union fdctl_args {
   struct {
@@ -31,6 +32,16 @@ union fdctl_args {
     int     force;
     uchar * keypair;
   } set_identity;
+
+  struct {
+    int  has_enable;
+    int  enable;
+    int  has_url;
+    char url[ FD_BAM_CTRL_URL_MAX ];
+    int  has_sni;
+    char sni[ FD_BAM_CTRL_SNI_MAX ];
+    /* Flags mirror CLI options so we can send partial updates without clobbering other fields. */
+  } set_bam;
 
   struct {
     int  parent_pipefd;

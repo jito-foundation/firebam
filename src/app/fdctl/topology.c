@@ -7,6 +7,7 @@
 #include "../../disco/topo/fd_cpu_topo.h"
 #include "../../disco/plugin/fd_plugin.h"
 #include "../../disco/bam/fd_bam_types.h"
+#include "../../disco/bam/fd_bam_ctrl.h"
 #include "../../util/pod/fd_pod_format.h"
 #include "../../util/net/fd_ip4.h"
 #include "../../util/tile/fd_tile_private.h"
@@ -317,7 +318,16 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_link( topo, "sign_bam",  "sign_bam",  128UL,                                    64UL,              1UL );
     /**/                 fd_topob_link( topo, "bam_gossip","bam_gossip", 16UL,                                      sizeof(fd_bam_contact_update_t), 1UL );
 
-    /**/                 fd_topob_tile( topo, "bam",  "bam",  "metric_in", tile_to_cpu[ topo->tile_cnt ], 0, 1 );
+    fd_topo_tile_t * bam_tile =
+      fd_topob_tile( topo, "bam",  "bam",  "metric_in", tile_to_cpu[ topo->tile_cnt ], 0, 1 );
+
+    fd_topo_obj_t * bam_ctrl_obj = fd_topob_obj( topo, "opaque", "bam" );
+    /* Reserve a dedicated opaque object so admin commands and the bam tile can share the
+       fd_bam_ctrl_t state machine without a restart. */
+    FD_TEST( fd_pod_insertf_ulong( topo->props, sizeof(fd_bam_ctrl_t), "obj.%lu.footprint", bam_ctrl_obj->id ) );
+    FD_TEST( fd_pod_insertf_ulong( topo->props, alignof(fd_bam_ctrl_t), "obj.%lu.align", bam_ctrl_obj->id ) );
+    FD_TEST( fd_pod_insertf_ulong( topo->props, bam_ctrl_obj->id, "bam_ctrl" ) );
+    fd_topob_tile_uses( topo, bam_tile, bam_ctrl_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
 
     /**/                 fd_topob_tile_out( topo, "bam", 0UL, "bam_verif", 0UL );
     FOR(bank_tile_cnt)   fd_topob_tile_in(  topo, "bam", 0UL, "metric_in", "bank_bam",    i, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );

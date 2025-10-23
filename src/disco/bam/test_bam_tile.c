@@ -8,6 +8,7 @@
 #include "../bundle/proto/block_engine.pb.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../ballet/nanopb/pb_encode.h"
+#include "../../tango/fseq/fd_fseq.h"
 #include <string.h>
 
 FD_IMPORT_BINARY( test_bundle_response, "src/disco/bundle/test_bundle_response.binpb" );
@@ -257,6 +258,152 @@ test_bam_request_ctx_labels( void ) {
 }
 
 static void
+setup_ctrl_defaults( fd_bam_tile_t * ctx,
+                     fd_bam_ctrl_t * ctrl ) {
+  ctx->ctrl = ctrl;
+  fd_memset( ctrl, 0, sizeof(fd_bam_ctrl_t) );
+
+  /* Mirror the on-startup state: control block idle, HTTPS endpoint configured, BAM enabled. */
+  ctx->runtime_enabled = 1;
+  char const * host = "initial.builder.test";
+  ulong host_len = strlen( host );
+  FD_TEST( host_len < sizeof( ctx->server_fqdn ) );
+  strcpy( ctx->server_fqdn, host );
+  ctx->server_fqdn_len = host_len;
+  strcpy( ctx->server_sni, host );
+  ctx->server_sni_len = host_len;
+  ctx->server_tcp_port = 443;
+  ctx->is_ssl          = 1;
+
+  ctrl->current_enable = 1U;
+  ctrl->enable         = 1U;
+  fd_bam_ctrl_copy_str( ctrl->current_url, FD_BAM_CTRL_URL_MAX, "https://initial.builder.test:443" );
+  fd_bam_ctrl_copy_str( ctrl->current_sni, FD_BAM_CTRL_SNI_MAX, host );
+  ctrl->state = FD_BAM_CTRL_STATE_IDLE;
+}
+
+FD_FN_UNUSED static void
+test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
+  /* Ensure runtime URL/SNI updates reconfigure the client and publish success to the control block. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * ctx = env->state;
+
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_defaults( ctx, &ctrl );
+
+  static fd_keyswitch_t keyswitch = {0};
+  keyswitch.magic = FD_KEYSWITCH_MAGIC;
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  keyswitch.param = 0UL;
+  ctx->keyswitch = &keyswitch;
+
+  ctrl.command = FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI;
+  ctrl.enable  = 1U;
+  fd_bam_ctrl_copy_str( ctrl.url, FD_BAM_CTRL_URL_MAX, "http://new.example.com:8899" );
+  fd_bam_ctrl_copy_str( ctrl.sni, FD_BAM_CTRL_SNI_MAX, "custom.sni.invalid" );
+  ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state==FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( ctrl.current_enable==1U );
+  FD_TEST( !strcmp( ctrl.current_url, "http://new.example.com:8899" ) );
+  FD_TEST( !strcmp( ctrl.current_sni, "custom.sni.invalid" ) );
+  FD_TEST( ctx->runtime_enabled==1 );
+  FD_TEST( ctx->server_tcp_port==8899 );
+  FD_TEST( !strcmp( ctx->server_fqdn, "new.example.com" ) );
+  FD_TEST( ctx->server_fqdn_len==strlen( "new.example.com" ) );
+  FD_TEST( ctx->is_ssl==0 );
+  FD_TEST( !strcmp( ctx->server_sni, "custom.sni.invalid" ) );
+  FD_TEST( ctx->server_sni_len==strlen( "custom.sni.invalid" ) );
+  FD_TEST( !strcmp( ctx->ctrl->error, "" ) );
+  FD_TEST( !strcmp( ctx->grpc_client->host, "custom.sni.invalid" ) );
+  FD_TEST( ctx->grpc_client->port==8899 );
+
+  ctx->keyswitch = NULL;
+  test_bam_env_destroy( env );
+}
+
+FD_FN_UNUSED static void
+test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
+  /* Validate that toggling enable pauses connectivity and clears the status latch. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * ctx = env->state;
+
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_defaults( ctx, &ctrl );
+
+  static fd_keyswitch_t keyswitch = {0};
+  keyswitch.magic = FD_KEYSWITCH_MAGIC;
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  keyswitch.param = 0UL;
+  ctx->keyswitch = &keyswitch;
+
+  uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  fd_memset( fseq_mem, 0, sizeof(fseq_mem) );
+  void * fseq_shmem = fd_fseq_new( fseq_mem, 0UL );
+  FD_TEST( fseq_shmem );
+  ulong * fseq = fd_fseq_join( fseq_shmem );
+  FD_TEST( fseq );
+  fd_fseq_update( fseq, 1UL );
+  ctx->bam_status_fseq = fseq;
+
+  ctrl.command = FD_BAM_CTRL_CMD_ENABLE;
+  ctrl.enable  = 0U;
+  ctrl.state   = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state==FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( ctrl.current_enable==0U );
+  FD_TEST( ctx->runtime_enabled==0 );
+  FD_TEST( fd_fseq_query( fseq )==0UL );
+  FD_TEST( !strcmp( ctrl.current_url, "https://initial.builder.test:443" ) );
+
+  FD_TEST( fd_fseq_leave( fseq )==fseq_shmem );
+  FD_TEST( fd_fseq_delete( fseq_shmem )==fseq_shmem );
+  ctx->bam_status_fseq = NULL;
+  ctx->keyswitch = NULL;
+
+  test_bam_env_destroy( env );
+}
+
+FD_FN_UNUSED static void
+test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
+  /* Invalid runtime URLs should surface an error without mutating existing configuration. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * ctx = env->state;
+
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_defaults( ctx, &ctrl );
+
+  static fd_keyswitch_t keyswitch = {0};
+  keyswitch.magic = FD_KEYSWITCH_MAGIC;
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  keyswitch.param = 0UL;
+  ctx->keyswitch = &keyswitch;
+
+  ctrl.command = FD_BAM_CTRL_CMD_URL;
+  ctrl.enable  = 1U;
+  fd_bam_ctrl_copy_str( ctrl.url, FD_BAM_CTRL_URL_MAX, "not a url" );
+  ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state==FD_BAM_CTRL_STATE_ERROR );
+  FD_TEST( strstr( ctrl.error, "Invalid BAM URL" )!=NULL );
+  FD_TEST( !strcmp( ctrl.current_url, "https://initial.builder.test:443" ) );
+  FD_TEST( !strcmp( ctx->server_fqdn, "initial.builder.test" ) );
+  FD_TEST( ctx->runtime_enabled==1 );
+
+  ctx->keyswitch = NULL;
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -311,6 +458,9 @@ main( int     argc,
   test_bam_grpc_timeout( wksp );
   test_bam_client_status( wksp );
   test_bam_request_ctx_labels();
+  test_bam_ctrl_updates_url_and_sni( wksp );
+  test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
+  test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
   test_bam_builder_fee_info( wksp );
 
   fd_wksp_usage_t wksp_usage;

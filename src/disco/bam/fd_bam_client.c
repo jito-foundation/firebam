@@ -914,8 +914,13 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
 }
 
 static void
-fd_bam_client_step1( fd_bam_tile_t * ctx,
-                        int *              charge_busy ) {
+  fd_bam_client_step1( fd_bam_tile_t * ctx,
+                         int *              charge_busy ) {
+
+  if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->runtime_enabled ) ) ) {
+    /* Admin can pause BAM without tearing the tile down; skip reconnect/IO until re-enabled. */
+    return;
+  }
 
   /* Wait for TCP socket to connect */
   if( FD_UNLIKELY( !ctx->tcp_sock_connected ) ) {
