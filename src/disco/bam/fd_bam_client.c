@@ -116,9 +116,13 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_last_builder_heartbeat_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
   ctx->bam_last_config_poll_ns    = 0L;
-  ctx->bam_pending_results        = 0UL;
-  ctx->bam_results_head           = 0UL;
-  ctx->bam_results_tail           = 0UL;
+  /* Preserve any buffered bundle results so they flush once the next
+     scheduler stream comes up.  The server expects every dispatched
+     bundle to eventually produce a result; dropping them here would lose
+     that guarantee. */
+  // ctx->bam_pending_results        = 0UL;
+  // ctx->bam_results_head           = 0UL;
+  // ctx->bam_results_tail           = 0UL;
   ctx->bam_leader_pending         = 0U;
 }
 
@@ -886,13 +890,13 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( ctx->auther.needs_poll ) ) {
     fd_bundle_auther_poll( &ctx->auther, ctx->grpc_client, ctx->keyguard_client );
     return 1;
-  }
+}
   if( FD_UNLIKELY( ctx->auther.state!=FD_BUNDLE_AUTH_STATE_DONE_WAIT ) ) return 0;
 
   /* Request block builder info */
   int const builder_info_expired = ( ctx->builder_info_valid_until - now )<0;
   if( FD_UNLIKELY( ( ( !ctx->builder_info_avail ) |
-                     ( !builder_info_expired    ) ) &
+                     ( builder_info_expired     ) ) &
                    ( !ctx->builder_info_wait      ) ) ) {
     fd_bam_client_request_builder_info( ctx );
     return 1;
