@@ -15,6 +15,8 @@
 #include "../../util/hist/fd_histf.h"
 #include "../../ballet/base58/fd_base58.h"
 
+#define FD_BAM_HEARTBEAT_TIMEOUT_NS ((long)6e9) /* 6 seconds */
+
 #if FD_HAS_OPENSSL
 #include <openssl/ssl.h> /* SSL_CTX */
 #endif

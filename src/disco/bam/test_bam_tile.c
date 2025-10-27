@@ -9,6 +9,7 @@
 #include "../../ballet/base58/fd_base58.h"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../tango/fseq/fd_fseq.h"
+#include <limits.h>
 #include <string.h>
 
 FD_IMPORT_BINARY( test_bundle_response, "src/disco/bundle/test_bundle_response.binpb" );
@@ -184,6 +185,202 @@ test_bam_grpc_timeout( fd_wksp_t * wksp ) {
   FD_TEST( state->defer_reset==1U );
 
   test_bam_env_destroy( env );
+}
+
+static fd_bam_tile_t *
+test_bam_heartbeat_env_start( test_bam_env_t * env,
+                              fd_wksp_t *      wksp ) {
+  g_clock = (long)1e9;
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+  state->runtime_enabled = 1;
+  state->keepalive->ts_deadline = LONG_MAX;
+  state->keepalive->ts_last_tx = g_clock;
+  state->keepalive->ts_last_rx = g_clock;
+  state->keepalive->inflight   = 0;
+  state->defer_reset = 0;
+  fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( state->bam_last_builder_heartbeat_ns==g_clock );
+  FD_TEST( state->bam_last_validator_heartbeat_ns==g_clock );
+  return state;
+}
+
+static void
+test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
+  /* Test 1: Timeout triggers when heartbeat exceeds 6 seconds */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e8;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==1 );
+    FD_TEST( charge_busy==1 );
+    test_bam_env_destroy( env );
+  }
+
+  /* Test 2: No timeout when heartbeat timestamp is 0L (uninitialized) */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    state->bam_last_builder_heartbeat_ns = 0L;
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e9;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==0 );
+    test_bam_env_destroy( env );
+  }
+
+  /* Test 3: No timeout when stream is not live */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    state->bam_stream_live = 0;
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e9;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==0 );
+    test_bam_env_destroy( env );
+  }
+
+  /* Test 4: No timeout just before the threshold */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e6; /* 1ms before timeout */
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==0 );
+    test_bam_env_destroy( env );
+  }
+
+  /* Test 5: Timeout at exact boundary (>= 6 seconds should trigger) */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==1 );
+    FD_TEST( charge_busy==1 );
+    test_bam_env_destroy( env );
+  }
+
+  /* Test 6: Timeout at boundary + 1ns */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + 1L;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==1 );
+    FD_TEST( charge_busy==1 );
+    test_bam_env_destroy( env );
+  }
+
+  /* Test 7: No timeout when runtime is disabled */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    state->runtime_enabled = 0;
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e9;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==0 );
+    test_bam_env_destroy( env );
+  }
+}
+
+static void
+test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
+  // Pre-encoded bam_api.SchedulerResponse messages (nanopb framing) that
+  // drive the heartbeat timestamping logic, derived from src/disco/bam/proto/bam_api.proto
+
+  // SchedulerResponse { v0 { heart_beat { time_sent_microseconds: 1 } } }
+  static uchar heartbeat_msg[] = { 0x0a, 0x04, 0x0a, 0x02, 0x08, 0x01 };
+  // SchedulerResponse { v0 { multiple_atomic_txn_batch { /* field #1 (reserved/unused) set to 0 so the message is non-empty */ } } }
+  static uchar bundle_msg[]    = { 0x0a, 0x04, 0x12, 0x02, 0x08, 0x00 };
+
+  /* Heartbeat message updates timestamp */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    fd_bam_client_grpc_rx_msg( state, heartbeat_msg, sizeof(heartbeat_msg),
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    long expected_ts = g_clock;
+    FD_TEST( state->bam_last_builder_heartbeat_ns==expected_ts );
+    test_bam_env_destroy( env );
+  }
+
+  /* 5.9 seconds after heartbeat should NOT timeout */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
+    fd_bam_client_grpc_rx_msg( state, heartbeat_msg, sizeof(heartbeat_msg),
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==0 );
+    test_bam_env_destroy( env );
+  }
+
+  /* 6.1 seconds after heartbeat SHOULD timeout */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
+    fd_bam_client_grpc_rx_msg( state, heartbeat_msg, sizeof(heartbeat_msg),
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)2e8;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==1 );
+    FD_TEST( charge_busy==1 );
+    test_bam_env_destroy( env );
+  }
+
+  /* Bundle batches update timestamp */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    fd_bam_client_grpc_rx_msg( state, bundle_msg, sizeof(bundle_msg),
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    long expected_ts = g_clock;
+    FD_TEST( state->bam_last_builder_heartbeat_ns==expected_ts );
+    test_bam_env_destroy( env );
+  }
+
+  /* 5.9 seconds after bundle should NOT timeout */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
+    fd_bam_client_grpc_rx_msg( state, bundle_msg, sizeof(bundle_msg),
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==0 );
+    test_bam_env_destroy( env );
+  }
+
+  /* 6.1 seconds after bundle SHOULD timeout */
+  {
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    int charge_busy = 0;
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
+    fd_bam_client_grpc_rx_msg( state, bundle_msg, sizeof(bundle_msg),
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)2e8;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->defer_reset==1 );
+    FD_TEST( charge_busy==1 );
+    test_bam_env_destroy( env );
+  }
 }
 
 static void
@@ -456,6 +653,8 @@ main( int     argc,
   test_bam_bundle_requires_builder_info( wksp );
   test_bam_grpc_end_handling( wksp );
   test_bam_grpc_timeout( wksp );
+  test_bam_heartbeat_timeout_forces_disconnect( wksp );
+  test_bam_heartbeat_reset_extends_timeout( wksp );
   test_bam_client_status( wksp );
   test_bam_request_ctx_labels();
   test_bam_ctrl_updates_url_and_sni( wksp );

@@ -924,8 +924,8 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
 }
 
 static void
-  fd_bam_client_step1( fd_bam_tile_t * ctx,
-                         int *              charge_busy ) {
+fd_bam_client_step1( fd_bam_tile_t * ctx,
+                       int *              charge_busy ) {
 
   if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->runtime_enabled ) ) ) {
     /* Admin can pause BAM without tearing the tile down; skip reconnect/IO until re-enabled. */
@@ -979,6 +979,17 @@ static void
     FD_LOG_WARNING(( "Bundle gRPC timed out (HTTP/2 PING went unanswered for %.2f seconds)",
                      (double)( check_ts - ctx->keepalive->ts_last_tx )/1e9 ));
     ctx->keepalive->inflight = 0;
+    ctx->defer_reset = 1;
+    *charge_busy = 1;
+    return;
+  }
+
+  /* Did BAM heartbeat time out */
+  if( FD_UNLIKELY( ctx->bam_stream_live &&
+                   ctx->bam_last_builder_heartbeat_ns != 0L &&
+                   check_ts - ctx->bam_last_builder_heartbeat_ns >= FD_BAM_HEARTBEAT_TIMEOUT_NS ) ) {
+    FD_LOG_WARNING(( "BAM heartbeat timed out (no heartbeat for %.2f seconds)",
+                     (double)( check_ts - ctx->bam_last_builder_heartbeat_ns )/1e9 ));
     ctx->defer_reset = 1;
     *charge_busy = 1;
     return;
@@ -1408,11 +1419,14 @@ fd_bam_client_grpc_rx_start(
     ctx->bundle_subscription_live = 1;
     ctx->bundle_subscription_wait = 0;
     break;
-  case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
+  case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream: {
+    long now = fd_bam_now();
     ctx->bam_stream_live        = 1;
     ctx->bam_stream_connecting  = 0;
-    ctx->bam_last_validator_heartbeat_ns = fd_bam_now();
+    ctx->bam_last_validator_heartbeat_ns = now;
+    ctx->bam_last_builder_heartbeat_ns   = now;
     break;
+  }
   }
 }
 
