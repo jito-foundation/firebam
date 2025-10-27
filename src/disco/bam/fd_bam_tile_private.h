@@ -239,6 +239,12 @@ int
 fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
                                  long               now );
 
+/* Expose internal result flushing logic for unit tests. Returns 1 if any
+   results were flushed (busy), 0 otherwise. Not used in production. */
+
+int
+fd_bam_test_flush_results( fd_bam_tile_t * ctx );
+
 /* fd_bam_tile_backoff is called whenever an error occurs.  Stalls
    forward progress for a randomized amount of time to prevent error
    floods. */

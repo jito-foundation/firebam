@@ -125,6 +125,8 @@ test_bam_env_mock_conn_empty( test_bam_env_t * env ) {
 
 FD_FN_UNUSED static void
 test_bam_env_mock_h2_hs( fd_bam_tile_t * state ) {
+  fd_h2_conn_t * conn = fd_grpc_client_h2_conn( state->grpc_client );
+  conn->flags = 0; /* Simulate completed HTTP/2 handshake */
   state->grpc_client->h2_hs_done = 1;
   FD_TEST( !fd_grpc_client_request_is_blocked( state->grpc_client ) );
 }

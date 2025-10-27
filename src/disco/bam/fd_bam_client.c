@@ -788,6 +788,11 @@ fd_bam_flush_results( fd_bam_tile_t * ctx ) {
   return busy;
 }
 
+int
+fd_bam_test_flush_results( fd_bam_tile_t * ctx ) {
+  return fd_bam_flush_results( ctx );
+}
+
 static void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
                                    pb_istream_t *   istream ) {

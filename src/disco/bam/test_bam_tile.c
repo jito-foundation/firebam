@@ -32,6 +32,32 @@ zero_meta_ts( fd_frag_meta_t * meta,
   }
 }
 
+static fd_bam_bundle_result_t
+test_make_bundle_result( ulong bundle_id ) {
+  fd_bam_bundle_result_t res = {0};
+  res.bundle_id        = bundle_id;
+  res.slot             = bundle_id + 1000UL;
+  res.bundle_txn_cnt   = 2UL;
+  res.txn_cnt          = 2U;
+  res.execution_success = 1U;
+  res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+  for( uint i=0U; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {
+    res.transaction_err[ i ]   = 0U;
+    res.consumed_cus[ i ]      = (uint)( i + 1U );
+    res.sanitize_success[ i ]  = 1U;
+  }
+  return res;
+}
+
+static void
+test_enqueue_bundle_result( fd_bam_tile_t *               state,
+                            fd_bam_bundle_result_t const * res ) {
+  FD_TEST( state->bam_pending_results < FD_BAM_MAX_PENDING_RESULTS );
+  state->bam_results[ state->bam_results_tail ] = *res;
+  state->bam_results_tail = ( state->bam_results_tail + 1UL ) % FD_BAM_MAX_PENDING_RESULTS;
+  state->bam_pending_results++;
+}
+
 static void
 test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -633,6 +659,74 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* Verifies that bundle results buffered in the queue survive
+ * fd_bam_client_reset and remain available for flushing after reconnect.
+ * Ensure that bundle results aren't lost during temporary disconnections. */
+
+static void
+test_bam_bundle_result_queue_survives_reset( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  for( ulong i=0UL; i<3UL; i++ ) {
+    fd_bam_bundle_result_t res = test_make_bundle_result( 100UL + i );
+    test_enqueue_bundle_result( state, &res );
+  }
+
+  ulong expected_tail = state->bam_results_tail;
+  fd_bam_client_reset( state );
+
+  FD_TEST( state->bam_pending_results==3UL );
+  FD_TEST( state->bam_results_head==0UL );
+  FD_TEST( state->bam_results_tail==expected_tail );
+  FD_TEST( state->bam_results[0].bundle_id==100UL );
+  FD_TEST( state->bam_results[1].bundle_id==101UL );
+  FD_TEST( state->bam_results[2].bundle_id==102UL );
+
+  test_bam_env_destroy( env );
+}
+
+/* Verifies that buffered bundle results flush cleanly once a new scheduler stream is
+   established. Tests that the queue drains completely and head/tail
+   pointers are properly updated after successful flush. */
+
+static void
+test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  for( ulong i=0UL; i<2UL; i++ ) {
+    fd_bam_bundle_result_t res = test_make_bundle_result( 200UL + i );
+    test_enqueue_bundle_result( state, &res );
+  }
+
+  fd_bam_client_reset( state );
+  FD_TEST( state->bam_pending_results==2UL );
+
+  test_bam_env_mock_conn( env );
+  state->bam_stream_live = 0U;
+
+  fd_grpc_h2_stream_t * stream = fd_grpc_client_stream_acquire( state->grpc_client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( stream );
+  stream->hdrs.h2_status     = 200;
+  stream->hdrs.is_grpc_proto = 1;
+  state->bam_stream = stream;
+  state->bam_stream_live = 1U;
+  state->grpc_client->request_stream = NULL;
+  *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
+
+  int flushed = fd_bam_test_flush_results( state );
+  FD_TEST( flushed==1 );
+  FD_TEST( state->bam_pending_results==0UL );
+  FD_TEST( state->bam_results_head==state->bam_results_tail );
+
+  test_bam_env_destroy( env );
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -661,6 +755,8 @@ main( int     argc,
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
   test_bam_builder_fee_info( wksp );
+  test_bam_bundle_result_queue_survives_reset( wksp );
+  test_bam_bundle_result_queue_flushes_after_reconnect( wksp );
 
   fd_wksp_usage_t wksp_usage;
   FD_TEST( fd_wksp_usage( wksp, NULL, 0UL, &wksp_usage ) );

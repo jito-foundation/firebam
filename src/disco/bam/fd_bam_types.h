@@ -9,7 +9,9 @@
 #include "../../flamenco/types/fd_types.h"
 #include "../../util/net/fd_net_headers.h"
 
-#define FD_BAM_MAX_PENDING_RESULTS 64UL
+/* FD_BAM_MAX_PENDING_RESULTS is the bundle result queue depth, so long disconnects
+ * don't drop SchedulerMessage payloads. */
+#define FD_BAM_MAX_PENDING_RESULTS 512UL
 
 typedef struct {
   ulong bundle_id;
