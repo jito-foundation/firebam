@@ -361,6 +361,15 @@ fd_pack_out_valid( fd_pack_out_ctx_t const * out ) {
   return FD_LIKELY( out->mem ) && FD_LIKELY( out->idx!=ULONG_MAX );
 }
 
+static inline ulong
+fd_pack_collect_builder_outs( fd_pack_ctx_t * ctx,
+                              fd_pack_out_ctx_t ** outs ) {
+  ulong cnt = 0UL;
+  if( FD_LIKELY( fd_pack_out_valid( &ctx->bundle_out ) ) ) outs[ cnt++ ] = &ctx->bundle_out;
+  if( FD_LIKELY( fd_pack_out_valid( &ctx->bam_out ) ) )    outs[ cnt++ ] = &ctx->bam_out;
+  return cnt;
+}
+
 static inline int
 fd_pack_has_builder_outputs( fd_pack_ctx_t const * ctx ) {
   return fd_pack_out_valid( &ctx->bundle_out ) || fd_pack_out_valid( &ctx->bam_out );
@@ -429,13 +438,14 @@ static inline void
 fd_pack_publish_bam_results( fd_pack_ctx_t *     ctx,
                              fd_stem_context_t * stem,
                              int *               charge_busy ) {
-  if( FD_UNLIKELY( !fd_pack_has_builder_outputs( ctx ) ) ) return;
+  fd_pack_out_ctx_t * outs[ 2 ];
+  ulong out_cnt = fd_pack_collect_builder_outs( ctx, outs );
   while( ctx->bam_results_pending ) {
     fd_bam_bundle_result_t const * res = &ctx->bam_results[ ctx->bam_results_head ];
     ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
     int published = 0;
-    published |= fd_pack_publish_result_to_out( &ctx->bundle_out, stem, res, tspub );
-    published |= fd_pack_publish_result_to_out( &ctx->bam_out,     stem, res, tspub );
+    for( ulong i=0UL; i<out_cnt; i++ )
+      published |= fd_pack_publish_result_to_out( outs[ i ], stem, res, tspub );
     ctx->bam_results_head = (ctx->bam_results_head + 1UL) % FD_BAM_MAX_PENDING_RESULTS;
     ctx->bam_results_pending--;
     if( FD_LIKELY( published ) ) *charge_busy = 1;
@@ -449,6 +459,7 @@ fd_pack_tile_drop_expired_bundles( fd_pack_ctx_t * ctx,
   for(;;) {
     block_builder_info_t const * meta = fd_pack_peek_bundle_meta( ctx->pack );
     if( FD_UNLIKELY( !meta ) ) return;
+    /* Treat max_schedule_slot==0 as unlimited (no expiration) */
     ulong max_slot = meta->max_schedule_slot ? meta->max_schedule_slot : ULONG_MAX;
     if( FD_LIKELY( slot <= max_slot ) ) return;
 
@@ -679,14 +690,20 @@ after_credit( fd_pack_ctx_t *     ctx,
 
   long now = fd_tickcount();
 
-  if( FD_LIKELY( ctx->leader_state_pending && fd_pack_has_builder_outputs( ctx ) ) ) {
-    ulong tspub = (ulong)fd_frag_meta_ts_comp( now );
-    int published = 0;
-    published |= fd_pack_publish_leader_state_to_out( &ctx->bundle_out, stem, &ctx->pending_leader_state, tspub );
-    published |= fd_pack_publish_leader_state_to_out( &ctx->bam_out,     stem, &ctx->pending_leader_state, tspub );
-    if( FD_LIKELY( published ) ) {
+  if( FD_LIKELY( ctx->leader_state_pending ) ) {
+    fd_pack_out_ctx_t * outs[ 2 ];
+    ulong out_cnt = fd_pack_collect_builder_outs( ctx, outs );
+    if( FD_LIKELY( out_cnt ) ) {
+      ulong tspub = (ulong)fd_frag_meta_ts_comp( now );
+      int published = 0;
+      for( ulong i=0UL; i<out_cnt; i++ )
+        published |= fd_pack_publish_leader_state_to_out( outs[ i ], stem, &ctx->pending_leader_state, tspub );
+      if( FD_LIKELY( published ) ) {
+        ctx->leader_state_pending = 0;
+        *charge_busy = 1;
+      }
+    } else {
       ctx->leader_state_pending = 0;
-      *charge_busy = 1;
     }
   }
 
