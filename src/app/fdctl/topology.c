@@ -48,6 +48,8 @@ fd_topo_initialize( config_t * config ) {
   int bundle_tile_enabled = config->tiles.bundle.enabled;
   int bam_tile_enabled     = config->tiles.bam.enabled;
 
+  ulong pack_builder_mtu = fd_ulong_max(sizeof(fd_bam_bundle_result_t), sizeof(fd_bam_leader_state_t));
+
   /*             topo, name */
   fd_topob_wksp( topo, "metric_in"    );
   fd_topob_wksp( topo, "net_quic"     );
@@ -111,15 +113,15 @@ fd_topo_initialize( config_t * config ) {
   /**/                 fd_topob_link( topo, "pack_bank",    "pack_bank",    65536UL,                                  USHORT_MAX,             1UL );
   /**/                 fd_topob_link( topo, "pack_poh",     "pack_poh",     65536UL,                                  sizeof(fd_done_packing_t), 1UL );
   if( FD_UNLIKELY( bundle_tile_enabled ) )
-    /**/               fd_topob_link( topo, "pack_bundle",  "pack_bundle",  256UL,                                    sizeof(fd_bam_leader_state_t), 1UL );
+    /**/               fd_topob_link( topo, "pack_bundle",  "pack_bundle",  256UL,                                    pack_builder_mtu,       1UL );
   if( FD_UNLIKELY( bam_tile_enabled ) )
-    /**/               fd_topob_link( topo, "pack_bam",     "pack_bam",     256UL,                                    sizeof(fd_bam_leader_state_t), 1UL );
+    /**/               fd_topob_link( topo, "pack_bam",     "pack_bam",     2048UL,                                   pack_builder_mtu,       1UL );
   FOR(bank_tile_cnt)   fd_topob_link( topo, "bank_poh",     "bank_poh",     16384UL,                                  USHORT_MAX,             1UL );
   FOR(bank_tile_cnt)   fd_topob_link( topo, "bank_pack",    "bank_pack",    16384UL,                                  USHORT_MAX,             3UL );
   if( FD_UNLIKELY( bundle_tile_enabled ) )
-    FOR(bank_tile_cnt) fd_topob_link( topo, "bank_bundle",  "bank_bundle",  1024UL,                                   128UL,                  1UL );
+    FOR(bank_tile_cnt) fd_topob_link( topo, "bank_bundle",  "bank_bundle",  1024UL,                                   sizeof(fd_bam_bundle_result_t),                  1UL );
   if( FD_UNLIKELY( bam_tile_enabled ) )
-    FOR(bank_tile_cnt) fd_topob_link( topo, "bank_bam",      "bank_bam",      1024UL,                                   128UL,                  1UL );
+    FOR(bank_tile_cnt) fd_topob_link( topo, "bank_bam",      "bank_bam",      2048UL,                                 sizeof(fd_bam_bundle_result_t),                  1UL );
   /**/                 fd_topob_link( topo, "poh_pack",     "bank_poh",     128UL,                                    sizeof(fd_became_leader_t), 1UL );
   /**/                 fd_topob_link( topo, "poh_shred",    "poh_shred",    16384UL,                                  USHORT_MAX,             2UL );
   /**/                 fd_topob_link( topo, "crds_shred",   "poh_shred",    128UL,                                    8UL  + 40200UL * 38UL,  1UL );
