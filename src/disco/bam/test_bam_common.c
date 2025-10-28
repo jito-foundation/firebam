@@ -91,8 +91,8 @@ test_bam_env_create( test_bam_env_t * env,
   state->keepalive->ts_last_rx = now;
 
   fd_histf_new( state->metrics.msg_rx_delay,
-      FD_MHIST_MIN( BUNDLE, MESSAGE_RX_DELAY_NANOS ),
-      FD_MHIST_MAX( BUNDLE, MESSAGE_RX_DELAY_NANOS ) );
+      FD_MHIST_MIN( BAM, MESSAGE_RX_DELAY_NANOS ),
+      FD_MHIST_MAX( BAM, MESSAGE_RX_DELAY_NANOS ) );
   state->cached_ts = now;
 
   return env;

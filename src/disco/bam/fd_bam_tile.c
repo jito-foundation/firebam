@@ -50,20 +50,20 @@ loose_footprint( fd_topo_tile_t const * tile ) {
 
 static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
-  FD_MCNT_SET( BUNDLE, TRANSACTION_RECEIVED,   ctx->metrics.txn_received_cnt          );
-  FD_MCNT_SET( BUNDLE, BUNDLE_RECEIVED,        ctx->metrics.bundle_received_cnt       );
-  FD_MCNT_SET( BUNDLE, PACKET_RECEIVED,        ctx->metrics.packet_received_cnt       );
-  FD_MCNT_SET( BUNDLE, SHREDSTREAM_HEARTBEATS, ctx->metrics.shredstream_heartbeat_cnt );
-  FD_MCNT_SET( BUNDLE, KEEPALIVES,             ctx->metrics.ping_ack_cnt              );
-  FD_MCNT_SET( BUNDLE, ERRORS_PROTOBUF,        ctx->metrics.decode_fail_cnt           );
-  FD_MCNT_SET( BUNDLE, ERRORS_TRANSPORT,       ctx->metrics.transport_fail_cnt        );
-  FD_MCNT_SET( BUNDLE, ERRORS_NO_FEE_INFO,     ctx->metrics.missing_builder_info_fail_cnt );
+  FD_MCNT_SET( BAM, TRANSACTION_RECEIVED,   ctx->metrics.txn_received_cnt          );
+  FD_MCNT_SET( BAM, BUNDLE_RECEIVED,        ctx->metrics.bundle_received_cnt       );
+  FD_MCNT_SET( BAM, BUNDLE_RESULTS_DROPPED, ctx->metrics.bundle_result_drop_cnt    );
+  FD_MCNT_SET( BAM, PACKET_RECEIVED,        ctx->metrics.packet_received_cnt       );
+  FD_MCNT_SET( BAM, KEEPALIVES,             ctx->metrics.ping_ack_cnt              );
+  FD_MCNT_SET( BAM, ERRORS_PROTOBUF,        ctx->metrics.decode_fail_cnt           );
+  FD_MCNT_SET( BAM, ERRORS_TRANSPORT,       ctx->metrics.transport_fail_cnt        );
+  FD_MCNT_SET( BAM, ERRORS_NO_FEE_INFO,     ctx->metrics.missing_builder_info_fail_cnt );
 
-  FD_MGAUGE_SET( BUNDLE, RTT_SAMPLE,   (ulong)ctx->rtt->latest_rtt   );
-  FD_MGAUGE_SET( BUNDLE, RTT_SMOOTHED, (ulong)ctx->rtt->smoothed_rtt );
-  FD_MGAUGE_SET( BUNDLE, RTT_VAR,      (ulong)ctx->rtt->var_rtt      );
+  FD_MGAUGE_SET( BAM, RTT_SAMPLE,   (ulong)ctx->rtt->latest_rtt   );
+  FD_MGAUGE_SET( BAM, RTT_SMOOTHED, (ulong)ctx->rtt->smoothed_rtt );
+  FD_MGAUGE_SET( BAM, RTT_VAR,      (ulong)ctx->rtt->var_rtt      );
 
-  FD_MHIST_COPY( BUNDLE, MESSAGE_RX_DELAY_NANOS, ctx->metrics.msg_rx_delay );
+  FD_MHIST_COPY( BAM, MESSAGE_RX_DELAY_NANOS, ctx->metrics.msg_rx_delay );
 
   fd_wksp_t * wksp = fd_wksp_containing( ctx );
   fd_wksp_usage_t usage[1];
@@ -71,11 +71,11 @@ metrics_write( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !fd_wksp_usage( wksp, &free_tag, 1UL, usage ) ) ) {
     FD_LOG_ERR(( "fd_wksp_usage failed" )); /* unreachable */
   }
-  FD_MGAUGE_SET( BUNDLE, HEAP_SIZE,       usage->total_sz );
-  FD_MGAUGE_SET( BUNDLE, HEAP_FREE_BYTES, usage->used_sz  );
+  FD_MGAUGE_SET( BAM, HEAP_SIZE,       usage->total_sz );
+  FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->used_sz  );
 
   int bundle_status = fd_bam_client_status( ctx );
-  FD_MGAUGE_SET( BUNDLE, CONNECTED, bundle_status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  FD_MGAUGE_SET( BAM, CONNECTED, bundle_status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
   ctx->bundle_status_recent = (uchar)bundle_status;
 }
 
@@ -146,7 +146,10 @@ static inline void
 fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
                        fd_bam_bundle_result_t const * res ) {
   if( FD_UNLIKELY( ctx->bam_pending_results>=FD_BAM_MAX_PENDING_RESULTS ) ) {
-    FD_LOG_WARNING(( "Dropping BAM bundle result (queue full)" ));
+    FD_LOG_WARNING(( "Dropping BAM bundle result (bam tile queue full): bundle_id=%lu slot=%lu txn_cnt=%u exec_success=%u sched_err=%u",
+                     res->bundle_id, res->slot, res->txn_cnt, res->execution_success, res->scheduling_error ));
+    ctx->metrics.bundle_result_drop_cnt++;
+    FD_MCNT_INC( BAM, BUNDLE_RESULTS_DROPPED, 1UL );
     return;
   }
   ctx->bam_results[ ctx->bam_results_tail ] = *res;
@@ -197,8 +200,7 @@ bam_during_frag( fd_bam_tile_t * ctx,
       FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->bank_in.chunk0, ctx->bank_in.wmark ));
       return;
     }
-    fd_bam_bundle_result_t const * res = (fd_bam_bundle_result_t const *)fd_chunk_to_laddr( ctx->bank_in.mem, chunk );
-    fd_bam_enqueue_result( ctx, res );
+    fd_bam_enqueue_result( ctx, fd_chunk_to_laddr( ctx->bank_in.mem, chunk ) );
     return;
   }
 
@@ -537,6 +539,7 @@ static void
 fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->ctrl ) ) return;
 
+  // wait until we receive a new request
   for( ;; ) {
     long state = FD_VOLATILE_CONST( ctx->ctrl->state );
     if( FD_LIKELY( state!=FD_BAM_CTRL_STATE_REQUEST ) ) return;
@@ -624,7 +627,7 @@ crypto_malloc( ulong        num,
   (void)file; (void)line;
   void * result = fd_alloc_malloc( fd_quic_ssl_mem_function_ctx, 16UL, num + 8UL );
   if( FD_UNLIKELY( !result ) ) {
-    FD_MCNT_INC( BUNDLE, ERRORS_SSL_ALLOC, 1UL );
+    FD_MCNT_INC( BAM, ERRORS_SSL_ALLOC, 1UL );
     return NULL;
   }
   *(ulong *)result = num;
@@ -990,8 +993,8 @@ unprivileged_init( fd_topo_t *      topo,
   fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
 
   fd_histf_new( ctx->metrics.msg_rx_delay,
-      FD_MHIST_MIN( BUNDLE, MESSAGE_RX_DELAY_NANOS ),
-      FD_MHIST_MAX( BUNDLE, MESSAGE_RX_DELAY_NANOS ) );
+      FD_MHIST_MIN( BAM, MESSAGE_RX_DELAY_NANOS ),
+      FD_MHIST_MAX( BAM, MESSAGE_RX_DELAY_NANOS ) );
 }
 
 static ulong

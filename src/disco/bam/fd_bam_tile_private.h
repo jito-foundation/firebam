@@ -45,8 +45,8 @@ typedef struct fd_bam_in_ctx fd_bam_in_ctx_t;
 struct fd_bam_metrics {
   ulong txn_received_cnt;
   ulong bundle_received_cnt;
+  ulong bundle_result_drop_cnt;
   ulong packet_received_cnt;
-  ulong shredstream_heartbeat_cnt;
   ulong ping_ack_cnt;
 
   ulong decode_fail_cnt;

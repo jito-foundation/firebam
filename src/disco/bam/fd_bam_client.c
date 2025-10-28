@@ -905,7 +905,7 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( ctx->auther.needs_poll ) ) {
     fd_bundle_auther_poll( &ctx->auther, ctx->grpc_client, ctx->keyguard_client );
     return 1;
-}
+  }
   if( FD_UNLIKELY( ctx->auther.state!=FD_BUNDLE_AUTH_STATE_DONE_WAIT ) ) return 0;
 
   /* Request block builder info */
@@ -1544,6 +1544,8 @@ fd_bam_client_grpc_rx_end(
   case FD_BAM_CLIENT_REQ_Bundle_SubscribePackets:
     ctx->packet_subscription_live = 0;
     ctx->packet_subscription_wait = 0;
+    ctx->bam_stream_live       = 0;
+    ctx->bam_stream_connecting = 0;
     fd_bam_tile_backoff( ctx, fd_bam_now() );
     ctx->defer_reset = 1;
     FD_LOG_INFO(( "SubscribePackets stream failed (gRPC status %u-%s). Reconnecting ...",
@@ -1552,6 +1554,8 @@ fd_bam_client_grpc_rx_end(
   case FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles:
     ctx->bundle_subscription_live = 0;
     ctx->bundle_subscription_wait = 0;
+    ctx->bam_stream_live       = 0;
+    ctx->bam_stream_connecting = 0;
     fd_bam_tile_backoff( ctx, fd_bam_now() );
     ctx->defer_reset = 1;
     FD_LOG_INFO(( "SubscribeBundles stream failed (gRPC status %u-%s). Reconnecting ...",

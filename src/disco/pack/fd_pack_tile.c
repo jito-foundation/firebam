@@ -364,7 +364,11 @@ fd_pack_enqueue_bam_result( fd_pack_ctx_t * ctx,
                             fd_bam_bundle_result_t const * res ) {
   if( FD_UNLIKELY( !fd_pack_out_valid( &ctx->bundle_out ) && !fd_pack_out_valid( &ctx->bam_out ) ) ) return;
   if( FD_UNLIKELY( ctx->bam_results_pending>=FD_BAM_MAX_PENDING_RESULTS ) ) {
-    FD_LOG_WARNING(( "Dropping BAM bundle result (pack queue full)" ));
+    FD_LOG_WARNING(( "Dropping BAM bundle result (pack queue full): bundle_id=%lu slot=%lu txn_cnt=%u exec_success=%u sched_err=%u. "
+                 "This violates BAM protocol guarantees. Consider increasing FD_BAM_MAX_PENDING_RESULTS or investigating slow network.",
+                 res->bundle_id, res->slot, res->txn_cnt, res->execution_success, res->scheduling_error ));
+    /* TODO: Implement backpressure mechanism to upstream tiles */
+    FD_MCNT_INC( BAM, BUNDLE_RESULTS_DROPPED, 1UL );
     return;
   }
   ctx->bam_results[ ctx->bam_results_tail ] = *res;

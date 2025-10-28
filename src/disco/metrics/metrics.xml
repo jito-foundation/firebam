@@ -342,6 +342,32 @@ metric introduced.
     <int value="5" name="SslAlloc" label="OpenSSL alloc fail" />
 </enum>
 
+<enum name="BamError">
+    <int value="1" name="Protobuf" label="Protobuf decode/encode error" />
+    <int value="2" name="Transport" label="Transport error" />
+    <int value="3" name="Timeout" label="I/O timeout" />
+    <int value="4" name="NoFeeInfo" label="Bundle dropped due to missing fee info" />
+    <int value="5" name="SslAlloc" label="OpenSSL alloc fail" />
+</enum>
+
+<tile name="bam">
+    <counter name="TransactionReceived" summary="Total count of transactions received from BAM, including transactions within bundles" />
+    <counter name="PacketReceived" summary="Total count of packets received from BAM" />
+    <counter name="BundleReceived" summary="Total count of bundles received from BAM" />
+    <counter name="BundleResultsDropped" summary="Count of BAM bundle results dropped before publication" />
+    <counter name="Errors" enum="BamError" summary="Number of BAM client errors encountered" />
+    <gauge name="HeapSize" summary="Workspace heap size used by the BAM client" />
+    <gauge name="HeapFreeBytes" summary="Approx free space in workspace used by the BAM client" />
+    <counter name="Keepalives" summary="Number of HTTP/2 PINGs acknowledged by the BAM server" />
+    <gauge name="Connected" summary="1 if connected to the BAM server, 0 if not" />
+    <gauge name="RttSample" summary="Latest BAM RTT sample at scrape time (nanoseconds)" />
+    <gauge name="RttSmoothed" summary="BAM RTT moving average (nanoseconds)" />
+    <gauge name="RttVar" summary="BAM RTT variance (nanoseconds)" />
+    <histogram name="MessageRxDelayNanos" min="100000" max="1000000000">
+        <summary>Message receive delay in nanoseconds from BAM server to BAM client</summary>
+    </histogram>
+</tile>
+
 <tile name="bundle">
     <counter name="TransactionReceived" summary="Total count of transactions received, including transactions within bundles" />
     <counter name="PacketReceived" summary="Total count of packets received" />
