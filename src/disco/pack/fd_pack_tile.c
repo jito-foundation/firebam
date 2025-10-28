@@ -269,11 +269,9 @@ typedef struct {
   ulong       poh_out_wmark;
   ulong       poh_out_chunk;
 
-  fd_pack_out_ctx_t     bundle_out;
-  fd_pack_out_ctx_t     bam_out;
-  fd_bam_leader_state_t pending_leader_state;
-  int                   leader_state_pending;
-  long                  last_leader_state_ns;
+  fd_pack_out_ctx_t bundle_out;
+  fd_pack_out_ctx_t bam_out;
+  long              last_leader_state_ns;
 
   ulong      insert_result[ FD_PACK_INSERT_RETVAL_CNT ];
   fd_histf_t schedule_duration[ 1 ];
@@ -361,24 +359,10 @@ fd_pack_out_valid( fd_pack_out_ctx_t const * out ) {
   return FD_LIKELY( out->mem ) && FD_LIKELY( out->idx!=ULONG_MAX );
 }
 
-static inline ulong
-fd_pack_collect_builder_outs( fd_pack_ctx_t * ctx,
-                              fd_pack_out_ctx_t ** outs ) {
-  ulong cnt = 0UL;
-  if( FD_LIKELY( fd_pack_out_valid( &ctx->bundle_out ) ) ) outs[ cnt++ ] = &ctx->bundle_out;
-  if( FD_LIKELY( fd_pack_out_valid( &ctx->bam_out ) ) )    outs[ cnt++ ] = &ctx->bam_out;
-  return cnt;
-}
-
-static inline int
-fd_pack_has_builder_outputs( fd_pack_ctx_t const * ctx ) {
-  return fd_pack_out_valid( &ctx->bundle_out ) || fd_pack_out_valid( &ctx->bam_out );
-}
-
 static inline void
 fd_pack_enqueue_bam_result( fd_pack_ctx_t * ctx,
                             fd_bam_bundle_result_t const * res ) {
-  if( FD_UNLIKELY( !fd_pack_has_builder_outputs( ctx ) ) ) return;
+  if( FD_UNLIKELY( !fd_pack_out_valid( &ctx->bundle_out ) && !fd_pack_out_valid( &ctx->bam_out ) ) ) return;
   if( FD_UNLIKELY( ctx->bam_results_pending>=FD_BAM_MAX_PENDING_RESULTS ) ) {
     FD_LOG_WARNING(( "Dropping BAM bundle result (pack queue full)" ));
     return;
@@ -389,63 +373,51 @@ fd_pack_enqueue_bam_result( fd_pack_ctx_t * ctx,
 }
 
 static inline int
-fd_pack_publish_result_to_out( fd_pack_out_ctx_t *       out,
-                               fd_stem_context_t *       stem,
-                               fd_bam_bundle_result_t const * res,
-                               ulong                     tspub ) {
-  if( FD_UNLIKELY( !fd_pack_out_valid( out ) ) ) return 0;
-  fd_bam_bundle_result_t * dst = fd_chunk_to_laddr( out->mem, out->chunk );
-  *dst = *res;
-  fd_stem_publish( stem,
-                   out->idx,
-                   res->bundle_id,
-                   out->chunk,
-                   sizeof(fd_bam_bundle_result_t),
-                   0UL,
-                   0UL,
-                   tspub );
-  out->chunk = fd_dcache_compact_next( out->chunk,
-                                       sizeof(fd_bam_bundle_result_t),
-                                       out->chunk0,
-                                       out->wmark );
-  return 1;
-}
+fd_pack_publish_to_builder_outs( fd_pack_ctx_t *     ctx,
+                                 fd_stem_context_t * stem,
+                                 ulong               key,
+                                 void const *        msg,
+                                 ulong               sz,
+                                 ulong               tspub ) {
+  int published = 0;
+  fd_pack_out_ctx_t * out = &ctx->bundle_out;
+  if( FD_LIKELY( fd_pack_out_valid( out ) ) ) {
+    fd_memcpy( fd_chunk_to_laddr( out->mem, out->chunk ), msg, sz );
+    fd_stem_publish( stem, out->idx, key, out->chunk, sz, 0UL, 0UL, tspub );
+    out->chunk = fd_dcache_compact_next( out->chunk, sz, out->chunk0, out->wmark );
+    published = 1;
+  }
 
-static inline int
-fd_pack_publish_leader_state_to_out( fd_pack_out_ctx_t *          out,
-                                     fd_stem_context_t *          stem,
-                                     fd_bam_leader_state_t const * state,
-                                     ulong                        tspub ) {
-  if( FD_UNLIKELY( !fd_pack_out_valid( out ) ) ) return 0;
-  fd_bam_leader_state_t * msg = fd_chunk_to_laddr( out->mem, out->chunk );
-  *msg = *state;
-  fd_stem_publish( stem,
-                   out->idx,
-                   state->slot,
-                   out->chunk,
-                   sizeof(fd_bam_leader_state_t),
-                   0UL,
-                   0UL,
-                   tspub );
-  out->chunk = fd_dcache_compact_next( out->chunk,
-                                       sizeof(fd_bam_leader_state_t),
-                                       out->chunk0,
-                                       out->wmark );
-  return 1;
+  out = &ctx->bam_out;
+  if( FD_LIKELY( fd_pack_out_valid( out ) ) ) {
+    fd_memcpy( fd_chunk_to_laddr( out->mem, out->chunk ), msg, sz );
+    fd_stem_publish( stem, out->idx, key, out->chunk, sz, 0UL, 0UL, tspub );
+    out->chunk = fd_dcache_compact_next( out->chunk, sz, out->chunk0, out->wmark );
+    published = 1;
+  }
+
+  return published;
 }
 
 static inline void
 fd_pack_publish_bam_results( fd_pack_ctx_t *     ctx,
                              fd_stem_context_t * stem,
                              int *               charge_busy ) {
-  fd_pack_out_ctx_t * outs[ 2 ];
-  ulong out_cnt = fd_pack_collect_builder_outs( ctx, outs );
+  if( FD_UNLIKELY( !ctx->bam_results_pending ) ) return;
+  if( FD_UNLIKELY( !fd_pack_out_valid( &ctx->bundle_out ) && !fd_pack_out_valid( &ctx->bam_out ) ) ) {
+    ctx->bam_results_head    = 0UL;
+    ctx->bam_results_tail    = 0UL;
+    ctx->bam_results_pending = 0UL;
+    return;
+  }
   while( ctx->bam_results_pending ) {
     fd_bam_bundle_result_t const * res = &ctx->bam_results[ ctx->bam_results_head ];
-    ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
-    int published = 0;
-    for( ulong i=0UL; i<out_cnt; i++ )
-      published |= fd_pack_publish_result_to_out( outs[ i ], stem, res, tspub );
+    int published = fd_pack_publish_to_builder_outs( ctx,
+                                                     stem,
+                                                     res->bundle_id,
+                                                     res,
+                                                     sizeof(fd_bam_bundle_result_t),
+                                                     fd_frag_meta_ts_comp( fd_tickcount() ) );
     ctx->bam_results_head = (ctx->bam_results_head + 1UL) % FD_BAM_MAX_PENDING_RESULTS;
     ctx->bam_results_pending--;
     if( FD_LIKELY( published ) ) *charge_busy = 1;
@@ -571,52 +543,18 @@ metrics_write( fd_pack_ctx_t * ctx ) {
   fd_pack_metrics_write( ctx->pack );
 }
 
- static inline void
- during_housekeeping( fd_pack_ctx_t * ctx ) {
-   ctx->approx_wallclock_ns = fd_log_wallclock();
-   ctx->approx_tickcount = fd_tickcount();
+static inline void
+during_housekeeping( fd_pack_ctx_t * ctx ) {
+  ctx->approx_wallclock_ns = fd_log_wallclock();
+  ctx->approx_tickcount    = fd_tickcount();
 
-   if( FD_UNLIKELY( ctx->crank->enabled && fd_keyswitch_state_query( ctx->crank->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
-     fd_memcpy( ctx->crank->identity_pubkey, ctx->crank->keyswitch->bytes, 32UL );
-     fd_keyswitch_state( ctx->crank->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
-   }
+  if( FD_UNLIKELY( ctx->crank->enabled && fd_keyswitch_state_query( ctx->crank->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
+    fd_memcpy( ctx->crank->identity_pubkey, ctx->crank->keyswitch->bytes, 32UL );
+    fd_keyswitch_state( ctx->crank->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
+  }
 
-  if( FD_LIKELY( fd_pack_has_builder_outputs( ctx ) ) ) {
-     if( FD_LIKELY( ( ctx->leader_slot!=ULONG_MAX ) & !!ctx->leader_bank ) ) {
-       long now = ctx->approx_wallclock_ns;
-       long interval = (long)5e6; /* 5 ms */
-       if( FD_UNLIKELY( ( ctx->last_leader_state_ns==0L ) | ( now - ctx->last_leader_state_ns >= interval ) ) ) {
-         ulong ticks_per_slot = ctx->leader_ticks_per_slot ? ctx->leader_ticks_per_slot : 1UL;
-         ulong tick_mod = 0UL;
-
-         if( FD_LIKELY( ticks_per_slot ) ) {
-           ulong duration_ns = ctx->slot_duration_ns;
-           if( FD_LIKELY( duration_ns>0UL ) ) {
-             long raw_elapsed = now - ctx->slot_start_ns;
-             if( raw_elapsed < 0L ) raw_elapsed = 0L;
-             ulong elapsed_ns = (ulong)raw_elapsed;
-             if( elapsed_ns > duration_ns ) elapsed_ns = duration_ns;
-             ulong denom = duration_ns ? duration_ns : 1UL;
-             tick_mod = ( elapsed_ns * ticks_per_slot ) / denom;
-             if( tick_mod >= ticks_per_slot ) tick_mod = ticks_per_slot - 1UL;
-           }
-         }
-
-         ulong limit     = ctx->limits.slot_max_cost;
-         ulong consumed  = fd_pack_current_block_cost( ctx->pack );
-         ulong remaining = limit>consumed ? ( limit - consumed ) : 0UL;
-
-         ctx->pending_leader_state.slot = ctx->leader_slot;
-         ctx->pending_leader_state.tick = (uint)fd_ulong_min( tick_mod, (ulong)UINT_MAX );
-         ctx->pending_leader_state.slot_cu_budget_remaining = (uint)fd_ulong_min( remaining, (ulong)UINT_MAX );
-         ctx->leader_state_pending = 1;
-         ctx->last_leader_state_ns = now;
-       }
-     } else {
-       ctx->leader_state_pending = 0;
-       ctx->last_leader_state_ns = 0L;
-     }
-   }
+  if( FD_UNLIKELY( ( ctx->leader_slot==ULONG_MAX ) | !ctx->leader_bank ) )
+    ctx->last_leader_state_ns = 0L;
 }
 
 static inline void
@@ -690,26 +628,52 @@ after_credit( fd_pack_ctx_t *     ctx,
 
   long now = fd_tickcount();
 
-  if( FD_LIKELY( ctx->leader_state_pending ) ) {
-    fd_pack_out_ctx_t * outs[ 2 ];
-    ulong out_cnt = fd_pack_collect_builder_outs( ctx, outs );
-    if( FD_LIKELY( out_cnt ) ) {
-      ulong tspub = (ulong)fd_frag_meta_ts_comp( now );
-      int published = 0;
-      for( ulong i=0UL; i<out_cnt; i++ )
-        published |= fd_pack_publish_leader_state_to_out( outs[ i ], stem, &ctx->pending_leader_state, tspub );
-      if( FD_LIKELY( published ) ) {
-        ctx->leader_state_pending = 0;
-        *charge_busy = 1;
+  if( FD_LIKELY( ctx->leader_slot!=ULONG_MAX ) ) {
+    if( FD_LIKELY( fd_pack_out_valid( &ctx->bundle_out ) || fd_pack_out_valid( &ctx->bam_out ) ) ) {
+      long now_ns = ctx->approx_wallclock_ns + (long)((double)(now - ctx->approx_tickcount)/ctx->ticks_per_ns);
+      const long interval = (long)5e6; /* 5 ms */
+      if( FD_UNLIKELY( ( ctx->last_leader_state_ns==0L ) | ( now_ns - ctx->last_leader_state_ns >= interval ) ) ) {
+        ulong ticks_per_slot = ctx->leader_ticks_per_slot ? ctx->leader_ticks_per_slot : 1UL;
+        ulong tick_mod = 0UL;
+        if( FD_LIKELY( ticks_per_slot ) ) {
+          ulong duration_ns = ctx->slot_duration_ns ? ctx->slot_duration_ns : 1UL;
+          long raw_elapsed = now_ns - ctx->slot_start_ns;
+          if( raw_elapsed < 0L ) raw_elapsed = 0L;
+          ulong elapsed_ns = (ulong)raw_elapsed;
+          if( elapsed_ns > ctx->slot_duration_ns ) elapsed_ns = ctx->slot_duration_ns;
+          tick_mod = ( elapsed_ns * ticks_per_slot ) / duration_ns;
+          if( FD_UNLIKELY( tick_mod>=ticks_per_slot ) ) tick_mod = ticks_per_slot - 1UL;
+        }
+
+        ulong limit     = ctx->limits.slot_max_cost;
+        ulong consumed  = fd_pack_current_block_cost( ctx->pack );
+        ulong remaining = limit>consumed ? ( limit - consumed ) : 0UL;
+
+        fd_bam_leader_state_t state = {
+          .slot                     = ctx->leader_slot,
+          .tick                     = (uint)fd_ulong_min( tick_mod, UINT_MAX ),
+          .slot_cu_budget_remaining = (uint)fd_ulong_min( remaining, UINT_MAX )
+        };
+
+        int published = fd_pack_publish_to_builder_outs( ctx,
+                                                         stem,
+                                                         state.slot,
+                                                         &state,
+                                                         sizeof( state ),
+                                                         fd_frag_meta_ts_comp( now ) );
+        if( FD_LIKELY( published ) ) {
+          ctx->last_leader_state_ns = now_ns;
+          *charge_busy = 1;
+        }
       }
     } else {
-      ctx->leader_state_pending = 0;
+      ctx->last_leader_state_ns = 0L;
     }
+  } else {
+    ctx->last_leader_state_ns = 0L;
   }
 
-  if( FD_LIKELY( ctx->bam_results_pending ) ) {
-    fd_pack_publish_bam_results( ctx, stem, charge_busy );
-  }
+  fd_pack_publish_bam_results( ctx, stem, charge_busy );
 
   int pacing_bank_cnt = (int)fd_pack_pacing_enabled_bank_cnt( ctx->pacer, now );
 
@@ -1599,7 +1563,6 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_results_tail    = 0UL;
   ctx->bam_results_pending = 0UL;
   memset( ctx->bam_results, 0, sizeof( ctx->bam_results ) );
-  ctx->leader_state_pending = 0;
   ctx->last_leader_state_ns = 0L;
 
   /* Initialize metrics storage */
