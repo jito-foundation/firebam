@@ -6,8 +6,14 @@
 
 #include "test_bam_common.c"
 #include "../bundle/proto/block_engine.pb.h"
+#include "proto/bam_api.pb.h"
+#include "proto/bam_types.pb.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../ballet/nanopb/pb_encode.h"
+#include "../../ballet/nanopb/pb_decode.h"
+#include "../../waltz/grpc/fd_grpc_codec.h"
+#include "../../util/fd_util.h"
+#include <stdbool.h>
 #include "../../tango/fseq/fd_fseq.h"
 #include <limits.h>
 #include <string.h>
@@ -21,6 +27,16 @@ static long g_clock = 1L;
 __attribute__((weak)) long
 fd_bam_now( void ) {
   return g_clock;
+}
+
+static void
+test_bam_keepalive_sync( fd_bam_tile_t * state,
+                         long            now ) {
+  state->keepalive->ts_next_tx = now + state->keepalive_interval;
+  state->keepalive->ts_deadline = 0L;
+  state->keepalive->ts_last_tx  = now;
+  state->keepalive->ts_last_rx  = now;
+  state->keepalive->inflight    = 0U;
 }
 
 static void
@@ -56,6 +72,211 @@ test_enqueue_bundle_result( fd_bam_tile_t *               state,
   state->bam_results[ state->bam_results_tail ] = *res;
   state->bam_results_tail = ( state->bam_results_tail + 1UL ) % FD_BAM_MAX_PENDING_RESULTS;
   state->bam_pending_results++;
+}
+
+typedef struct {
+  bam_types_TransactionCommittedResult txns[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  ulong                                txn_cnt;
+} test_bam_committed_results_t;
+
+typedef struct {
+  bam_types_AtomicTxnBatchResult results[ 8 ];
+  ulong                          result_cnt;
+  test_bam_committed_results_t   committed[ 8 ];
+} test_bam_multi_results_t;
+
+typedef struct {
+  bam_api_SchedulerMessage msg;
+  test_bam_multi_results_t multi;
+} test_bam_decoded_message_t;
+
+static void
+test_bam_decode_multi_results( pb_istream_t * stream,
+                               test_bam_decoded_message_t * out );
+
+static void
+test_bam_decode_scheduler_message_v0( pb_istream_t * stream,
+                                      test_bam_decoded_message_t * out );
+
+static void
+test_bam_decode_committed_results( pb_istream_t * stream,
+                                   test_bam_committed_results_t * out ) {
+  uint32_t tag;
+  pb_wire_type_t wire_type;
+  bool eof = false;
+  while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
+    switch( tag ) {
+    case bam_types_Committed_transaction_results_tag: {
+      FD_TEST( wire_type==PB_WT_STRING );
+      FD_TEST( out->txn_cnt < FD_PACK_MAX_TXN_PER_BUNDLE );
+      pb_istream_t substream;
+      FD_TEST( pb_make_string_substream( stream, &substream ) );
+      bam_types_TransactionCommittedResult * txn = &out->txns[ out->txn_cnt ];
+      *txn = (bam_types_TransactionCommittedResult)bam_types_TransactionCommittedResult_init_default;
+      FD_TEST( pb_decode( &substream, bam_types_TransactionCommittedResult_fields, txn ) );
+      pb_close_string_substream( stream, &substream );
+      out->txn_cnt++;
+      break;
+    }
+    default:
+      FD_TEST( pb_skip_field( stream, wire_type ) );
+      break;
+    }
+  }
+}
+
+static void
+test_bam_decode_atomic_result( pb_istream_t * stream,
+                               bam_types_AtomicTxnBatchResult * out,
+                               test_bam_committed_results_t * committed ) {
+  uint32_t tag;
+  pb_wire_type_t wire_type;
+  bool eof = false;
+  while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
+    switch( tag ) {
+    case bam_types_AtomicTxnBatchResult_seq_id_tag: {
+      FD_TEST( wire_type==PB_WT_VARINT );
+      uint64_t val = 0;
+      FD_TEST( pb_decode_varint( stream, &val ) );
+      out->seq_id = (uint32_t)val;
+      break;
+    }
+    case bam_types_AtomicTxnBatchResult_committed_tag: {
+      FD_TEST( wire_type==PB_WT_STRING );
+      pb_istream_t substream;
+      FD_TEST( pb_make_string_substream( stream, &substream ) );
+      out->which_result = bam_types_AtomicTxnBatchResult_committed_tag;
+      test_bam_decode_committed_results( &substream, committed );
+      pb_close_string_substream( stream, &substream );
+      break;
+    }
+    case bam_types_AtomicTxnBatchResult_not_committed_tag: {
+      FD_TEST( wire_type==PB_WT_STRING );
+      pb_istream_t substream;
+      FD_TEST( pb_make_string_substream( stream, &substream ) );
+      out->which_result = bam_types_AtomicTxnBatchResult_not_committed_tag;
+      out->result.not_committed = (bam_types_NotCommitted)bam_types_NotCommitted_init_default;
+      FD_TEST( pb_decode( &substream, bam_types_NotCommitted_fields, &out->result.not_committed ) );
+      pb_close_string_substream( stream, &substream );
+      break;
+    }
+    default:
+      FD_TEST( pb_skip_field( stream, wire_type ) );
+      break;
+    }
+  }
+}
+
+static bool
+test_bam_decode_atomic_result_cb( pb_istream_t * stream,
+                                  const pb_field_t * field,
+                                  void ** arg ) {
+  (void)field;
+  test_bam_multi_results_t * multi = (test_bam_multi_results_t *)(*arg);
+  FD_TEST( multi->result_cnt < 8UL );
+
+  bam_types_AtomicTxnBatchResult * res = &multi->results[ multi->result_cnt ];
+  *res = (bam_types_AtomicTxnBatchResult)bam_types_AtomicTxnBatchResult_init_default;
+  test_bam_committed_results_t * committed = &multi->committed[ multi->result_cnt ];
+  fd_memset( committed, 0, sizeof(test_bam_committed_results_t) );
+
+  test_bam_decode_atomic_result( stream, res, committed );
+
+  multi->result_cnt++;
+  return true;
+}
+
+static void
+test_bam_decode_multi_results( pb_istream_t * stream,
+                               test_bam_decoded_message_t * out ) {
+  bam_types_MultipleAtomicTxnBatchResult msg = bam_types_MultipleAtomicTxnBatchResult_init_default;
+  msg.results.funcs.decode = test_bam_decode_atomic_result_cb;
+  msg.results.arg          = &out->multi;
+  FD_TEST( pb_decode( stream, bam_types_MultipleAtomicTxnBatchResult_fields, &msg ) );
+}
+
+static void
+test_bam_decode_scheduler_message_v0( pb_istream_t * stream,
+                                      test_bam_decoded_message_t * out ) {
+  uint32_t tag;
+  pb_wire_type_t wire_type;
+  bool eof = false;
+  while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
+    switch( tag ) {
+    case bam_api_SchedulerMessageV0_heart_beat_tag:
+      FD_TEST( wire_type==PB_WT_STRING );
+      pb_istream_t hb_stream;
+      FD_TEST( pb_make_string_substream( stream, &hb_stream ) );
+      out->msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_heart_beat_tag;
+      FD_TEST( pb_decode( &hb_stream, bam_types_ValidatorHeartBeat_fields,
+                          &out->msg.versioned_msg.v0.msg.heart_beat ) );
+      pb_close_string_substream( stream, &hb_stream );
+      break;
+    case bam_api_SchedulerMessageV0_auth_proof_tag: {
+      FD_TEST( wire_type==PB_WT_STRING );
+      pb_istream_t substream;
+      FD_TEST( pb_make_string_substream( stream, &substream ) );
+      out->msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_auth_proof_tag;
+      out->msg.versioned_msg.v0.msg.auth_proof = (bam_types_AuthProof)bam_types_AuthProof_init_default;
+      FD_TEST( pb_decode( &substream, bam_types_AuthProof_fields,
+                          &out->msg.versioned_msg.v0.msg.auth_proof ) );
+      pb_close_string_substream( stream, &substream );
+      break;
+    }
+    case bam_api_SchedulerMessageV0_leader_state_tag:
+      FD_TEST( wire_type==PB_WT_STRING );
+      pb_istream_t ls_stream;
+      FD_TEST( pb_make_string_substream( stream, &ls_stream ) );
+      out->msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_leader_state_tag;
+      FD_TEST( pb_decode( &ls_stream, bam_types_LeaderState_fields,
+                          &out->msg.versioned_msg.v0.msg.leader_state ) );
+      pb_close_string_substream( stream, &ls_stream );
+      break;
+    case bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag: {
+      FD_TEST( wire_type==PB_WT_STRING );
+      pb_istream_t substream;
+      FD_TEST( pb_make_string_substream( stream, &substream ) );
+      out->msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag;
+      test_bam_decode_multi_results( &substream, out );
+      pb_close_string_substream( stream, &substream );
+      break;
+    }
+    default:
+      FD_TEST( pb_skip_field( stream, wire_type ) );
+      break;
+    }
+  }
+}
+
+static void
+test_bam_decode_last_message( fd_bam_tile_t *              state,
+                              test_bam_decoded_message_t * out ) {
+  fd_grpc_client_t * client = state->grpc_client;
+  fd_grpc_hdr_t hdr;
+  memcpy( &hdr, client->nanopb_tx, sizeof(fd_grpc_hdr_t) );
+  uint msg_sz = fd_uint_bswap( hdr.msg_sz );
+  FD_TEST( msg_sz <= client->nanopb_tx_max - sizeof(fd_grpc_hdr_t) );
+
+  out->msg = (bam_api_SchedulerMessage)bam_api_SchedulerMessage_init_default;
+  fd_memset( &out->multi, 0, sizeof(out->multi) );
+  pb_istream_t stream = pb_istream_from_buffer( client->nanopb_tx + sizeof(fd_grpc_hdr_t), msg_sz );
+  uint32_t tag;
+  pb_wire_type_t wire_type;
+  bool eof = false;
+  while( pb_decode_tag( &stream, &wire_type, &tag, &eof ) ) {
+    if( tag==bam_api_SchedulerMessage_v0_tag && wire_type==PB_WT_STRING ) {
+      pb_istream_t substream;
+      FD_TEST( pb_make_string_substream( &stream, &substream ) );
+      out->msg.which_versioned_msg = bam_api_SchedulerMessage_v0_tag;
+      test_bam_decode_scheduler_message_v0( &substream, out );
+      pb_close_string_substream( &stream, &substream );
+    } else {
+      FD_TEST( pb_skip_field( &stream, wire_type ) );
+    }
+  }
+
+  client->request_stream = NULL;
+  *client->request_tx_op = (fd_h2_tx_op_t){0};
 }
 
 static void
@@ -473,6 +694,216 @@ test_bam_client_status( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  state->bam_stream            = NULL;
+  state->bam_stream_live       = 0U;
+  state->bam_stream_connecting = 0U;
+  state->bam_config_inflight   = 1U;
+  state->bam_auth_ready        = 1U;
+  state->bam_auth_inflight     = 0U;
+  state->grpc_client->request_stream = NULL;
+  *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
+
+  g_clock = (long)5e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  char const challenge[] = "challenge-123";
+  fd_memset( state->bam_auth_challenge, 0, sizeof(state->bam_auth_challenge) );
+  memcpy( state->bam_auth_challenge, challenge, sizeof(challenge) );
+  state->bam_auth_challenge_len = (uint)sizeof(challenge) - 1U;
+
+  char const signature[] = "sig-abcdef";
+  fd_memset( state->bam_auth_signature, 0, sizeof(state->bam_auth_signature) );
+  memcpy( state->bam_auth_signature, signature, sizeof(signature) );
+
+  char const validator_key[] = "validator-key-test";
+  fd_memset( state->bam_validator_pubkey, 0, sizeof(state->bam_validator_pubkey) );
+  memcpy( state->bam_validator_pubkey, validator_key, sizeof(validator_key) );
+
+  fd_bam_test_drive( state, g_clock );
+
+  FD_TEST( state->bam_stream!=NULL );
+  FD_TEST( state->bam_stream_connecting==1U );
+  FD_TEST( state->bam_auth_ready==0U );
+  FD_TEST( state->bam_stream_live==0U );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.which_versioned_msg==bam_api_SchedulerMessage_v0_tag );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_auth_proof_tag );
+  FD_TEST( 0==strcmp( decoded.msg.versioned_msg.v0.msg.auth_proof.challenge_to_sign, challenge ) );
+  FD_TEST( 0==strcmp( decoded.msg.versioned_msg.v0.msg.auth_proof.signature, signature ) );
+  FD_TEST( 0==strcmp( decoded.msg.versioned_msg.v0.msg.auth_proof.validator_pubkey, validator_key ) );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_scheduler_heartbeat_publishes_message( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_grpc_h2_stream_t * stream = fd_grpc_client_stream_acquire( state->grpc_client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( stream );
+  state->bam_stream      = stream;
+  state->bam_stream_live = 1U;
+  state->grpc_client->request_stream = NULL;
+  *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
+  state->bam_auth_ready = 1U;
+  state->bam_auth_inflight = 0U;
+
+  g_clock = (long)7e9;
+  long now = g_clock;
+  state->bam_last_validator_heartbeat_ns = 0L;
+  state->bam_last_config_poll_ns = now;
+  test_bam_keepalive_sync( state, now );
+  int busy = fd_bam_test_drive( state, now );
+  FD_TEST( busy==1 );
+  FD_TEST( state->bam_last_validator_heartbeat_ns==now );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.which_versioned_msg==bam_api_SchedulerMessage_v0_tag );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_heart_beat_tag );
+  FD_TEST( decoded.msg.versioned_msg.v0.msg.heart_beat.time_sent_microseconds==(uint64_t)(now/1000L) );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_scheduler_leader_state_publishes_message( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_grpc_h2_stream_t * stream = fd_grpc_client_stream_acquire( state->grpc_client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( stream );
+  state->bam_stream      = stream;
+  state->bam_stream_live = 1U;
+  state->grpc_client->request_stream = NULL;
+  *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
+  state->bam_auth_ready = 1U;
+  state->bam_auth_inflight = 0U;
+
+  state->bam_leader_pending = 1U;
+  state->bam_leader_state = (fd_bam_leader_state_t){
+    .slot = 42UL,
+    .tick = 7U,
+    .slot_cu_budget_remaining = 123U
+  };
+
+  g_clock = (long)8e9;
+  long now = g_clock;
+  state->bam_last_config_poll_ns = now;
+  state->bam_last_validator_heartbeat_ns = now;
+  test_bam_keepalive_sync( state, now );
+  int busy = fd_bam_test_drive( state, now );
+  FD_TEST( busy==1 );
+  FD_TEST( state->bam_leader_pending==0U );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.which_versioned_msg==bam_api_SchedulerMessage_v0_tag );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_leader_state_tag );
+  bam_types_LeaderState const * ls = &decoded.msg.versioned_msg.v0.msg.leader_state;
+  FD_TEST( ls->slot==42UL );
+  FD_TEST( ls->tick==7U );
+  FD_TEST( ls->slot_cu_budget_remaining==123U );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_scheduler_result_publishes_message( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_grpc_h2_stream_t * stream = fd_grpc_client_stream_acquire( state->grpc_client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( stream );
+  state->bam_stream      = stream;
+  state->bam_stream_live = 1U;
+  state->grpc_client->request_stream = NULL;
+  *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
+  state->bam_auth_ready = 1U;
+  state->bam_auth_inflight = 0U;
+
+  g_clock = (long)9e9;
+  test_bam_keepalive_sync( state, g_clock );
+
+  fd_bam_bundle_result_t res = test_make_bundle_result( 900UL );
+  test_enqueue_bundle_result( state, &res );
+
+  int flushed = fd_bam_test_flush_results( state );
+  FD_TEST( flushed==1 );
+  FD_TEST( state->bam_pending_results==0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.which_versioned_msg==bam_api_SchedulerMessage_v0_tag );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  FD_TEST( decoded.multi.results[0].seq_id==900U );
+  FD_TEST( decoded.multi.results[0].which_result==bam_types_AtomicTxnBatchResult_committed_tag );
+  FD_TEST( decoded.multi.committed[0].txn_cnt==res.txn_cnt );
+  FD_TEST( decoded.multi.committed[0].txns[0].cus_consumed==(uint32_t)res.consumed_cus[0] );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_scheduler_result_not_committed_publishes_message( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_grpc_h2_stream_t * stream = fd_grpc_client_stream_acquire( state->grpc_client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( stream );
+  state->bam_stream      = stream;
+  state->bam_stream_live = 1U;
+  state->grpc_client->request_stream = NULL;
+  *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
+  state->bam_auth_ready = 1U;
+  state->bam_auth_inflight = 0U;
+
+  g_clock = (long)10e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  fd_bam_bundle_result_t res = test_make_bundle_result( 901UL );
+  res.execution_success = 0U;
+  res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
+  test_enqueue_bundle_result( state, &res );
+
+  int flushed = fd_bam_test_flush_results( state );
+  FD_TEST( flushed==1 );
+  FD_TEST( state->bam_pending_results==0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.which_versioned_msg==bam_api_SchedulerMessage_v0_tag );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+  FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_scheduling_error_tag );
+  FD_TEST( result->result.not_committed.reason.scheduling_error==bam_types_SchedulingError_OUTSIDE_LEADER_SLOT );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_request_ctx_labels( void ) {
   FD_TEST( 0==strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ), "BamGetAuthChallenge" ) );
   FD_TEST( 0==strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream ), "BamInitSchedulerStream" ) );
@@ -722,6 +1153,11 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
   int flushed = fd_bam_test_flush_results( state );
   FD_TEST( flushed==1 );
   FD_TEST( state->bam_pending_results==0UL );
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  FD_TEST( decoded.multi.results[0].seq_id==201U );
   FD_TEST( state->bam_results_head==state->bam_results_tail );
 
   test_bam_env_destroy( env );
@@ -747,6 +1183,11 @@ main( int     argc,
   test_bam_bundle_requires_builder_info( wksp );
   test_bam_grpc_end_handling( wksp );
   test_bam_grpc_timeout( wksp );
+  test_bam_scheduler_auth_proof_publishes_message( wksp );
+  test_bam_scheduler_heartbeat_publishes_message( wksp );
+  test_bam_scheduler_leader_state_publishes_message( wksp );
+  test_bam_scheduler_result_publishes_message( wksp );
+  test_bam_scheduler_result_not_committed_publishes_message( wksp );
   test_bam_heartbeat_timeout_forces_disconnect( wksp );
   test_bam_heartbeat_reset_extends_timeout( wksp );
   test_bam_client_status( wksp );

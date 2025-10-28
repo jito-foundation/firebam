@@ -51,6 +51,10 @@ typedef struct {
   bam_types_AtomicTxnBatchResult const * atomic_res;
 } fd_bam_encode_batch_ctx_t;
 
+static int
+fd_bam_drive( fd_bam_tile_t * ctx,
+              long             now );
+
 static void
 fd_bam_tile_publish_bundle_txn( fd_bam_tile_t * ctx,
                                 void const *    txn,
@@ -791,6 +795,12 @@ fd_bam_flush_results( fd_bam_tile_t * ctx ) {
 int
 fd_bam_test_flush_results( fd_bam_tile_t * ctx ) {
   return fd_bam_flush_results( ctx );
+}
+
+int
+fd_bam_test_drive( fd_bam_tile_t * ctx,
+                   long             now ) {
+  return fd_bam_drive( ctx, now );
 }
 
 static void

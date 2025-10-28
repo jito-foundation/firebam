@@ -245,6 +245,10 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
 int
 fd_bam_test_flush_results( fd_bam_tile_t * ctx );
 
+int
+fd_bam_test_drive( fd_bam_tile_t * ctx,
+                   long             now );
+
 /* fd_bam_tile_backoff is called whenever an error occurs.  Stalls
    forward progress for a randomized amount of time to prevent error
    floods. */
