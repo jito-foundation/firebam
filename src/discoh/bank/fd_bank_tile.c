@@ -26,9 +26,12 @@ typedef struct {
   void const * _bank;
   ulong _pack_idx;
   ulong _txn_idx;
-  int _is_bundle;
-  ulong _bundle_id;
-  ulong _bundle_txn_cnt;
+  int   _is_bundle;      /* Non-zero while handling bundle fragments (vs microblocks). */
+  ulong _bundle_id;      /* Bundle id from the pack trailer. Trailer bytes are dropped, so caching is
+                            the only way to surface the id in BAM results; stays 0 outside bundle flow. */
+  ulong _bundle_txn_cnt; /* Bundle-wide declared txn count preserved for BAM reporting. Once the trailer
+                            is copied out, there is no other source, so we fall back to the runtime txn_cnt
+                            only when the trailer field is unset (non-bundle path). */
 
   ulong * busy_fseq;
 
@@ -48,11 +51,14 @@ typedef struct {
   ulong       rebates_for_slot;
   fd_pack_rebate_sum_t rebater[ 1 ];
 
+  /* bank->bam stem output backing workspace (NULL when BAM tile absent). */
   fd_wksp_t * bam_out_mem;
+  /* Compact dcache book-keeping for BAM fragments; zeroed if BAM disabled. */
   ulong       bam_out_chunk0;
   ulong       bam_out_wmark;
   ulong       bam_out_chunk;
-  int         bam_out_enabled;
+  /* Stem out-link index carrying BAM results. ULONG_MAX signals no BAM wiring. */
+  ulong       bam_out_idx;
 
   struct {
     ulong txn_load_address_lookup_tables[ 6 ];
@@ -164,11 +170,11 @@ static void
 publish_bundle_result( fd_bank_ctx_t * ctx,
                        fd_bam_bundle_result_t const * result,
                        fd_stem_context_t * stem ) {
-  if( FD_UNLIKELY( !ctx->bam_out_enabled ) ) return;
+  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
   const ulong sz = sizeof(fd_bam_bundle_result_t);
   fd_memcpy( fd_chunk_to_laddr( ctx->bam_out_mem, ctx->bam_out_chunk ), result, sz );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
-  fd_stem_publish( stem, 2UL, result->bundle_id, ctx->bam_out_chunk, sz, 0UL, 0UL, tspub );
+  fd_stem_publish( stem, ctx->bam_out_idx, result->bundle_id, ctx->bam_out_chunk, sz, 0UL, 0UL, tspub );
   ctx->bam_out_chunk = fd_dcache_compact_next( ctx->bam_out_chunk, sz, ctx->bam_out_chunk0, ctx->bam_out_wmark );
 }
 
@@ -613,13 +619,13 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->bam_out_chunk0 = fd_dcache_compact_chunk0( ctx->bam_out_mem, bam_out->dcache );
     ctx->bam_out_wmark  = fd_dcache_compact_wmark ( ctx->bam_out_mem, bam_out->dcache, bam_out->mtu );
     ctx->bam_out_chunk  = ctx->bam_out_chunk0;
-    ctx->bam_out_enabled = 1;
+    ctx->bam_out_idx    = bam_out_idx;
   } else {
     ctx->bam_out_mem    = NULL;
     ctx->bam_out_chunk0 = 0UL;
     ctx->bam_out_wmark  = 0UL;
     ctx->bam_out_chunk  = 0UL;
-    ctx->bam_out_enabled = 0;
+    ctx->bam_out_idx    = ULONG_MAX;
   }
 }
 
