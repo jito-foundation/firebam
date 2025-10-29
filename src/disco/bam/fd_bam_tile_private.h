@@ -129,18 +129,11 @@ struct fd_bam_tile {
   uchar builder_info_wait  : 1;  /* Request already in-flight? */
   long  builder_info_valid_until;                 /* Expiry timestamp for builder info */
 
-  /* Bundle subscriptions */
-  uchar packet_subscription_live : 1;  /* Packet stream is currently subscribed */
-  uchar packet_subscription_wait : 1;  /* Packet subscription RPC in-flight */
-  uchar bundle_subscription_live : 1;  /* Bundle stream is currently subscribed */
-  uchar bundle_subscription_wait : 1;  /* Bundle subscription RPC in-flight */
-
   /* Bundle state */
   ulong bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).
-                                                     BAM AtomicTxnBatch updates copy the sender-provided
-                                                     seq_id here, while SubscribeBundles falls back to
-                                                     incrementing this counter so every txn in the bundle
-                                                     shares the same block_engine.bundle_id. */
+                                                     Scheduler batches copy the sender-provided seq_id so
+                                                     every txn in the bundle shares the same
+                                                     block_engine.bundle_id. */
   ulong bundle_txn_cnt;                           /* Number of txns in current bundle */
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler */
 
@@ -202,9 +195,6 @@ typedef struct fd_bam_tile fd_bam_tile_t;
 
 #define FD_BAM_CLIENT_REQ_Auth_GenerateAuthChallenge         0
 #define FD_BAM_CLIENT_REQ_Auth_GenerateAuthTokens            1
-#define FD_BAM_CLIENT_REQ_Bundle_SubscribePackets            4
-#define FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles            5
-#define FD_BAM_CLIENT_REQ_Bundle_GetBlockBuilderFeeInfo      6
 #define FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge               7
 #define FD_BAM_CLIENT_REQ_BAM_GetConfig                      8
 #define FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream            9

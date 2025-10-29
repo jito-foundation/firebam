@@ -5,7 +5,6 @@
 #endif
 
 #include "test_bam_common.c"
-#include "../bundle/proto/block_engine.pb.h"
 #include "proto/bam_api.pb.h"
 #include "proto/bam_types.pb.h"
 #include "../../ballet/base58/fd_base58.h"
@@ -18,7 +17,6 @@
 #include <limits.h>
 #include <string.h>
 
-FD_IMPORT_BINARY( test_bundle_response, "src/disco/bundle/test_bundle_response.binpb" );
 
 __attribute__((weak)) char const fdctl_version_string[] = "0.0.0";
 
@@ -72,6 +70,97 @@ test_enqueue_bundle_result( fd_bam_tile_t *               state,
   state->bam_results[ state->bam_results_tail ] = *res;
   state->bam_results_tail = ( state->bam_results_tail + 1UL ) % FD_BAM_MAX_PENDING_RESULTS;
   state->bam_pending_results++;
+}
+
+typedef struct {
+  bam_types_Packet * packets;
+  size_t             packet_cnt;
+} test_bam_packet_encode_ctx_t;
+
+static bool
+test_bam_encode_packets_cb( pb_ostream_t *       stream,
+                            pb_field_t const *   field,
+                            void * const *       arg ) {
+  test_bam_packet_encode_ctx_t * ctx = (test_bam_packet_encode_ctx_t *)(*arg);
+  for( size_t i=0UL; i<ctx->packet_cnt; i++ ) {
+    if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
+    if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_Packet_fields, &ctx->packets[ i ] ) ) ) return false;
+  }
+  return true;
+}
+
+typedef struct {
+  bam_types_AtomicTxnBatch * batches;
+  size_t                     batch_cnt;
+} test_bam_batch_encode_ctx_t;
+
+static bool
+test_bam_encode_batches_cb( pb_ostream_t *       stream,
+                            pb_field_t const *   field,
+                            void * const *       arg ) {
+  test_bam_batch_encode_ctx_t * ctx = (test_bam_batch_encode_ctx_t *)(*arg);
+  for( size_t i=0UL; i<ctx->batch_cnt; i++ ) {
+    if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
+    if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_AtomicTxnBatch_fields, &ctx->batches[ i ] ) ) ) return false;
+  }
+  return true;
+}
+
+static size_t
+test_bam_encode_scheduler_response( bam_types_Packet * packets,
+                                    size_t             packet_cnt,
+                                    uint32_t           seq_id,
+                                    uchar *            out,
+                                    size_t             out_sz ) {
+  test_bam_packet_encode_ctx_t packets_ctx = {
+      .packets    = packets,
+      .packet_cnt = packet_cnt
+  };
+
+  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
+  batch.seq_id = seq_id;
+  batch.max_schedule_slot = 0UL;
+  batch.packets.funcs.encode = test_bam_encode_packets_cb;
+  batch.packets.arg          = &packets_ctx;
+
+  test_bam_batch_encode_ctx_t batches_ctx = {
+      .batches   = &batch,
+      .batch_cnt = 1UL
+  };
+
+  bam_types_MultipleAtomicTxnBatch multi = bam_types_MultipleAtomicTxnBatch_init_default;
+  multi.batches.funcs.encode = test_bam_encode_batches_cb;
+  multi.batches.arg          = &batches_ctx;
+
+  bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
+  resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
+  resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag;
+  resp.versioned_msg.v0.resp.multiple_atomic_txn_batch = multi;
+
+  pb_ostream_t ostream = pb_ostream_from_buffer( out, out_sz );
+  FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
+  return (size_t)ostream.bytes_written;
+}
+
+static size_t
+test_bam_build_scheduler_batch_msg( uchar *  out,
+                                    size_t   out_sz,
+                                    uint32_t seq_id,
+                                    int      revert_on_error ) {
+  bam_types_Packet packets[ 2 ];
+  for( size_t i=0UL; i<2UL; i++ ) {
+    packets[ i ] = bam_types_Packet_init_default;
+    packets[ i ].data.size = (pb_size_t)( i + 1UL );
+    for( pb_size_t j=0U; j<packets[ i ].data.size; j++ ) {
+      packets[ i ].data.bytes[ j ] = (uchar)( 'A' + (int)i + (int)j );
+    }
+    if( revert_on_error ) {
+      packets[ i ].has_meta        = 1;
+      packets[ i ].meta.has_flags  = 1;
+      packets[ i ].meta.flags.revert_on_error = 1;
+    }
+  }
+  return test_bam_encode_scheduler_response( packets, 2UL, seq_id, out, out_sz );
 }
 
 typedef struct {
@@ -285,20 +374,19 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  static uchar subscribe_packets_msg[] = {
-    0x12, 0x13, 0x0a, 0x07, 0x0a, 0x01, 0x48, 0x12,
-    0x02, 0x08, 0x01, 0x0a, 0x08, 0x0a, 0x02, 0x48,
-    0x48, 0x12, 0x02, 0x08, 0x02
-  };
+  uchar protobuf[256];
+  size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 0U, 0 );
 
   FD_TEST( state->metrics.txn_received_cnt==0UL );
+  FD_TEST( state->metrics.bundle_received_cnt==0UL );
 
   fd_bam_client_grpc_rx_msg( state,
-                             subscribe_packets_msg,
-                             sizeof(subscribe_packets_msg),
-                             FD_BAM_CLIENT_REQ_Bundle_SubscribePackets );
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.txn_received_cnt  ==2UL );
+  FD_TEST( state->metrics.txn_received_cnt==2UL );
+  FD_TEST( state->metrics.bundle_received_cnt==0UL );
 
   zero_meta_ts( env->out_mcache, 2UL );
   fd_frag_meta_t expected[2] = {
@@ -324,10 +412,13 @@ test_bam_bundle_forwarded( fd_wksp_t * wksp ) {
 
   FD_TEST( state->metrics.bundle_received_cnt==0UL );
 
+  uchar protobuf[512];
+  size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 1U, 1 );
+
   fd_bam_client_grpc_rx_msg( state,
-                             test_bundle_response,
-                             test_bundle_response_sz,
-                             FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles );
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
   FD_TEST( state->metrics.bundle_received_cnt==1UL );
   FD_TEST( state->bundle_seq==1UL );
@@ -349,10 +440,12 @@ test_bam_bundle_requires_builder_info( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
 
   FD_TEST( state->metrics.bundle_received_cnt==0UL );
+  uchar protobuf[512];
+  size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 2U, 1 );
   fd_bam_client_grpc_rx_msg( state,
-                             test_bundle_response,
-                             test_bundle_response_sz,
-                             FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles );
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->metrics.bundle_received_cnt==0UL );
   FD_TEST( state->metrics.missing_builder_info_fail_cnt==1UL );
   FD_TEST( state->metrics.txn_received_cnt==0UL );
@@ -368,22 +461,23 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
 
   fd_grpc_client_t * client = state->grpc_client;
-  fd_grpc_h2_stream_t * stream = fd_grpc_client_stream_acquire( client, FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles );
+  fd_grpc_h2_stream_t * stream = fd_grpc_client_stream_acquire( client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( stream );
   stream->hdrs.h2_status     = 200;
   stream->hdrs.is_grpc_proto = 1;
-  fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles );
-  FD_TEST( state->bundle_subscription_live==1U );
+  state->bam_stream = stream;
+  fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( state->bam_stream_live==1U );
 
-  fd_grpc_resp_hdrs_t hdrs = {
-    .h2_status   = 200,
-    .grpc_status = FD_GRPC_STATUS_UNAVAILABLE
+  fd_grpc_resp_hdrs_t hdrs_fail = {
+      .h2_status   = 200,
+      .grpc_status = FD_GRPC_STATUS_UNAVAILABLE
   };
-  fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles, &hdrs );
-  FD_TEST( state->bundle_subscription_live==0U );
-  FD_TEST( state->defer_reset==1U );
+  fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &hdrs_fail );
+  FD_TEST( state->bam_stream_live==0U );
+  FD_TEST( state->bam_stream==NULL );
+  FD_TEST( state->defer_reset==0U );
 
-  state->defer_reset = 0;
   stream = fd_grpc_client_stream_acquire( client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( stream );
   stream->hdrs.h2_status     = 200;
@@ -391,8 +485,12 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   state->bam_stream = stream;
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->bam_stream_live==1U );
-  hdrs.grpc_status = FD_GRPC_STATUS_OK;
-  fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &hdrs );
+
+  fd_grpc_resp_hdrs_t hdrs_ok = {
+      .h2_status   = 200,
+      .grpc_status = FD_GRPC_STATUS_OK
+  };
+  fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &hdrs_ok );
   FD_TEST( state->bam_stream_live==0U );
   FD_TEST( state->bam_stream==NULL );
   FD_TEST( state->defer_reset==0U );
@@ -906,8 +1004,8 @@ test_bam_scheduler_result_not_committed_publishes_message( fd_wksp_t * wksp ) {
 static void
 test_bam_request_ctx_labels( void ) {
   FD_TEST( 0==strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ), "BamGetAuthChallenge" ) );
+  FD_TEST( 0==strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_GetConfig ), "BamGetBuilderConfig" ) );
   FD_TEST( 0==strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream ), "BamInitSchedulerStream" ) );
-  FD_TEST( 0==strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_Bundle_SubscribePackets ), "SubscribePackets" ) );
   FD_TEST( 0==strcmp( fd_bam_request_ctx_cstr( 99UL ), "unknown" ) );
 }
 
@@ -1064,27 +1162,28 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
 
   uchar pb_buf[ 256 ];
-  block_engine_BlockBuilderFeeInfoResponse resp = block_engine_BlockBuilderFeeInfoResponse_init_default;
+  bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_block_engine_config = true;
   uchar pubkey[32] = {0};
   pubkey[0] = 1U;
   pubkey[1] = 2U;
   pubkey[2] = 3U;
   pubkey[3] = 4U;
   pubkey[4] = 5U;
-  FD_TEST( fd_base58_encode_32( pubkey, NULL, resp.pubkey ) );
-  resp.pubkey[ FD_BASE58_ENCODED_32_SZ-1 ] = '\0';
-  resp.commission = 5U;
+  FD_TEST( fd_base58_encode_32( pubkey, NULL, resp.block_engine_config.builder_pubkey ) );
+  resp.block_engine_config.builder_pubkey[ FD_BASE58_ENCODED_32_SZ-1 ] = '\0';
+  resp.block_engine_config.builder_commission = 5U;
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
-  if( FD_UNLIKELY( !pb_encode( &ostream, &block_engine_BlockBuilderFeeInfoResponse_msg, &resp ) ) ) {
+  if( FD_UNLIKELY( !pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) ) ) {
     FD_LOG_ERR(( "pb_encode fee info failed: %s", PB_GET_ERROR( &ostream ) ));
   }
 
   FD_TEST( state->builder_info_avail==0U );
-  fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_Bundle_GetBlockBuilderFeeInfo );
+  fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetConfig );
   FD_TEST( state->builder_info_avail==1U );
   FD_TEST( state->builder_commission==5U );
   uchar decoded[32];
-  FD_TEST( fd_base58_decode_32( resp.pubkey, decoded ) );
+  FD_TEST( fd_base58_decode_32( resp.block_engine_config.builder_pubkey, decoded ) );
   FD_TEST( 0==memcmp( state->builder_pubkey, decoded, 32UL ) );
 
   test_bam_env_destroy( env );

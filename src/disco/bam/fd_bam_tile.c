@@ -238,7 +238,7 @@ fd_bam_tile_publish_block_engine_update(
       fd_chunk_to_laddr( ctx->plugin_out.mem, ctx->plugin_out.chunk );
   memset( update, 0, sizeof(fd_plugin_msg_block_engine_update_t) );
 
-  strncpy( update->name, "jito", sizeof(update->name) );
+  strncpy( update->name, "bam", sizeof(update->name) );
 
   /* Deliberately silently truncates */
   snprintf( update->url, sizeof(update->url), "%s://%.*s:%u",

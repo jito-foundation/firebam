@@ -86,11 +86,6 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
 
   ctx->builder_info_avail       = 0;
   ctx->builder_info_wait        = 0;
-  ctx->packet_subscription_live = 0;
-  ctx->packet_subscription_wait = 0;
-  ctx->bundle_subscription_live = 0;
-  ctx->bundle_subscription_wait = 0;
-
   ctx->bundle_max_schedule_slot = ULONG_MAX;
 
   memset( ctx->rtt, 0, sizeof(fd_rtt_estimate_t) );
@@ -365,6 +360,10 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   if( FD_UNLIKELY( state->packet_cnt==0 ) ) return;
 
   if( state->revert_on_error ) {
+    if( FD_UNLIKELY( !ctx->builder_info_avail ) ) {
+      ctx->metrics.missing_builder_info_fail_cnt++;
+      return;
+    }
     ctx->bundle_seq                = batch->seq_id;
     ctx->bundle_txn_cnt            = state->packet_cnt;
     ctx->bundle_max_schedule_slot  = batch->max_schedule_slot ? batch->max_schedule_slot : ULONG_MAX;
@@ -883,14 +882,14 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
 
     if( pfds[0].revents & (POLLERR|POLLHUP) ) {
       int connect_err = fd_bam_client_do_connect( ctx, 0 );
-      FD_LOG_INFO(( "Bundle gRPC connect attempt failed (%i-%s)", connect_err, fd_io_strerror( connect_err ) ));
+      FD_LOG_INFO(( "BAM gRPC connect attempt failed (%i-%s)", connect_err, fd_io_strerror( connect_err ) ));
       fd_bam_client_reset( ctx );
       ctx->metrics.transport_fail_cnt++;
       *charge_busy = 1;
       return;
     }
     if( pfds[0].revents & POLLOUT ) {
-      FD_LOG_DEBUG(( "Bundle TCP socket connected" ));
+      FD_LOG_DEBUG(( "BAM TCP socket connected" ));
       ctx->tcp_sock_connected = 1;
       *charge_busy = 1;
       return;
@@ -912,7 +911,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   /* Did a HTTP/2 PING time out */
   long check_ts = ctx->cached_ts = fd_bam_now();
   if( FD_UNLIKELY( fd_keepalive_is_timeout( ctx->keepalive, check_ts ) ) ) {
-    FD_LOG_WARNING(( "Bundle gRPC timed out (HTTP/2 PING went unanswered for %.2f seconds)",
+    FD_LOG_WARNING(( "BAM gRPC timed out (HTTP/2 PING went unanswered for %.2f seconds)",
                      (double)( check_ts - ctx->keepalive->ts_last_tx )/1e9 ));
     ctx->keepalive->inflight = 0;
     ctx->defer_reset = 1;
@@ -960,9 +959,9 @@ fd_bam_client_log_status( fd_bam_tile_t * ctx ) {
     long ts = fd_log_wallclock();
     if( FD_LIKELY( ts-(ctx->last_bundle_status_log_nanos) >= (long)1e6 ) ) {
       if( connected_now ) {
-        FD_LOG_NOTICE(( "Connected to bundle server" ));
+        FD_LOG_NOTICE(( "Connected to BAM server" ));
       } else {
-        FD_LOG_WARNING(( "Disconnected from bundle server" ));
+        FD_LOG_WARNING(( "Disconnected from BAM server" ));
       }
       ctx->last_bundle_status_log_nanos = ts;
       ctx->bundle_status_logged = (uchar)status;
@@ -998,7 +997,7 @@ fd_bam_tile_backoff( fd_bam_tile_t * ctx,
 static void
 fd_bam_client_grpc_conn_established( void * app_ctx ) {
   (void)app_ctx;
-  FD_LOG_INFO(( "Bundle gRPC connection established" ));
+  FD_LOG_INFO(( "BAM gRPC connection established" ));
 }
 
 static void
@@ -1006,7 +1005,7 @@ fd_bam_client_grpc_conn_dead( void * app_ctx,
                                  uint   h2_err,
                                  int    closed_by ) {
   fd_bam_tile_t * ctx = app_ctx;
-  FD_LOG_INFO(( "Bundle gRPC connection closed %s (%u-%s)",
+  FD_LOG_INFO(( "BAM gRPC connection closed %s (%u-%s)",
                 closed_by ? "by peer" : "due to error",
                 h2_err, fd_h2_strerror( h2_err ) ));
   ctx->defer_reset = 1;
@@ -1032,12 +1031,13 @@ fd_bam_tile_publish_bundle_txn(
     .reference_slot = 0UL,
     .payload_sz     = (ushort)txn_sz,
     .txn_t_sz       = 0U,
-    .source_ipv4      = source_ipv4,
-    .source_tpu       = FD_TXN_M_TPU_SOURCE_BUNDLE,
+    .source_ipv4    = source_ipv4,
+    .source_tpu     = FD_TXN_M_TPU_SOURCE_BUNDLE,
     .block_engine   = {
-      .bundle_id      = ctx->bundle_seq,
-      .bundle_txn_cnt = bundle_txn_cnt,
-      .commission     = (uchar)ctx->builder_commission
+      .bundle_id         = ctx->bundle_seq,
+      .bundle_txn_cnt    = bundle_txn_cnt,
+      .commission        = (uchar)ctx->builder_commission,
+      .max_schedule_slot = ctx->bundle_max_schedule_slot
     },
   };
   memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL );
@@ -1076,7 +1076,8 @@ fd_bam_tile_publish_txn(
       .bundle_id         = 0UL,
       .bundle_txn_cnt    = 1UL,
       .commission        = 0U,
-      .commission_pubkey = {0U}
+      .commission_pubkey = {0U},
+      .max_schedule_slot = 0UL
     },
   };
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
@@ -1358,12 +1359,6 @@ fd_bam_request_ctx_cstr( ulong request_ctx ) {
     return "GenerateAuthChallenge";
   case FD_BAM_CLIENT_REQ_Auth_GenerateAuthTokens:
     return "GenerateAuthTokens";
-  case FD_BAM_CLIENT_REQ_Bundle_SubscribePackets:
-    return "SubscribePackets";
-  case FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles:
-    return "SubscribeBundles";
-  case FD_BAM_CLIENT_REQ_Bundle_GetBlockBuilderFeeInfo:
-    return "GetBlockBuilderFeeInfo";
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     return "BamGetAuthChallenge";
   case FD_BAM_CLIENT_REQ_BAM_GetConfig:

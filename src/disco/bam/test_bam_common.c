@@ -139,8 +139,6 @@ test_bam_env_mock_conn( test_bam_env_t * env ) {
   test_bam_env_mock_h2_hs( state );
   state->auther.state = FD_BUNDLE_AUTH_STATE_DONE_WAIT;
   state->bam_stream_live = 1;
-  state->bundle_subscription_live = 1;
-  state->packet_subscription_live = 1;
   FD_TEST( fd_bam_client_status( state )==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
 }
 
