@@ -56,6 +56,8 @@ test_bam_env_create( test_bam_env_t * env,
 
   fd_bam_tile_t * state = env->state;
   fd_memset( state, 0, sizeof(fd_bam_tile_t) );
+  for( ulong i=0UL; i<sizeof(state->bam_url_pubkey); i++ ) state->bam_url_pubkey[ i ] = (uchar)( i + 1U );
+  fd_base58_encode_32( state->bam_url_pubkey, NULL, state->bam_validator_pubkey );
   state->stem = env->stem;
   state->verify_out = (fd_bam_out_ctx_t) {
     .idx    = 0UL,
@@ -71,7 +73,6 @@ test_bam_env_create( test_bam_env_t * env,
   state->so_rcvbuf       = 4096;
   state->grpc_buf_max    = 4096UL;
   state->map_seed        = 1UL;
-  fd_bundle_auther_init( &state->auther );
 
   state->grpc_client_mem = fd_wksp_alloc_laddr( wksp, fd_grpc_client_align(), fd_grpc_client_footprint( state->grpc_buf_max ), 1UL );
   FD_TEST( state->grpc_client_mem );
@@ -137,7 +138,6 @@ test_bam_env_mock_conn( test_bam_env_t * env ) {
   fd_bam_tile_t * state = env->state;
   test_bam_env_mock_builder_info( state );
   test_bam_env_mock_h2_hs( state );
-  state->auther.state = FD_BUNDLE_AUTH_STATE_DONE_WAIT;
   state->bam_stream_live = 1;
   FD_TEST( fd_bam_client_status( state )==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
 }

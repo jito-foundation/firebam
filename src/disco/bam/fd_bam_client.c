@@ -25,9 +25,7 @@
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 
-#define FD_BUNDLE_CLIENT_REQUEST_TIMEOUT ((long)8e9) /* 8 seconds */
-
-#define FD_BUNDLE_CLIENT_MAX_TXN_PER_BUNDLE (5UL)
+#define FD_BAM_CLIENT_REQUEST_TIMEOUT ((long)8e9) /* 8 seconds */
 
 #define FD_BAM_AUTH_LABEL "X_OFF_CHAIN_JITO_BAM_V1\0"
 static char const fd_bam_auth_label[] = FD_BAM_AUTH_LABEL;
@@ -99,7 +97,6 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
 
   fd_bam_tile_backoff( ctx, fd_bam_now() );
 
-  fd_bundle_auther_reset( &ctx->auther );
   fd_grpc_client_reset( ctx->grpc_client );
 
   ctx->bam_stream                 = NULL;
@@ -125,6 +122,17 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
 static int
 fd_bam_client_do_connect( fd_bam_tile_t const * ctx,
                              uint                     ip4_addr ) {
+  if( FD_UNLIKELY( ctx->tcp_sock<0 ) ) return EBADF;
+
+  if( FD_UNLIKELY( ip4_addr==0U ) ) {
+    int so_err = 0;
+    socklen_t so_err_sz = sizeof(so_err);
+    if( FD_UNLIKELY( getsockopt( ctx->tcp_sock, SOL_SOCKET, SO_ERROR, &so_err, &so_err_sz ) ) ) {
+      return errno;
+    }
+    return so_err;
+  }
+
   struct sockaddr_in addr = {
     .sin_family      = AF_INET,
     .sin_addr.s_addr = ip4_addr,
@@ -452,7 +460,7 @@ fd_bam_request_auth_challenge( fd_bam_tile_t * ctx ) {
   ctx->bam_auth_inflight = 1;
   fd_grpc_client_deadline_set( request,
                                FD_GRPC_DEADLINE_RX_END,
-                               fd_bam_now() + FD_BUNDLE_CLIENT_REQUEST_TIMEOUT );
+                               fd_bam_now() + FD_BAM_CLIENT_REQUEST_TIMEOUT );
 }
 
 static int
@@ -516,7 +524,7 @@ fd_bam_request_config( fd_bam_tile_t * ctx,
   ctx->bam_config_inflight     = 1;
   fd_grpc_client_deadline_set( request,
                                FD_GRPC_DEADLINE_RX_END,
-                               fd_bam_now() + FD_BUNDLE_CLIENT_REQUEST_TIMEOUT );
+                               fd_bam_now() + FD_BAM_CLIENT_REQUEST_TIMEOUT );
 }
 
 static void
@@ -758,6 +766,9 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   }
 
   if( FD_UNLIKELY( resp.which_versioned_msg != bam_api_SchedulerResponse_v0_tag ) ) {
+    FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", (unsigned)resp.which_versioned_msg ));
+    ctx->metrics.transport_fail_cnt++;
+    ctx->defer_reset = 1;
     return;
   }
 
@@ -842,13 +853,6 @@ fd_bam_client_send_ping( fd_bam_tile_t * ctx ) {
 int
 fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
                                  long               now ) {
-  /* Drive auth */
-  if( FD_UNLIKELY( ctx->auther.needs_poll ) ) {
-    fd_bundle_auther_poll( &ctx->auther, ctx->grpc_client, ctx->keyguard_client );
-    return 1;
-  }
-  if( FD_UNLIKELY( ctx->auther.state!=FD_BUNDLE_AUTH_STATE_DONE_WAIT ) ) return 0;
-
   /* Send a PING */
   if( FD_UNLIKELY( fd_keepalive_should_tx( ctx->keepalive, now ) ) ) {
     fd_bam_client_send_ping( ctx );
@@ -867,6 +871,12 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     return;
   }
 
+  if( FD_UNLIKELY( ctx->defer_reset ) ) {
+    fd_bam_client_reset( ctx );
+    *charge_busy = 1;
+    return;
+  }
+
   /* Wait for TCP socket to connect */
   if( FD_UNLIKELY( !ctx->tcp_sock_connected ) ) {
     if( FD_UNLIKELY( ctx->tcp_sock < 0 ) ) goto reconnect;
@@ -881,7 +891,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     if( poll_res==0 ) return;
 
     if( pfds[0].revents & (POLLERR|POLLHUP) ) {
-      int connect_err = fd_bam_client_do_connect( ctx, 0 );
+      int connect_err = fd_bam_client_do_connect( ctx, 0U );
       FD_LOG_INFO(( "BAM gRPC connect attempt failed (%i-%s)", connect_err, fd_io_strerror( connect_err ) ));
       fd_bam_client_reset( ctx );
       ctx->metrics.transport_fail_cnt++;
@@ -914,7 +924,8 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     FD_LOG_WARNING(( "BAM gRPC timed out (HTTP/2 PING went unanswered for %.2f seconds)",
                      (double)( check_ts - ctx->keepalive->ts_last_tx )/1e9 ));
     ctx->keepalive->inflight = 0;
-    ctx->defer_reset = 1;
+    fd_bam_client_reset( ctx );
+    ctx->metrics.transport_fail_cnt++;
     *charge_busy = 1;
     return;
   }
@@ -1134,18 +1145,6 @@ fd_bam_client_grpc_rx_msg(
   fd_bam_tile_t * ctx = app_ctx;
   pb_istream_t istream = pb_istream_from_buffer( protobuf, protobuf_sz );
   switch( request_ctx ) {
-  case FD_BAM_CLIENT_REQ_Auth_GenerateAuthChallenge:
-    if( FD_UNLIKELY( !fd_bundle_auther_handle_challenge_resp( &ctx->auther, protobuf, protobuf_sz ) ) ) {
-      ctx->metrics.decode_fail_cnt++;
-      fd_bam_tile_backoff( ctx, fd_bam_now() );
-    }
-    break;
-  case FD_BAM_CLIENT_REQ_Auth_GenerateAuthTokens:
-    if( FD_UNLIKELY( !fd_bundle_auther_handle_tokens_resp( &ctx->auther, protobuf, protobuf_sz ) ) ) {
-      ctx->metrics.decode_fail_cnt++;
-      fd_bam_tile_backoff( ctx, fd_bam_now() );
-    }
-    break;
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     if( FD_UNLIKELY( !fd_bam_handle_auth_challenge( ctx, protobuf, protobuf_sz ) ) ) {
       ctx->metrics.decode_fail_cnt++;
@@ -1169,10 +1168,6 @@ fd_bam_client_request_failed( fd_bam_tile_t * ctx,
                                  ulong              request_ctx ) {
   fd_bam_tile_backoff( ctx, fd_bam_now() );
   switch( request_ctx ) {
-  case FD_BAM_CLIENT_REQ_Auth_GenerateAuthChallenge:
-  case FD_BAM_CLIENT_REQ_Auth_GenerateAuthTokens:
-    fd_bundle_auther_handle_request_fail( &ctx->auther );
-    break;
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     ctx->bam_auth_inflight       = 0;
     ctx->bam_auth_ready          = 0;
@@ -1234,7 +1229,6 @@ fd_bam_client_grpc_rx_end(
     fd_bam_client_request_failed( ctx, request_ctx );
     if( resp->grpc_status==FD_GRPC_STATUS_UNAUTHENTICATED ||
         resp->grpc_status==FD_GRPC_STATUS_PERMISSION_DENIED ) {
-      fd_bundle_auther_reset( &ctx->auther );
       ctx->bam_auth_ready         = 0;
       ctx->bam_auth_challenge_len = 0;
     }
@@ -1329,10 +1323,6 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
     return CONNECTING; /* connection is not ready */
   }
 
-  if( FD_UNLIKELY( ctx->auther.state != FD_BUNDLE_AUTH_STATE_DONE_WAIT ) ) {
-    return CONNECTING; /* not authenticated */
-  }
-
   if( FD_UNLIKELY( !ctx->bam_stream_live ) ) {
     return CONNECTING;
   }
@@ -1355,10 +1345,6 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
 FD_FN_CONST char const *
 fd_bam_request_ctx_cstr( ulong request_ctx ) {
   switch( request_ctx ) {
-  case FD_BAM_CLIENT_REQ_Auth_GenerateAuthChallenge:
-    return "GenerateAuthChallenge";
-  case FD_BAM_CLIENT_REQ_Auth_GenerateAuthTokens:
-    return "GenerateAuthTokens";
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     return "BamGetAuthChallenge";
   case FD_BAM_CLIENT_REQ_BAM_GetConfig:

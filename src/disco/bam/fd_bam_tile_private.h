@@ -1,7 +1,6 @@
 #ifndef HEADER_fd_src_disco_bam_fd_bam_tile_private_h
 #define HEADER_fd_src_disco_bam_fd_bam_tile_private_h
 
-#include "../bundle/fd_bundle_auth.h"
 #include "../bundle/fd_keepalive.h"
 #include "../stem/fd_stem.h"
 #include "../keyguard/fd_keyswitch.h"
@@ -120,8 +119,6 @@ struct fd_bam_tile {
   ulong                    map_seed;              /* Random seed used for header hashing */
 
   /* Bundle authenticator */
-  fd_bundle_auther_t auther;                      /* Tracks identity and signs bundle requests */
-
   /* Bundle block builder info */
   uchar builder_pubkey[ 32 ];                     /* Builder identity fetched from BAM */
   uchar builder_commission;  /* in [0,100] (percent) */
@@ -193,11 +190,9 @@ typedef struct fd_bam_tile fd_bam_tile_t;
 
 /* Define 'request_ctx' IDs to identify different types of gRPC calls */
 
-#define FD_BAM_CLIENT_REQ_Auth_GenerateAuthChallenge         0
-#define FD_BAM_CLIENT_REQ_Auth_GenerateAuthTokens            1
-#define FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge               7
-#define FD_BAM_CLIENT_REQ_BAM_GetConfig                      8
-#define FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream            9
+#define FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge               0
+#define FD_BAM_CLIENT_REQ_BAM_GetConfig                      1
+#define FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream            2
 
 FD_PROTOTYPES_BEGIN
 

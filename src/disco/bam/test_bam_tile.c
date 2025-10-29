@@ -17,6 +17,8 @@
 #include <limits.h>
 #include <string.h>
 
+static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL, 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
+
 
 __attribute__((weak)) char const fdctl_version_string[] = "0.0.0";
 
@@ -571,7 +573,8 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e8;
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==1 );
+    FD_TEST( state->tcp_sock==-1 );
+    FD_TEST( state->tcp_sock_connected==0U );
     FD_TEST( charge_busy==1 );
     test_bam_env_destroy( env );
   }
@@ -584,7 +587,8 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e9;
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==0 );
+    FD_TEST( state->tcp_sock>=0 );
+    FD_TEST( state->tcp_sock_connected==1U );
     test_bam_env_destroy( env );
   }
 
@@ -596,7 +600,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e9;
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==0 );
+    FD_TEST( state->tcp_sock>=0 );
     test_bam_env_destroy( env );
   }
 
@@ -607,7 +611,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e6; /* 1ms before timeout */
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==0 );
+    FD_TEST( state->tcp_sock>=0 );
     test_bam_env_destroy( env );
   }
 
@@ -618,7 +622,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS;
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==1 );
+    FD_TEST( state->tcp_sock==-1 );
     FD_TEST( charge_busy==1 );
     test_bam_env_destroy( env );
   }
@@ -630,7 +634,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + 1L;
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==1 );
+    FD_TEST( state->tcp_sock==-1 );
     FD_TEST( charge_busy==1 );
     test_bam_env_destroy( env );
   }
@@ -643,7 +647,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e9;
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==0 );
+    FD_TEST( state->tcp_sock>=0 );
     test_bam_env_destroy( env );
   }
 }
@@ -680,7 +684,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
                                FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8;
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==0 );
+    FD_TEST( state->tcp_sock>=0 );
     test_bam_env_destroy( env );
   }
 
@@ -694,7 +698,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
                                FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)2e8;
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==1 );
+    FD_TEST( state->tcp_sock==-1 );
     FD_TEST( charge_busy==1 );
     test_bam_env_destroy( env );
   }
@@ -720,7 +724,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
                                FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8;
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==0 );
+    FD_TEST( state->tcp_sock>=0 );
     test_bam_env_destroy( env );
   }
 
@@ -734,7 +738,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
                                FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)2e8;
     fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->defer_reset==1 );
+    FD_TEST( state->tcp_sock==-1 );
     FD_TEST( charge_busy==1 );
     test_bam_env_destroy( env );
   }
@@ -778,11 +782,6 @@ test_bam_client_status( fd_wksp_t * wksp ) {
     FD_TEST( fd_bam_client_status( state )==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING );
     *state->grpc_client = client_backup;
   }
-
-  FD_TEST( fd_bam_client_status( state )==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
-  state->auther.state = FD_BUNDLE_AUTH_STATE_REQ_TOKENS;
-  FD_TEST( fd_bam_client_status( state )==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING );
-  state->auther.state = FD_BUNDLE_AUTH_STATE_DONE_WAIT;
 
   FD_TEST( fd_bam_client_status( state )==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
   state->bam_stream_live = 0U;
@@ -1571,6 +1570,7 @@ int
 main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
+  fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL, 0UL ) );
 
   ulong cpu_idx = fd_tile_cpu_id( fd_tile_idx() );
   if( cpu_idx>fd_shmem_cpu_cnt() ) cpu_idx = 0UL;
