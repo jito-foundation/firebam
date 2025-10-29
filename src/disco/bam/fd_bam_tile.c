@@ -53,8 +53,9 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, TRANSACTION_RECEIVED,   ctx->metrics.txn_received_cnt          );
   FD_MCNT_SET( BAM, BUNDLE_RECEIVED,        ctx->metrics.bundle_received_cnt       );
   FD_MCNT_SET( BAM, BUNDLE_RESULTS_DROPPED, ctx->metrics.bundle_result_drop_cnt    );
-  FD_MCNT_SET( BAM, PACKET_RECEIVED,        ctx->metrics.packet_received_cnt       );
   FD_MCNT_SET( BAM, KEEPALIVES,             ctx->metrics.ping_ack_cnt              );
+  FD_MCNT_SET( BAM, HEARTBEATS_SENT,        ctx->metrics.heartbeat_sent_cnt        );
+  FD_MCNT_SET( BAM, HEARTBEATS_RECEIVED,    ctx->metrics.heartbeat_recv_cnt        );
   FD_MCNT_SET( BAM, ERRORS_PROTOBUF,        ctx->metrics.decode_fail_cnt           );
   FD_MCNT_SET( BAM, ERRORS_TRANSPORT,       ctx->metrics.transport_fail_cnt        );
   FD_MCNT_SET( BAM, ERRORS_NO_FEE_INFO,     ctx->metrics.missing_builder_info_fail_cnt );

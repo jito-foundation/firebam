@@ -291,7 +291,6 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
     0x48, 0x12, 0x02, 0x08, 0x02
   };
 
-  FD_TEST( state->metrics.packet_received_cnt==0UL );
   FD_TEST( state->metrics.txn_received_cnt==0UL );
 
   fd_bam_client_grpc_rx_msg( state,
@@ -299,7 +298,6 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
                              sizeof(subscribe_packets_msg),
                              FD_BAM_CLIENT_REQ_Bundle_SubscribePackets );
 
-  FD_TEST( state->metrics.packet_received_cnt==2UL );
   FD_TEST( state->metrics.txn_received_cnt  ==2UL );
 
   zero_meta_ts( env->out_mcache, 2UL );
@@ -557,6 +555,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
                                FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
     long expected_ts = g_clock;
     FD_TEST( state->bam_last_builder_heartbeat_ns==expected_ts );
+    FD_TEST( state->metrics.heartbeat_recv_cnt==1UL );
     test_bam_env_destroy( env );
   }
 
@@ -774,6 +773,7 @@ test_bam_scheduler_heartbeat_publishes_message( fd_wksp_t * wksp ) {
   FD_TEST( decoded.msg.which_versioned_msg==bam_api_SchedulerMessage_v0_tag );
   FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_heart_beat_tag );
   FD_TEST( decoded.msg.versioned_msg.v0.msg.heart_beat.time_sent_microseconds==(uint64_t)(now/1000L) );
+  FD_TEST( state->metrics.heartbeat_sent_cnt==1UL );
 
   test_bam_env_destroy( env );
 }

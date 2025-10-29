@@ -882,9 +882,10 @@
 | Metric | Type | Description |
 |--------|------|-------------|
 | <span class="metrics-name">bam_&#8203;transaction_&#8203;received</span> | counter | Total count of transactions received from BAM, including transactions within bundles |
-| <span class="metrics-name">bam_&#8203;packet_&#8203;received</span> | counter | Total count of packets received from BAM |
 | <span class="metrics-name">bam_&#8203;bundle_&#8203;received</span> | counter | Total count of bundles received from BAM |
 | <span class="metrics-name">bam_&#8203;bundle_&#8203;results_&#8203;dropped</span> | counter | Count of BAM bundle results dropped before publication |
+| <span class="metrics-name">bam_&#8203;heartbeats_&#8203;sent</span> | counter | Count of validator heartbeats sent to BAM |
+| <span class="metrics-name">bam_&#8203;heartbeats_&#8203;received</span> | counter | Count of builder heartbeats received from BAM |
 | <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">protobuf</span>"} | counter | Number of BAM client errors encountered (Protobuf decode/encode error) |
 | <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">transport</span>"} | counter | Number of BAM client errors encountered (Transport error) |
 | <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">timeout</span>"} | counter | Number of BAM client errors encountered (I/O timeout) |

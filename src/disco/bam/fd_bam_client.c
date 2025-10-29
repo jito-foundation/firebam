@@ -2,9 +2,6 @@
 
 #define _GNU_SOURCE /* SOL_TCP */
 #include "fd_bam_tile_private.h"
-#include "../bundle/proto/block_engine.pb.h"
-#include "../bundle/proto/bundle.pb.h"
-#include "../bundle/proto/packet.pb.h"
 #include "proto/bam_api.pb.h"
 #include "proto/bam_types.pb.h"
 #include "../fd_txn_m_t.h"
@@ -249,72 +246,6 @@ fd_bam_client_drive_io( fd_bam_tile_t * ctx,
   return fd_grpc_client_rxtx_socket( ctx->grpc_client, ctx->tcp_sock, charge_busy );
 }
 
-static void
-fd_bam_client_request_builder_info( fd_bam_tile_t * ctx ) {
-  if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
-
-  block_engine_BlockBuilderFeeInfoRequest req = block_engine_BlockBuilderFeeInfoRequest_init_default;
-  static char const path[] = "/block_engine.BlockEngineValidator/GetBlockBuilderFeeInfo";
-  fd_grpc_h2_stream_t * request = fd_grpc_client_request_start(
-      ctx->grpc_client,
-      path, sizeof(path)-1,
-      FD_BAM_CLIENT_REQ_Bundle_GetBlockBuilderFeeInfo,
-      &block_engine_BlockBuilderFeeInfoRequest_msg, &req,
-      ctx->auther.access_token, ctx->auther.access_token_sz
-  );
-  if( FD_UNLIKELY( !request ) ) return;
-  fd_grpc_client_deadline_set(
-      request,
-      FD_GRPC_DEADLINE_RX_END,
-      fd_log_wallclock() + FD_BUNDLE_CLIENT_REQUEST_TIMEOUT );
-
-  ctx->builder_info_wait = 1;
-}
-
-static void
-fd_bam_client_subscribe_packets( fd_bam_tile_t * ctx ) {
-  if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
-
-  block_engine_SubscribePacketsRequest req = block_engine_SubscribePacketsRequest_init_default;
-  static char const path[] = "/block_engine.BlockEngineValidator/SubscribePackets";
-  fd_grpc_h2_stream_t * request = fd_grpc_client_request_start(
-      ctx->grpc_client,
-      path, sizeof(path)-1,
-      FD_BAM_CLIENT_REQ_Bundle_SubscribePackets,
-      &block_engine_SubscribePacketsRequest_msg, &req,
-      ctx->auther.access_token, ctx->auther.access_token_sz
-  );
-  if( FD_UNLIKELY( !request ) ) return;
-  fd_grpc_client_deadline_set(
-      request,
-      FD_GRPC_DEADLINE_HEADER,
-      fd_log_wallclock() + FD_BUNDLE_CLIENT_REQUEST_TIMEOUT );
-
-  ctx->packet_subscription_wait = 1;
-}
-
-static void
-fd_bam_client_subscribe_bundles( fd_bam_tile_t * ctx ) {
-  if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
-
-  block_engine_SubscribeBundlesRequest req = block_engine_SubscribeBundlesRequest_init_default;
-  static char const path[] = "/block_engine.BlockEngineValidator/SubscribeBundles";
-  fd_grpc_h2_stream_t * request = fd_grpc_client_request_start(
-      ctx->grpc_client,
-      path, sizeof(path)-1,
-      FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles,
-      &block_engine_SubscribeBundlesRequest_msg, &req,
-      ctx->auther.access_token, ctx->auther.access_token_sz
-  );
-  if( FD_UNLIKELY( !request ) ) return;
-  fd_grpc_client_deadline_set(
-      request,
-      FD_GRPC_DEADLINE_HEADER,
-      fd_log_wallclock() + FD_BUNDLE_CLIENT_REQUEST_TIMEOUT );
-
-  ctx->bundle_subscription_wait = 1;
-}
-
 static bool
 fd_bam_encode_committed_cb( pb_ostream_t *          stream,
                             pb_field_t const *       field,
@@ -433,8 +364,6 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       bam_types_AtomicTxnBatch const * batch ) {
   if( FD_UNLIKELY( state->packet_cnt==0 ) ) return;
 
-  ctx->metrics.packet_received_cnt += state->packet_cnt;
-
   if( state->revert_on_error ) {
     ctx->bundle_seq                = batch->seq_id;
     ctx->bundle_txn_cnt            = state->packet_cnt;
@@ -491,6 +420,16 @@ fd_bam_visit_batches( pb_istream_t *       stream,
   int ok = fd_bam_decode_batch( ctx, &substream );
   pb_close_string_substream( stream, &substream );
   return ok;
+}
+
+static void
+fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
+                                      uint64_t        time_sent_microseconds ) {
+  if( FD_UNLIKELY( !time_sent_microseconds ) ) return;
+  ulong tsorig_ns = time_sent_microseconds * 1000UL;
+  long  now_ns    = fd_bam_now();
+  ulong now_u     = fd_ulong_if( now_ns>=0L, (ulong)now_ns, 0UL );
+  fd_histf_sample( ctx->metrics.msg_rx_delay, fd_ulong_sat_sub( now_u, tsorig_ns ) );
 }
 
 static void
@@ -563,7 +502,7 @@ fd_bam_request_config( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
 
   bam_api_ConfigRequest req = bam_api_ConfigRequest_init_default;
-  static char const path[] = "/bam_api.BamNodeApi/GetConfig";
+  static char const path[] = "/bam_api.BamNodeApi/GetBuilderConfig";
   fd_grpc_h2_stream_t * request = fd_grpc_client_request_start_ex(
       ctx->grpc_client,
       path, sizeof(path)-1,
@@ -723,6 +662,7 @@ fd_bam_send_heartbeat( fd_bam_tile_t * ctx,
     return;
   }
   ctx->bam_last_validator_heartbeat_ns = now;
+  ctx->metrics.heartbeat_sent_cnt++;
 }
 
 static int
@@ -826,6 +766,8 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   switch( v0->which_resp ) {
   case bam_api_SchedulerResponseV0_heart_beat_tag:
     ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
+    fd_bam_client_sample_heartbeat_delay( ctx, v0->resp.heart_beat.time_sent_microseconds );
+    ctx->metrics.heartbeat_recv_cnt++;
     break;
   case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag:
     ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
@@ -907,27 +849,6 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
     return 1;
   }
   if( FD_UNLIKELY( ctx->auther.state!=FD_BUNDLE_AUTH_STATE_DONE_WAIT ) ) return 0;
-
-  /* Request block builder info */
-  int const builder_info_expired = ( ctx->builder_info_valid_until - now )<0;
-  if( FD_UNLIKELY( ( ( !ctx->builder_info_avail ) |
-                     ( builder_info_expired     ) ) &
-                   ( !ctx->builder_info_wait      ) ) ) {
-    fd_bam_client_request_builder_info( ctx );
-    return 1;
-  }
-
-  /* Subscribe to packets */
-  if( FD_UNLIKELY( !ctx->packet_subscription_live && !ctx->packet_subscription_wait ) ) {
-    fd_bam_client_subscribe_packets( ctx );
-    return 1;
-  }
-
-  /* Subscribe to bundles */
-  if( FD_UNLIKELY( !ctx->bundle_subscription_live && !ctx->bundle_subscription_wait ) ) {
-    fd_bam_client_subscribe_bundles( ctx );
-    return 1;
-  }
 
   /* Send a PING */
   if( FD_UNLIKELY( fd_keepalive_should_tx( ctx->keepalive, now ) ) ) {
@@ -1176,241 +1097,6 @@ fd_bam_tile_publish_txn(
 /* Called for each transaction in a bundle.  Simply counts up
    bundle_txn_cnt, but does not publish anything. */
 
-static bool
-fd_bam_client_visit_pb_bundle_txn_preflight(
-    pb_istream_t *     istream,
-    pb_field_t const * field,
-    void **            arg
-) {
-  (void)istream; (void)field;
-  fd_bam_tile_t * ctx = *arg;
-  ctx->bundle_txn_cnt++;
-  return true;
-}
-
-/* Called for each transaction in a bundle.  Publishes each transaction
-   to the tango message bus. */
-
-static bool
-fd_bam_client_visit_pb_bundle_txn(
-    pb_istream_t *     istream,
-    pb_field_t const * field,
-    void **            arg
-) {
-  (void)field;
-  fd_bam_tile_t * ctx = *arg;
-
-  packet_Packet packet = packet_Packet_init_default;
-  if( FD_UNLIKELY( !pb_decode( istream, &packet_Packet_msg, &packet ) ) ) {
-    ctx->metrics.decode_fail_cnt++;
-    FD_LOG_WARNING(( "Protobuf decode of (packet.Packet) failed" ));
-    return false;
-  }
-
-  if( FD_UNLIKELY( packet.data.size == 0 ) ) {
-    FD_LOG_WARNING(( "Bundle server delivered an empty packet, ignoring" ));
-    return true;
-  }
-
-  if( FD_UNLIKELY( packet.data.size > FD_TXN_MTU ) ) {
-    FD_LOG_WARNING(( "Bundle server delivered an oversize transaction, ignoring" ));
-    return true;
-  }
-
-  uint _ip4; uint ip4 = fd_uint_if( packet.has_meta, fd_cstr_to_ip4_addr( packet.meta.addr, &_ip4 ) ? _ip4 : ctx->server_ip4_addr, ctx->server_ip4_addr );
-  fd_bam_tile_publish_bundle_txn(
-      ctx,
-      packet.data.bytes, packet.data.size,
-      ctx->bundle_txn_cnt,
-      ip4
-  );
-
-  return true;
-}
-
-static void
-fd_bam_client_sample_rx_delay(
-    fd_bam_tile_t *                ctx,
-    google_protobuf_Timestamp const * ts
-) {
-  ulong tsorig = (ulong)ts->seconds*(ulong)1e9 + (ulong)ts->nanos;
-  fd_histf_sample( ctx->metrics.msg_rx_delay, fd_ulong_sat_sub( (ulong)ctx->cached_ts, tsorig ) );
-}
-
-/* Called for each BundleUuid in a SubscribeBundlesResponse. */
-
-static bool
-fd_bam_client_visit_pb_bundle_uuid(
-    pb_istream_t *     istream,
-    pb_field_t const * field,
-    void **            arg
-) {
-  (void)field;
-  fd_bam_tile_t * ctx = *arg;
-
-  /* Reset bundle state */
-
-  ctx->bundle_txn_cnt = 0UL;
-
-  /* Do two decode passes.  This is required because we need to know the
-     number of transactions in a bundle ahead of time.  However, due to
-     the Protobuf wire encoding, we don't know the number of txns that
-     will come until we've parsed everything.
-
-     First pass: Count number of bundles. */
-
-  pb_istream_t peek = *istream;
-  bundle_BundleUuid bundle = bundle_BundleUuid_init_default;
-  bundle.bundle.packets = (pb_callback_t) {
-    .funcs.decode = fd_bam_client_visit_pb_bundle_txn_preflight,
-    .arg          = ctx
-  };
-  if( FD_UNLIKELY( !pb_decode( &peek, &bundle_BundleUuid_msg, &bundle ) ) ) {
-    ctx->metrics.decode_fail_cnt++;
-    FD_LOG_WARNING(( "Protobuf decode of (bundle.BundleUuid) failed: %s", peek.errmsg ));
-    return false;
-  }
-
-  /* At this opint, ctx->bundle_txn_cnt is correctly set.  Too many txns
-     is treated as a NOP.
-
-     Second pass: Actually publish bundle packets */
-
-  if( FD_UNLIKELY( ctx->bundle_txn_cnt>FD_BUNDLE_CLIENT_MAX_TXN_PER_BUNDLE ) ) return true;
-
-  ctx->bundle_seq++;
-  bundle = (bundle_BundleUuid)bundle_BundleUuid_init_default;
-  bundle.bundle.packets = (pb_callback_t) {
-    .funcs.decode = fd_bam_client_visit_pb_bundle_txn,
-    .arg          = ctx
-  };
-
-  ctx->metrics.bundle_received_cnt++;
-
-  if( FD_UNLIKELY( !pb_decode( istream, &bundle_BundleUuid_msg, &bundle ) ) ) {
-    ctx->metrics.decode_fail_cnt++;
-    FD_LOG_WARNING(( "Protobuf decode of (bundle.BundleUuid) failed (internal error): %s", istream->errmsg ));
-    return false;
-  }
-
-  fd_bam_client_sample_rx_delay( ctx, &bundle.bundle.header.ts );
-
-  return true;
-}
-
-/* Handle a SubscribeBundlesResponse from a SubscribeBundles gRPC call. */
-
-static void
-fd_bam_client_handle_bundle_batch(
-    fd_bam_tile_t * ctx,
-    pb_istream_t *     istream
-) {
-  if( FD_UNLIKELY( !ctx->builder_info_avail ) ) {
-    ctx->metrics.missing_builder_info_fail_cnt++; /* unreachable */
-    return;
-  }
-
-  block_engine_SubscribeBundlesResponse res = block_engine_SubscribeBundlesResponse_init_default;
-  res.bundles = (pb_callback_t) {
-    .funcs.decode = fd_bam_client_visit_pb_bundle_uuid,
-    .arg          = ctx
-  };
-  if( FD_UNLIKELY( !pb_decode( istream, &block_engine_SubscribeBundlesResponse_msg, &res ) ) ) {
-    ctx->metrics.decode_fail_cnt++;
-    FD_LOG_WARNING(( "Protobuf decode of (block_engine.SubscribeBundlesResponse) failed: %s", istream->errmsg ));
-    return;
-  }
-}
-
-/* Called for each 'Packet' (a regular transaction) of a
-   SubscribePacketsResponse. */
-
-static bool
-fd_bam_client_visit_pb_packet(
-    pb_istream_t *     istream,
-    pb_field_t const * field,
-    void **            arg
-) {
-  (void)field;
-  fd_bam_tile_t * ctx = *arg;
-
-  packet_Packet packet = packet_Packet_init_default;
-  if( FD_UNLIKELY( !pb_decode( istream, &packet_Packet_msg, &packet ) ) ) {
-    ctx->metrics.decode_fail_cnt++;
-    FD_LOG_WARNING(( "Protobuf decode of (packet.Packet) failed" ));
-    return false;
-  }
-
-  if( FD_UNLIKELY( packet.data.size == 0 ) ) {
-    FD_LOG_WARNING(( "Bundle server delivered an empty packet, ignoring" ));
-    return true;
-  }
-
-  if( FD_UNLIKELY( packet.data.size > FD_TXN_MTU ) ) {
-    FD_LOG_WARNING(( "Bundle server delivered an oversize transaction, ignoring" ));
-    return true;
-  }
-
-
-  uint _ip4; uint ip4 = fd_uint_if( packet.has_meta, fd_cstr_to_ip4_addr( packet.meta.addr, &_ip4 ) ? _ip4 : 0U, 0U );
-  fd_bam_tile_publish_txn( ctx, packet.data.bytes, packet.data.size, ip4 );
-  ctx->metrics.packet_received_cnt++;
-
-  return true;
-}
-
-/* Handle a SubscribePacketsResponse from a SubscribePackets gRPC call. */
-
-static void
-fd_bam_client_handle_packet_batch(
-    fd_bam_tile_t * ctx,
-    pb_istream_t *     istream
-) {
-  block_engine_SubscribePacketsResponse res = block_engine_SubscribePacketsResponse_init_default;
-  res.batch.packets = (pb_callback_t) {
-    .funcs.decode = fd_bam_client_visit_pb_packet,
-    .arg          = ctx
-  };
-  if( FD_UNLIKELY( !pb_decode( istream, &block_engine_SubscribePacketsResponse_msg, &res ) ) ) {
-    ctx->metrics.decode_fail_cnt++;
-    FD_LOG_WARNING(( "Protobuf decode of (block_engine.SubscribePacketsResponse) failed" ));
-    return;
-  }
-
-  fd_bam_client_sample_rx_delay( ctx, &res.header.ts );
-}
-
-/* Handle a BlockBuilderFeeInfoResponse from a GetBlockBuilderFeeInfo
-   gRPC call. */
-
-static void
-fd_bam_client_handle_builder_fee_info(
-    fd_bam_tile_t * ctx,
-    pb_istream_t *     istream
-) {
-  block_engine_BlockBuilderFeeInfoResponse res = block_engine_BlockBuilderFeeInfoResponse_init_default;
-  if( FD_UNLIKELY( !pb_decode( istream, &block_engine_BlockBuilderFeeInfoResponse_msg, &res ) ) ) {
-    ctx->metrics.decode_fail_cnt++;
-    FD_LOG_WARNING(( "Protobuf decode of (block_engine.BlockBuilderFeeInfoResponse) failed" ));
-    return;
-  }
-  if( FD_UNLIKELY( res.commission > 100 ) ) {
-    ctx->metrics.decode_fail_cnt++;
-    FD_LOG_WARNING(( "BlockBuilderFeeInfoResponse commission out of range (0-100): %lu", res.commission ));
-    return;
-  }
-
-  ctx->builder_commission = (uchar)res.commission;
-  if( FD_UNLIKELY( !fd_base58_decode_32( res.pubkey, ctx->builder_pubkey ) ) ) {
-    FD_LOG_HEXDUMP_WARNING(( "Invalid pubkey in BlockBuilderFeeInfoResponse", res.pubkey, strnlen( res.pubkey, sizeof(res.pubkey) ) ));
-    return;
-  }
-
-  long validity_duration_ns = (long)( 60e9 * 5. ); /* 5 minutes */
-  ctx->builder_info_avail = 1;
-  ctx->builder_info_valid_until = fd_bam_now() + validity_duration_ns;
-}
-
 static void
 fd_bam_client_grpc_tx_complete(
     void * app_ctx,
@@ -1426,14 +1112,6 @@ fd_bam_client_grpc_rx_start(
 ) {
   fd_bam_tile_t * ctx = app_ctx;
   switch( request_ctx ) {
-  case FD_BAM_CLIENT_REQ_Bundle_SubscribePackets:
-    ctx->packet_subscription_live = 1;
-    ctx->packet_subscription_wait = 0;
-    break;
-  case FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles:
-    ctx->bundle_subscription_live = 1;
-    ctx->bundle_subscription_wait = 0;
-    break;
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream: {
     long now = fd_bam_now();
     ctx->bam_stream_live        = 1;
@@ -1466,15 +1144,6 @@ fd_bam_client_grpc_rx_msg(
       ctx->metrics.decode_fail_cnt++;
       fd_bam_tile_backoff( ctx, fd_bam_now() );
     }
-    break;
-  case FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles:
-    fd_bam_client_handle_bundle_batch( ctx, &istream );
-    break;
-  case FD_BAM_CLIENT_REQ_Bundle_SubscribePackets:
-    fd_bam_client_handle_packet_batch( ctx, &istream );
-    break;
-  case FD_BAM_CLIENT_REQ_Bundle_GetBlockBuilderFeeInfo:
-    fd_bam_client_handle_builder_fee_info( ctx, &istream );
     break;
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     if( FD_UNLIKELY( !fd_bam_handle_auth_challenge( ctx, protobuf, protobuf_sz ) ) ) {
@@ -1541,29 +1210,6 @@ fd_bam_client_grpc_rx_end(
   }
 
   switch( request_ctx ) {
-  case FD_BAM_CLIENT_REQ_Bundle_SubscribePackets:
-    ctx->packet_subscription_live = 0;
-    ctx->packet_subscription_wait = 0;
-    ctx->bam_stream_live       = 0;
-    ctx->bam_stream_connecting = 0;
-    fd_bam_tile_backoff( ctx, fd_bam_now() );
-    ctx->defer_reset = 1;
-    FD_LOG_INFO(( "SubscribePackets stream failed (gRPC status %u-%s). Reconnecting ...",
-                  resp->grpc_status, fd_grpc_status_cstr( resp->grpc_status ) ));
-    return;
-  case FD_BAM_CLIENT_REQ_Bundle_SubscribeBundles:
-    ctx->bundle_subscription_live = 0;
-    ctx->bundle_subscription_wait = 0;
-    ctx->bam_stream_live       = 0;
-    ctx->bam_stream_connecting = 0;
-    fd_bam_tile_backoff( ctx, fd_bam_now() );
-    ctx->defer_reset = 1;
-    FD_LOG_INFO(( "SubscribeBundles stream failed (gRPC status %u-%s). Reconnecting ...",
-                  resp->grpc_status, fd_grpc_status_cstr( resp->grpc_status ) ));
-    return;
-  case FD_BAM_CLIENT_REQ_Bundle_GetBlockBuilderFeeInfo:
-    ctx->builder_info_wait = 0;
-    break;
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     ctx->bam_auth_inflight = 0;
     break;
@@ -1721,7 +1367,7 @@ fd_bam_request_ctx_cstr( ulong request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     return "BamGetAuthChallenge";
   case FD_BAM_CLIENT_REQ_BAM_GetConfig:
-    return "BamGetConfig";
+    return "BamGetBuilderConfig";
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
     return "BamInitSchedulerStream";
   default:
