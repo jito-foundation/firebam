@@ -53,6 +53,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, TRANSACTION_RECEIVED,   ctx->metrics.txn_received_cnt          );
   FD_MCNT_SET( BAM, BUNDLE_RECEIVED,        ctx->metrics.bundle_received_cnt       );
   FD_MCNT_SET( BAM, BUNDLE_RESULTS_DROPPED, ctx->metrics.bundle_result_drop_cnt    );
+  FD_MCNT_SET( BAM, PACKETS_DROPPED,        ctx->metrics.packet_drop_cnt           );
   FD_MCNT_SET( BAM, KEEPALIVES,             ctx->metrics.ping_ack_cnt              );
   FD_MCNT_SET( BAM, HEARTBEATS_SENT,        ctx->metrics.heartbeat_sent_cnt        );
   FD_MCNT_SET( BAM, HEARTBEATS_RECEIVED,    ctx->metrics.heartbeat_recv_cnt        );

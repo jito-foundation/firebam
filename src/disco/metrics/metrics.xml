@@ -354,6 +354,7 @@ metric introduced.
     <counter name="TransactionReceived" summary="Total count of transactions received from BAM, including transactions within bundles" />
     <counter name="BundleReceived" summary="Total count of bundles received from BAM" />
     <counter name="BundleResultsDropped" summary="Count of BAM bundle results dropped before publication" />
+    <counter name="PacketsDropped" summary="Count of BAM packets dropped before publication" />
     <counter name="HeartbeatsSent" summary="Count of validator heartbeats sent to BAM" />
     <counter name="HeartbeatsReceived" summary="Count of builder heartbeats received from BAM" />
     <counter name="Errors" enum="BamError" summary="Number of BAM client errors encountered" />

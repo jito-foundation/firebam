@@ -45,6 +45,7 @@ struct fd_bam_metrics {
   ulong txn_received_cnt;
   ulong bundle_received_cnt;
   ulong bundle_result_drop_cnt;
+  ulong packet_drop_cnt;
   ulong ping_ack_cnt;
   ulong heartbeat_sent_cnt;
   ulong heartbeat_recv_cnt;

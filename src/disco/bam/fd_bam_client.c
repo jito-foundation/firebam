@@ -6,6 +6,7 @@
 #include "proto/bam_types.pb.h"
 #include "../fd_txn_m_t.h"
 #include "../plugin/fd_plugin.h"
+#include "../metrics/fd_metrics.h"
 #include "../../waltz/h2/fd_h2_conn.h"
 #include "../../waltz/http/fd_url.h" /* fd_url_unescape */
 #include "../../ballet/base58/fd_base58.h"
@@ -84,6 +85,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
 
   ctx->builder_info_avail       = 0;
   ctx->builder_info_wait        = 0;
+  ctx->builder_info_valid_until = 0L;
   ctx->bundle_max_schedule_slot = ULONG_MAX;
 
   memset( ctx->rtt, 0, sizeof(fd_rtt_estimate_t) );
@@ -344,6 +346,16 @@ fd_bam_collect_packet( pb_istream_t *         stream,
 
   bam_types_Packet packet = bam_types_Packet_init_default;
   if( FD_UNLIKELY( !pb_decode( stream, &bam_types_Packet_msg, &packet ) ) ) {
+    return false;
+  }
+
+  if( FD_UNLIKELY( packet.data.size > FD_TXN_MTU ) ) {
+    if( FD_LIKELY( state->ctx ) ) {
+      state->ctx->metrics.packet_drop_cnt++;
+      FD_MCNT_INC( BAM, PACKETS_DROPPED, 1UL );
+    }
+    FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding MTU (%lu>%lu); dropping batch",
+                     (ulong)packet.data.size, FD_TXN_MTU ));
     return false;
   }
 
@@ -609,6 +621,15 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
          bam_contact_dirty after it republishes, so reconnects without new
          config continue advertising the last known override. */
       ctx->bam_contact_avail = 1U;
+    } else {
+      /* BAM withdrew its TPU override; fall back to Firedancer defaults and
+         prompt gossip to restore the original contact info. */
+      if( FD_UNLIKELY( ctx->bam_contact_avail ) ) {
+        ctx->bam_contact_dirty = 1U;
+      }
+      ctx->bam_contact_avail = 0U;
+      ctx->bam_tpu_addr.l      = 0UL;
+      ctx->bam_tpu_quic_addr.l = 0UL;
     }
   }
 }
@@ -793,6 +814,14 @@ fd_bam_drive( fd_bam_tile_t * ctx,
   int busy = 0;
   if( FD_UNLIKELY( !ctx->grpc_client ) ) return busy;
   if( FD_UNLIKELY( !fd_grpc_client_is_connected( ctx->grpc_client ) ) ) return busy;
+
+  if( FD_UNLIKELY( ctx->builder_info_avail ) ) {
+    long const valid_until = ctx->builder_info_valid_until;
+    if( FD_UNLIKELY( valid_until && now >= valid_until ) ) {
+      ctx->builder_info_avail      = 0;
+      ctx->bam_last_config_poll_ns = 0L;
+    }
+  }
 
   if( FD_UNLIKELY( !ctx->bam_auth_ready && !ctx->bam_auth_inflight && !ctx->bam_stream ) ) {
     fd_bam_request_auth_challenge( ctx );
