@@ -64,6 +64,10 @@ fd_bam_tile_publish_txn( fd_bam_tile_t * ctx,
                          ulong           txn_sz,
                          uint            source_ipv4 );
 
+static void
+fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
+                                      uint64_t        time_sent_microseconds );
+
 __attribute__((weak)) long
 fd_bam_now( void ) {
   return fd_log_wallclock();
@@ -427,18 +431,67 @@ fd_bam_decode_batch( fd_bam_tile_t * ctx,
   return 1;
 }
 
-static bool
-fd_bam_visit_batches( pb_istream_t *       stream,
-                      pb_field_t const *   field,
-                      void **              arg ) {
-  (void)field;
-  fd_bam_tile_t * ctx = *arg;
-  pb_istream_t substream;
-  if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return false;
+static int
+fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
+                                         pb_istream_t *   stream ) {
+  uint32_t      tag;
+  pb_wire_type_t wire_type;
+  bool          eof = false;
+  while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
+    if( FD_UNLIKELY( tag!=bam_types_MultipleAtomicTxnBatch_batches_tag ) ) {
+      if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
+      continue;
+    }
+    if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+      if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
+      continue;
+    }
+    pb_istream_t substream;
+    if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return 0;
+    int ok = fd_bam_decode_batch( ctx, &substream );
+    pb_close_string_substream( stream, &substream );
+    if( FD_UNLIKELY( !ok ) ) return 0;
+  }
+  if( FD_UNLIKELY( !eof ) ) return 0;
+  return 1;
+}
 
-  int ok = fd_bam_decode_batch( ctx, &substream );
-  pb_close_string_substream( stream, &substream );
-  return ok;
+static int
+fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
+                                     pb_istream_t *   stream ) {
+  uint32_t      tag;
+  pb_wire_type_t wire_type;
+  bool          eof = false;
+  while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
+    switch( tag ) {
+    case bam_api_SchedulerResponseV0_heart_beat_tag: {
+      bam_types_BuilderHeartBeat hb = bam_types_BuilderHeartBeat_init_default;
+      if( FD_UNLIKELY( !pb_decode( stream, &bam_types_BuilderHeartBeat_msg, &hb ) ) ) return 0;
+      ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
+      fd_bam_client_sample_heartbeat_delay( ctx, hb.time_sent_microseconds );
+      ctx->metrics.heartbeat_recv_cnt++;
+      break;
+    }
+    case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag: {
+      if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+        if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
+        break;
+      }
+      pb_istream_t substream;
+      if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return 0;
+      int ok = fd_bam_decode_multiple_atomic_txn_batch( ctx, &substream );
+      pb_close_string_substream( stream, &substream );
+      if( FD_UNLIKELY( !ok ) ) return 0;
+      ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
+      break;
+    }
+    default:
+      if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
+      break;
+    }
+  }
+  if( FD_UNLIKELY( !eof ) ) return 0;
+  return 1;
 }
 
 static void
@@ -774,38 +827,46 @@ fd_bam_test_drive( fd_bam_tile_t * ctx,
 static void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
                                    pb_istream_t *   istream ) {
-  bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
-  resp.versioned_msg.v0.resp.multiple_atomic_txn_batch.batches = (pb_callback_t){
-    .funcs.decode = fd_bam_visit_batches,
-    .arg          = ctx
-  };
+  uint32_t      tag;
+  pb_wire_type_t wire_type;
+  bool          eof         = false;
+  uint32_t      version_tag = 0U;
+  int           seen_v0     = 0;
 
-  if( FD_UNLIKELY( !pb_decode( istream, &bam_api_SchedulerResponse_msg, &resp ) ) ) {
-    ctx->metrics.decode_fail_cnt++;
-    FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed" ));
-    return;
+  while( pb_decode_tag( istream, &wire_type, &tag, &eof ) ) {
+    version_tag = tag;
+    if( tag==bam_api_SchedulerResponse_v0_tag ) {
+      if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+        if( FD_UNLIKELY( !pb_skip_field( istream, wire_type ) ) ) goto fail;
+        continue;
+      }
+      pb_istream_t substream;
+      if( FD_UNLIKELY( !pb_make_string_substream( istream, &substream ) ) ) goto fail;
+      int ok = fd_bam_decode_scheduler_response_v0( ctx, &substream );
+      pb_close_string_substream( istream, &substream );
+      if( FD_UNLIKELY( !ok ) ) goto fail;
+      seen_v0 = 1;
+    } else {
+      if( FD_UNLIKELY( !pb_skip_field( istream, wire_type ) ) ) goto fail;
+    }
   }
 
-  if( FD_UNLIKELY( resp.which_versioned_msg != bam_api_SchedulerResponse_v0_tag ) ) {
-    FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", (unsigned)resp.which_versioned_msg ));
-    ctx->metrics.transport_fail_cnt++;
-    ctx->defer_reset = 1;
-    return;
+  if( FD_UNLIKELY( !eof ) ) goto fail;
+  if( FD_UNLIKELY( !seen_v0 ) ) {
+    if( version_tag && version_tag!=bam_api_SchedulerResponse_v0_tag ) {
+      FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", (unsigned)version_tag ));
+      ctx->metrics.transport_fail_cnt++;
+      ctx->defer_reset = 1;
+    } else {
+      ctx->metrics.decode_fail_cnt++;
+      FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) missing version" ));
+    }
   }
+  return;
 
-  bam_api_SchedulerResponseV0 * v0 = &resp.versioned_msg.v0;
-  switch( v0->which_resp ) {
-  case bam_api_SchedulerResponseV0_heart_beat_tag:
-    ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
-    fd_bam_client_sample_heartbeat_delay( ctx, v0->resp.heart_beat.time_sent_microseconds );
-    ctx->metrics.heartbeat_recv_cnt++;
-    break;
-  case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag:
-    ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
-    break;
-  default:
-    break;
-  }
+fail:
+  ctx->metrics.decode_fail_cnt++;
+  FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed" ));
 }
 
 static int
