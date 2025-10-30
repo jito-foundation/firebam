@@ -1,5 +1,7 @@
 #include "fd_bank_abi.h"
 
+#include <limits.h>
+
 #include "../../disco/tiles.h"
 #include "../../disco/bam/fd_bam_types.h"
 #include "../../disco/pack/fd_pack.h"
@@ -13,6 +15,12 @@
 
 #define FD_BANK_TRANSACTION_LANDED    1
 #define FD_BANK_TRANSACTION_EXECUTED  2
+
+typedef struct {
+  fd_bam_bundle_result_t res;
+  uint seen_mask;
+  uchar in_use;
+} fd_bam_batch_state_t;
 
 typedef struct {
   ulong kind_id;
@@ -68,6 +76,8 @@ typedef struct {
     ulong exec_failed;
     ulong success;
   } metrics;
+
+  fd_bam_batch_state_t bam_batch_state[ FD_BAM_MAX_PENDING_RESULTS ];
 } fd_bank_ctx_t;
 
 FD_FN_CONST static inline ulong
@@ -96,6 +106,64 @@ metrics_write( fd_bank_ctx_t * ctx ) {
   FD_MCNT_SET( BANK, FEE_ONLY_TRANSACTIONS,        ctx->metrics.fee_only          );
   FD_MCNT_SET( BANK, EXECUTED_FAILED_TRANSACTIONS, ctx->metrics.exec_failed       );
   FD_MCNT_SET( BANK, SUCCESSFUL_TRANSACTIONS,      ctx->metrics.success           );
+}
+
+static fd_bam_batch_state_t *
+fd_bank_batch_state_find( fd_bank_ctx_t * ctx,
+                          ulong           seq_id ) {
+  for( ulong i=0UL; i<FD_BAM_MAX_PENDING_RESULTS; i++ ) {
+    fd_bam_batch_state_t * state = &ctx->bam_batch_state[ i ];
+    if( FD_UNLIKELY( !state->in_use ) ) continue;
+    if( FD_LIKELY( state->res.bundle_id==seq_id ) ) return state;
+  }
+  return NULL;
+}
+
+static fd_bam_batch_state_t *
+fd_bank_batch_state_acquire( fd_bank_ctx_t * ctx ) {
+  for( ulong i=0UL; i<FD_BAM_MAX_PENDING_RESULTS; i++ ) {
+    fd_bam_batch_state_t * state = &ctx->bam_batch_state[ i ];
+    if( FD_UNLIKELY( state->in_use ) ) continue;
+    return state;
+  }
+  return NULL;
+}
+
+static fd_bam_batch_state_t *
+fd_bank_batch_state_prepare( fd_bank_ctx_t * ctx,
+                             ulong           seq_id,
+                             ulong           slot,
+                             uint            batch_cnt,
+                             int             revert_on_error ) {
+  fd_bam_batch_state_t * state = fd_bank_batch_state_find( ctx, seq_id );
+  if( FD_UNLIKELY( !state ) ) {
+    state = fd_bank_batch_state_acquire( ctx );
+    if( FD_UNLIKELY( !state ) ) {
+      FD_LOG_WARNING(( "Dropping BAM batch result (bank buffer full): seq_id=%lu", seq_id ));
+      FD_MCNT_INC( BAM, BUNDLE_RESULTS_DROPPED, 1UL );
+      return NULL;
+    }
+    state->in_use    = 1U;
+    state->seen_mask = 0U;
+    fd_memset( &state->res, 0, sizeof( state->res ) );
+    state->res.bundle_id         = seq_id;
+    state->res.slot              = slot;
+    state->res.bundle_txn_cnt    = (ulong)batch_cnt;
+    state->res.txn_cnt           = (uint)fd_ulong_min( (ulong)batch_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
+    state->res.execution_success = revert_on_error ? 0U : 1U;
+    state->res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+  }
+  return state;
+}
+
+static void
+fd_bank_batch_state_publish( fd_bank_ctx_t *       ctx,
+                             fd_bam_batch_state_t * state,
+                             fd_stem_context_t *    stem ) {
+  publish_bundle_result( ctx, &state->res, stem );
+  state->in_use    = 0U;
+  state->seen_mask = 0U;
+  fd_memset( &state->res, 0, sizeof( state->res ) );
 }
 
 static int
@@ -297,6 +365,68 @@ handle_microblock( fd_bank_ctx_t *     ctx,
                    "(%u) requested_exec_plus_acct_data_cus (%u) is_simple_vote (%i) exec_failed (%i)",
                    actual_execution_cus, actual_acct_data_cus, requested_exec_plus_acct_data_cus, is_simple_vote,
                    transaction_err[ sanitized_idx-1UL ] ));
+    }
+  }
+
+  ulong sanitized_idx_report = 0UL;
+  for( ulong i=0UL; i<txn_cnt; i++ ) {
+    fd_txn_p_t * txn = (fd_txn_p_t *)( dst + (i*sizeof(fd_txn_p_t)) );
+    ulong sanitized_arr_idx = ULONG_MAX;
+
+    if( FD_UNLIKELY( txn->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS ) ) {
+      sanitized_idx_report++;
+      sanitized_arr_idx = sanitized_idx_report - 1UL;
+    }
+
+    uint seq_id = txn->bam_seq_id;
+    if( FD_UNLIKELY( !seq_id ) ) continue;
+    if( FD_UNLIKELY( txn->bam_revert_on_error ) ) continue;
+
+    uint batch_cnt = txn->bam_batch_cnt ? txn->bam_batch_cnt : 1U;
+    uint batch_idx = txn->bam_batch_idx;
+    if( FD_UNLIKELY( batch_idx >= FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
+      FD_LOG_WARNING(( "Ignoring BAM batch index %u (>= %u) for seq_id=%u", batch_idx, FD_PACK_MAX_TXN_PER_BUNDLE, seq_id ));
+      continue;
+    }
+
+    fd_bam_batch_state_t * state = fd_bank_batch_state_prepare( ctx, (ulong)seq_id, slot, batch_cnt, 0 );
+    if( FD_UNLIKELY( !state ) ) continue;
+    fd_bam_bundle_result_t * res = &state->res;
+
+    uint  err        = (uint)bam_types_TransactionErrorReason_SANITIZE_FAILURE;
+    uint  consumed   = 0U;
+    uchar sanitized  = 0U;
+
+    if( sanitized_arr_idx!=ULONG_MAX ) {
+      if( FD_LIKELY( sanitized_arr_idx < sanitized_txn_cnt ) ) {
+        err       = (uint)transaction_err[ sanitized_arr_idx ];
+        consumed  = consumed_exec_cus[ sanitized_arr_idx ] + consumed_acct_data_cus[ sanitized_arr_idx ];
+        sanitized = 1U;
+      } else {
+        err       = 0U;
+        consumed  = 0U;
+        sanitized = 1U;
+      }
+    }
+
+    if( res->bundle_txn_cnt < (ulong)batch_cnt ) res->bundle_txn_cnt = (ulong)batch_cnt;
+    uint capped_cnt = (uint)fd_ulong_min( (ulong)batch_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
+    if( FD_UNLIKELY( capped_cnt==0U ) ) capped_cnt = 1U;
+    if( res->txn_cnt < capped_cnt ) res->txn_cnt = capped_cnt;
+
+    res->transaction_err[ batch_idx ]  = err;
+    res->consumed_cus[ batch_idx ]     = consumed;
+    res->sanitize_success[ batch_idx ] = sanitized;
+
+    state->seen_mask |= (1U<<batch_idx);
+
+    uint expected_cnt = res->txn_cnt;
+    if( FD_UNLIKELY( !expected_cnt ) ) expected_cnt = (uint)fd_ulong_min( (ulong)batch_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
+    if( FD_UNLIKELY( !expected_cnt ) ) expected_cnt = 1U;
+    uint expected_mask = (1U<<expected_cnt) - 1U;
+
+    if( FD_LIKELY( (state->seen_mask & expected_mask)==expected_mask ) ) {
+      fd_bank_batch_state_publish( ctx, state, stem );
     }
   }
 
@@ -627,6 +757,8 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->bam_out_chunk  = 0UL;
     ctx->bam_out_idx    = ULONG_MAX;
   }
+
+  fd_memset( ctx->bam_batch_state, 0, sizeof( ctx->bam_batch_state ) );
 }
 
 /* For a bundle, one bundle might burst into at most 5 separate PoH mixins, since the

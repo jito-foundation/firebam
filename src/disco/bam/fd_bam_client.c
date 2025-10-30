@@ -110,12 +110,18 @@ fd_bam_tile_publish_bundle_txn( fd_bam_tile_t * ctx,
                                 void const *    txn,
                                 ulong           txn_sz,
                                 ulong           bundle_txn_cnt,
+                                uint            batch_idx,
                                 uint            source_ipv4 );
 
 static void
 fd_bam_tile_publish_txn( fd_bam_tile_t * ctx,
                          void const *    txn,
                          ulong           txn_sz,
+                         ulong           max_schedule_slot,
+                         uint            scheduler_seq_id,
+                         uint            batch_idx,
+                         uint            batch_cnt,
+                         int             revert_on_error,
                          uint            source_ipv4 );
 
 static void
@@ -530,13 +536,27 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
 
     for( ulong i=0UL; i<state->packet_cnt; i++ ) {
       bam_types_Packet const * pkt = &state->packets[ i ];
-      fd_bam_tile_publish_bundle_txn( ctx, pkt->data.bytes, pkt->data.size, state->packet_cnt, 0U );
+      fd_bam_tile_publish_bundle_txn( ctx,
+                                      pkt->data.bytes,
+                                      pkt->data.size,
+                                      state->packet_cnt,
+                                      (uint)i,
+                                      0U );
     }
     ctx->metrics.bundle_received_cnt++;
   } else {
+    ulong max_slot = batch->max_schedule_slot ? batch->max_schedule_slot : ULONG_MAX;
     for( ulong i=0UL; i<state->packet_cnt; i++ ) {
       bam_types_Packet const * pkt = &state->packets[ i ];
-      fd_bam_tile_publish_txn( ctx, pkt->data.bytes, pkt->data.size, 0U );
+      fd_bam_tile_publish_txn( ctx,
+                               pkt->data.bytes,
+                               pkt->data.size,
+                               max_slot,
+                               (uint)batch->seq_id,
+                               (uint)i,
+                               (uint)state->packet_cnt,
+                               0,
+                               0U );
     }
   }
   ctx->bundle_max_schedule_slot = ULONG_MAX;
@@ -564,30 +584,28 @@ fd_bam_decode_batch( fd_bam_tile_t * ctx,
     FD_MCNT_INC( BAM, ERRORS_PROTOBUF, 1UL );
     char const * err = PB_GET_ERROR( stream );
     FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)", err ? err : "unknown" ));
-    if( FD_UNLIKELY( state.revert_on_error ) ) {
-      if( state.has_deser_error ) {
-        fd_bam_client_report_deser_error( ctx, &batch, &state, state.deser_reason, state.deser_index );
-      } else if( state.has_generic_invalid ) {
-        fd_bam_client_report_generic_invalid( ctx, &batch, &state, state.generic_invalid_msg );
-      } else {
-        char msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ];
-        switch( state.drop_reason ) {
-        case FD_BAM_BATCH_DROP_PROTO:
-          strncpy( msg, "batch decode failed", sizeof(msg)-1UL );
-          break;
-        case FD_BAM_BATCH_DROP_OVERSIZE:
-          strncpy( msg, "packet exceeds MTU", sizeof(msg)-1UL );
-          break;
-        case FD_BAM_BATCH_DROP_MIXED_FLAGS:
-          strncpy( msg, "mixed revert flags", sizeof(msg)-1UL );
-          break;
-        default:
-          strncpy( msg, err ? err : "protobuf decode failed", sizeof(msg)-1UL );
-          break;
-        }
-        msg[ sizeof(msg)-1UL ] = '\0';
-        fd_bam_client_report_generic_invalid( ctx, &batch, &state, msg );
+    if( state.has_deser_error ) {
+      fd_bam_client_report_deser_error( ctx, &batch, &state, state.deser_reason, state.deser_index );
+    } else if( state.has_generic_invalid ) {
+      fd_bam_client_report_generic_invalid( ctx, &batch, &state, state.generic_invalid_msg );
+    } else {
+      char msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ];
+      switch( state.drop_reason ) {
+      case FD_BAM_BATCH_DROP_PROTO:
+        strncpy( msg, "batch decode failed", sizeof(msg)-1UL );
+        break;
+      case FD_BAM_BATCH_DROP_OVERSIZE:
+        strncpy( msg, "packet exceeds MTU", sizeof(msg)-1UL );
+        break;
+      case FD_BAM_BATCH_DROP_MIXED_FLAGS:
+        strncpy( msg, "mixed revert flags", sizeof(msg)-1UL );
+        break;
+      default:
+        strncpy( msg, err ? err : "protobuf decode failed", sizeof(msg)-1UL );
+        break;
       }
+      msg[ sizeof(msg)-1UL ] = '\0';
+      fd_bam_client_report_generic_invalid( ctx, &batch, &state, msg );
     }
     return 1;
   }
@@ -1319,6 +1337,7 @@ fd_bam_tile_publish_bundle_txn(
     void const *       txn,
     ulong              txn_sz,  /* <=FD_TXN_MTU */
     ulong              bundle_txn_cnt,
+    uint               batch_idx,
     uint               source_ipv4
 ) {
   if( FD_UNLIKELY( !ctx->builder_info_avail ) ) {
@@ -1336,8 +1355,12 @@ fd_bam_tile_publish_bundle_txn(
     .block_engine   = {
       .bundle_id         = ctx->bundle_seq,
       .bundle_txn_cnt    = bundle_txn_cnt,
+      .max_schedule_slot = ctx->bundle_max_schedule_slot,
+      .scheduler_seq_id  = (uint)ctx->bundle_seq,
+      .batch_cnt         = (ushort)bundle_txn_cnt,
+      .batch_idx         = (ushort)batch_idx,
+      .revert_on_error   = 1U,
       .commission        = (uchar)ctx->builder_commission,
-      .max_schedule_slot = ctx->bundle_max_schedule_slot
     },
   };
   memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL );
@@ -1363,6 +1386,11 @@ fd_bam_tile_publish_txn(
     fd_bam_tile_t * ctx,
     void const *       txn,
     ulong              txn_sz,  /* <=FD_TXN_MTU */
+    ulong              max_schedule_slot,
+    uint               scheduler_seq_id,
+    uint               batch_idx,
+    uint               batch_cnt,
+    int                revert_on_error,
     uint               source_ipv4
 ) {
   fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
@@ -1373,13 +1401,21 @@ fd_bam_tile_publish_txn(
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BUNDLE,
     .block_engine   = {
-      .bundle_id         = 0UL,
-      .bundle_txn_cnt    = 1UL,
-      .commission        = 0U,
-      .commission_pubkey = {0U},
-      .max_schedule_slot = 0UL
+      .bundle_id         = (ulong)scheduler_seq_id,
+      .bundle_txn_cnt    = batch_cnt,
+      .max_schedule_slot = max_schedule_slot,
+      .scheduler_seq_id  = scheduler_seq_id,
+      .batch_cnt         = (ushort)batch_cnt,
+      .batch_idx         = (ushort)batch_idx,
+      .revert_on_error   = (uchar)revert_on_error,
+      .commission        = revert_on_error ? (uchar)ctx->builder_commission : (uchar)0,
     },
   };
+  if( revert_on_error && ctx->builder_info_avail ) {
+    memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL );
+  } else {
+    fd_memset( txnm->block_engine.commission_pubkey, 0, sizeof( txnm->block_engine.commission_pubkey ) );
+  }
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
 
   ulong sz  = fd_txn_m_realized_footprint( txnm, 0, 0 );

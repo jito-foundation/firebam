@@ -1104,7 +1104,7 @@ during_frag( fd_pack_ctx_t * ctx,
 
 
     ulong bundle_id = txnm->block_engine.bundle_id;
-    if( FD_UNLIKELY( bundle_id ) ) {
+    if( FD_UNLIKELY( txnm->block_engine.revert_on_error && bundle_id ) ) {
       ctx->is_bundle = 1;
       if( FD_LIKELY( bundle_id!=ctx->current_bundle->id ) ) {
         if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
@@ -1175,6 +1175,10 @@ during_frag( fd_pack_ctx_t * ctx,
     ctx->cur_spot->txnp->payload_sz  = payload_sz;
     ctx->cur_spot->txnp->source_ipv4 = source_ipv4;
     ctx->cur_spot->txnp->source_tpu  = source_tpu;
+    ctx->cur_spot->txnp->bam_seq_id          = txnm->block_engine.scheduler_seq_id;
+    ctx->cur_spot->txnp->bam_batch_cnt       = (ushort)txnm->block_engine.batch_cnt;
+    ctx->cur_spot->txnp->bam_batch_idx       = (ushort)txnm->block_engine.batch_idx;
+    ctx->cur_spot->txnp->bam_revert_on_error = (uchar)(txnm->block_engine.revert_on_error ? 1 : 0);
 
     break;
   }

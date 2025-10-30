@@ -462,9 +462,14 @@ fd_bundle_tile_publish_bundle_txn(
     .source_ipv4      = source_ipv4,
     .source_tpu       = FD_TXN_M_TPU_SOURCE_BUNDLE,
     .block_engine   = {
-      .bundle_id      = ctx->bundle_seq,
-      .bundle_txn_cnt = bundle_txn_cnt,
-      .commission     = (uchar)ctx->builder_commission
+      .bundle_id         = ctx->bundle_seq,
+      .bundle_txn_cnt    = bundle_txn_cnt,
+      .max_schedule_slot = 0UL,
+      .scheduler_seq_id  = (uint)ctx->bundle_seq,
+      .batch_cnt         = (ushort)bundle_txn_cnt,
+      .batch_idx         = 0U,
+      .revert_on_error   = 1U,
+      .commission        = (uchar)ctx->builder_commission
     },
   };
   memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL );
@@ -502,6 +507,11 @@ fd_bundle_tile_publish_txn(
     .block_engine   = {
       .bundle_id         = 0UL,
       .bundle_txn_cnt    = 1UL,
+      .max_schedule_slot = 0UL,
+      .scheduler_seq_id  = 0U,
+      .batch_cnt         = 1U,
+      .batch_idx         = 0U,
+      .revert_on_error   = 0U,
       .commission        = 0U,
       .commission_pubkey = {0U}
     },
