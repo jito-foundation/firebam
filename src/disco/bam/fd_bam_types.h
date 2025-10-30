@@ -12,6 +12,7 @@
 /* FD_BAM_MAX_PENDING_RESULTS is the bundle result queue depth, so long disconnects
  * don't drop SchedulerMessage payloads. */
 #define FD_BAM_MAX_PENDING_RESULTS 512UL
+#define FD_BAM_GENERIC_INVALID_MSG_MAX 96UL
 
 typedef struct {
   ulong bundle_id;
@@ -23,6 +24,11 @@ typedef struct {
   uint  transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   uint  consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ];
   uchar sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  uint  has_deser_error;
+  uint  deser_index;
+  uint  deser_reason;
+  uint  has_generic_invalid;
+  char  generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ];
 } fd_bam_bundle_result_t;
 
 typedef struct {

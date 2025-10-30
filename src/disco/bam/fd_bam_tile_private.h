@@ -7,6 +7,7 @@
 #include "../keyguard/fd_keyguard_client.h"
 #include "../bam/fd_bam_types.h"
 #include "fd_bam_ctrl.h"
+#include "../metrics/fd_metrics.h"
 #include "../../waltz/grpc/fd_grpc_client.h"
 #include "../../waltz/resolv/fd_netdb.h"
 #include "../../waltz/fd_rtt_est.h"
@@ -190,6 +191,21 @@ struct fd_bam_tile {
 };
 
 typedef struct fd_bam_tile fd_bam_tile_t;
+
+FD_FN_UNUSED static inline void
+fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
+                       fd_bam_bundle_result_t const * res ) {
+  if( FD_UNLIKELY( ctx->bam_pending_results>=FD_BAM_MAX_PENDING_RESULTS ) ) {
+    FD_LOG_WARNING(( "Dropping BAM bundle result (bam tile queue full): bundle_id=%lu slot=%lu txn_cnt=%u exec_success=%u sched_err=%u",
+                     res->bundle_id, res->slot, res->txn_cnt, res->execution_success, res->scheduling_error ));
+    ctx->metrics.bundle_result_drop_cnt++;
+    FD_MCNT_INC( BAM, BUNDLE_RESULTS_DROPPED, 1UL );
+    return;
+  }
+  ctx->bam_results[ ctx->bam_results_tail ] = *res;
+  ctx->bam_results_tail = (ctx->bam_results_tail + 1UL) % FD_BAM_MAX_PENDING_RESULTS;
+  ctx->bam_pending_results++;
+}
 
 /* Define 'request_ctx' IDs to identify different types of gRPC calls */
 

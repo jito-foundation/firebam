@@ -470,6 +470,123 @@ test_bam_bundle_requires_builder_info( fd_wksp_t * wksp ) {
   FD_TEST( res->execution_success==0U );
   FD_TEST( res->txn_cnt==2U );
 
+  test_bam_env_mock_conn_empty( env );
+  test_bam_env_mock_h2_hs( state );
+  test_bam_prepare_scheduler_stream( state );
+  g_clock = (long)14e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  FD_TEST( fd_bam_test_flush_results( state )==1 );
+  FD_TEST( state->bam_pending_results==0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.which_versioned_msg==bam_api_SchedulerMessage_v0_tag );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+  FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_generic_invalid_tag );
+  FD_TEST( 0==strcmp( result->result.not_committed.reason.generic_invalid.message, "builder info unavailable" ) );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_bundle_rejects_mixed_revert_flags( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  bam_types_Packet packets[ 2 ];
+  fd_memset( packets, 0, sizeof( packets ) );
+  for( size_t i=0UL; i<2UL; i++ ) {
+    packets[ i ].data.size = 1U;
+    packets[ i ].data.bytes[0] = (uchar)( 'Z' + (int)i );
+    packets[ i ].has_meta = 1;
+    packets[ i ].meta.has_flags = 1;
+    packets[ i ].meta.flags.revert_on_error = (i==0UL);
+  }
+
+  uchar protobuf[256];
+  size_t protobuf_sz = test_bam_encode_scheduler_response( packets, 2UL, 42U, protobuf, sizeof( protobuf ) );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.bundle_received_cnt==0UL );
+  FD_TEST( state->bam_pending_results==1UL );
+
+  test_bam_prepare_scheduler_stream( state );
+  g_clock = (long)15e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  FD_TEST( fd_bam_test_flush_results( state )==1 );
+  FD_TEST( state->bam_pending_results==0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+  FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_deserialization_error_tag );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.reason==bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_bundle_rejects_vote_transactions( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  bam_types_Packet packets[ 2 ];
+  fd_memset( packets, 0, sizeof( packets ) );
+  for( size_t i=0UL; i<2UL; i++ ) {
+    packets[ i ].data.size = 1U;
+    packets[ i ].data.bytes[0] = (uchar)( 'a' + (int)i );
+    packets[ i ].has_meta = 1;
+    packets[ i ].meta.has_flags = 1;
+    packets[ i ].meta.flags.revert_on_error = 1;
+    packets[ i ].meta.flags.simple_vote_tx  = (i==0UL);
+  }
+
+  uchar protobuf[256];
+  size_t protobuf_sz = test_bam_encode_scheduler_response( packets, 2UL, 43U, protobuf, sizeof( protobuf ) );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.bundle_received_cnt==0UL );
+  FD_TEST( state->bam_pending_results==1UL );
+
+  test_bam_prepare_scheduler_stream( state );
+  g_clock = (long)16e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  FD_TEST( fd_bam_test_flush_results( state )==1 );
+  FD_TEST( state->bam_pending_results==0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+  FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_deserialization_error_tag );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.reason==bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE );
+
   test_bam_env_destroy( env );
 }
 
@@ -1590,6 +1707,8 @@ main( int     argc,
   test_bam_packets_forwarded( wksp );
   test_bam_bundle_forwarded( wksp );
   test_bam_bundle_requires_builder_info( wksp );
+  test_bam_bundle_rejects_mixed_revert_flags( wksp );
+  test_bam_bundle_rejects_vote_transactions( wksp );
   test_bam_grpc_end_handling( wksp );
   test_bam_grpc_timeout( wksp );
   test_bam_scheduler_auth_proof_publishes_message( wksp );

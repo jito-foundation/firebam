@@ -360,6 +360,43 @@ fd_pack_out_valid( fd_pack_out_ctx_t const * out ) {
 }
 
 static inline void
+fd_pack_assign_bundle_failure_reason( fd_bam_bundle_result_t * res,
+                                      int                      result ) {
+  switch( result ) {
+  case FD_PACK_INSERT_REJECT_NONCE_PRIORITY:
+    res->has_deser_error = 1U;
+    res->deser_reason    = bam_types_DeserializationErrorReason_PRIORITIZATION_FAILURE;
+    res->deser_index     = 0U;
+    break;
+  case FD_PACK_INSERT_REJECT_UNAFFORDABLE:
+    if( FD_UNLIKELY( res->txn_cnt==0U ) ) res->txn_cnt = 1U;
+    res->transaction_err[0]  = bam_types_TransactionErrorReason_INSUFFICIENT_FUNDS_FOR_FEE;
+    res->sanitize_success[0] = 1U;
+    break;
+  case FD_PACK_INSERT_REJECT_ADDR_LUT:
+    if( FD_UNLIKELY( res->txn_cnt==0U ) ) res->txn_cnt = 1U;
+    res->transaction_err[0]  = bam_types_TransactionErrorReason_ADDRESS_LOOKUP_TABLE_NOT_FOUND;
+    res->sanitize_success[0] = 1U;
+    break;
+  case FD_PACK_INSERT_REJECT_DUPLICATE:
+  case FD_PACK_INSERT_REJECT_DUPLICATE_ACCT:
+  case FD_PACK_INSERT_REJECT_TOO_LARGE:
+  case FD_PACK_INSERT_REJECT_ACCOUNT_CNT:
+  case FD_PACK_INSERT_REJECT_ESTIMATION_FAIL:
+  case FD_PACK_INSERT_REJECT_WRITES_SYSVAR:
+  case FD_PACK_INSERT_REJECT_INVALID_NONCE:
+  case FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST:
+  case FD_PACK_INSERT_REJECT_NONCE_CONFLICT:
+    res->has_deser_error = 1U;
+    res->deser_reason    = bam_types_DeserializationErrorReason_FILTER_FAILURE;
+    res->deser_index     = 0U;
+    break;
+  default:
+    break;
+  }
+}
+
+static inline void
 fd_pack_enqueue_bam_result( fd_pack_ctx_t * ctx,
                             fd_bam_bundle_result_t const * res ) {
   if( FD_UNLIKELY( !fd_pack_out_valid( &ctx->bundle_out ) && !fd_pack_out_valid( &ctx->bam_out ) ) ) return;
@@ -1295,6 +1332,7 @@ after_frag( fd_pack_ctx_t *     ctx,
           res.execution_success = 0U;
           res.scheduling_error  = fd_pack_result_sched_error( result );
           for( uint i=0U; i<res.txn_cnt; i++ ) res.sanitize_success[ i ] = 1U;
+          fd_pack_assign_bundle_failure_reason( &res, result );
           fd_pack_enqueue_bam_result( ctx, &res );
         }
         ctx->current_bundle->bundle = NULL;
