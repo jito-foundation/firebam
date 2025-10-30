@@ -1075,9 +1075,13 @@ fd_bam_client_log_status( fd_bam_tile_t * ctx ) {
     long ts = fd_log_wallclock();
     if( FD_LIKELY( ts-(ctx->last_bundle_status_log_nanos) >= (long)1e6 ) ) {
       if( connected_now ) {
-        FD_LOG_NOTICE(( "Connected to BAM server" ));
+        FD_LOG_NOTICE(( "Connected to BAM node" ));
+        ctx->metrics.connection_cnt++;
+        FD_MCNT_INC( BAM, CONNECTIONS, 1UL );
       } else {
-        FD_LOG_WARNING(( "Disconnected from BAM server" ));
+        FD_LOG_WARNING(( "Disconnected from BAM node" ));
+        ctx->metrics.disconnect_cnt++;
+        FD_MCNT_INC( BAM, DISCONNECTS, 1UL );
       }
       ctx->last_bundle_status_log_nanos = ts;
       ctx->bundle_status_logged = (uchar)status;

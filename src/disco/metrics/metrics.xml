@@ -360,13 +360,15 @@ metric introduced.
     <counter name="Errors" enum="BamError" summary="Number of BAM client errors encountered" />
     <gauge name="HeapSize" summary="Workspace heap size used by the BAM client" />
     <gauge name="HeapFreeBytes" summary="Approx free space in workspace used by the BAM client" />
-    <counter name="Keepalives" summary="Number of HTTP/2 PINGs acknowledged by the BAM server" />
-    <gauge name="Connected" summary="1 if connected to the BAM server, 0 if not" />
+    <counter name="Keepalives" summary="Number of HTTP/2 PINGs acknowledged by the BAM node" />
+    <counter name="Connections" summary="Number of times the BAM client established a connection to the BAM node" />
+    <counter name="Disconnects" summary="Number of times the BAM client disconnected from the BAM node" />
+    <gauge name="Connected" summary="1 if connected to the BAM node, 0 if not" />
     <gauge name="RttSample" summary="Latest BAM RTT sample at scrape time (nanoseconds)" />
     <gauge name="RttSmoothed" summary="BAM RTT moving average (nanoseconds)" />
     <gauge name="RttVar" summary="BAM RTT variance (nanoseconds)" />
     <histogram name="MessageRxDelayNanos" min="100000" max="1000000000">
-        <summary>Message receive delay in nanoseconds from BAM server to BAM client</summary>
+        <summary>Message receive delay in nanoseconds from BAM node to BAM client</summary>
     </histogram>
 </tile>
 

@@ -49,6 +49,8 @@ struct fd_bam_metrics {
   ulong ping_ack_cnt;
   ulong heartbeat_sent_cnt;
   ulong heartbeat_recv_cnt;
+  ulong connection_cnt;
+  ulong disconnect_cnt;
 
   ulong decode_fail_cnt;
   ulong transport_fail_cnt;

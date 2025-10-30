@@ -894,11 +894,13 @@
 | <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">ssl_&#8203;alloc</span>"} | counter | Number of BAM client errors encountered (OpenSSL alloc fail) |
 | <span class="metrics-name">bam_&#8203;heap_&#8203;size</span> | gauge | Workspace heap size used by the BAM client |
 | <span class="metrics-name">bam_&#8203;heap_&#8203;free_&#8203;bytes</span> | gauge | Approx free space in workspace used by the BAM client |
-| <span class="metrics-name">bam_&#8203;keepalives</span> | counter | Number of HTTP/2 PINGs acknowledged by the BAM server |
-| <span class="metrics-name">bam_&#8203;connected</span> | gauge | 1 if connected to the BAM server, 0 if not |
+| <span class="metrics-name">bam_&#8203;keepalives</span> | counter | Number of HTTP/2 PINGs acknowledged by the BAM node |
+| <span class="metrics-name">bam_&#8203;connections</span> | counter | Number of times the BAM client established a connection to the BAM node |
+| <span class="metrics-name">bam_&#8203;disconnects</span> | counter | Number of times the BAM client disconnected from the BAM node |
+| <span class="metrics-name">bam_&#8203;connected</span> | gauge | 1 if connected to the BAM node, 0 if not |
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;sample</span> | gauge | Latest BAM RTT sample at scrape time (nanoseconds) |
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;smoothed</span> | gauge | BAM RTT moving average (nanoseconds) |
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;var</span> | gauge | BAM RTT variance (nanoseconds) |
-| <span class="metrics-name">bam_&#8203;message_&#8203;rx_&#8203;delay_&#8203;nanos</span> | histogram | Message receive delay in nanoseconds from BAM server to BAM client |
+| <span class="metrics-name">bam_&#8203;message_&#8203;rx_&#8203;delay_&#8203;nanos</span> | histogram | Message receive delay in nanoseconds from BAM node to BAM client |
 
 </div>
