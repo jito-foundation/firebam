@@ -555,7 +555,7 @@ test_bam_bundle_rejects_vote_transactions( fd_wksp_t * wksp ) {
     packets[ i ].data.bytes[0] = (uchar)( 'a' + (int)i );
     packets[ i ].has_meta = 1;
     packets[ i ].meta.has_flags = 1;
-    packets[ i ].meta.flags.revert_on_error = 1;
+    packets[ i ].meta.flags.revert_on_error = (i==0UL); /* vary to ensure vote rejection independent of flag */
     packets[ i ].meta.flags.simple_vote_tx  = (i==0UL);
   }
 

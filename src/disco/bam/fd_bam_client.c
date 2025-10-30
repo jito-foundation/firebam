@@ -64,10 +64,10 @@ static fd_bam_bundle_result_t
 fd_bam_client_make_base_result( bam_types_AtomicTxnBatch const * batch,
                                 fd_bam_batch_ctx_t const *       state ) {
   fd_bam_bundle_result_t res = {0};
-  res.bundle_id        = batch ? (ulong)batch->seq_id : 0UL;
-  res.slot             = batch ? batch->max_schedule_slot : 0UL;
-  res.bundle_txn_cnt   = state ? state->packet_cnt : 0UL;
-  res.txn_cnt          = 0U;
+  res.bundle_id = (ulong)batch->seq_id;
+  res.slot      = batch->max_schedule_slot;
+  res.bundle_txn_cnt = state->packet_cnt;
+  res.txn_cnt        = (uint)state->packet_cnt;
   res.execution_success = 0U;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   return res;
@@ -449,6 +449,14 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   }
 
   if( packet.has_meta && packet.meta.has_flags ) {
+    if( FD_UNLIKELY( packet.meta.flags.simple_vote_tx ) ) {
+      state->drop_reason = FD_BAM_BATCH_DROP_PROTO;
+      state->has_deser_error = 1U;
+      state->deser_reason    = bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE;
+      state->deser_index     = (uint)state->packet_cnt;
+      return false;
+    }
+
     int flag = packet.meta.flags.revert_on_error;
     if( state->revert_flag_set && state->revert_on_error!=flag ) {
       FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
@@ -464,11 +472,6 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     }
     state->revert_on_error = flag;
     state->revert_flag_set = 1;
-    if( FD_UNLIKELY( state->revert_on_error && packet.meta.flags.simple_vote_tx && !state->has_deser_error ) ) {
-      state->has_deser_error = 1U;
-      state->deser_reason    = bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE;
-      state->deser_index     = (uint)state->packet_cnt;
-    }
   }
 
   if( FD_UNLIKELY( packet.data.size > FD_TXN_MTU ) ) {
