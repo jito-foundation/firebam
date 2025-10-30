@@ -374,8 +374,14 @@ fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
 
   int rx_err = fd_h2_rbuf_recvmsg( client->frame_rx, sock_fd, MSG_NOSIGNAL|MSG_DONTWAIT );
   if( FD_UNLIKELY( rx_err ) ) {
-    FD_LOG_INFO(( "Disconnected: recvmsg error (%i-%s)", rx_err, fd_io_strerror( rx_err ) ));
-    return 0;
+    if( FD_UNLIKELY( rx_err==EPERM ) ) {
+      FD_LOG_DEBUG(( "recvmsg returned EPERM; treating as retryable" ));
+      rx_err = 0;
+    }
+    if( FD_UNLIKELY( rx_err ) ) {
+      FD_LOG_INFO(( "Disconnected: recvmsg error (%i-%s)", rx_err, fd_io_strerror( rx_err ) ));
+      return 0;
+    }
   }
 
   if( FD_UNLIKELY( conn->flags ) ) fd_h2_tx_control( conn, client->frame_tx, &fd_grpc_client_h2_callbacks );
@@ -383,6 +389,12 @@ fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
   fd_grpc_client_service_streams( client, fd_log_wallclock() );
 
   int tx_err = fd_h2_rbuf_sendmsg( client->frame_tx, sock_fd, MSG_NOSIGNAL|MSG_DONTWAIT );
+  if( FD_UNLIKELY( tx_err ) ) {
+    if( FD_UNLIKELY( tx_err==EPERM ) ) {
+      FD_LOG_DEBUG(( "sendmsg returned EPERM; treating as retryable" ));
+      tx_err = 0;
+    }
+  }
   if( FD_UNLIKELY( tx_err ) ) {
     FD_LOG_WARNING(( "fd_h2_rbuf_sendmsg failed (%i-%s)", tx_err, fd_io_strerror( tx_err ) ));
     return 0;

@@ -465,8 +465,19 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
   while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
     switch( tag ) {
     case bam_api_SchedulerResponseV0_heart_beat_tag: {
+      if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+        if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
+        break;
+      }
+      pb_istream_t hb_stream;
+      if( FD_UNLIKELY( !pb_make_string_substream( stream, &hb_stream ) ) ) return 0;
       bam_types_BuilderHeartBeat hb = bam_types_BuilderHeartBeat_init_default;
-      if( FD_UNLIKELY( !pb_decode( stream, &bam_types_BuilderHeartBeat_msg, &hb ) ) ) return 0;
+      int ok = pb_decode( &hb_stream, &bam_types_BuilderHeartBeat_msg, &hb );
+      pb_close_string_substream( stream, &hb_stream );
+      if( FD_UNLIKELY( !ok ) ) {
+        FD_LOG_WARNING(( "heartbeat decode failed: %s", PB_GET_ERROR( &hb_stream ) ));
+        return 0;
+      }
       ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
       fd_bam_client_sample_heartbeat_delay( ctx, hb.time_sent_microseconds );
       ctx->metrics.heartbeat_recv_cnt++;
@@ -866,7 +877,9 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
 
 fail:
   ctx->metrics.decode_fail_cnt++;
-  FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed" ));
+  char const * err = PB_GET_ERROR( istream );
+  FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed (%s)",
+                   err ? err : "unknown" ));
 }
 
 static int
@@ -1026,7 +1039,9 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
                    check_ts - ctx->bam_last_builder_heartbeat_ns >= FD_BAM_HEARTBEAT_TIMEOUT_NS ) ) {
     FD_LOG_WARNING(( "BAM heartbeat timed out (no heartbeat for %.2f seconds)",
                      (double)( check_ts - ctx->bam_last_builder_heartbeat_ns )/1e9 ));
-    ctx->defer_reset = 1;
+    ctx->keepalive->inflight = 0;
+    fd_bam_client_reset( ctx );
+    ctx->metrics.transport_fail_cnt++;
     *charge_busy = 1;
     return;
   }
