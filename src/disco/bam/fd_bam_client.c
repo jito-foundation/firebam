@@ -4,6 +4,7 @@
 #include "fd_bam_tile_private.h"
 #include "proto/bam_api.pb.h"
 #include "proto/bam_types.pb.h"
+#include "fd_bam_errors.h"
 #include "../fd_txn_m_t.h"
 #include "../plugin/fd_plugin.h"
 #include "../metrics/fd_metrics.h"
@@ -380,7 +381,7 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
       out->which_reason                 = bam_types_NotCommitted_generic_invalid_tag;
       snprintf( out->reason.generic_invalid.message,
                 sizeof(out->reason.generic_invalid.message),
-                "invalid scheduling error %u",
+                FD_BAM_ERR_FMT_INVALID_SCHEDULING_ERROR,
                 res->scheduling_error );
     }
     return;
@@ -406,7 +407,7 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
         out->which_reason                      = bam_types_NotCommitted_generic_invalid_tag;
         snprintf( out->reason.generic_invalid.message,
                   sizeof(out->reason.generic_invalid.message),
-                  "transaction error %u",
+                  FD_BAM_ERR_FMT_TRANSACTION_ERROR,
                   err );
       }
       return;
@@ -415,7 +416,7 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
 
   out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
   strncpy( out->reason.generic_invalid.message,
-           "bundle execution failed",
+           FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED,
            sizeof(out->reason.generic_invalid.message)-1UL );
   out->reason.generic_invalid.message[ sizeof(out->reason.generic_invalid.message)-1UL ] = '\0';
 }
@@ -520,7 +521,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   if( state->revert_on_error ) {
     if( FD_UNLIKELY( !ctx->builder_info_avail ) ) {
       ctx->metrics.missing_builder_info_fail_cnt++;
-      fd_bam_client_report_generic_invalid( ctx, batch, state, "builder info unavailable" );
+      fd_bam_client_report_generic_invalid( ctx, batch, state, FD_BAM_ERR_MSG_BUILDER_INFO_UNAVAILABLE );
       return;
     }
     ctx->bundle_seq                = batch->seq_id;

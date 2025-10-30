@@ -7,6 +7,7 @@
 #include "test_bam_common.c"
 #include "proto/bam_api.pb.h"
 #include "proto/bam_types.pb.h"
+#include "fd_bam_errors.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../ballet/nanopb/pb_decode.h"
@@ -488,7 +489,8 @@ test_bam_bundle_requires_builder_info( fd_wksp_t * wksp ) {
   bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
   FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
   FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_generic_invalid_tag );
-  FD_TEST( 0==strcmp( result->result.not_committed.reason.generic_invalid.message, "builder info unavailable" ) );
+  FD_TEST( 0==strcmp( result->result.not_committed.reason.generic_invalid.message,
+                      FD_BAM_ERR_MSG_BUILDER_INFO_UNAVAILABLE ) );
 
   test_bam_env_destroy( env );
 }
@@ -1302,7 +1304,8 @@ test_bam_scheduler_result_not_committed_generic_failure_reason( fd_wksp_t * wksp
   bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
   FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
   FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_generic_invalid_tag );
-  FD_TEST( 0==strcmp( result->result.not_committed.reason.generic_invalid.message, "bundle execution failed" ) );
+  FD_TEST( 0==strcmp( result->result.not_committed.reason.generic_invalid.message,
+                      FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED ) );
 
   fd_bam_bundle_result_t invalid = test_make_bundle_result( 905UL );
   invalid.execution_success = 0U;
@@ -1319,7 +1322,10 @@ test_bam_scheduler_result_not_committed_generic_failure_reason( fd_wksp_t * wksp
   result = &decoded.multi.results[0];
   FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
   FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_generic_invalid_tag );
-  FD_TEST( 0==strcmp( result->result.not_committed.reason.generic_invalid.message, "transaction error 39" ) );
+  char const * generic_msg = result->result.not_committed.reason.generic_invalid.message;
+  size_t const txn_prefix_len = strlen( FD_BAM_ERR_PREFIX_TRANSACTION_ERROR );
+  FD_TEST( 0==strncmp( generic_msg, FD_BAM_ERR_PREFIX_TRANSACTION_ERROR, txn_prefix_len ) );
+  FD_TEST( strlen( generic_msg )>txn_prefix_len );
 
   test_bam_env_destroy( env );
 }
@@ -1351,7 +1357,10 @@ test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( fd_wksp
   bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
   FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
   FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_generic_invalid_tag );
-  FD_TEST( 0==strcmp( result->result.not_committed.reason.generic_invalid.message, "invalid scheduling error 3" ) );
+  char const * sched_msg = result->result.not_committed.reason.generic_invalid.message;
+  size_t const sched_prefix_len = strlen( FD_BAM_ERR_PREFIX_INVALID_SCHEDULING );
+  FD_TEST( 0==strncmp( sched_msg, FD_BAM_ERR_PREFIX_INVALID_SCHEDULING, sched_prefix_len ) );
+  FD_TEST( strlen( sched_msg )>sched_prefix_len );
 
   test_bam_env_destroy( env );
 }
