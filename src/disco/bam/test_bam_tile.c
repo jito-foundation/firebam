@@ -464,6 +464,11 @@ test_bam_bundle_requires_builder_info( fd_wksp_t * wksp ) {
   FD_TEST( state->metrics.bundle_received_cnt==0UL );
   FD_TEST( state->metrics.missing_builder_info_fail_cnt==1UL );
   FD_TEST( state->metrics.txn_received_cnt==0UL );
+  FD_TEST( state->bam_pending_results==1UL );
+  fd_bam_bundle_result_t const * res = &state->bam_results[ state->bam_results_head ];
+  FD_TEST( res->bundle_id==2UL );
+  FD_TEST( res->execution_success==0U );
+  FD_TEST( res->txn_cnt==2U );
 
   test_bam_env_destroy( env );
 }

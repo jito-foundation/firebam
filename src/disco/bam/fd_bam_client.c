@@ -31,12 +31,20 @@
 #define FD_BAM_AUTH_LABEL "X_OFF_CHAIN_JITO_BAM_V1\0"
 static char const fd_bam_auth_label[] = FD_BAM_AUTH_LABEL;
 
+enum {
+  FD_BAM_BATCH_DROP_NONE         = 0,
+  FD_BAM_BATCH_DROP_PROTO        = 1,
+  FD_BAM_BATCH_DROP_OVERSIZE     = 2,
+  FD_BAM_BATCH_DROP_MIXED_FLAGS  = 3
+};
+
 typedef struct {
   fd_bam_tile_t * ctx;
   bam_types_Packet    packets[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   ulong               packet_cnt;
   int                 revert_on_error;
   int                 revert_flag_set;
+  int                 drop_reason;
 } fd_bam_batch_ctx_t;
 
 typedef struct {
@@ -75,6 +83,7 @@ fd_bam_now( void ) {
 
 void
 fd_bam_client_reset( fd_bam_tile_t * ctx ) {
+  long now = fd_bam_now();
   if( FD_UNLIKELY( ctx->tcp_sock >= 0 ) ) {
     if( FD_UNLIKELY( 0!=close( ctx->tcp_sock ) ) ) {
       FD_LOG_ERR(( "close(tcp_sock=%i) failed (%i-%s)", ctx->tcp_sock, errno, fd_io_strerror( errno ) ));
@@ -87,9 +96,14 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
      transition so gossip never advertises a half-cleared override. */
   ctx->defer_reset = 0;
 
-  ctx->builder_info_avail       = 0;
+  if( FD_UNLIKELY( ctx->builder_info_avail ) ) {
+    long const valid_until = ctx->builder_info_valid_until;
+    if( FD_UNLIKELY( valid_until && now >= valid_until ) ) {
+      ctx->builder_info_avail       = 0;
+      ctx->builder_info_valid_until = 0L;
+    }
+  }
   ctx->builder_info_wait        = 0;
-  ctx->builder_info_valid_until = 0L;
   ctx->bundle_max_schedule_slot = ULONG_MAX;
 
   memset( ctx->rtt, 0, sizeof(fd_rtt_estimate_t) );
@@ -101,7 +115,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   }
 # endif
 
-  fd_bam_tile_backoff( ctx, fd_bam_now() );
+  fd_bam_tile_backoff( ctx, now );
 
   fd_grpc_client_reset( ctx->grpc_client );
 
@@ -337,6 +351,38 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
   out->reason.generic_invalid.message[ sizeof(out->reason.generic_invalid.message)-1UL ] = '\0';
 }
 
+static void
+fd_bam_enqueue_not_committed( fd_bam_tile_t * ctx,
+                              ulong           bundle_id,
+                              uint            txn_cnt,
+                              uint            scheduling_error ) {
+  if( FD_UNLIKELY( ctx->bam_pending_results>=FD_BAM_MAX_PENDING_RESULTS ) ) {
+    FD_LOG_WARNING(( "Dropping BAM bundle result (bam tile queue full): bundle_id=%lu sched_err=%u",
+                     bundle_id, scheduling_error ));
+    ctx->metrics.bundle_result_drop_cnt++;
+    FD_MCNT_INC( BAM, BUNDLE_RESULTS_DROPPED, 1UL );
+    return;
+  }
+
+  fd_bam_bundle_result_t res;
+  fd_memset( &res, 0, sizeof(res) );
+  res.bundle_id        = bundle_id;
+  res.bundle_txn_cnt   = (ulong)txn_cnt;
+  uint capped_txn_cnt  = (uint)fd_ulong_min( (ulong)txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
+  res.txn_cnt          = capped_txn_cnt;
+  res.execution_success = 0U;
+  res.scheduling_error  = scheduling_error;
+  for( uint i=0U; i<res.txn_cnt; i++ ) {
+    res.sanitize_success[ i ] = 1U;
+    res.transaction_err [ i ] = 0U;
+    res.consumed_cus    [ i ] = 0U;
+  }
+
+  ctx->bam_results[ ctx->bam_results_tail ] = res;
+  ctx->bam_results_tail = ( ctx->bam_results_tail + 1UL ) % FD_BAM_MAX_PENDING_RESULTS;
+  ctx->bam_pending_results++;
+}
+
 static bool
 fd_bam_collect_packet( pb_istream_t *         stream,
                        pb_field_t const *     field,
@@ -350,7 +396,21 @@ fd_bam_collect_packet( pb_istream_t *         stream,
 
   bam_types_Packet packet = bam_types_Packet_init_default;
   if( FD_UNLIKELY( !pb_decode( stream, &bam_types_Packet_msg, &packet ) ) ) {
+    state->drop_reason = FD_BAM_BATCH_DROP_PROTO;
     return false;
+  }
+
+  if( packet.has_meta && packet.meta.has_flags ) {
+    int flag = packet.meta.flags.revert_on_error;
+    if( state->revert_flag_set && state->revert_on_error!=flag ) {
+      FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
+      state->drop_reason     = FD_BAM_BATCH_DROP_MIXED_FLAGS;
+      state->revert_on_error = state->revert_on_error | flag;
+      state->revert_flag_set = 1;
+      return false;
+    }
+    state->revert_on_error = flag;
+    state->revert_flag_set = 1;
   }
 
   if( FD_UNLIKELY( packet.data.size > FD_TXN_MTU ) ) {
@@ -360,19 +420,11 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     }
     FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding MTU (%lu>%lu); dropping batch",
                      (ulong)packet.data.size, FD_TXN_MTU ));
+    state->drop_reason = FD_BAM_BATCH_DROP_OVERSIZE;
     return false;
   }
 
   state->packets[ state->packet_cnt ] = packet;
-  if( packet.has_meta && packet.meta.has_flags ) {
-    int flag = packet.meta.flags.revert_on_error;
-    if( state->revert_flag_set && state->revert_on_error!=flag ) {
-      FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
-    }
-    state->revert_on_error = flag;
-    state->revert_flag_set = 1;
-  }
-
   state->packet_cnt++;
   return true;
 }
@@ -386,6 +438,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   if( state->revert_on_error ) {
     if( FD_UNLIKELY( !ctx->builder_info_avail ) ) {
       ctx->metrics.missing_builder_info_fail_cnt++;
+      fd_bam_enqueue_not_committed( ctx, (ulong)batch->seq_id, (uint)state->packet_cnt, FD_BAM_SCHED_ERR_NONE );
       return;
     }
     ctx->bundle_seq                = batch->seq_id;
@@ -413,7 +466,8 @@ fd_bam_decode_batch( fd_bam_tile_t * ctx,
     .ctx              = ctx,
     .packet_cnt       = 0UL,
     .revert_on_error  = 0,
-    .revert_flag_set  = 0
+    .revert_flag_set  = 0,
+    .drop_reason      = FD_BAM_BATCH_DROP_NONE
   };
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
@@ -423,7 +477,12 @@ fd_bam_decode_batch( fd_bam_tile_t * ctx,
   };
 
   if( FD_UNLIKELY( !pb_decode( stream, &bam_types_AtomicTxnBatch_msg, &batch ) ) ) {
-    FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed" ));
+    char const * err = PB_GET_ERROR( stream );
+    FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)",
+                     err ? err : "unknown" ));
+    if( FD_UNLIKELY( state.revert_on_error ) ) {
+      fd_bam_enqueue_not_committed( ctx, (ulong)batch.seq_id, (uint)state.packet_cnt, FD_BAM_SCHED_ERR_NONE );
+    }
     return 0;
   }
 
@@ -703,6 +762,7 @@ fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->bam_auth_ready ) ) return;
   if( FD_UNLIKELY( ctx->bam_stream || ctx->bam_stream_connecting ) ) return;
   if( FD_UNLIKELY( !ctx->grpc_client ) ) return;
+  if( FD_UNLIKELY( !ctx->builder_info_avail ) ) return;
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
 
   bam_types_AuthProof proof = bam_types_AuthProof_init_default;
@@ -906,10 +966,24 @@ fd_bam_drive( fd_bam_tile_t * ctx,
     fd_bam_try_start_stream( ctx );
   }
 
-  if( FD_UNLIKELY( !ctx->bam_config_inflight ) &&
-      ( ctx->bam_last_config_poll_ns==0L || now - ctx->bam_last_config_poll_ns >= (long)1e9 ) ) {
-    fd_bam_request_config( ctx, now );
-    busy = 1;
+  long const config_refresh_margin_ns = (long)5e9;
+  int need_config = 0;
+  if( FD_UNLIKELY( !ctx->builder_info_avail ) ) {
+    need_config = 1;
+  } else {
+    long const valid_until = ctx->builder_info_valid_until;
+    if( FD_UNLIKELY( !valid_until || now + config_refresh_margin_ns >= valid_until ) ) {
+      need_config = 1;
+    }
+  }
+  if( FD_UNLIKELY( ctx->bam_last_config_poll_ns==0L ) ) need_config = 1;
+  if( FD_UNLIKELY( need_config && !ctx->bam_config_inflight ) ) {
+    long const throttle_ns = ctx->builder_info_avail ? (long)5e9 : (long)1e9;
+    if( FD_UNLIKELY( ctx->bam_last_config_poll_ns==0L ||
+                     now - ctx->bam_last_config_poll_ns >= throttle_ns ) ) {
+      fd_bam_request_config( ctx, now );
+      busy = 1;
+    }
   }
 
   long const heartbeat_ns = (long)5e9;
