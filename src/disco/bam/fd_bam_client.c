@@ -47,7 +47,7 @@ typedef struct {
   uchar               revert_flag_set;                         /* 0 before first flag observed, 1 after; prevents defaulting to revert_on_error=0 */
   uchar               drop_reason;                             /* FD_BAM_BATCH_DROP_* value describing rejection path */
   uchar               has_deser_error;                         /* boolean: 1 when deser_reason/index populated */
-  uchar               deser_index;                             /* transaction index tied to deserialization error; capped to FD_PACK_MAX_TXN_PER_BUNDLE-1 */
+  uchar               deser_index;                             /* zero-based transaction index tied to deserialization error */
   uchar               deser_reason;                            /* bam_types_DeserializationErrorReason enum value */
   uchar               has_generic_invalid;                     /* boolean: 1 when generic_invalid_msg contains an explanation */
   char                generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ]; /* human-readable drop detail; NUL terminated when flag set */
@@ -83,8 +83,7 @@ fd_bam_client_report_deser_error( fd_bam_tile_t *            ctx,
   fd_bam_bundle_result_t res = fd_bam_client_make_base_result( batch, state );
   res.has_deser_error = 1;
   res.deser_reason    = reason;
-  uchar max_idx = FD_PACK_MAX_TXN_PER_BUNDLE ? FD_PACK_MAX_TXN_PER_BUNDLE-1UL : 0UL;
-  res.deser_index     = index>max_idx ? max_idx : index;
+  res.deser_index     = index;
   fd_bam_enqueue_result( ctx, &res );
 }
 
@@ -436,6 +435,11 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   if( FD_UNLIKELY( state->packet_cnt >= FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
     FD_LOG_WARNING(( "Received AtomicTxnBatch exceeding max bundle size" ));
     state->drop_reason = FD_BAM_BATCH_DROP_OVERSIZE;
+    if( FD_LIKELY( !state->has_deser_error ) ) {
+      state->has_deser_error = 1;
+      state->deser_reason    = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+      state->deser_index     = (uchar)state->packet_cnt;
+    }
     if( FD_LIKELY( !state->has_generic_invalid ) ) {
       state->has_generic_invalid = 1;
       strncpy( state->generic_invalid_msg, "bundle exceeds max transactions", FD_BAM_GENERIC_INVALID_MSG_MAX-1UL );

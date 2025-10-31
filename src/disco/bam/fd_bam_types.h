@@ -11,7 +11,7 @@
 
 /* FD_BAM_MAX_PENDING_RESULTS is the bundle result queue depth, so long disconnects
  * don't drop SchedulerMessage payloads. */
-#define FD_BAM_MAX_PENDING_RESULTS 512UL
+#define FD_BAM_MAX_PENDING_RESULTS 2048UL
 #define FD_BAM_GENERIC_INVALID_MSG_MAX 96UL
 
 typedef struct {

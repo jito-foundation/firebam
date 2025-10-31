@@ -633,8 +633,11 @@ test_bam_bundle_rejects_excess_packet_count( fd_wksp_t * wksp ) {
   FD_TEST( decoded.multi.result_cnt==1UL );
   bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
   FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_generic_invalid_tag );
-  FD_TEST( strstr( result->result.not_committed.reason.generic_invalid.message, "max transactions" )!=NULL );
+  FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_deserialization_error_tag );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.reason==
+           bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.index==
+           (uint32_t)FD_PACK_MAX_TXN_PER_BUNDLE );
 
   test_bam_env_destroy( env );
 }
