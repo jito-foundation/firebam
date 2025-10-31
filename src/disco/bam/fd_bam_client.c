@@ -532,31 +532,28 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     }
     ctx->bundle_seq                = batch->seq_id;
     ctx->bundle_txn_cnt            = state->packet_cnt;
-    ctx->bundle_max_schedule_slot  = batch->max_schedule_slot ? batch->max_schedule_slot : ULONG_MAX;
+    ctx->bundle_max_schedule_slot  = batch->max_schedule_slot;
 
     for( uchar i=0; i<state->packet_cnt; i++ ) {
-      bam_types_Packet const * pkt = &state->packets[ i ];
       fd_bam_tile_publish_bundle_txn( ctx,
-                                      pkt->data.bytes,
-                                      pkt->data.size,
+                                      state->packets[i].data.bytes,
+                                      state->packets[i].data.size,
                                       state->packet_cnt,
                                       i,
                                       0 );
     }
     ctx->metrics.bundle_received_cnt++;
   } else {
-    ulong max_slot = batch->max_schedule_slot ? batch->max_schedule_slot : ULONG_MAX;
-    for( uchar i=0; i<state->packet_cnt; i++ ) {
-      bam_types_Packet const * pkt = &state->packets[ i ];
-      fd_bam_tile_publish_txn( ctx,
-                               pkt->data.bytes,
-                               pkt->data.size,
-                               max_slot,
-                               batch->seq_id,
-                               i,
-                               state->packet_cnt,
-                               0,
-                               0 );
+    for (uchar i = 0; i < state->packet_cnt; i++) {
+      fd_bam_tile_publish_txn(ctx,
+                              state->packets[i].data.bytes,
+                              state->packets[i].data.size,
+                              batch->max_schedule_slot,
+                              batch->seq_id,
+                              i,
+                              state->packet_cnt,
+                              0,
+                              0);
     }
   }
   ctx->bundle_max_schedule_slot = ULONG_MAX;
