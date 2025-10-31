@@ -879,6 +879,42 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
       ctx->bam_tpu_addr.l      = 0UL;
       ctx->bam_tpu_quic_addr.l = 0UL;
     }
+
+    if( FD_LIKELY( ctx->fee_cfg ) ) {
+      uint new_commission_bps = fd_uint_min( cfg->commission_bps, 10000U );
+      int  updated            = 0;
+
+      if( FD_UNLIKELY( ctx->validator_commission_bps!=new_commission_bps ) ) {
+        ctx->validator_commission_bps = new_commission_bps;
+        updated = 1;
+      }
+
+      if( cfg->prio_fee_recipient_pubkey[0] ) {
+        uchar decoded[ 32 ];
+        if( FD_LIKELY( fd_base58_decode_32( cfg->prio_fee_recipient_pubkey, decoded ) ) ) {
+          if( FD_UNLIKELY( !ctx->prio_fee_recipient_set || fd_memcmp( ctx->prio_fee_recipient, decoded, sizeof( decoded ) ) ) ) {
+            fd_memcpy( ctx->prio_fee_recipient, decoded, sizeof( decoded ) );
+            ctx->prio_fee_recipient_set = 1U;
+            updated = 1;
+          }
+        } else {
+          FD_LOG_HEXDUMP_WARNING(( "Invalid priority fee recipient pubkey in ConfigResponse",
+                                   cfg->prio_fee_recipient_pubkey,
+                                   strnlen( cfg->prio_fee_recipient_pubkey, sizeof( cfg->prio_fee_recipient_pubkey ) ) ));
+        }
+      }
+
+      if( FD_UNLIKELY( updated ) ) {
+        ctx->fee_cfg_version++;
+        fd_bam_fee_cfg_t * fee_cfg = ctx->fee_cfg;
+        fd_memcpy( fee_cfg->prio_fee_recipient, ctx->prio_fee_recipient, sizeof( fee_cfg->prio_fee_recipient ) );
+        fee_cfg->commission_bps         = ctx->validator_commission_bps;
+        fee_cfg->has_prio_fee_recipient = ctx->prio_fee_recipient_set;
+        fd_compiler_mfence();
+        fee_cfg->version = ctx->fee_cfg_version;
+        fd_compiler_mfence();
+      }
+    }
   }
 }
 

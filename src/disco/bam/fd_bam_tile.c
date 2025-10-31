@@ -847,6 +847,19 @@ privileged_init( fd_topo_t *      topo,
   }
 
   ctx->runtime_enabled = 1;
+  ctx->fee_cfg_version = 0UL;
+  ctx->validator_commission_bps = 0U;
+  ctx->prio_fee_recipient_set   = 0U;
+  fd_memset( ctx->prio_fee_recipient, 0, sizeof( ctx->prio_fee_recipient ) );
+
+  ulong bam_fee_cfg_obj_id = fd_pod_query_ulong( topo->props, "bam_fee_cfg", ULONG_MAX );
+  if( FD_LIKELY( bam_fee_cfg_obj_id!=ULONG_MAX ) ) {
+    ctx->fee_cfg = fd_topo_obj_laddr( topo, bam_fee_cfg_obj_id );
+    fd_memset( ctx->fee_cfg, 0, sizeof(fd_bam_fee_cfg_t) );
+  } else {
+    ctx->fee_cfg = NULL;
+  }
+
   ulong bam_ctrl_obj_id = fd_pod_query_ulong( topo->props, "bam_ctrl", ULONG_MAX );
   if( FD_LIKELY( bam_ctrl_obj_id!=ULONG_MAX ) ) {
     ctx->ctrl = fd_topo_obj_laddr( topo, bam_ctrl_obj_id );

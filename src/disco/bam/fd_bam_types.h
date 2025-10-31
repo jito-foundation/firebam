@@ -25,7 +25,7 @@ typedef struct {
   uint   consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Actual compute units consumed per transaction (exec+account data), even when the bundle later reverts. 0 when the txn never executed. */
   uchar sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];  /* Boolean sanitize outcome per transaction (1=passed bank sanitize, 0=failed). When 0, transaction_err typically reports SANITIZE_FAILURE. */
   uchar has_deser_error;   /* Batch-level flag indicating deserialization or flag validation failed before execution; when set, per-transaction arrays are undefined and deser_* identify the offender. */
-  uchar deser_index;       /* Zero-based transaction index tied to the deserialization error; clamped to FD_PACK_MAX_TXN_PER_BUNDLE-1 and only valid when has_deser_error==1. */
+  uchar deser_index;       /* Zero-based transaction index tied to the deserialization error; only valid when has_deser_error==1. */
   uchar deser_reason;      /* bam_types_DeserializationErrorReason enumerator for the failure reported by deser_index; only meaningful when has_deser_error==1. */
   uchar has_generic_invalid; /* Batch-level rejection flag for generic invalid conditions (mixed modes, oversize, etc.). When 1, generic_invalid_msg contains a human-readable explanation. */
   char  generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ]; /* NUL-terminated ASCII detail describing a generic invalid rejection. Truncated to FD_BAM_GENERIC_INVALID_MSG_MAX-1 bytes when present. */
@@ -42,6 +42,13 @@ typedef struct {
   fd_ip4_port_t tpu_quic_addr; /* QUIC forwarding socket advertised by BAM. Optional override; zeroed if unused */
   uint          use_bam;       /* `FD_BAM_CONTACT_USE_*` selector. Non-zero when BAM overrides contact info */
 } fd_bam_contact_update_t;
+
+typedef struct {
+  uchar prio_fee_recipient[ 32 ]; /* Decoded priority fee recipient pubkey */
+  uint  commission_bps;           /* Validator commission expressed in basis points */
+  uint  has_prio_fee_recipient;   /* Non-zero when prio_fee_recipient contains a valid pubkey */
+  ulong version;                  /* Monotonically increasing update counter */
+} fd_bam_fee_cfg_t;
 
 #define FD_BAM_CONTACT_USE_DEFAULT ((uint)0U)
 #define FD_BAM_CONTACT_USE_BAM     ((uint)1U)

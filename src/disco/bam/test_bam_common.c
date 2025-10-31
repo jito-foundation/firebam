@@ -82,6 +82,14 @@ test_bam_env_create( test_bam_env_t * env,
   h2_conn->flags = 0;
   state->grpc_client->conn->peer_settings.max_concurrent_streams = 8;
 
+  state->fee_cfg = fd_wksp_alloc_laddr( wksp, alignof(fd_bam_fee_cfg_t), sizeof(fd_bam_fee_cfg_t), 1UL );
+  FD_TEST( state->fee_cfg );
+  fd_memset( state->fee_cfg, 0, sizeof(fd_bam_fee_cfg_t) );
+  state->fee_cfg_version = 0UL;
+  state->validator_commission_bps = 0U;
+  state->prio_fee_recipient_set = 0U;
+  fd_memset( state->prio_fee_recipient, 0, sizeof( state->prio_fee_recipient ) );
+
   FD_TEST( fd_rng_new( state->rng, 0U, 0UL ) );
   long ka_interval = (long)1e9;
   long ka_timeout  = (long)1e9;
@@ -151,6 +159,10 @@ test_bam_env_destroy( test_bam_env_t * env ) {
   if( env->state->tcp_sock>=0 ) {
     FD_TEST( 0==close( env->state->tcp_sock ) );
     env->state->tcp_sock = -1;
+  }
+  if( env->state->fee_cfg ) {
+    fd_wksp_free_laddr( env->state->fee_cfg );
+    env->state->fee_cfg = NULL;
   }
   fd_wksp_free_laddr( fd_mcache_delete( fd_mcache_leave( env->out_mcache ) ) );
   fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( env->out_dcache ) ) );

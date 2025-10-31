@@ -1,5 +1,7 @@
 #include "../shared/fd_config.h"
 
+#include <stdalign.h>
+
 #include "../../disco/net/fd_net_tile.h"
 #include "../../disco/quic/fd_tpu.h"
 #include "../../disco/tiles.h"
@@ -323,6 +325,12 @@ fd_topo_initialize( config_t * config ) {
     fd_topo_tile_t * bam_tile =
       fd_topob_tile( topo, "bam",  "bam",  "metric_in", tile_to_cpu[ topo->tile_cnt ], 0, 1 );
 
+    fd_topo_obj_t * bam_fee_cfg_obj = fd_topob_obj( topo, "opaque", "bam_fee_cfg" );
+    FD_TEST( fd_pod_insertf_ulong( topo->props, sizeof(fd_bam_fee_cfg_t), "obj.%lu.footprint", bam_fee_cfg_obj->id ) );
+    FD_TEST( fd_pod_insertf_ulong( topo->props, alignof(fd_bam_fee_cfg_t), "obj.%lu.align", bam_fee_cfg_obj->id ) );
+    FD_TEST( fd_pod_insert_ulong( topo->props, "bam_fee_cfg", bam_fee_cfg_obj->id ) );
+    fd_topob_tile_uses( topo, bam_tile, bam_fee_cfg_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+
     fd_topo_obj_t * bam_ctrl_obj = fd_topob_obj( topo, "opaque", "bam" );
     /* Reserve a dedicated opaque object so admin commands and the bam tile can share the
        fd_bam_ctrl_t state machine without a restart. */
@@ -457,6 +465,10 @@ fd_topo_initialize( config_t * config ) {
     }
 
     FD_TEST( fd_pod_insert_ulong( topo->props, "bam_status", bam_status_obj->id ) );
+
+    fd_topo_tile_t * pack_tile = &topo->tiles[ fd_topo_find_tile( topo, "pack", 0UL ) ];
+    fd_topo_obj_t  * bam_fee_cfg_obj = fd_topob_obj( topo, "opaque", "bam_fee_cfg" );
+    fd_topob_tile_uses( topo, pack_tile, bam_fee_cfg_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
   }
 
   /* There's another special fseq that's used to communicate the shred

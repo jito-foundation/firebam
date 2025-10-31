@@ -307,6 +307,8 @@ typedef struct {
   ulong                  bam_results_head;
   ulong                  bam_results_tail;
   ulong                  bam_results_pending;
+  fd_bam_fee_cfg_t *     bam_fee_cfg;
+  ulong                  bam_fee_cfg_version;
 
   struct {
     int                   enabled;
@@ -601,6 +603,29 @@ metrics_write( fd_pack_ctx_t * ctx ) {
 }
 
 static inline void
+fd_pack_apply_bam_fee_cfg( fd_pack_ctx_t * ctx ) {
+  if( FD_UNLIKELY( !ctx->bam_fee_cfg ) ) return;
+  if( FD_UNLIKELY( !ctx->crank->enabled ) ) return;
+
+  ulong version = FD_VOLATILE_CONST( ctx->bam_fee_cfg->version );
+  if( FD_UNLIKELY( !version || version==ctx->bam_fee_cfg_version ) ) return;
+
+  ctx->bam_fee_cfg_version = version;
+
+  if( FD_LIKELY( ctx->bam_fee_cfg->has_prio_fee_recipient ) ) {
+    fd_memcpy( ctx->crank->gen->crank3->new_tip_receiver,
+               ctx->bam_fee_cfg->prio_fee_recipient,
+               sizeof( ctx->bam_fee_cfg->prio_fee_recipient ) );
+    fd_memcpy( ctx->crank->gen->crank2->new_tip_receiver,
+               ctx->bam_fee_cfg->prio_fee_recipient,
+               sizeof( ctx->bam_fee_cfg->prio_fee_recipient ) );
+  }
+
+  ctx->crank->gen->crank3->init_tip_distribution_acct.commission_bps =
+      (ushort)fd_uint_min( ctx->bam_fee_cfg->commission_bps, 10000U );
+}
+
+static inline void
 during_housekeeping( fd_pack_ctx_t * ctx ) {
   ctx->approx_wallclock_ns = fd_log_wallclock();
   ctx->approx_tickcount    = fd_tickcount();
@@ -609,6 +634,8 @@ during_housekeeping( fd_pack_ctx_t * ctx ) {
     fd_memcpy( ctx->crank->identity_pubkey, ctx->crank->keyswitch->bytes, 32UL );
     fd_keyswitch_state( ctx->crank->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
   }
+
+  fd_pack_apply_bam_fee_cfg( ctx );
 
   if( FD_UNLIKELY( ( ctx->leader_slot==ULONG_MAX ) | !ctx->leader_bank ) )
     ctx->last_leader_state_ns = 0L;
@@ -1425,6 +1452,13 @@ privileged_init( fd_topo_t *      topo,
   FD_SCRATCH_ALLOC_INIT( l, scratch );
   fd_pack_ctx_t * ctx = FD_SCRATCH_ALLOC_APPEND( l, alignof( fd_pack_ctx_t ), sizeof( fd_pack_ctx_t ) );
 
+  ctx->bam_fee_cfg         = NULL;
+  ctx->bam_fee_cfg_version = 0UL;
+
+  ulong bam_fee_cfg_obj_id = fd_pod_query_ulong( topo->props, "bam_fee_cfg", ULONG_MAX );
+  if( FD_LIKELY( bam_fee_cfg_obj_id!=ULONG_MAX ) )
+    ctx->bam_fee_cfg = fd_topo_obj_laddr( topo, bam_fee_cfg_obj_id );
+
   if( FD_UNLIKELY( !strcmp( tile->pack.bundle.identity_key_path, "" ) ) )
     FD_LOG_ERR(( "identity_key_path not set" ));
 
@@ -1473,6 +1507,13 @@ unprivileged_init( fd_topo_t *      topo,
                                          tile->pack.max_pending_transactions, BUNDLE_META_SZ, tile->pack.bank_tile_count,
                                          limits_lower, rng ) );
   if( FD_UNLIKELY( !ctx->pack ) ) FD_LOG_ERR(( "fd_pack_new failed" ));
+
+  if( FD_UNLIKELY( !ctx->bam_fee_cfg ) ) {
+    ulong bam_fee_cfg_obj_id = fd_pod_query_ulong( topo->props, "bam_fee_cfg", ULONG_MAX );
+    if( FD_LIKELY( bam_fee_cfg_obj_id!=ULONG_MAX ) )
+      ctx->bam_fee_cfg = fd_topo_obj_laddr( topo, bam_fee_cfg_obj_id );
+    ctx->bam_fee_cfg_version = 0UL;
+  }
 
   if( FD_UNLIKELY( tile->in_cnt>32UL ) ) FD_LOG_ERR(( "Too many input links (%lu>32) to pack tile", tile->in_cnt ));
 

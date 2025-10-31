@@ -98,6 +98,8 @@ struct fd_bam_tile {
   char   server_sni[ 256 ]; /* cstr; optional override for TLS SNI */
   ushort server_sni_len;                          /* Length of server_sni (no terminator) */
   ushort server_tcp_port;                         /* Remote TCP port for gRPC */
+  fd_bam_fee_cfg_t * fee_cfg;                     /* Shared fee configuration exported to peers */
+  ulong              fee_cfg_version;             /* Last version published to fee_cfg */
 
   /* Resolver */
   fd_netdb_fds_t netdb_fds[1];                    /* fd_netdb handles for async DNS lookups */
@@ -129,6 +131,9 @@ struct fd_bam_tile {
   uchar builder_info_avail : 1;  /* Block builder info available? (potentially stale) */
   uchar builder_info_wait  : 1;  /* Request already in-flight? */
   long  builder_info_valid_until;                 /* Expiry timestamp for builder info */
+  uchar prio_fee_recipient[ 32 ];                 /* Validator priority fee recipient advertised by BAM */
+  uint  validator_commission_bps;                 /* Validator commission basis points */
+  uint  prio_fee_recipient_set : 1;               /* Flag indicating prio_fee_recipient populated */
 
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).

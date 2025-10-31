@@ -1674,6 +1674,11 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   fd_memset( resp.bam_config.tpu_fwd_sock.ip, 0, sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   fd_memcpy( resp.bam_config.tpu_fwd_sock.ip, "5.6.7.8", 7UL );
   resp.bam_config.tpu_fwd_sock.port = 10001U;
+  uchar prio_fee_raw[ 32 ];
+  for( ulong i=0UL; i<32UL; i++ ) prio_fee_raw[ i ] = (uchar)( i + 7U );
+  FD_TEST( fd_base58_encode_32( prio_fee_raw, NULL, resp.bam_config.prio_fee_recipient_pubkey ) );
+  resp.bam_config.prio_fee_recipient_pubkey[ FD_BASE58_ENCODED_32_SZ-1 ] = '\0';
+  resp.bam_config.commission_bps = 2750U;
 
   uchar pb_buf[ 256 ];
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
@@ -1695,6 +1700,14 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( fd_cstr_to_ip4_addr( "5.6.7.8", &expected_quic.addr ) );
   expected_quic.port = fd_ushort_bswap( (ushort)10001U );
   FD_TEST( state->bam_tpu_quic_addr.l==expected_quic.l );
+  FD_TEST( state->prio_fee_recipient_set==1U );
+  FD_TEST( state->validator_commission_bps==2750U );
+  FD_TEST( 0==memcmp( state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
+  FD_TEST( state->fee_cfg!=NULL );
+  FD_TEST( state->fee_cfg->has_prio_fee_recipient==1U );
+  FD_TEST( state->fee_cfg->commission_bps==2750U );
+  FD_TEST( 0==memcmp( state->fee_cfg->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
+  FD_TEST( state->fee_cfg->version==1UL );
 
   state->bam_contact_dirty = 0U;
   ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
@@ -1706,6 +1719,7 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_contact_dirty==0U );
   FD_TEST( state->bam_tpu_addr.l==expected_tpu.l );
   FD_TEST( state->bam_tpu_quic_addr.l==expected_quic.l );
+  FD_TEST( state->fee_cfg->version==1UL );
 
   resp.bam_config.has_tpu_fwd_sock = false;
   fd_memset( resp.bam_config.tpu_fwd_sock.ip, 0, sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
@@ -1720,6 +1734,7 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_contact_avail==1U );
   FD_TEST( state->bam_tpu_addr.l==expected_tpu.l );
   FD_TEST( state->bam_tpu_quic_addr.l==0UL );
+  FD_TEST( state->fee_cfg->version==1UL );
 
   test_bam_env_destroy( env );
 }
