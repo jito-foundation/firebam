@@ -593,6 +593,100 @@ test_bam_bundle_rejects_vote_transactions( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_bundle_rejects_excess_packet_count( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  size_t packet_cnt = FD_PACK_MAX_TXN_PER_BUNDLE + 1UL;
+  bam_types_Packet packets[ FD_PACK_MAX_TXN_PER_BUNDLE + 1UL ];
+  fd_memset( packets, 0, sizeof( packets ) );
+  for( size_t i=0UL; i<packet_cnt; i++ ) {
+    packets[ i ].data.size = 1U;
+    packets[ i ].data.bytes[0] = (uchar)( 'a' + (int)( i % 26UL ) );
+  }
+
+  uchar protobuf[ 2048 ];
+  size_t protobuf_sz = test_bam_encode_scheduler_response( packets, packet_cnt, 50U, protobuf, sizeof( protobuf ) );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.bundle_received_cnt==0UL );
+  FD_TEST( state->metrics.txn_received_cnt==0UL );
+  FD_TEST( state->bam_pending_results==1UL );
+
+  test_bam_prepare_scheduler_stream( state );
+  g_clock = (long)17e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  FD_TEST( fd_bam_test_flush_results( state )==1 );
+  FD_TEST( state->bam_pending_results==0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+  FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_generic_invalid_tag );
+  FD_TEST( strstr( result->result.not_committed.reason.generic_invalid.message, "max transactions" )!=NULL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_bundle_rejects_oversized_packet( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  bam_types_Packet packets[1];
+  fd_memset( packets, 0, sizeof( packets ) );
+  packets[0].data.size = (pb_size_t)( FD_TXN_MTU + 1UL );
+  for( pb_size_t i=0U; i<packets[0].data.size; i++ ) {
+    packets[0].data.bytes[ i ] = (uchar)( i & 0xFF );
+  }
+
+  uchar protobuf[ 4096 ];
+  size_t protobuf_sz = test_bam_encode_scheduler_response( packets, 1UL, 51U, protobuf, sizeof( protobuf ) );
+
+  FD_TEST( state->metrics.packet_drop_cnt==0UL );
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.packet_drop_cnt==1UL );
+  FD_TEST( state->metrics.txn_received_cnt==0UL );
+  FD_TEST( state->bam_pending_results==1UL );
+
+  test_bam_prepare_scheduler_stream( state );
+  g_clock = (long)18e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  FD_TEST( fd_bam_test_flush_results( state )==1 );
+  FD_TEST( state->bam_pending_results==0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+  FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_generic_invalid_tag );
+  FD_TEST( strstr( result->result.not_committed.reason.generic_invalid.message, "exceeds MTU" )!=NULL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -1755,6 +1849,8 @@ main( int     argc,
   test_bam_bundle_requires_builder_info( wksp );
   test_bam_bundle_rejects_mixed_revert_flags( wksp );
   test_bam_bundle_rejects_vote_transactions( wksp );
+  test_bam_bundle_rejects_excess_packet_count( wksp );
+  test_bam_bundle_rejects_oversized_packet( wksp );
   test_bam_grpc_end_handling( wksp );
   test_bam_grpc_timeout( wksp );
   test_bam_scheduler_auth_proof_publishes_message( wksp );

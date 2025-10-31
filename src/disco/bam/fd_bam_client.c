@@ -1402,13 +1402,13 @@ fd_bam_tile_publish_txn(
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BUNDLE,
     .block_engine   = {
       .bundle_id         = (ulong)scheduler_seq_id,
-      .bundle_txn_cnt    = batch_cnt,
+      .bundle_txn_cnt    = revert_on_error ? (ulong)batch_cnt : 1UL,
       .max_schedule_slot = max_schedule_slot,
       .scheduler_seq_id  = scheduler_seq_id,
       .batch_cnt         = (ushort)batch_cnt,
       .batch_idx         = (ushort)batch_idx,
       .revert_on_error   = (uchar)revert_on_error,
-      .commission        = revert_on_error ? (uchar)ctx->builder_commission : (uchar)0,
+      .commission        = revert_on_error ? ctx->builder_commission : 0,
     },
   };
   if( revert_on_error && ctx->builder_info_avail ) {

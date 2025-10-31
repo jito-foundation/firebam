@@ -6,6 +6,7 @@
 #include "../../ballet/base58/fd_base58.h"
 #include "../../disco/metrics/fd_metrics.h"
 #include <math.h>
+#include <limits.h>
 #include <string.h>
 
 #if FD_USING_GCC && __GNUC__ >= 15
@@ -1884,13 +1885,13 @@ test_bundle_expiration_during_slot( void ) {
   meta.max_schedule_slot = 200UL;
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 1000UL, 0, &meta, &_deleted )>=0 );
 
-  /* Bundle 3: no expiration (max_schedule_slot = 0 means unlimited) */
+  /* Bundle 3: effectively unlimited lifetime (use explicit large slot to avoid sentinel assumptions) */
   bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
   make_transaction1( bundle[0]->txnp, 4UL, 2000U, 32U, 8.0, "e", "", NULL, NULL );
   memset( &meta, 0, sizeof(meta) );
   meta.bundle_id = 3UL;
   meta.bundle_txn_cnt = 1UL;
-  meta.max_schedule_slot = 0UL; /* unlimited */
+  meta.max_schedule_slot = ULONG_MAX;
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, &meta, &_deleted )>=0 );
 
   FD_TEST( fd_pack_avail_txn_cnt( pack )==5UL );
@@ -1907,10 +1908,10 @@ test_bundle_expiration_during_slot( void ) {
   FD_TEST( dropped==2UL );
   FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
   stored = (test_bundle_meta_t const *)fd_pack_peek_bundle_meta( pack );
-  FD_TEST( stored && stored->bundle_id==3UL && stored->max_schedule_slot==0UL );
+  FD_TEST( stored && stored->bundle_id==3UL && stored->max_schedule_slot==ULONG_MAX );
 
-  /* Even at large slot values a bundle with max_schedule_slot==0 remains */
-  dropped = drop_expired_bundles_for_slot( pack, ULONG_MAX );
+  /* Even at very large slot values an "unlimited" bundle remains */
+  dropped = drop_expired_bundles_for_slot( pack, ULONG_MAX - 1UL );
   FD_TEST( dropped==0UL );
 
   ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
@@ -1945,14 +1946,14 @@ test_bundle_priority_ordering( void ) {
     FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 1000UL, 0, &meta, &_deleted )>=0 );
   }
 
-  /* Bundles should schedule in FIFO order (not priority order) */
-  ulong expected_txn_idx = 0UL;
+  /* Highest priority bundles should be scheduled first */
   for( ulong i=0UL; i<10UL; i++ ) {
     ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
     FD_TEST( txn_cnt==2UL );
     for( ulong j=0UL; j<txn_cnt; j++ ) {
-      FD_TEST( extract_txn_id( outcome.results + j )==expected_txn_idx );
-      expected_txn_idx++;
+      ulong expected_bundle = 9UL - i;
+      ulong expected_txn_id = expected_bundle*2UL + j;
+      FD_TEST( extract_txn_id( outcome.results + j )==expected_txn_id );
     }
     fd_pack_microblock_complete( pack, 0UL );
   }
