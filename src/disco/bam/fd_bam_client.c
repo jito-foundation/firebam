@@ -109,8 +109,8 @@ static void
 fd_bam_tile_publish_bundle_txn( fd_bam_tile_t * ctx,
                                 void const *    txn,
                                 ulong           txn_sz,
-                                uint            bundle_txn_cnt,
-                                uint            batch_idx,
+                                uchar           bundle_txn_cnt,
+                                uchar           batch_idx,
                                 uint            source_ipv4 );
 
 static void
@@ -119,8 +119,8 @@ fd_bam_tile_publish_txn( fd_bam_tile_t * ctx,
                          ulong           txn_sz,
                          ulong           max_schedule_slot,
                          uint            scheduler_seq_id,
-                         uint            batch_idx,
-                         uint            batch_cnt,
+                         uchar           batch_idx,
+                         uchar           batch_cnt,
                          int             revert_on_error,
                          uint            source_ipv4 );
 
@@ -403,9 +403,9 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
   }
 
     for( uchar i=0U; i<res->txn_cnt; i++ ) {
-    uint err = res->transaction_err[ i ];
+    int err = res->transaction_err[ i ];
     if( FD_UNLIKELY( err ) ) {
-      if( FD_LIKELY( err < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
+      if( FD_LIKELY( err < (int)_bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
         out->which_reason                      = bam_types_NotCommitted_transaction_error_tag;
         out->reason.transaction_error.index    = i;
         out->reason.transaction_error.reason   = (bam_types_TransactionErrorReason)err;
@@ -1001,7 +1001,7 @@ fd_bam_flush_results( fd_bam_tile_t * ctx ) {
     fd_bam_bundle_result_t const * res =
         &ctx->bam_results[ ctx->bam_results_head ];
     if( FD_UNLIKELY( !fd_bam_send_result( ctx, res ) ) ) break;
-    ctx->bam_results_head = (ushort)((ctx->bam_results_head + 1U) % FD_BAM_MAX_PENDING_RESULTS);
+    ctx->bam_results_head = (ctx->bam_results_head + 1) % FD_BAM_MAX_PENDING_RESULTS;
     ctx->bam_pending_results--;
     busy = 1;
   }
@@ -1336,8 +1336,8 @@ fd_bam_tile_publish_bundle_txn(
     fd_bam_tile_t * ctx,
     void const *       txn,
     ulong              txn_sz,  /* <=FD_TXN_MTU */
-    uint               bundle_txn_cnt,
-    uint               batch_idx,
+    uchar              bundle_txn_cnt,
+    uchar              batch_idx,
     uint               source_ipv4
 ) {
   if( FD_UNLIKELY( !ctx->builder_info_avail ) ) {
@@ -1388,8 +1388,8 @@ fd_bam_tile_publish_txn(
     ulong              txn_sz,  /* <=FD_TXN_MTU */
     ulong              max_schedule_slot,
     uint               scheduler_seq_id,
-    uint               batch_idx,
-    uint               batch_cnt,
+    uchar              batch_idx,
+    uchar              batch_cnt,
     int                revert_on_error,
     uint               source_ipv4
 ) {

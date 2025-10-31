@@ -7,6 +7,7 @@
 #include "../../../util/fd_util.h"
 #include "../../../util/net/fd_net_headers.h"
 
+#include <limits.h>
 #include <unistd.h>
 
 void
@@ -87,7 +88,7 @@ set_bam_apply_request( args_t *   args,
     /* Make sure the tile sees a fresh request after a previous completion/error path. */
     FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
 
-  uint command = 0U;
+  uchar command = 0;
   if( args->set_bam.has_enable ) command |= FD_BAM_CTRL_CMD_ENABLE;
   if( args->set_bam.has_url    ) command |= FD_BAM_CTRL_CMD_URL;
   if( args->set_bam.has_sni    ) command |= FD_BAM_CTRL_CMD_SNI;
@@ -95,7 +96,7 @@ set_bam_apply_request( args_t *   args,
     FD_LOG_ERR(( "No BAM configuration changes requested" ));
 
   ctrl->command = command;
-  ctrl->enable  = args->set_bam.has_enable ? (uint)args->set_bam.enable : ctrl->current_enable;
+  ctrl->enable  = args->set_bam.has_enable ? (uchar)args->set_bam.enable : ctrl->current_enable;
 
   if( args->set_bam.has_url ) fd_bam_ctrl_copy_str( ctrl->url, sizeof(ctrl->url), args->set_bam.url );
   else                        fd_bam_ctrl_copy_str( ctrl->url, sizeof(ctrl->url), ctrl->current_url );

@@ -72,9 +72,9 @@ test_make_bundle_result( ulong bundle_id ) {
   res.execution_success = 1;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   for( uint i=0U; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {
-    res.transaction_err[ i ]   = 0;
+    res.transaction_err[ i ]   = (uchar)0;
     res.consumed_cus[ i ]      = (uint)( i + 1U );
-    res.sanitize_success[ i ]  = 1;
+    res.sanitize_success[ i ]  = (uchar)1;
   }
   return res;
 }
@@ -1352,7 +1352,7 @@ test_bam_scheduler_result_not_committed_transaction_error_reason( fd_wksp_t * wk
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 903UL );
   res.execution_success  = 0;
-  res.transaction_err[1] = (ushort)bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  res.transaction_err[1] = (uchar)bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
   test_enqueue_bundle_result( state, &res );
 
   int flushed = fd_bam_test_flush_results( state );
@@ -1389,7 +1389,7 @@ test_bam_scheduler_result_not_committed_transaction_error_high_index( fd_wksp_t 
   res.txn_cnt          = 3;
   res.execution_success = 0;
   for( uint i=0U; i<res.txn_cnt; i++ ) res.sanitize_success[ i ] = 1;
-  res.transaction_err[ 2 ] = (ushort)bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  res.transaction_err[ 2 ] = (uchar)bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
   test_enqueue_bundle_result( state, &res );
 
   int flushed = fd_bam_test_flush_results( state );
@@ -1440,7 +1440,7 @@ test_bam_scheduler_result_not_committed_generic_failure_reason( fd_wksp_t * wksp
 
   fd_bam_bundle_result_t invalid = test_make_bundle_result( 905UL );
   invalid.execution_success = 0;
-  invalid.transaction_err[0] = (ushort)_bam_types_TransactionErrorReason_ARRAYSIZE;
+  invalid.transaction_err[0] = (uchar)_bam_types_TransactionErrorReason_ARRAYSIZE;
   test_enqueue_bundle_result( state, &invalid );
 
   FD_TEST( fd_bam_test_flush_results( state )==1 );
@@ -1475,7 +1475,7 @@ test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( fd_wksp
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 906UL );
   res.execution_success = 0;
-  res.scheduling_error  = (uint)(_bam_types_SchedulingError_MAX + 1);
+  res.scheduling_error  = (ushort)(_bam_types_SchedulingError_MAX + 1);
   test_enqueue_bundle_result( state, &res );
 
   FD_TEST( fd_bam_test_flush_results( state )==1 );

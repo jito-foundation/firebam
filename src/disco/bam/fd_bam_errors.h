@@ -8,7 +8,7 @@
 #define FD_BAM_ERR_MSG_BUILDER_INFO_UNAVAILABLE "builder info unavailable"
 #define FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED  "bundle execution failed"
 
-#define FD_BAM_ERR_FMT_TRANSACTION_ERROR        "transaction error %u"
+#define FD_BAM_ERR_FMT_TRANSACTION_ERROR        "transaction error %i"
 #define FD_BAM_ERR_PREFIX_TRANSACTION_ERROR     "transaction error "
 
 #define FD_BAM_ERR_FMT_INVALID_SCHEDULING_ERROR "invalid scheduling error %u"

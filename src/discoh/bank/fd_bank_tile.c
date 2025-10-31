@@ -394,33 +394,30 @@ handle_microblock( fd_bank_ctx_t *     ctx,
       continue;
     }
 
-    fd_bam_batch_state_t * state = fd_bank_batch_state_prepare( ctx, (ulong)seq_id, slot, batch_cnt, 0 );
+    fd_bam_batch_state_t * state = fd_bank_batch_state_prepare( ctx, seq_id, slot, batch_cnt, 0 );
     if( FD_UNLIKELY( !state ) ) continue;
     fd_bam_bundle_result_t * res = &state->res;
 
-    uint  err        = (uint)bam_types_TransactionErrorReason_SANITIZE_FAILURE;
+    int  err        = bam_types_TransactionErrorReason_SANITIZE_FAILURE;
     uint  consumed   = 0U;
-    uchar sanitized  = (uchar)0;
+    uchar sanitized  = 0;
 
     if( sanitized_arr_idx!=ULONG_MAX ) {
       if( FD_LIKELY( sanitized_arr_idx < sanitized_txn_cnt ) ) {
-        err       = (uint)transaction_err[ sanitized_arr_idx ];
+        err       = transaction_err[ sanitized_arr_idx ];
         consumed  = consumed_exec_cus[ sanitized_arr_idx ] + consumed_acct_data_cus[ sanitized_arr_idx ];
-        sanitized = (uchar)1;
+        sanitized = 1;
       } else {
         err       = 0U;
         consumed  = 0U;
-        sanitized = (uchar)1;
+        sanitized = 1;
       }
     }
 
-    uchar desired_bundle_cnt = (uchar)fd_uint_min( batch_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
-    if( res->bundle_txn_cnt < desired_bundle_cnt ) res->bundle_txn_cnt = desired_bundle_cnt;
-    uint capped_cnt = (uint)fd_ulong_min( (ulong)batch_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
-    if( FD_UNLIKELY( capped_cnt==0U ) ) capped_cnt = 1U;
-    if( res->txn_cnt < capped_cnt ) res->txn_cnt = (uchar)capped_cnt;
+    res->bundle_txn_cnt = (uchar)batch_cnt;
+    res->txn_cnt = (uchar)( batch_cnt == 0 ? 1 : batch_cnt );
 
-    res->transaction_err[ batch_idx ]  = (ushort)fd_uint_min( err, (uint)USHRT_MAX );
+    res->transaction_err[ batch_idx ]  =  err;
     res->consumed_cus[ batch_idx ]     = consumed;
     res->sanitize_success[ batch_idx ] = sanitized;
 
@@ -621,7 +618,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     .scheduling_error   = FD_BAM_SCHED_ERR_NONE
   };
   for( ulong i=0UL; i<txn_cnt; i++ ) {
-    result.transaction_err[i]  = (ushort)transaction_err[i];
+    result.transaction_err[i]  = (uchar)fd_uint_min( (uint)transaction_err[i], (uint)UCHAR_MAX );
     result.consumed_cus[i]     = consumed_cus[i];
     result.sanitize_success[i] = (uchar)((txns[i].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS)!=0);
   }

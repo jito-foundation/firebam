@@ -9,9 +9,9 @@
 #define FD_BAM_CTRL_SNI_MAX 256UL
 #define FD_BAM_CTRL_ERR_MAX 128UL
 
-#define FD_BAM_CTRL_CMD_ENABLE (1U<<0)
-#define FD_BAM_CTRL_CMD_URL    (1U<<1)
-#define FD_BAM_CTRL_CMD_SNI    (1U<<2)
+#define FD_BAM_CTRL_CMD_ENABLE (uchar)(1U<<0)
+#define FD_BAM_CTRL_CMD_URL    (uchar)(1U<<1)
+#define FD_BAM_CTRL_CMD_SNI    (uchar)(1U<<2)
 
 #define FD_BAM_CTRL_STATE_IDLE      (0L)
 #define FD_BAM_CTRL_STATE_REQUEST   (1L)
@@ -21,12 +21,12 @@
 
 typedef struct fd_bam_ctrl {
   long state;                        /* FD_BAM_CTRL_STATE_* */
-  uint command;                      /* FD_BAM_CTRL_CMD_* bitset */
-  uint enable;                       /* Desired enable state (0/1) */
+  uchar command;                     /* FD_BAM_CTRL_CMD_* bitset */
+  uchar enable;                      /* Desired enable state (0/1) */
   char url[ FD_BAM_CTRL_URL_MAX ];   /* Requested URL */
   char sni[ FD_BAM_CTRL_SNI_MAX ];   /* Requested SNI override (optional) */
   char error[ FD_BAM_CTRL_ERR_MAX ]; /* Error message returned on failure */
-  uint current_enable;               /* Currently applied enable flag */
+  uchar current_enable;              /* Currently applied enable flag */
   char current_url[ FD_BAM_CTRL_URL_MAX ]; /* Currently applied URL */
   char current_sni[ FD_BAM_CTRL_SNI_MAX ]; /* Currently applied SNI */
 } fd_bam_ctrl_t;

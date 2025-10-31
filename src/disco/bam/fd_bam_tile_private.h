@@ -92,7 +92,7 @@ struct fd_bam_tile {
 
   /* Config */
   fd_bam_ctrl_t * ctrl;                           /* Runtime control shared object (NULL when tile launched without admin support) */
-  int   runtime_enabled;                          /* Whether BAM runtime connectivity is enabled */
+  uchar   runtime_enabled;                          /* Whether BAM runtime connectivity is enabled */
   char   server_fqdn[ 256 ]; /* cstr; hostname configured for BAM endpoint */
   ushort server_fqdn_len;                         /* Length of server_fqdn (no terminator) */
   char   server_sni[ 256 ]; /* cstr; optional override for TLS SNI */

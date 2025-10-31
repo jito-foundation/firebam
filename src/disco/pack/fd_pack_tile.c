@@ -362,28 +362,28 @@ fd_pack_out_valid( fd_pack_out_ctx_t const * out ) {
 
 static inline void
 fd_pack_assign_bam_failure_reason( fd_bam_bundle_result_t * res,
-                                   uint                     idx,
+                                   ushort                   idx,
                                    int                      result ) {
   if( FD_UNLIKELY( !res ) ) return;
   if( FD_UNLIKELY( idx>=FD_PACK_MAX_TXN_PER_BUNDLE ) ) idx = (uint)FD_PACK_MAX_TXN_PER_BUNDLE - 1U;
-  uint new_cnt = idx + 1U;
+  ushort new_cnt = idx + 1;
   if( FD_UNLIKELY( res->txn_cnt<=idx ) )
     res->txn_cnt = (uchar)fd_uint_min( new_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
   if( FD_UNLIKELY( res->bundle_txn_cnt<=idx ) )
     res->bundle_txn_cnt = (uchar)fd_uint_min( new_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
-  res->sanitize_success[ idx ] = (uchar)1;
+  res->sanitize_success[ idx ] = 1;
 
   switch( result ) {
   case FD_PACK_INSERT_REJECT_NONCE_PRIORITY:
-    res->has_deser_error = (uchar)1;
-    res->deser_reason    = (uchar)bam_types_DeserializationErrorReason_PRIORITIZATION_FAILURE;
+    res->has_deser_error = 1;
+    res->deser_reason    = bam_types_DeserializationErrorReason_PRIORITIZATION_FAILURE;
     res->deser_index     = (uchar)idx;
     break;
   case FD_PACK_INSERT_REJECT_UNAFFORDABLE:
-    res->transaction_err[ idx ] = (ushort)bam_types_TransactionErrorReason_INSUFFICIENT_FUNDS_FOR_FEE;
+    res->transaction_err[ idx ] = bam_types_TransactionErrorReason_INSUFFICIENT_FUNDS_FOR_FEE;
     break;
   case FD_PACK_INSERT_REJECT_ADDR_LUT:
-    res->transaction_err[ idx ] = (ushort)bam_types_TransactionErrorReason_ADDRESS_LOOKUP_TABLE_NOT_FOUND;
+    res->transaction_err[ idx ] = bam_types_TransactionErrorReason_ADDRESS_LOOKUP_TABLE_NOT_FOUND;
     break;
   case FD_PACK_INSERT_REJECT_DUPLICATE:
   case FD_PACK_INSERT_REJECT_DUPLICATE_ACCT:
@@ -394,13 +394,13 @@ fd_pack_assign_bam_failure_reason( fd_bam_bundle_result_t * res,
   case FD_PACK_INSERT_REJECT_INVALID_NONCE:
   case FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST:
   case FD_PACK_INSERT_REJECT_NONCE_CONFLICT:
-    res->has_deser_error = (uchar)1;
-    res->deser_reason    = (uchar)bam_types_DeserializationErrorReason_FILTER_FAILURE;
+    res->has_deser_error = 1;
+    res->deser_reason    = bam_types_DeserializationErrorReason_FILTER_FAILURE;
     res->deser_index     = (uchar)idx;
     break;
   default:
     if( FD_LIKELY( !res->has_generic_invalid ) ) {
-      res->has_generic_invalid = (uchar)1;
+      res->has_generic_invalid = 1;
       snprintf( res->generic_invalid_msg,
                 FD_BAM_GENERIC_INVALID_MSG_MAX,
                 "pack rejected seq %lu idx %u (code %d)",
@@ -425,8 +425,8 @@ fd_pack_enqueue_bam_result( fd_pack_ctx_t * ctx,
     return;
   }
   ctx->bam_results[ ctx->bam_results_tail ] = *res;
-  ctx->bam_results_tail = (ctx->bam_results_tail + 1UL) % FD_BAM_MAX_PENDING_RESULTS;
-  ctx->bam_results_pending++;
+  ctx->bam_results_tail    = (ushort)((ctx->bam_results_tail + 1U) % FD_BAM_MAX_PENDING_RESULTS);
+  ctx->bam_results_pending = (ushort)( ctx->bam_results_pending + 1U );
 }
 
 static inline int
@@ -515,7 +515,7 @@ fd_pack_tile_drop_expired_bundles( fd_pack_ctx_t * ctx,
   }
 }
 
-FD_FN_CONST static inline uint
+FD_FN_CONST static inline ushort
 fd_pack_result_sched_error( int result ) {
   switch( result ) {
   case FD_PACK_INSERT_REJECT_PRIORITY:
@@ -1192,9 +1192,9 @@ during_frag( fd_pack_ctx_t * ctx,
     ctx->cur_spot->txnp->source_ipv4 = source_ipv4;
     ctx->cur_spot->txnp->source_tpu  = source_tpu;
     ctx->cur_spot->txnp->bam_seq_id          = txnm->block_engine.scheduler_seq_id;
-    ctx->cur_spot->txnp->bam_batch_cnt       = (ushort)txnm->block_engine.batch_cnt;
-    ctx->cur_spot->txnp->bam_batch_idx       = (ushort)txnm->block_engine.batch_idx;
-    ctx->cur_spot->txnp->bam_revert_on_error = (uchar)(txnm->block_engine.revert_on_error ? 1 : 0);
+    ctx->cur_spot->txnp->bam_batch_cnt       = txnm->block_engine.batch_cnt;
+    ctx->cur_spot->txnp->bam_batch_idx       = txnm->block_engine.batch_idx;
+    ctx->cur_spot->txnp->bam_revert_on_error = txnm->block_engine.revert_on_error ? 1 : 0;
 
     break;
   }
@@ -1352,7 +1352,7 @@ after_frag( fd_pack_ctx_t *     ctx,
           res.execution_success = (uchar)0;
           res.scheduling_error  = fd_pack_result_sched_error( result );
           for( uint i=0U; i<(uint)res.txn_cnt; i++ ) res.sanitize_success[ i ] = (uchar)1;
-          fd_pack_assign_bam_failure_reason( &res, 0U, result );
+          fd_pack_assign_bam_failure_reason( &res, 0, result );
           fd_pack_enqueue_bam_result( ctx, &res );
         }
         ctx->current_bundle->bundle = NULL;
@@ -1364,10 +1364,7 @@ after_frag( fd_pack_ctx_t *     ctx,
       }
     } else {
       fd_txn_p_t * spot_txnp = ctx->cur_spot->txnp;
-      uint         scheduler_seq_id = spot_txnp->bam_seq_id;
       ushort       bam_batch_cnt    = spot_txnp->bam_batch_cnt;
-      ushort       bam_batch_idx    = spot_txnp->bam_batch_idx;
-      int          bam_revert_flag  = spot_txnp->bam_revert_on_error;
       ulong blockhash_slot = sig;
       ulong deleted;
       long insert_duration = -fd_tickcount();
@@ -1377,31 +1374,22 @@ after_frag( fd_pack_ctx_t *     ctx,
       ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ]++;
       fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
       if( FD_UNLIKELY( result<0 ) ) {
-        if( FD_LIKELY( scheduler_seq_id && !bam_revert_flag ) ) {
-          uint batch_cnt = bam_batch_cnt ? (uint)bam_batch_cnt : 1U;
-          uint capped_cnt = (uint)fd_ulong_min( (ulong)batch_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
-          if( FD_UNLIKELY( !capped_cnt ) ) capped_cnt = 1U;
-
+        if( FD_LIKELY( spot_txnp->bam_seq_id && !spot_txnp->bam_revert_on_error ) ) {
           fd_bam_bundle_result_t res = {0};
-          res.bundle_id         = (ulong)scheduler_seq_id;
+          res.bundle_id         = spot_txnp->bam_seq_id;
           res.slot              = FD_LIKELY( ctx->leader_slot!=ULONG_MAX ) ? ctx->leader_slot : blockhash_slot;
           if( FD_UNLIKELY( res.slot==ULONG_MAX ) ) res.slot = 0UL;
-          res.bundle_txn_cnt    = (uchar)fd_uint_min( batch_cnt ? batch_cnt : 1U, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
-          res.txn_cnt           = (uchar)fd_uint_min( capped_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
-          res.execution_success = (uchar)0;
+          res.bundle_txn_cnt    = (uchar)(bam_batch_cnt ? bam_batch_cnt : 1);
+          res.txn_cnt           = (uchar)fd_ushort_min( bam_batch_cnt, (uchar)FD_PACK_MAX_TXN_PER_BUNDLE );
+          res.execution_success = 0;
           res.scheduling_error  = fd_pack_result_sched_error( result );
-          for( uint i=0U; i<(uint)res.txn_cnt; i++ ) {
-            res.transaction_err[ i ]  = (ushort)0;
-            res.consumed_cus[ i ]     = 0U;
-            res.sanitize_success[ i ] = (uchar)1;
+          for( uchar i=0; i<res.txn_cnt; i++ ) {
+            res.transaction_err[ i ]  = 0;
+            res.consumed_cus[ i ]     = 0;
+            res.sanitize_success[ i ] = 1;
           }
 
-          uint idx = (uint)bam_batch_idx;
-          if( FD_UNLIKELY( idx>=res.txn_cnt ) ) {
-            idx = res.txn_cnt ? res.txn_cnt - 1U : 0U;
-            FD_LOG_WARNING(( "Clamping BAM batch index %u to %u for seq_id=%u", (uint)bam_batch_idx, idx, scheduler_seq_id ));
-          }
-          fd_pack_assign_bam_failure_reason( &res, idx, result );
+          fd_pack_assign_bam_failure_reason( &res, spot_txnp->bam_batch_idx, result );
           fd_pack_enqueue_bam_result( ctx, &res );
         }
       } else {

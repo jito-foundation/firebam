@@ -15,20 +15,20 @@
 #define FD_BAM_GENERIC_INVALID_MSG_MAX 96UL
 
 typedef struct {
-  ulong bundle_id;
-  ulong slot;
-  uchar bundle_txn_cnt;
-  uchar txn_cnt;
-  uchar execution_success; /* treated as bool */
-  uint  scheduling_error;  /* bam_types_SchedulingError or FD_BAM_SCHED_ERR_NONE */
-  ushort transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ];
-  uint   consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ];
-  uchar sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];
-  uchar has_deser_error;
-  uchar deser_index;
-  uchar deser_reason;
-  uchar has_generic_invalid;
-  char  generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ];
+  ulong bundle_id;    /* Scheduler-assigned seq_id for this batch; mirrors AtomicTxnBatch.seq_id and is used to correlate results. 0 is valid for warmup traffic; ULONG_MAX is never produced. */
+  ulong slot;         /* Slot associated with the batch. Executed bundles use the bank/Poh slot, while pre-execution drops mirror AtomicTxnBatch.max_schedule_slot. 0 means the scheduler supplied no slot hint. */
+  uchar bundle_txn_cnt; /* Declared transaction count from the scheduler, capped to FD_PACK_MAX_TXN_PER_BUNDLE. 0 until pack/bank has observed bundle metadata. */
+  uchar txn_cnt;         /* Number of per-transaction result entries populated below. Consumers must only examine indices [0,txn_cnt); value saturates at FD_PACK_MAX_TXN_PER_BUNDLE. */
+  uchar execution_success; /* Bundle-level success flag (1/1). Set to 1 only when every transaction executed and committed; remains 0 for sanitize failures, revert_on_error cascades, or scheduler drops. */
+  ushort scheduling_error;  /* bam_types_SchedulingError reason code when the batch never scheduled; FD_BAM_SCHED_ERR_NONE (UINT_MAX) when scheduling succeeded or the bundle executed. */
+  int transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Per-transaction bam_types_TransactionErrorReason for indices <txn_cnt. 0 denotes success. */
+  uint   consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Actual compute units consumed per transaction (exec+account data), even when the bundle later reverts. 0 when the txn never executed. */
+  uchar sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];  /* Boolean sanitize outcome per transaction (1=passed bank sanitize, 0=failed). When 0, transaction_err typically reports SANITIZE_FAILURE. */
+  uchar has_deser_error;   /* Batch-level flag indicating deserialization or flag validation failed before execution; when set, per-transaction arrays are undefined and deser_* identify the offender. */
+  uchar deser_index;       /* Zero-based transaction index tied to the deserialization error; clamped to FD_PACK_MAX_TXN_PER_BUNDLE-1 and only valid when has_deser_error==1. */
+  uchar deser_reason;      /* bam_types_DeserializationErrorReason enumerator for the failure reported by deser_index; only meaningful when has_deser_error==1. */
+  uchar has_generic_invalid; /* Batch-level rejection flag for generic invalid conditions (mixed modes, oversize, etc.). When 1, generic_invalid_msg contains a human-readable explanation. */
+  char  generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ]; /* NUL-terminated ASCII detail describing a generic invalid rejection. Truncated to FD_BAM_GENERIC_INVALID_MSG_MAX-1 bytes when present. */
 } fd_bam_bundle_result_t;
 
 typedef struct {
@@ -48,9 +48,9 @@ typedef struct {
 
 #define FD_BAM_STEM_SIG_GOSSIP_UPDATE (5UL)
 
-#define FD_BAM_SCHED_ERR_NONE            ((uint)UINT_MAX)
-#define FD_BAM_SCHED_ERR_POH_TIMEOUT     ((uint)bam_types_SchedulingError_POH_TIMEOUT)
-#define FD_BAM_SCHED_ERR_OUTSIDE_SLOT    ((uint)bam_types_SchedulingError_OUTSIDE_LEADER_SLOT)
-#define FD_BAM_SCHED_ERR_CONTAINER_FULL  ((uint)bam_types_SchedulingError_CONTAINER_FULL)
+#define FD_BAM_SCHED_ERR_NONE            USHORT_MAX
+#define FD_BAM_SCHED_ERR_POH_TIMEOUT     bam_types_SchedulingError_POH_TIMEOUT
+#define FD_BAM_SCHED_ERR_OUTSIDE_SLOT    bam_types_SchedulingError_OUTSIDE_LEADER_SLOT
+#define FD_BAM_SCHED_ERR_CONTAINER_FULL  bam_types_SchedulingError_CONTAINER_FULL
 
 #endif /* HEADER_fd_src_disco_bam_fd_bam_types_h */

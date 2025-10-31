@@ -419,8 +419,8 @@ fd_bam_tile_format_url( fd_bam_tile_t const * ctx,
 static void
 fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->ctrl ) ) return;
-  ctx->ctrl->current_enable = (uint)!!ctx->runtime_enabled;
-  ctx->ctrl->enable         = (uint)!!ctx->runtime_enabled;
+  ctx->ctrl->current_enable = ctx->runtime_enabled;
+  ctx->ctrl->enable         = ctx->runtime_enabled;
   char url_buf[ FD_BAM_CTRL_URL_MAX + FD_BAM_CTRL_URL_FORMAT_OVERHEAD ];
   fd_bam_tile_format_url( ctx, url_buf, sizeof(url_buf) );
   fd_bam_ctrl_copy_str( ctx->ctrl->current_url, FD_BAM_CTRL_URL_MAX, url_buf );
@@ -443,7 +443,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   ushort new_port = ctx->server_tcp_port;
   int    new_ssl  = ctx->is_ssl;
   char   new_host[ 256 ];
-  ulong  new_host_len = (ulong)ctx->server_fqdn_len;
+  ulong  new_host_len = ctx->server_fqdn_len;
   fd_memcpy( new_host, ctx->server_fqdn, fd_ulong_min( sizeof(new_host)-1UL, new_host_len ) );
   new_host[ new_host_len ] = '\0';
 
@@ -474,7 +474,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     fd_bam_ctrl_copy_str( new_sni, sizeof(new_sni), ctx->server_sni );
   }
 
-  int new_enable = ctx->runtime_enabled;
+  uchar new_enable = ctx->runtime_enabled;
   if( command & FD_BAM_CTRL_CMD_ENABLE )
     new_enable = !!enable;
 
@@ -852,8 +852,8 @@ privileged_init( fd_topo_t *      topo,
     ctx->ctrl = fd_topo_obj_laddr( topo, bam_ctrl_obj_id );
     fd_memset( ctx->ctrl, 0, sizeof(fd_bam_ctrl_t) );
     ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
-    ctx->ctrl->enable         = 1U;
-    ctx->ctrl->current_enable = 1U;
+    ctx->ctrl->enable         = 1;
+    ctx->ctrl->current_enable = 1;
     fd_bam_ctrl_copy_str( ctx->ctrl->current_url, FD_BAM_CTRL_URL_MAX, tile->bam.url );
     fd_bam_ctrl_copy_str( ctx->ctrl->current_sni, FD_BAM_CTRL_SNI_MAX, tile->bam.sni );
   } else {
