@@ -443,7 +443,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   ushort new_port = ctx->server_tcp_port;
   int    new_ssl  = ctx->is_ssl;
   char   new_host[ 256 ];
-  ulong  new_host_len = ctx->server_fqdn_len;
+  ulong  new_host_len = (ulong)ctx->server_fqdn_len;
   fd_memcpy( new_host, ctx->server_fqdn, fd_ulong_min( sizeof(new_host)-1UL, new_host_len ) );
   new_host[ new_host_len ] = '\0';
 
@@ -483,7 +483,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   if( command & FD_BAM_CTRL_CMD_URL ) {
     fd_memset( ctx->server_fqdn, 0, sizeof(ctx->server_fqdn) );
     fd_memcpy( ctx->server_fqdn, new_host, new_host_len );
-    ctx->server_fqdn_len = new_host_len;
+    ctx->server_fqdn_len = (ushort)fd_ulong_min( new_host_len, (ulong)USHORT_MAX );
     ctx->server_tcp_port = new_port;
     ctx->is_ssl          = !!new_ssl;
     need_reset = 1;
@@ -493,7 +493,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     fd_memset( ctx->server_sni, 0, sizeof(ctx->server_sni) );
     ulong sni_len = strlen( new_sni );
     fd_memcpy( ctx->server_sni, new_sni, sni_len );
-    ctx->server_sni_len = sni_len;
+    ctx->server_sni_len = (ushort)fd_ulong_min( sni_len, (ulong)USHORT_MAX );
     fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
     need_reset = 1;
   }
@@ -576,14 +576,14 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
     FD_LOG_CRIT(( "Invalid url->host_len" )); /* unreachable */
   }
   fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_fqdn ), url->host, url->host_len ) );
-  ctx->server_fqdn_len = url->host_len;
+  ctx->server_fqdn_len = (ushort)fd_ulong_min( url->host_len, (ulong)USHORT_MAX );
 
   if( FD_UNLIKELY( tile->bam.sni_len ) ) {
     fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_sni ), tile->bam.sni, tile->bam.sni_len ) );
-    ctx->server_sni_len = tile->bam.sni_len;
+    ctx->server_sni_len = (ushort)fd_ulong_min( tile->bam.sni_len, (ulong)USHORT_MAX );
   } else {
     fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_sni ), url->host, url->host_len ) );
-    ctx->server_sni_len = url->host_len;
+    ctx->server_sni_len = (ushort)fd_ulong_min( url->host_len, (ulong)USHORT_MAX );
   }
 
   ctx->is_ssl = !!is_ssl;

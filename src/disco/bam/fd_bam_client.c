@@ -42,14 +42,14 @@ enum {
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
   bam_types_Packet    packets[ FD_PACK_MAX_TXN_PER_BUNDLE ];   /* decoded packet cache; indices [0,packet_cnt) valid */
-  ulong               packet_cnt;                              /* number of packets collected; 0..FD_PACK_MAX_TXN_PER_BUNDLE */
-  int                 revert_on_error;                         /* 0/1 flag mirrored from packet meta; only meaningful when revert_flag_set!=0 */
-  int                 revert_flag_set;                         /* 0 before first flag observed, 1 after; prevents defaulting to revert_on_error=0 */
-  int                 drop_reason;                             /* FD_BAM_BATCH_DROP_* value describing rejection path */
-  uint                has_deser_error;                         /* boolean: 1 when deser_reason/index populated */
-  uint                deser_index;                             /* transaction index tied to deserialization error; capped to FD_PACK_MAX_TXN_PER_BUNDLE-1 */
-  uint                deser_reason;                            /* bam_types_DeserializationErrorReason enum value */
-  uint                has_generic_invalid;                     /* boolean: 1 when generic_invalid_msg contains an explanation */
+  uchar               packet_cnt;                              /* number of packets collected; 0..FD_PACK_MAX_TXN_PER_BUNDLE */
+  uchar               revert_on_error;                         /* 0/1 flag mirrored from packet meta; only meaningful when revert_flag_set!=0 */
+  uchar               revert_flag_set;                         /* 0 before first flag observed, 1 after; prevents defaulting to revert_on_error=0 */
+  uchar               drop_reason;                             /* FD_BAM_BATCH_DROP_* value describing rejection path */
+  uchar               has_deser_error;                         /* boolean: 1 when deser_reason/index populated */
+  uchar               deser_index;                             /* transaction index tied to deserialization error; capped to FD_PACK_MAX_TXN_PER_BUNDLE-1 */
+  uchar               deser_reason;                            /* bam_types_DeserializationErrorReason enum value */
+  uchar               has_generic_invalid;                     /* boolean: 1 when generic_invalid_msg contains an explanation */
   char                generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ]; /* human-readable drop detail; NUL terminated when flag set */
 } fd_bam_batch_ctx_t;
 
@@ -68,8 +68,8 @@ fd_bam_client_make_base_result( bam_types_AtomicTxnBatch const * batch,
   res.bundle_id = (ulong)batch->seq_id;
   res.slot      = batch->max_schedule_slot;
   res.bundle_txn_cnt = state->packet_cnt;
-  res.txn_cnt        = (uint)state->packet_cnt;
-  res.execution_success = 0U;
+  res.txn_cnt        = state->packet_cnt;
+  res.execution_success = 0;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   return res;
 }
@@ -78,12 +78,12 @@ static void
 fd_bam_client_report_deser_error( fd_bam_tile_t *            ctx,
                                   bam_types_AtomicTxnBatch const * batch,
                                   fd_bam_batch_ctx_t const * state,
-                                  uint                       reason,
-                                  uint                       index ) {
+                                  uchar                      reason,
+                                  uchar                      index ) {
   fd_bam_bundle_result_t res = fd_bam_client_make_base_result( batch, state );
-  res.has_deser_error = 1U;
+  res.has_deser_error = 1;
   res.deser_reason    = reason;
-  uint max_idx = (uint)( FD_PACK_MAX_TXN_PER_BUNDLE ? (FD_PACK_MAX_TXN_PER_BUNDLE-1UL) : 0UL );
+  uchar max_idx = FD_PACK_MAX_TXN_PER_BUNDLE ? FD_PACK_MAX_TXN_PER_BUNDLE-1UL : 0UL;
   res.deser_index     = index>max_idx ? max_idx : index;
   fd_bam_enqueue_result( ctx, &res );
 }
@@ -94,7 +94,7 @@ fd_bam_client_report_generic_invalid( fd_bam_tile_t *            ctx,
                                       fd_bam_batch_ctx_t const * state,
                                       char const *               msg ) {
   fd_bam_bundle_result_t res = fd_bam_client_make_base_result( batch, state );
-  res.has_generic_invalid = 1U;
+  res.has_generic_invalid = 1;
   size_t len = fd_ulong_min( msg ? strlen( msg ) : 0UL, FD_BAM_GENERIC_INVALID_MSG_MAX-1UL );
   if( len ) fd_memcpy( res.generic_invalid_msg, msg, len );
   res.generic_invalid_msg[ len ] = '\0';
@@ -109,7 +109,7 @@ static void
 fd_bam_tile_publish_bundle_txn( fd_bam_tile_t * ctx,
                                 void const *    txn,
                                 ulong           txn_sz,
-                                ulong           bundle_txn_cnt,
+                                uint            bundle_txn_cnt,
                                 uint            batch_idx,
                                 uint            source_ipv4 );
 
@@ -328,7 +328,7 @@ fd_bam_encode_committed_cb( pb_ostream_t *          stream,
   fd_bam_encode_ctx_t const * ctx = (fd_bam_encode_ctx_t const *)*arg;
   if( FD_UNLIKELY( !ctx || !ctx->res ) ) return false;
   fd_bam_bundle_result_t const * res = ctx->res;
-  for( uint i=0U; i<res->txn_cnt; i++ ) {
+  for( uchar i=0U; i<res->txn_cnt; i++ ) {
     bam_types_TransactionCommittedResult txn_res = bam_types_TransactionCommittedResult_init_default;
     txn_res.cus_consumed               = res->consumed_cus[ i ];
     txn_res.feepayer_balance_lamports  = 0UL;
@@ -393,7 +393,7 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
     return;
   }
 
-  for( uint i=0U; i<res->txn_cnt; i++ ) {
+    for( uchar i=0U; i<res->txn_cnt; i++ ) {
     if( FD_UNLIKELY( !res->sanitize_success[ i ] ) ) {
       out->which_reason                             = bam_types_NotCommitted_deserialization_error_tag;
       out->reason.deserialization_error.index       = i;
@@ -402,7 +402,7 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
     }
   }
 
-  for( uint i=0U; i<res->txn_cnt; i++ ) {
+    for( uchar i=0U; i<res->txn_cnt; i++ ) {
     uint err = res->transaction_err[ i ];
     if( FD_UNLIKELY( err ) ) {
       if( FD_LIKELY( err < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
@@ -437,7 +437,7 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     FD_LOG_WARNING(( "Received AtomicTxnBatch exceeding max bundle size" ));
     state->drop_reason = FD_BAM_BATCH_DROP_OVERSIZE;
     if( FD_LIKELY( !state->has_generic_invalid ) ) {
-      state->has_generic_invalid = 1U;
+      state->has_generic_invalid = 1;
       strncpy( state->generic_invalid_msg, "bundle exceeds max transactions", FD_BAM_GENERIC_INVALID_MSG_MAX-1UL );
       state->generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX-1UL ] = '\0';
     }
@@ -448,7 +448,7 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   if( FD_UNLIKELY( !pb_decode( stream, &bam_types_Packet_msg, &packet ) ) ) {
     state->drop_reason = FD_BAM_BATCH_DROP_PROTO;
     if( FD_LIKELY( !state->has_generic_invalid ) ) {
-      state->has_generic_invalid = 1U;
+      state->has_generic_invalid = 1;
       strncpy( state->generic_invalid_msg, "packet decode failed", FD_BAM_GENERIC_INVALID_MSG_MAX-1UL );
       state->generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX-1UL ] = '\0';
     }
@@ -458,26 +458,26 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   if( packet.has_meta && packet.meta.has_flags ) {
     if( FD_UNLIKELY( packet.meta.flags.simple_vote_tx ) ) {
       state->drop_reason = FD_BAM_BATCH_DROP_PROTO;
-      state->has_deser_error = 1U;
+      state->has_deser_error = 1;
       state->deser_reason    = bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE;
-      state->deser_index     = (uint)state->packet_cnt;
+      state->deser_index     = state->packet_cnt;
       return false;
     }
 
-    int flag = packet.meta.flags.revert_on_error;
-    if( state->revert_flag_set && state->revert_on_error!=flag ) {
+    uchar flag_set = packet.meta.flags.revert_on_error ? 1 : 0;
+    if( state->revert_flag_set && state->revert_on_error!=flag_set ) {
       FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
       state->drop_reason     = FD_BAM_BATCH_DROP_MIXED_FLAGS;
       if( FD_LIKELY( !state->has_deser_error ) ) {
-        state->has_deser_error = 1U;
+        state->has_deser_error = 1;
         state->deser_reason    = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
-        state->deser_index     = (uint)state->packet_cnt;
+        state->deser_index     = state->packet_cnt;
       }
-      state->revert_on_error = state->revert_on_error | flag;
+      state->revert_on_error = state->revert_on_error | flag_set;
       state->revert_flag_set = 1;
       return false;
     }
-    state->revert_on_error = flag;
+    state->revert_on_error = flag_set;
     state->revert_flag_set = 1;
   }
 
@@ -486,11 +486,11 @@ fd_bam_collect_packet( pb_istream_t *         stream,
       state->ctx->metrics.packet_drop_cnt++;
       FD_MCNT_INC( BAM, PACKETS_DROPPED, 1UL );
     }
-    FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding MTU (%lu>%lu); dropping batch",
-                     (ulong)packet.data.size, FD_TXN_MTU ));
+    FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding MTU (%u>%lu); dropping batch",
+                     packet.data.size, FD_TXN_MTU ));
     state->drop_reason = FD_BAM_BATCH_DROP_OVERSIZE;
     if( FD_LIKELY( !state->has_generic_invalid ) ) {
-      state->has_generic_invalid = 1U;
+      state->has_generic_invalid = 1;
       strncpy( state->generic_invalid_msg, "packet exceeds MTU", FD_BAM_GENERIC_INVALID_MSG_MAX-1UL );
       state->generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX-1UL ] = '\0';
     }
@@ -518,8 +518,8 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     return;
   }
 
-  if( FD_UNLIKELY( state->packet_cnt==0 ) ) {
-    fd_bam_client_report_deser_error( ctx, batch, state, bam_types_DeserializationErrorReason_EMPTY, 0U );
+  if( FD_UNLIKELY( state->packet_cnt==0U ) ) {
+    fd_bam_client_report_deser_error( ctx, batch, state, bam_types_DeserializationErrorReason_EMPTY, 0 );
     ctx->bundle_max_schedule_slot = ULONG_MAX;
     return;
   }
@@ -534,29 +534,29 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     ctx->bundle_txn_cnt            = state->packet_cnt;
     ctx->bundle_max_schedule_slot  = batch->max_schedule_slot ? batch->max_schedule_slot : ULONG_MAX;
 
-    for( ulong i=0UL; i<state->packet_cnt; i++ ) {
+    for( uchar i=0; i<state->packet_cnt; i++ ) {
       bam_types_Packet const * pkt = &state->packets[ i ];
       fd_bam_tile_publish_bundle_txn( ctx,
                                       pkt->data.bytes,
                                       pkt->data.size,
                                       state->packet_cnt,
-                                      (uint)i,
-                                      0U );
+                                      i,
+                                      0 );
     }
     ctx->metrics.bundle_received_cnt++;
   } else {
     ulong max_slot = batch->max_schedule_slot ? batch->max_schedule_slot : ULONG_MAX;
-    for( ulong i=0UL; i<state->packet_cnt; i++ ) {
+    for( uchar i=0; i<state->packet_cnt; i++ ) {
       bam_types_Packet const * pkt = &state->packets[ i ];
       fd_bam_tile_publish_txn( ctx,
                                pkt->data.bytes,
                                pkt->data.size,
                                max_slot,
-                               (uint)batch->seq_id,
-                               (uint)i,
-                               (uint)state->packet_cnt,
+                               batch->seq_id,
+                               i,
+                               state->packet_cnt,
                                0,
-                               0U );
+                               0 );
     }
   }
   ctx->bundle_max_schedule_slot = ULONG_MAX;
@@ -567,7 +567,7 @@ fd_bam_decode_batch( fd_bam_tile_t * ctx,
                      pb_istream_t *   stream ) {
   fd_bam_batch_ctx_t state = {
     .ctx              = ctx,
-    .packet_cnt       = 0UL,
+    .packet_cnt       = 0,
     .revert_on_error  = 0,
     .revert_flag_set  = 0,
     .drop_reason      = FD_BAM_BATCH_DROP_NONE
@@ -742,7 +742,7 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   }
 
   ctx->bam_auth_inflight      = 0;
-  ctx->bam_auth_challenge_len = (uint)challenge_len;
+  ctx->bam_auth_challenge_len = (ushort)challenge_len;
   fd_memset( ctx->bam_auth_challenge, 0, sizeof(ctx->bam_auth_challenge) );
   fd_memcpy( ctx->bam_auth_challenge, resp.challenge_to_sign, challenge_len );
 
@@ -1001,7 +1001,7 @@ fd_bam_flush_results( fd_bam_tile_t * ctx ) {
     fd_bam_bundle_result_t const * res =
         &ctx->bam_results[ ctx->bam_results_head ];
     if( FD_UNLIKELY( !fd_bam_send_result( ctx, res ) ) ) break;
-    ctx->bam_results_head = ( ctx->bam_results_head + 1UL ) % FD_BAM_MAX_PENDING_RESULTS;
+    ctx->bam_results_head = (ushort)((ctx->bam_results_head + 1U) % FD_BAM_MAX_PENDING_RESULTS);
     ctx->bam_pending_results--;
     busy = 1;
   }
@@ -1336,7 +1336,7 @@ fd_bam_tile_publish_bundle_txn(
     fd_bam_tile_t * ctx,
     void const *       txn,
     ulong              txn_sz,  /* <=FD_TXN_MTU */
-    ulong              bundle_txn_cnt,
+    uint               bundle_txn_cnt,
     uint               batch_idx,
     uint               source_ipv4
 ) {
@@ -1353,14 +1353,14 @@ fd_bam_tile_publish_bundle_txn(
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BUNDLE,
     .block_engine   = {
-      .bundle_id         = ctx->bundle_seq,
-      .bundle_txn_cnt    = bundle_txn_cnt,
+      .bundle_id         = (ulong)ctx->bundle_seq,
+      .bundle_txn_cnt    = (ulong)bundle_txn_cnt,
       .max_schedule_slot = ctx->bundle_max_schedule_slot,
-      .scheduler_seq_id  = (uint)ctx->bundle_seq,
+      .scheduler_seq_id  = ctx->bundle_seq,
       .batch_cnt         = (ushort)bundle_txn_cnt,
       .batch_idx         = (ushort)batch_idx,
       .revert_on_error   = 1U,
-      .commission        = (uchar)ctx->builder_commission,
+      .commission        = ctx->builder_commission,
     },
   };
   memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL );

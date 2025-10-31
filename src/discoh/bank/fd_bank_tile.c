@@ -153,9 +153,9 @@ fd_bank_batch_state_prepare( fd_bank_ctx_t * ctx,
     fd_memset( &state->res, 0, sizeof( state->res ) );
     state->res.bundle_id         = seq_id;
     state->res.slot              = slot;
-    state->res.bundle_txn_cnt    = (ulong)batch_cnt;
-    state->res.txn_cnt           = (uint)fd_ulong_min( (ulong)batch_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
-    state->res.execution_success = revert_on_error ? 0U : 1U;
+    state->res.bundle_txn_cnt    = (uchar)fd_uint_min( batch_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
+    state->res.txn_cnt           = (uchar)fd_uint_min( batch_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
+    state->res.execution_success = (uchar)( revert_on_error ? 0 : 1 );
     state->res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   }
   return state;
@@ -400,26 +400,27 @@ handle_microblock( fd_bank_ctx_t *     ctx,
 
     uint  err        = (uint)bam_types_TransactionErrorReason_SANITIZE_FAILURE;
     uint  consumed   = 0U;
-    uchar sanitized  = 0U;
+    uchar sanitized  = (uchar)0;
 
     if( sanitized_arr_idx!=ULONG_MAX ) {
       if( FD_LIKELY( sanitized_arr_idx < sanitized_txn_cnt ) ) {
         err       = (uint)transaction_err[ sanitized_arr_idx ];
         consumed  = consumed_exec_cus[ sanitized_arr_idx ] + consumed_acct_data_cus[ sanitized_arr_idx ];
-        sanitized = 1U;
+        sanitized = (uchar)1;
       } else {
         err       = 0U;
         consumed  = 0U;
-        sanitized = 1U;
+        sanitized = (uchar)1;
       }
     }
 
-    if( res->bundle_txn_cnt < (ulong)batch_cnt ) res->bundle_txn_cnt = (ulong)batch_cnt;
+    uchar desired_bundle_cnt = (uchar)fd_uint_min( batch_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
+    if( res->bundle_txn_cnt < desired_bundle_cnt ) res->bundle_txn_cnt = desired_bundle_cnt;
     uint capped_cnt = (uint)fd_ulong_min( (ulong)batch_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
     if( FD_UNLIKELY( capped_cnt==0U ) ) capped_cnt = 1U;
-    if( res->txn_cnt < capped_cnt ) res->txn_cnt = capped_cnt;
+    if( res->txn_cnt < capped_cnt ) res->txn_cnt = (uchar)capped_cnt;
 
-    res->transaction_err[ batch_idx ]  = err;
+    res->transaction_err[ batch_idx ]  = (ushort)fd_uint_min( err, (uint)USHRT_MAX );
     res->consumed_cus[ batch_idx ]     = consumed;
     res->sanitize_success[ batch_idx ] = sanitized;
 
@@ -614,13 +615,13 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   fd_bam_bundle_result_t result = {
     .bundle_id          = ctx->_bundle_id,
     .slot               = slot,
-    .bundle_txn_cnt     = ctx->_bundle_txn_cnt ? ctx->_bundle_txn_cnt : txn_cnt,
-    .txn_cnt            = (uint)txn_cnt,
-    .execution_success  = (uint)execution_success,
+    .bundle_txn_cnt     = (uchar)fd_ulong_min( ctx->_bundle_txn_cnt ? ctx->_bundle_txn_cnt : txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ),
+    .txn_cnt            = (uchar)fd_ulong_min( txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ),
+    .execution_success  = (uchar)( execution_success ? 1 : 0 ),
     .scheduling_error   = FD_BAM_SCHED_ERR_NONE
   };
   for( ulong i=0UL; i<txn_cnt; i++ ) {
-    result.transaction_err[i]  = (uint)transaction_err[i];
+    result.transaction_err[i]  = (ushort)transaction_err[i];
     result.consumed_cus[i]     = consumed_cus[i];
     result.sanitize_success[i] = (uchar)((txns[i].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS)!=0);
   }

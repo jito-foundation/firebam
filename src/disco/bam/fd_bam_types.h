@@ -17,17 +17,17 @@
 typedef struct {
   ulong bundle_id;
   ulong slot;
-  ulong bundle_txn_cnt;
-  uint  txn_cnt;
-  uint  execution_success; /* treated as bool */
+  uchar bundle_txn_cnt;
+  uchar txn_cnt;
+  uchar execution_success; /* treated as bool */
   uint  scheduling_error;  /* bam_types_SchedulingError or FD_BAM_SCHED_ERR_NONE */
-  uint  transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ];
-  uint  consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  ushort transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  uint   consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ];
   uchar sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];
-  uint  has_deser_error;
-  uint  deser_index;
-  uint  deser_reason;
-  uint  has_generic_invalid;
+  uchar has_deser_error;
+  uchar deser_index;
+  uchar deser_reason;
+  uchar has_generic_invalid;
   char  generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ];
 } fd_bam_bundle_result_t;
 

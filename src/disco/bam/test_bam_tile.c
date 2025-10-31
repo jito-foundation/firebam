@@ -67,14 +67,14 @@ test_make_bundle_result( ulong bundle_id ) {
   fd_bam_bundle_result_t res = {0};
   res.bundle_id        = bundle_id;
   res.slot             = bundle_id + 1000UL;
-  res.bundle_txn_cnt   = 2UL;
-  res.txn_cnt          = 2U;
-  res.execution_success = 1U;
+  res.bundle_txn_cnt   = 2;
+  res.txn_cnt          = 2;
+  res.execution_success = 1;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   for( uint i=0U; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {
-    res.transaction_err[ i ]   = 0U;
+    res.transaction_err[ i ]   = 0;
     res.consumed_cus[ i ]      = (uint)( i + 1U );
-    res.sanitize_success[ i ]  = 1U;
+    res.sanitize_success[ i ]  = 1;
   }
   return res;
 }
@@ -84,8 +84,8 @@ test_enqueue_bundle_result( fd_bam_tile_t *               state,
                             fd_bam_bundle_result_t const * res ) {
   FD_TEST( state->bam_pending_results < FD_BAM_MAX_PENDING_RESULTS );
   state->bam_results[ state->bam_results_tail ] = *res;
-  state->bam_results_tail = ( state->bam_results_tail + 1UL ) % FD_BAM_MAX_PENDING_RESULTS;
-  state->bam_pending_results++;
+  state->bam_results_tail = (ushort)((state->bam_results_tail + 1U) % FD_BAM_MAX_PENDING_RESULTS);
+  state->bam_pending_results = (ushort)( state->bam_pending_results + 1U );
 }
 
 typedef struct {
@@ -437,7 +437,7 @@ test_bam_bundle_forwarded( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
   FD_TEST( state->metrics.bundle_received_cnt==1UL );
-  FD_TEST( state->bundle_seq==1UL );
+  FD_TEST( state->bundle_seq==1U );
   FD_TEST( state->metrics.txn_received_cnt>0UL );
 
   fd_txn_m_t * first = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
@@ -1283,7 +1283,7 @@ test_bam_scheduler_result_not_committed_publishes_message( fd_wksp_t * wksp ) {
   state->bam_last_config_poll_ns = g_clock;
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 901UL );
-  res.execution_success = 0U;
+  res.execution_success = 0;
   res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
   test_enqueue_bundle_result( state, &res );
 
@@ -1317,8 +1317,8 @@ test_bam_scheduler_result_not_committed_sanitize_error_reason( fd_wksp_t * wksp 
   test_bam_keepalive_sync( state, g_clock );
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 902UL );
-  res.execution_success   = 0U;
-  res.sanitize_success[1] = 0U;
+  res.execution_success   = 0;
+  res.sanitize_success[1] = 0;
   test_enqueue_bundle_result( state, &res );
 
   int flushed = fd_bam_test_flush_results( state );
@@ -1351,8 +1351,8 @@ test_bam_scheduler_result_not_committed_transaction_error_reason( fd_wksp_t * wk
   test_bam_keepalive_sync( state, g_clock );
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 903UL );
-  res.execution_success  = 0U;
-  res.transaction_err[1] = bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  res.execution_success  = 0;
+  res.transaction_err[1] = (ushort)bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
   test_enqueue_bundle_result( state, &res );
 
   int flushed = fd_bam_test_flush_results( state );
@@ -1385,11 +1385,11 @@ test_bam_scheduler_result_not_committed_transaction_error_high_index( fd_wksp_t 
   test_bam_keepalive_sync( state, g_clock );
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 907UL );
-  res.bundle_txn_cnt   = 3UL;
-  res.txn_cnt          = 3U;
-  res.execution_success = 0U;
-  for( uint i=0U; i<res.txn_cnt; i++ ) res.sanitize_success[ i ] = 1U;
-  res.transaction_err[ 2 ] = bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  res.bundle_txn_cnt   = 3;
+  res.txn_cnt          = 3;
+  res.execution_success = 0;
+  for( uint i=0U; i<res.txn_cnt; i++ ) res.sanitize_success[ i ] = 1;
+  res.transaction_err[ 2 ] = (ushort)bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
   test_enqueue_bundle_result( state, &res );
 
   int flushed = fd_bam_test_flush_results( state );
@@ -1422,7 +1422,7 @@ test_bam_scheduler_result_not_committed_generic_failure_reason( fd_wksp_t * wksp
   test_bam_keepalive_sync( state, g_clock );
 
   fd_bam_bundle_result_t generic = test_make_bundle_result( 904UL );
-  generic.execution_success = 0U;
+  generic.execution_success = 0;
   test_enqueue_bundle_result( state, &generic );
 
   FD_TEST( fd_bam_test_flush_results( state )==1 );
@@ -1439,8 +1439,8 @@ test_bam_scheduler_result_not_committed_generic_failure_reason( fd_wksp_t * wksp
                       FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED ) );
 
   fd_bam_bundle_result_t invalid = test_make_bundle_result( 905UL );
-  invalid.execution_success = 0U;
-  invalid.transaction_err[0] = (uint)_bam_types_TransactionErrorReason_ARRAYSIZE;
+  invalid.execution_success = 0;
+  invalid.transaction_err[0] = (ushort)_bam_types_TransactionErrorReason_ARRAYSIZE;
   test_enqueue_bundle_result( state, &invalid );
 
   FD_TEST( fd_bam_test_flush_results( state )==1 );
@@ -1474,7 +1474,7 @@ test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( fd_wksp
   test_bam_keepalive_sync( state, g_clock );
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 906UL );
-  res.execution_success = 0U;
+  res.execution_success = 0;
   res.scheduling_error  = (uint)(_bam_types_SchedulingError_MAX + 1);
   test_enqueue_bundle_result( state, &res );
 
@@ -1516,9 +1516,9 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
   ulong host_len = strlen( host );
   FD_TEST( host_len < sizeof( ctx->server_fqdn ) );
   strcpy( ctx->server_fqdn, host );
-  ctx->server_fqdn_len = host_len;
+  ctx->server_fqdn_len = (ushort)host_len;
   strcpy( ctx->server_sni, host );
-  ctx->server_sni_len = host_len;
+  ctx->server_sni_len = (ushort)host_len;
   ctx->server_tcp_port = 443;
   ctx->is_ssl          = 1;
 

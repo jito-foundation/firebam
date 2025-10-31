@@ -94,9 +94,9 @@ struct fd_bam_tile {
   fd_bam_ctrl_t * ctrl;                           /* Runtime control shared object (NULL when tile launched without admin support) */
   int   runtime_enabled;                          /* Whether BAM runtime connectivity is enabled */
   char   server_fqdn[ 256 ]; /* cstr; hostname configured for BAM endpoint */
-  ulong  server_fqdn_len;                         /* Length of server_fqdn (no terminator) */
+  ushort server_fqdn_len;                         /* Length of server_fqdn (no terminator) */
   char   server_sni[ 256 ]; /* cstr; optional override for TLS SNI */
-  ulong  server_sni_len;                          /* Length of server_sni (no terminator) */
+  ushort server_sni_len;                          /* Length of server_sni (no terminator) */
   ushort server_tcp_port;                         /* Remote TCP port for gRPC */
 
   /* Resolver */
@@ -131,11 +131,11 @@ struct fd_bam_tile {
   long  builder_info_valid_until;                 /* Expiry timestamp for builder info */
 
   /* Bundle state */
-  ulong bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).
+  uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).
                                                      Scheduler batches copy the sender-provided seq_id so
                                                      every txn in the bundle shares the same
                                                      block_engine.bundle_id. */
-  ulong bundle_txn_cnt;                           /* Number of txns in current bundle */
+  uchar bundle_txn_cnt;                           /* Number of txns in current bundle */
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler */
 
   /* BAM specific */
@@ -143,15 +143,15 @@ struct fd_bam_tile {
   long                  bam_last_builder_heartbeat_ns;  /* Last heartbeat ts from builders */
   long                  bam_last_validator_heartbeat_ns;/* Last heartbeat ts from validator */
   long                  bam_last_config_poll_ns;         /* Last config fetch attempt */
-  ulong                 bam_pending_results;             /* Count of buffered bundle results */
-  ulong                 bam_results_head;                /* FIFO head for bam_results ring */
-  ulong                 bam_results_tail;                /* FIFO tail for bam_results ring */
+  ushort                bam_pending_results;             /* Count of buffered bundle results */
+  ushort                bam_results_head;                /* FIFO head for bam_results ring */
+  ushort                bam_results_tail;                /* FIFO tail for bam_results ring */
   fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Ring of pending bundle outcomes */
   fd_bam_leader_state_t  bam_leader_state;        /* Latest scheduler slot budget info */
   uchar                 bam_url_pubkey[ 32 ];   /* Ed25519 pubkey derived from identity file */
   char                  bam_validator_pubkey[ FD_BASE58_ENCODED_32_SZ ]; /* Base58 validator key */
   char                  bam_auth_challenge[ 256 ];        /* Challenge text from BAM */
-  uint                  bam_auth_challenge_len;           /* Length of auth challenge string */
+  ushort                bam_auth_challenge_len;           /* Length of auth challenge string */
   char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Latest auth response */
   uint                  bam_stream_live       : 1;        /* Stream established and receiving */
   uint                  bam_stream_connecting : 1;        /* Stream handshake in progress */
@@ -203,8 +203,8 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
     return;
   }
   ctx->bam_results[ ctx->bam_results_tail ] = *res;
-  ctx->bam_results_tail = (ctx->bam_results_tail + 1UL) % FD_BAM_MAX_PENDING_RESULTS;
-  ctx->bam_pending_results++;
+  ctx->bam_results_tail = (ushort)((ctx->bam_results_tail + 1U) % FD_BAM_MAX_PENDING_RESULTS);
+  ctx->bam_pending_results = (ushort)( ctx->bam_pending_results + 1U );
 }
 
 /* Define 'request_ctx' IDs to identify different types of gRPC calls */
