@@ -80,6 +80,11 @@ typedef struct {
   fd_bam_batch_state_t bam_batch_state[ FD_BAM_MAX_PENDING_RESULTS ];
 } fd_bank_ctx_t;
 
+static void
+publish_bundle_result( fd_bank_ctx_t * ctx,
+                       fd_bam_bundle_result_t const * result,
+                       fd_stem_context_t * stem );
+
 FD_FN_CONST static inline ulong
 scratch_align( void ) {
   return 128UL;
@@ -385,7 +390,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     uint batch_cnt = txn->bam_batch_cnt ? txn->bam_batch_cnt : 1U;
     uint batch_idx = txn->bam_batch_idx;
     if( FD_UNLIKELY( batch_idx >= FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
-      FD_LOG_WARNING(( "Ignoring BAM batch index %u (>= %u) for seq_id=%u", batch_idx, FD_PACK_MAX_TXN_PER_BUNDLE, seq_id ));
+      FD_LOG_WARNING(( "Ignoring BAM batch index %u (>= %lu) for seq_id=%u", batch_idx, FD_PACK_MAX_TXN_PER_BUNDLE, seq_id ));
       continue;
     }
 
