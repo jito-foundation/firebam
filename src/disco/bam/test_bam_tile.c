@@ -12,6 +12,8 @@
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../ballet/nanopb/pb_decode.h"
 #include "../../waltz/grpc/fd_grpc_codec.h"
+#include "../pack/fd_pack_tile_bam_fee.h"
+#include "../bundle/fd_bundle_crank.h"
 #include "../../util/fd_util.h"
 #include <stdbool.h>
 #include "../../tango/fseq/fd_fseq.h"
@@ -135,7 +137,7 @@ test_bam_encode_scheduler_response( bam_types_Packet * packets,
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
   batch.seq_id = seq_id;
-  batch.max_schedule_slot = 0UL;
+  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
   batch.packets.funcs.encode = test_bam_encode_packets_cb;
   batch.packets.arg          = &packets_ctx;
 
@@ -1740,6 +1742,119 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * bam_state = env->state;
+
+  FD_TEST( bam_state->fee_cfg!=NULL );
+  fd_bam_fee_cfg_t * shared_cfg = bam_state->fee_cfg;
+  fd_memset( shared_cfg, 0, sizeof(fd_bam_fee_cfg_t) );
+
+  bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_bam_config = true;
+  resp.bam_config.has_tpu_sock = true;
+  fd_memset( resp.bam_config.tpu_sock.ip, 0, sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_memcpy( resp.bam_config.tpu_sock.ip, "1.1.1.1", 7UL );
+  resp.bam_config.tpu_sock.port = 8000U;
+  resp.bam_config.has_tpu_fwd_sock = true;
+  fd_memset( resp.bam_config.tpu_fwd_sock.ip, 0, sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_memcpy( resp.bam_config.tpu_fwd_sock.ip, "2.2.2.2", 7UL );
+  resp.bam_config.tpu_fwd_sock.port = 9000U;
+  uchar prio_fee_raw[ 32 ];
+  for( ulong i=0UL; i<32UL; i++ ) prio_fee_raw[ i ] = (uchar)( i + 11U );
+  FD_TEST( fd_base58_encode_32( prio_fee_raw, NULL, resp.bam_config.prio_fee_recipient_pubkey ) );
+  resp.bam_config.prio_fee_recipient_pubkey[ FD_BASE58_ENCODED_32_SZ-1 ] = '\0';
+  resp.bam_config.commission_bps = 3500U;
+
+  uchar pb_buf[ 256 ];
+  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+  fd_bam_client_grpc_rx_msg( bam_state,
+                             pb_buf,
+                             (ulong)ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+
+  FD_TEST( shared_cfg->version==1UL );
+  FD_TEST( shared_cfg->has_prio_fee_recipient==1U );
+  FD_TEST( shared_cfg->commission_bps==3500U );
+  FD_TEST( 0==memcmp( shared_cfg->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
+
+  fd_bundle_crank_gen_t crank_gen_mem[1];
+  fd_memset( crank_gen_mem, 0, sizeof( crank_gen_mem ) );
+  fd_bundle_crank_gen_t * crank_gen = crank_gen_mem;
+  ulong pack_cfg_version = 0UL;
+  int crank_enabled = 1;
+
+  fd_memset( crank_gen->crank3->new_tip_receiver, 0xAA, sizeof( crank_gen->crank3->new_tip_receiver ) );
+  fd_memset( crank_gen->crank2->new_tip_receiver, 0xBB, sizeof( crank_gen->crank2->new_tip_receiver ) );
+  crank_gen->crank3->init_tip_distribution_acct.commission_bps = (ushort)777U;
+
+  fd_pack_apply_bam_fee_cfg_impl( shared_cfg,
+                                  &pack_cfg_version,
+                                  crank_enabled,
+                                  crank_gen->crank3,
+                                  crank_gen->crank2 );
+
+  FD_TEST( pack_cfg_version==shared_cfg->version );
+  FD_TEST( crank_gen->crank3->init_tip_distribution_acct.commission_bps==3500U );
+  FD_TEST( 0==memcmp( crank_gen->crank3->new_tip_receiver, prio_fee_raw, sizeof( prio_fee_raw ) ) );
+  FD_TEST( 0==memcmp( crank_gen->crank2->new_tip_receiver, prio_fee_raw, sizeof( prio_fee_raw ) ) );
+
+  uchar sentinel3[32];
+  uchar sentinel2[32];
+  fd_memset( sentinel3, 0xCC, sizeof( sentinel3 ) );
+  fd_memset( sentinel2, 0xDD, sizeof( sentinel2 ) );
+  fd_memcpy( crank_gen->crank3->new_tip_receiver, sentinel3, sizeof( sentinel3 ) );
+  fd_memcpy( crank_gen->crank2->new_tip_receiver, sentinel2, sizeof( sentinel2 ) );
+  crank_gen->crank3->init_tip_distribution_acct.commission_bps = (ushort)1234U;
+
+  /* Without a version bump pack tile should ignore the shared config. */
+  shared_cfg->commission_bps = 9000U;
+  fd_pack_apply_bam_fee_cfg_impl( shared_cfg,
+                                  &pack_cfg_version,
+                                  crank_enabled,
+                                  crank_gen->crank3,
+                                  crank_gen->crank2 );
+  FD_TEST( pack_cfg_version==1UL );
+  FD_TEST( crank_gen->crank3->init_tip_distribution_acct.commission_bps==1234U );
+  FD_TEST( 0==memcmp( crank_gen->crank3->new_tip_receiver, sentinel3, sizeof( sentinel3 ) ) );
+  FD_TEST( 0==memcmp( crank_gen->crank2->new_tip_receiver, sentinel2, sizeof( sentinel2 ) ) );
+
+  bam_api_ConfigResponse resp_update = bam_api_ConfigResponse_init_default;
+  resp_update.has_bam_config = true;
+  resp_update.bam_config.commission_bps = 15000U;
+  uchar prio_fee_raw2[ 32 ];
+  for( ulong i=0UL; i<32UL; i++ ) prio_fee_raw2[ i ] = (uchar)( i + 39U );
+  FD_TEST( fd_base58_encode_32( prio_fee_raw2, NULL, resp_update.bam_config.prio_fee_recipient_pubkey ) );
+  resp_update.bam_config.prio_fee_recipient_pubkey[ FD_BASE58_ENCODED_32_SZ-1 ] = '\0';
+  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp_update ) );
+  fd_bam_client_grpc_rx_msg( bam_state,
+                             pb_buf,
+                             (ulong)ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+
+  FD_TEST( shared_cfg->version==2UL );
+  FD_TEST( shared_cfg->commission_bps==10000U );
+  FD_TEST( shared_cfg->has_prio_fee_recipient==1U );
+  FD_TEST( 0==memcmp( shared_cfg->prio_fee_recipient, prio_fee_raw2, sizeof( prio_fee_raw2 ) ) );
+
+  fd_pack_apply_bam_fee_cfg_impl( shared_cfg,
+                                  &pack_cfg_version,
+                                  crank_enabled,
+                                  crank_gen->crank3,
+                                  crank_gen->crank2 );
+
+  FD_TEST( pack_cfg_version==shared_cfg->version );
+  FD_TEST( crank_gen->crank3->init_tip_distribution_acct.commission_bps==10000U );
+  FD_TEST( 0==memcmp( crank_gen->crank3->new_tip_receiver, prio_fee_raw2, sizeof( prio_fee_raw2 ) ) );
+  FD_TEST( 0==memcmp( crank_gen->crank2->new_tip_receiver, prio_fee_raw2, sizeof( prio_fee_raw2 ) ) );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -1890,6 +2005,7 @@ main( int     argc,
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
   test_bam_config_updates_contact_info( wksp );
+  test_bam_fee_cfg_propagates_to_pack( wksp );
   test_bam_builder_fee_info( wksp );
   test_bam_bundle_result_queue_survives_reset( wksp );
   test_bam_bundle_result_queue_flushes_after_reconnect( wksp );

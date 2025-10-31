@@ -155,7 +155,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
     }
   }
   ctx->builder_info_wait        = 0;
-  ctx->bundle_max_schedule_slot = ULONG_MAX;
+  ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
 
   memset( ctx->rtt, 0, sizeof(fd_rtt_estimate_t) );
 
@@ -512,19 +512,19 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       bam_types_AtomicTxnBatch const * batch ) {
   if( FD_UNLIKELY( state->has_deser_error ) ) {
     fd_bam_client_report_deser_error( ctx, batch, state, state->deser_reason, state->deser_index );
-    ctx->bundle_max_schedule_slot = ULONG_MAX;
+    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
     return;
   }
 
   if( FD_UNLIKELY( state->has_generic_invalid ) ) {
     fd_bam_client_report_generic_invalid( ctx, batch, state, state->generic_invalid_msg );
-    ctx->bundle_max_schedule_slot = ULONG_MAX;
+    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
     return;
   }
 
   if( FD_UNLIKELY( state->packet_cnt==0U ) ) {
     fd_bam_client_report_deser_error( ctx, batch, state, bam_types_DeserializationErrorReason_EMPTY, 0 );
-    ctx->bundle_max_schedule_slot = ULONG_MAX;
+    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
     return;
   }
 
@@ -560,7 +560,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                               0);
     }
   }
-  ctx->bundle_max_schedule_slot = ULONG_MAX;
+  ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
 }
 
 static int
@@ -892,7 +892,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
       if( cfg->prio_fee_recipient_pubkey[0] ) {
         uchar decoded[ 32 ];
         if( FD_LIKELY( fd_base58_decode_32( cfg->prio_fee_recipient_pubkey, decoded ) ) ) {
-          if( FD_UNLIKELY( !ctx->prio_fee_recipient_set || fd_memcmp( ctx->prio_fee_recipient, decoded, sizeof( decoded ) ) ) ) {
+          if( FD_UNLIKELY( !ctx->prio_fee_recipient_set || memcmp( ctx->prio_fee_recipient, decoded, sizeof( decoded ) ) ) ) {
             fd_memcpy( ctx->prio_fee_recipient, decoded, sizeof( decoded ) );
             ctx->prio_fee_recipient_set = 1U;
             updated = 1;
@@ -910,9 +910,9 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
         fd_memcpy( fee_cfg->prio_fee_recipient, ctx->prio_fee_recipient, sizeof( fee_cfg->prio_fee_recipient ) );
         fee_cfg->commission_bps         = ctx->validator_commission_bps;
         fee_cfg->has_prio_fee_recipient = ctx->prio_fee_recipient_set;
-        fd_compiler_mfence();
+        FD_COMPILER_MFENCE();
         fee_cfg->version = ctx->fee_cfg_version;
-        fd_compiler_mfence();
+        FD_COMPILER_MFENCE();
       }
     }
   }

@@ -14,6 +14,8 @@
 #define FD_BAM_MAX_PENDING_RESULTS 2048UL
 #define FD_BAM_GENERIC_INVALID_MSG_MAX 96UL
 
+#define FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ULONG_MAX
+
 typedef struct {
   ulong bundle_id;    /* Scheduler-assigned seq_id for this batch; mirrors AtomicTxnBatch.seq_id and is used to correlate results. 0 is valid for warmup traffic; ULONG_MAX is never produced. */
   ulong slot;         /* Slot associated with the batch. Executed bundles use the bank/Poh slot, while pre-execution drops mirror AtomicTxnBatch.max_schedule_slot. 0 means the scheduler supplied no slot hint. */

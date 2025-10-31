@@ -10,6 +10,7 @@
 #include "../metrics/fd_metrics.h"
 #include "../pack/fd_pack.h"
 #include "../pack/fd_pack_pacing.h"
+#include "fd_pack_tile_bam_fee.h"
 
 #include <linux/unistd.h>
 #include <limits.h>
@@ -115,10 +116,18 @@ static char const * const schedule_strategy_strings[3] = { "PRF", "BAL", "BUN" }
 typedef struct {
   fd_acct_addr_t commission_pubkey[1];
   uint           commission;
-  ulong          bundle_id;
-  ulong          bundle_txn_cnt;
-  ulong          max_schedule_slot;
 } block_builder_info_t;
+
+typedef struct {
+  ulong bundle_id;         /* Scheduler-supplied identifier for this bundle. */
+  ulong bundle_txn_cnt;    /* Declared transaction count for the bundle. */
+  ulong max_schedule_slot; /* Highest slot in which this bundle may execute (FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default). */
+} fd_bam_bundle_meta_t;
+
+typedef struct {
+  block_builder_info_t builder; /* Snapshot of builder commission info when the bundle was accepted. */
+  fd_bam_bundle_meta_t bundle;  /* Bundle-specific context required for scheduling and reporting. */
+} fd_pack_bundle_meta_t;
 
 typedef struct {
   fd_wksp_t * mem;
@@ -270,9 +279,9 @@ typedef struct {
   ulong       poh_out_wmark;
   ulong       poh_out_chunk;
 
-  fd_pack_out_ctx_t bundle_out;
-  fd_pack_out_ctx_t bam_out;
-  long              last_leader_state_ns;
+  fd_pack_out_ctx_t bundle_out; /* Stem output used for legacy bundle feedback; unused when BAM disabled. */
+  fd_pack_out_ctx_t bam_out;    /* Stem output towards BAM tile; conveys bundle execution outcomes. */
+  long              last_leader_state_ns; /* Monotonic timestamp (ns) of the last leader state push to BAM; 0 when none yet. */
 
   ulong      insert_result[ FD_PACK_INSERT_RETVAL_CNT ];
   fd_histf_t schedule_duration[ 1 ];
@@ -296,19 +305,20 @@ typedef struct {
     ulong txn_cnt;
     ulong txn_received;
     ulong min_blockhash_slot;
-    ulong max_schedule_slot;
+    ulong max_schedule_slot;  /* Tightest max_schedule_slot constraint derived from bundle packets. */
     fd_txn_e_t * _txn[ FD_PACK_MAX_TXN_PER_BUNDLE ];
     fd_txn_e_t * const * bundle; /* points to _txn when non-NULL */
+    uchar active;           /* 0 when no revert_on_error bundle is assembling; 1 while buf holds current batch fragments. Always cleared after completion/cancel. */
   } current_bundle[1];
 
-  block_builder_info_t blk_engine_cfg[1];
+  fd_pack_bundle_meta_t bundle_meta;  /* Prepared metadata copied into pack when sealing a bundle. */
 
-  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ];
-  ulong                  bam_results_head;
-  ulong                  bam_results_tail;
-  ulong                  bam_results_pending;
-  fd_bam_fee_cfg_t *     bam_fee_cfg;
-  ulong                  bam_fee_cfg_version;
+  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Ring buffer of bundle results awaiting publication to BAM. */
+  ulong                  bam_results_head;    /* Head index into bam_results (0..FD_BAM_MAX_PENDING_RESULTS-1). */
+  ulong                  bam_results_tail;    /* Tail index into bam_results. Equals head when ring empty. */
+  ulong                  bam_results_pending; /* Count of results currently buffered (<= FD_BAM_MAX_PENDING_RESULTS). */
+  fd_bam_fee_cfg_t *     bam_fee_cfg;         /* Optional fee configuration shared with BAM control plane; NULL when unset. */
+  ulong                  bam_fee_cfg_version; /* Monotonic version for bam_fee_cfg contents. 0 means no cfg broadcast yet. */
 
   struct {
     int                   enabled;
@@ -334,8 +344,8 @@ typedef struct {
   union{ fd_pack_rebate_t rebate[1]; uchar footprint[USHORT_MAX]; } rebate[1];
 } fd_pack_ctx_t;
 
-#define BUNDLE_META_SZ 64UL
-FD_STATIC_ASSERT( sizeof(block_builder_info_t)==BUNDLE_META_SZ, blk_engine_cfg );
+#define BUNDLE_META_SZ ((ulong)sizeof(fd_pack_bundle_meta_t))
+FD_STATIC_ASSERT( sizeof(fd_pack_bundle_meta_t)==BUNDLE_META_SZ, bundle_meta );
 
 #define FD_PACK_METRIC_STATE_TRANSACTIONS 0
 #define FD_PACK_METRIC_STATE_BANKS        1
@@ -488,14 +498,12 @@ fd_pack_tile_drop_expired_bundles( fd_pack_ctx_t * ctx,
                                    ulong           slot ) {
   if( FD_UNLIKELY( slot==ULONG_MAX ) ) return;
   for(;;) {
-    block_builder_info_t const * meta = fd_pack_peek_bundle_meta( ctx->pack );
+    fd_pack_bundle_meta_t const * meta = fd_pack_peek_bundle_meta( ctx->pack );
     if( FD_UNLIKELY( !meta ) ) return;
-    /* Treat max_schedule_slot==0 as unlimited (no expiration) */
-    ulong max_slot = meta->max_schedule_slot ? meta->max_schedule_slot : ULONG_MAX;
-    if( FD_LIKELY( slot <= max_slot ) ) return;
+    if( FD_LIKELY( slot<=meta->bundle.max_schedule_slot ) ) return;
 
-    ulong bundle_id      = meta->bundle_id;
-    ulong bundle_txn_cnt = meta->bundle_txn_cnt;
+    ulong bundle_id      = meta->bundle.bundle_id;
+    ulong bundle_txn_cnt = meta->bundle.bundle_txn_cnt;
 
     ulong removed = fd_pack_drop_best_bundle( ctx->pack );
     if( FD_UNLIKELY( !removed ) ) return;
@@ -603,29 +611,6 @@ metrics_write( fd_pack_ctx_t * ctx ) {
 }
 
 static inline void
-fd_pack_apply_bam_fee_cfg( fd_pack_ctx_t * ctx ) {
-  if( FD_UNLIKELY( !ctx->bam_fee_cfg ) ) return;
-  if( FD_UNLIKELY( !ctx->crank->enabled ) ) return;
-
-  ulong version = FD_VOLATILE_CONST( ctx->bam_fee_cfg->version );
-  if( FD_UNLIKELY( !version || version==ctx->bam_fee_cfg_version ) ) return;
-
-  ctx->bam_fee_cfg_version = version;
-
-  if( FD_LIKELY( ctx->bam_fee_cfg->has_prio_fee_recipient ) ) {
-    fd_memcpy( ctx->crank->gen->crank3->new_tip_receiver,
-               ctx->bam_fee_cfg->prio_fee_recipient,
-               sizeof( ctx->bam_fee_cfg->prio_fee_recipient ) );
-    fd_memcpy( ctx->crank->gen->crank2->new_tip_receiver,
-               ctx->bam_fee_cfg->prio_fee_recipient,
-               sizeof( ctx->bam_fee_cfg->prio_fee_recipient ) );
-  }
-
-  ctx->crank->gen->crank3->init_tip_distribution_acct.commission_bps =
-      (ushort)fd_uint_min( ctx->bam_fee_cfg->commission_bps, 10000U );
-}
-
-static inline void
 during_housekeeping( fd_pack_ctx_t * ctx ) {
   ctx->approx_wallclock_ns = fd_log_wallclock();
   ctx->approx_tickcount    = fd_tickcount();
@@ -635,7 +620,11 @@ during_housekeeping( fd_pack_ctx_t * ctx ) {
     fd_keyswitch_state( ctx->crank->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
   }
 
-  fd_pack_apply_bam_fee_cfg( ctx );
+  fd_pack_apply_bam_fee_cfg_impl( ctx->bam_fee_cfg,
+                                  &ctx->bam_fee_cfg_version,
+                                  ctx->crank->enabled,
+                                  ctx->crank->gen->crank3,
+                                  ctx->crank->gen->crank2 );
 
   if( FD_UNLIKELY( ( ctx->leader_slot==ULONG_MAX ) | !ctx->leader_bank ) )
     ctx->last_leader_state_ns = 0L;
@@ -717,7 +706,7 @@ after_credit( fd_pack_ctx_t *     ctx,
       long now_ns = ctx->approx_wallclock_ns + (long)((double)(now - ctx->approx_tickcount)/ctx->ticks_per_ns);
       const long interval = (long)5e6; /* 5 ms */
       if( FD_UNLIKELY( ( ctx->last_leader_state_ns==0L ) | ( now_ns - ctx->last_leader_state_ns >= interval ) ) ) {
-        ulong ticks_per_slot = ctx->leader_ticks_per_slot ? ctx->leader_ticks_per_slot : 1UL;
+        ulong ticks_per_slot = ctx->leader_ticks_per_slot;
         ulong tick_mod = 0UL;
         if( FD_LIKELY( ticks_per_slot ) ) {
           ulong duration_ns = ctx->slot_duration_ns ? ctx->slot_duration_ns : 1UL;
@@ -979,10 +968,6 @@ after_credit( fd_pack_ctx_t *     ctx,
         break;
     }
 
-    block_builder_info_t const * bundle_meta = fd_pack_peek_bundle_meta( ctx->pack );
-    ulong bundle_meta_id  = bundle_meta ? bundle_meta->bundle_id     : 0UL;
-    ulong bundle_meta_cnt = bundle_meta ? bundle_meta->bundle_txn_cnt : 0UL;
-
     fd_txn_p_t * microblock_dst = fd_chunk_to_laddr( ctx->bank_out_mem, ctx->bank_out_chunk );
     long schedule_duration = -fd_tickcount();
     ulong schedule_cnt = fd_pack_schedule_next_microblock( ctx->pack, CUS_PER_MICROBLOCK, VOTE_FRACTION, (ulong)i, flags, microblock_dst );
@@ -1003,8 +988,9 @@ after_credit( fd_pack_ctx_t *     ctx,
       trailer->pack_txn_idx = ctx->pack_txn_cnt;
       trailer->is_bundle = !!(microblock_dst->flags & FD_TXN_P_FLAGS_BUNDLE);
       if( FD_LIKELY( trailer->is_bundle ) ) {
-        trailer->bundle_id      = bundle_meta_id;
-        trailer->bundle_txn_cnt = bundle_meta_cnt;
+        fd_pack_bundle_meta_t const * bundle_meta = fd_pack_peek_bundle_meta( ctx->pack );
+        trailer->bundle_id      = bundle_meta ? bundle_meta->bundle.bundle_id      : 0UL;
+        trailer->bundle_txn_cnt = bundle_meta ? bundle_meta->bundle.bundle_txn_cnt : 0UL;
       } else {
         trailer->bundle_id      = 0UL;
         trailer->bundle_txn_cnt = 0UL;
@@ -1147,32 +1133,32 @@ during_frag( fd_pack_ctx_t * ctx,
 
 
     ulong bundle_id = txnm->block_engine.bundle_id;
-    if( FD_UNLIKELY( txnm->block_engine.revert_on_error && bundle_id ) ) {
+    if( FD_UNLIKELY( txnm->block_engine.revert_on_error ) ) {
       ctx->is_bundle = 1;
-      if( FD_LIKELY( bundle_id!=ctx->current_bundle->id ) ) {
-        if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
+      if( FD_LIKELY( !ctx->current_bundle->active || bundle_id!=ctx->current_bundle->id ) ) {
+        if( FD_UNLIKELY( ctx->current_bundle->active && ctx->current_bundle->bundle ) ) {
           FD_MCNT_INC( PACK, TRANSACTION_DROPPED_PARTIAL_BUNDLE, ctx->current_bundle->txn_received );
           fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
         }
+        ctx->current_bundle->active             = 1U;
         ctx->current_bundle->id                 = bundle_id;
         ctx->current_bundle->txn_cnt            = txnm->block_engine.bundle_txn_cnt;
         ctx->current_bundle->min_blockhash_slot = ULONG_MAX;
-        ctx->current_bundle->max_schedule_slot  = txnm->block_engine.max_schedule_slot
-                                                  ? txnm->block_engine.max_schedule_slot
-                                                  : ULONG_MAX;
+        ctx->current_bundle->max_schedule_slot  = txnm->block_engine.max_schedule_slot;
         ctx->current_bundle->txn_received       = 0UL;
 
         if( FD_UNLIKELY( ctx->current_bundle->txn_cnt==0UL ) ) {
           FD_MCNT_INC( PACK, TRANSACTION_DROPPED_PARTIAL_BUNDLE, 1UL );
+          ctx->current_bundle->active = 0U;
           ctx->current_bundle->id = 0UL;
-          ctx->current_bundle->max_schedule_slot = ULONG_MAX;
+          ctx->current_bundle->max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
           return;
         }
-        ctx->blk_engine_cfg->commission = txnm->block_engine.commission;
-        memcpy( ctx->blk_engine_cfg->commission_pubkey->b, txnm->block_engine.commission_pubkey, 32UL );
-        ctx->blk_engine_cfg->bundle_id     = bundle_id;
-        ctx->blk_engine_cfg->bundle_txn_cnt = ctx->current_bundle->txn_cnt;
-        ctx->blk_engine_cfg->max_schedule_slot = ctx->current_bundle->max_schedule_slot;
+        ctx->bundle_meta.builder.commission = txnm->block_engine.commission;
+        memcpy( ctx->bundle_meta.builder.commission_pubkey->b, txnm->block_engine.commission_pubkey, 32UL );
+        ctx->bundle_meta.bundle.bundle_id         = bundle_id;
+        ctx->bundle_meta.bundle.bundle_txn_cnt    = ctx->current_bundle->txn_cnt;
+        ctx->bundle_meta.bundle.max_schedule_slot = ctx->current_bundle->max_schedule_slot;
 
         ctx->current_bundle->bundle = fd_pack_insert_bundle_init( ctx->pack, ctx->current_bundle->_txn, ctx->current_bundle->txn_cnt );
       }
@@ -1181,7 +1167,8 @@ during_frag( fd_pack_ctx_t * ctx,
                               ? txnm->block_engine.max_schedule_slot
                               : ULONG_MAX;
       ctx->current_bundle->max_schedule_slot = fd_ulong_min( ctx->current_bundle->max_schedule_slot,
-                                                            bundle_max_slot );
+                                                             bundle_max_slot );
+      ctx->bundle_meta.bundle.max_schedule_slot = ctx->current_bundle->max_schedule_slot;
       ctx->current_bundle->min_blockhash_slot = fd_ulong_min( ctx->current_bundle->min_blockhash_slot, sig );
     } else {
       ctx->is_bundle = 0;
@@ -1282,9 +1269,8 @@ after_frag( fd_pack_ctx_t *     ctx,
     }
     ctx->leader_slot = fd_disco_poh_sig_slot( sig );
     ctx->slot_start_ns    = ctx->_became_leader->slot_start_ns;
-    long duration_ns      = ctx->_became_leader->slot_end_ns - ctx->_became_leader->slot_start_ns;
-    ctx->slot_duration_ns = duration_ns>0L ? (ulong)duration_ns : 0UL;
-    ctx->leader_ticks_per_slot = ctx->_became_leader->ticks_per_slot ? ctx->_became_leader->ticks_per_slot : 1UL;
+    ctx->slot_duration_ns = (ulong)fd_long_sat_sub(ctx->_became_leader->slot_end_ns, ctx->_became_leader->slot_start_ns);
+    ctx->leader_ticks_per_slot = ctx->_became_leader->ticks_per_slot;
 
     ulong exp_cnt = fd_pack_expire_before( ctx->pack, fd_ulong_max( ctx->leader_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS );
     FD_MCNT_INC( PACK, TRANSACTION_EXPIRED, exp_cnt );
@@ -1361,33 +1347,34 @@ after_frag( fd_pack_ctx_t *     ctx,
       if( FD_UNLIKELY( ++(ctx->current_bundle->txn_received)==ctx->current_bundle->txn_cnt ) ) {
         ulong deleted;
         long insert_duration = -fd_tickcount();
-        int result = fd_pack_insert_bundle_fini( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt, ctx->current_bundle->min_blockhash_slot, 0, ctx->blk_engine_cfg, &deleted );
+        int result = fd_pack_insert_bundle_fini( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt, ctx->current_bundle->min_blockhash_slot, 0, &ctx->bundle_meta, &deleted );
         insert_duration      += fd_tickcount();
         FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
         ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
         fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
-        if( FD_UNLIKELY( result<0 && ctx->current_bundle->id ) ) {
-          fd_bam_bundle_result_t res;
-          memset( &res, 0, sizeof(res) );
-          ulong slot = ctx->leader_slot;
-          if( FD_UNLIKELY( slot==ULONG_MAX ) ) slot = ctx->current_bundle->min_blockhash_slot;
-          if( FD_UNLIKELY( slot==ULONG_MAX ) ) slot = 0UL;
+      if( FD_UNLIKELY( result<0 && ctx->current_bundle->active ) ) {
+        fd_bam_bundle_result_t res = {0};
+        ulong slot = ctx->leader_slot;
+        if( FD_UNLIKELY( slot==ULONG_MAX ) ) slot = ctx->current_bundle->min_blockhash_slot;
+        if( FD_UNLIKELY( slot==ULONG_MAX ) ) slot = 0UL;
           res.bundle_id        = ctx->current_bundle->id;
           res.slot             = slot;
           res.bundle_txn_cnt   = (uchar)fd_ulong_min( ctx->current_bundle->txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
           res.txn_cnt          = (uchar)fd_ulong_min( ctx->current_bundle->txn_received, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
-          res.execution_success = (uchar)0;
+          res.execution_success = 0;
           res.scheduling_error  = fd_pack_result_sched_error( result );
-          for( uint i=0U; i<(uint)res.txn_cnt; i++ ) res.sanitize_success[ i ] = (uchar)1;
+          for( uchar i=0; i<res.txn_cnt; i++ ) res.sanitize_success[ i ] = 1;
           fd_pack_assign_bam_failure_reason( &res, 0, result );
           fd_pack_enqueue_bam_result( ctx, &res );
         }
         ctx->current_bundle->bundle = NULL;
+        ctx->current_bundle->active  = 0U;
         ctx->current_bundle->id      = 0UL;
         ctx->current_bundle->txn_cnt = 0UL;
         ctx->current_bundle->txn_received = 0UL;
         ctx->current_bundle->min_blockhash_slot = ULONG_MAX;
-        ctx->current_bundle->max_schedule_slot  = ULONG_MAX;
+        ctx->current_bundle->max_schedule_slot  = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+        ctx->bundle_meta.bundle.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
       }
     } else {
       fd_txn_p_t * spot_txnp = ctx->cur_spot->txnp;
@@ -1705,7 +1692,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->metric_state_begin = fd_tickcount();
   memset( ctx->metric_timing,      '\0', 16*sizeof(long)                 );
   memset( ctx->current_bundle,     '\0', sizeof(ctx->current_bundle)     );
-  memset( ctx->blk_engine_cfg,     '\0', sizeof(ctx->blk_engine_cfg)     );
+  memset( &ctx->bundle_meta,       '\0', sizeof(ctx->bundle_meta)        );
   memset( ctx->last_sched_metrics, '\0', sizeof(ctx->last_sched_metrics) );
   memset( ctx->crank->metrics,     '\0', sizeof(ctx->crank->metrics)     );
 
@@ -1770,6 +1757,7 @@ populate_allowed_fds( fd_topo_t const *      topo,
 
 #include "../stem/fd_stem.c"
 
+#ifndef FD_TILE_TEST
 fd_topo_run_tile_t fd_tile_pack = {
   .name                     = "pack",
   .populate_allowed_seccomp = populate_allowed_seccomp,
@@ -1780,3 +1768,4 @@ fd_topo_run_tile_t fd_tile_pack = {
   .unprivileged_init        = unprivileged_init,
   .run                      = stem_run,
 };
+#endif

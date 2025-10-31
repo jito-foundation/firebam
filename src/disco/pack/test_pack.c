@@ -9,6 +9,8 @@
 #include <limits.h>
 #include <string.h>
 
+#include "../bam/fd_bam_types.h"
+
 #if FD_USING_GCC && __GNUC__ >= 15
 #pragma GCC diagnostic ignored "-Wunterminated-string-initialization"
 #endif
@@ -72,8 +74,7 @@ drop_expired_bundles_for_slot( fd_pack_t * pack,
   for(;;) {
     test_bundle_meta_t const * meta = (test_bundle_meta_t const *)fd_pack_peek_bundle_meta( pack );
     if( FD_UNLIKELY( !meta ) ) break;
-    ulong max_slot = meta->max_schedule_slot ? meta->max_schedule_slot : ULONG_MAX;
-    if( FD_LIKELY( slot<=max_slot ) ) break;
+    if( FD_LIKELY( slot<=meta->max_schedule_slot ) ) break;
     FD_TEST( fd_pack_drop_best_bundle( pack )==meta->bundle_txn_cnt );
     dropped += meta->bundle_txn_cnt;
   }
@@ -1891,7 +1892,7 @@ test_bundle_expiration_during_slot( void ) {
   memset( &meta, 0, sizeof(meta) );
   meta.bundle_id = 3UL;
   meta.bundle_txn_cnt = 1UL;
-  meta.max_schedule_slot = ULONG_MAX;
+  meta.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, &meta, &_deleted )>=0 );
 
   FD_TEST( fd_pack_avail_txn_cnt( pack )==5UL );
@@ -1931,7 +1932,7 @@ test_bundle_priority_ordering( void ) {
   fd_txn_e_t * _bundle[FD_PACK_MAX_TXN_PER_BUNDLE];
   ulong _deleted;
 
-  /* Insert bundles in reverse priority order */
+  /* Insert bundles and expect FIFO scheduling */
   for( ulong i=0UL; i<10UL; i++ ) {
     fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 2UL );
     char buf[2] = {0};
@@ -1946,12 +1947,12 @@ test_bundle_priority_ordering( void ) {
     FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 1000UL, 0, &meta, &_deleted )>=0 );
   }
 
-  /* Highest priority bundles should be scheduled first */
+  /* Bundles should be scheduled in insertion order (FIFO) */
   for( ulong i=0UL; i<10UL; i++ ) {
     ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
     FD_TEST( txn_cnt==2UL );
     for( ulong j=0UL; j<txn_cnt; j++ ) {
-      ulong expected_bundle = 9UL - i;
+      ulong expected_bundle = i;
       ulong expected_txn_id = expected_bundle*2UL + j;
       FD_TEST( extract_txn_id( outcome.results + j )==expected_txn_id );
     }

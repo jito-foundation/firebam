@@ -141,7 +141,7 @@ struct fd_bam_tile {
                                                      every txn in the bundle shares the same
                                                      block_engine.bundle_id. */
   uchar bundle_txn_cnt;                           /* Number of txns in current bundle */
-  ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler */
+  ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
 
   /* BAM specific */
   fd_grpc_h2_stream_t * bam_stream;               /* Active scheduler stream when subscribed */

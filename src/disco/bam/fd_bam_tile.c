@@ -803,7 +803,7 @@ privileged_init( fd_topo_t *      topo,
   ctx->tcp_sock        = -1;
   ctx->bank_bam_in_idx = ULONG_MAX;
   ctx->pack_leader_in_idx = ULONG_MAX;
-  ctx->bundle_max_schedule_slot = ULONG_MAX;
+  ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
 
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
   fd_memcpy( ctx->bam_url_pubkey, public_key, 32UL );
