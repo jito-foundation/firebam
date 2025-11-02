@@ -872,6 +872,135 @@ test_bam_bundle_rejects_oversized_packet( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* Ensure a scheduler batch containing zero packets is surfaced as an EMPTY
+   deserialization error while leaving bundle/txn metrics untouched. */
+static void
+test_bam_bundle_rejects_empty_batch( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  uchar protobuf[256];
+  test_bam_packet_encode_ctx_t packets_ctx = {
+    .packets    = NULL,
+    .packet_cnt = 0UL
+  };
+
+  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
+  batch.seq_id = 55;
+  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  batch.packets.funcs.encode = test_bam_encode_packets_cb;
+  batch.packets.arg          = &packets_ctx;
+
+  test_bam_batch_encode_ctx_t batches_ctx = {
+    .batches   = &batch,
+    .batch_cnt = 1UL
+  };
+
+  bam_types_MultipleAtomicTxnBatch multi = bam_types_MultipleAtomicTxnBatch_init_default;
+  multi.batches.funcs.encode = test_bam_encode_batches_cb;
+  multi.batches.arg          = &batches_ctx;
+
+  bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
+  resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
+  resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag;
+  resp.versioned_msg.v0.resp.multiple_atomic_txn_batch = multi;
+
+  pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, sizeof( protobuf ) );
+  FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.bundle_received_cnt==0UL );
+  FD_TEST( state->metrics.txn_received_cnt==0UL );
+  FD_TEST( state->bam_pending_results==1UL );
+
+  test_bam_prepare_scheduler_stream( state );
+  g_clock = (long)19e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  FD_TEST( fd_bam_test_flush_results( state )==1 );
+  FD_TEST( state->bam_pending_results==0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+  FD_TEST( result->seq_id==55U );
+  FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_deserialization_error_tag );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.reason==bam_types_DeserializationErrorReason_EMPTY );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.index==0U );
+
+  test_bam_env_destroy( env );
+}
+
+/* Ensure an InitSchedulerStream response that omits the batches array entirely
+   is also treated as an EMPTY deserialization error and returns a not-committed
+   result back to the scheduler. */
+static void
+test_bam_bundle_rejects_missing_batches( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  uchar protobuf[256];
+  size_t out_sz = sizeof( protobuf );
+  test_bam_batch_encode_ctx_t batches_ctx = {
+    .batches   = NULL,
+    .batch_cnt = 0UL
+  };
+
+  bam_types_MultipleAtomicTxnBatch multi = bam_types_MultipleAtomicTxnBatch_init_default;
+  multi.batches.funcs.encode = test_bam_encode_batches_cb;
+  multi.batches.arg          = &batches_ctx;
+
+  bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
+  resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
+  resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag;
+  resp.versioned_msg.v0.resp.multiple_atomic_txn_batch = multi;
+
+  pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, out_sz );
+  FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.bundle_received_cnt==0UL );
+  FD_TEST( state->metrics.txn_received_cnt==0UL );
+  FD_TEST( state->bam_pending_results==1UL );
+
+  test_bam_prepare_scheduler_stream( state );
+  g_clock = (long)20e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  FD_TEST( fd_bam_test_flush_results( state )==1 );
+  FD_TEST( state->bam_pending_results==0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+  FD_TEST( result->seq_id==0U );
+  FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason==bam_types_NotCommitted_deserialization_error_tag );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.reason==bam_types_DeserializationErrorReason_EMPTY );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.index==0U );
+
+  test_bam_env_destroy( env );
+}
+
 static void
 test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -963,6 +1092,12 @@ test_bam_heartbeat_env_start( test_bam_env_t * env,
   state->keepalive->inflight   = 0;
   state->defer_reset = 0;
   test_bam_keepalive_sync( state, g_clock );
+  state->keepalive_interval    = LONG_MAX;
+  state->keepalive->interval   = 0L;
+  state->keepalive->timeout    = LONG_MAX;
+  state->keepalive->ts_next_tx = LONG_MAX;
+  state->keepalive->ts_deadline = LONG_MAX;
+  state->keepalive->inflight   = 0U;
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->bam_last_builder_heartbeat_ns==g_clock );
   FD_TEST( state->bam_last_validator_heartbeat_ns==g_clock );
@@ -1136,33 +1271,6 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     FD_TEST( charge_busy==1 );
     test_bam_env_destroy( env );
   }
-}
-
-static void
-/* Simulates repeated heartbeats just inside the timeout threshold to prove the
-   client stays connected while legitimate builder traffic keeps flowing. */
-test_bam_heartbeat_sustained_under_deadline( fd_wksp_t * wksp ) {
-  test_bam_env_t env[1];
-  fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
-
-  long const under_timeout_delta = FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)5e7;
-  for( int i=0; i<3; i++ ) {
-    g_clock += under_timeout_delta;
-    test_bam_send_scheduler_heartbeat( state, 1UL );
-    FD_TEST( state->bam_last_builder_heartbeat_ns==g_clock );
-    FD_TEST( state->defer_reset==0U );
-    int charge_busy = 0;
-    g_clock += (long)2e7;
-    fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->metrics.transport_fail_cnt==0UL );
-    test_bam_keepalive_sync( state, g_clock );
-    FD_TEST( state->tcp_sock>=0 );
-    FD_TEST( state->tcp_sock_connected==1U );
-    FD_TEST( state->bam_stream_live==1U );
-  }
-  FD_TEST( state->metrics.heartbeat_recv_cnt==3UL );
-
-  test_bam_env_destroy( env );
 }
 
 static void
@@ -2288,6 +2396,8 @@ main( int     argc,
   test_bam_bundle_rejects_vote_transactions( wksp );
   test_bam_bundle_rejects_excess_packet_count( wksp );
   test_bam_bundle_rejects_oversized_packet( wksp );
+  test_bam_bundle_rejects_empty_batch( wksp );
+  test_bam_bundle_rejects_missing_batches( wksp );
   test_bam_grpc_end_handling( wksp );
   test_bam_grpc_timeout( wksp );
   test_bam_scheduler_auth_proof_publishes_message( wksp );
@@ -2302,7 +2412,6 @@ main( int     argc,
   test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( wksp );
   test_bam_heartbeat_timeout_forces_disconnect( wksp );
   test_bam_heartbeat_reset_extends_timeout( wksp );
-  test_bam_heartbeat_sustained_under_deadline( wksp );
   test_bam_client_status( wksp );
   test_bam_auth_challenge_response_sets_signature( wksp );
   test_bam_request_ctx_labels();

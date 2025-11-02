@@ -618,6 +618,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
   uint32_t      tag;
   pb_wire_type_t wire_type;
   bool          eof = false;
+  int           seen_batch = 0;
   while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
     if( FD_UNLIKELY( tag!=bam_types_MultipleAtomicTxnBatch_batches_tag ) ) {
       if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
@@ -629,11 +630,29 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
     }
     pb_istream_t substream;
     if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return 0;
+    seen_batch = 1;
     int ok = fd_bam_decode_batch( ctx, &substream );
     pb_close_string_substream( stream, &substream );
     if( FD_UNLIKELY( !ok ) ) return 0;
   }
+
   if( FD_UNLIKELY( !eof ) ) return 0;
+  if( FD_UNLIKELY( !seen_batch ) ) {
+    FD_LOG_WARNING(( "MultipleAtomicTxnBatch contained no AtomicTxnBatch entries" ));
+    fd_bam_batch_ctx_t state = {
+      .ctx             = ctx,
+      .packet_cnt      = 0,
+      .revert_on_error = 0,
+      .revert_flag_set = 0,
+      .drop_reason     = FD_BAM_BATCH_DROP_NONE
+    };
+
+    bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
+    batch.seq_id            = 0U;
+    batch.max_schedule_slot = 0UL;
+
+    fd_bam_client_report_deser_error( ctx, &batch, &state, bam_types_DeserializationErrorReason_EMPTY, 0 );
+  }
   return 1;
 }
 
