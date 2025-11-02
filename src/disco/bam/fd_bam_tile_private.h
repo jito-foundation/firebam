@@ -108,9 +108,9 @@ struct fd_bam_tile {
   /* TCP socket */
   int  tcp_sock;                                  /* Non-blocking socket for gRPC transport */
   int  so_rcvbuf;                                 /* Desired receive buffer size */
-  uint tcp_sock_connected : 1;                    /* Set once connect handshake completes */
-  uint defer_reset        : 1;                    /* Delay reset until after current iteration */
-  long cached_ts;                                  /* Last fd_bam_now() sample for metrics */
+  uchar tcp_sock_connected : 1;                   /* Set once connect handshake completes */
+  uchar defer_reset : 1;                          /* Delay reset until after current iteration */
+  long cached_ts;                                 /* Last fd_bam_now() sample for metrics */
 
   /* Keepalive via HTTP/2 PINGs (randomized) */
   long              keepalive_interval;           /* Target interval for PING dispatch */
@@ -132,8 +132,8 @@ struct fd_bam_tile {
   uchar builder_info_wait  : 1;  /* Request already in-flight? */
   long  builder_info_valid_until;                 /* Expiry timestamp for builder info */
   uchar prio_fee_recipient[ 32 ];                 /* Validator priority fee recipient advertised by BAM */
-  uint  validator_commission_bps;                 /* Validator commission basis points */
-  uint  prio_fee_recipient_set : 1;               /* Flag indicating prio_fee_recipient populated */
+  ushort validator_commission_bps;                /* Validator commission basis points */
+  uchar prio_fee_recipient_set;                   /* Flag indicating prio_fee_recipient populated */
 
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).

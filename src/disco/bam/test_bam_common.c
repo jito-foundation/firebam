@@ -126,6 +126,15 @@ test_bam_env_mock_conn_empty( test_bam_env_t * env ) {
   state->keepalive->ts_last_rx = ts_start;
   state->keepalive->ts_deadline = ts_start + (long)1e9;
 
+  if( FD_UNLIKELY( env->server_sock>=0 ) ) {
+    FD_TEST( 0==close( env->server_sock ) );
+    env->server_sock = -1;
+  }
+  if( FD_UNLIKELY( state->tcp_sock>=0 ) ) {
+    FD_TEST( 0==close( state->tcp_sock ) );
+    state->tcp_sock = -1;
+  }
+
   int sockpair[2] = { -1, -1 };
   FD_TEST( 0==socketpair( AF_UNIX, SOCK_STREAM, 0, sockpair ) );
   env->server_sock    = sockpair[0];

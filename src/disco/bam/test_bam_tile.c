@@ -157,7 +157,7 @@ test_bam_encode_scheduler_response( bam_types_Packet * packets,
 
   pb_ostream_t ostream = pb_ostream_from_buffer( out, out_sz );
   FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
-  return (size_t)ostream.bytes_written;
+  return ostream.bytes_written;
 }
 
 static size_t
@@ -1139,7 +1139,7 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
 
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
-                             (ulong)ostream.bytes_written,
+                             ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge );
 
   FD_TEST( state->bam_auth_inflight==0U );
@@ -1687,7 +1687,7 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
-                             (ulong)ostream.bytes_written,
+                             ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetConfig );
 
   FD_TEST( state->bam_contact_avail==1U );
@@ -1695,19 +1695,19 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
 
   fd_ip4_port_t expected_tpu = {0};
   FD_TEST( fd_cstr_to_ip4_addr( "1.2.3.4", &expected_tpu.addr ) );
-  expected_tpu.port = fd_ushort_bswap( (ushort)9000U );
+  expected_tpu.port = fd_ushort_bswap( 9000 );
   FD_TEST( state->bam_tpu_addr.l==expected_tpu.l );
 
   fd_ip4_port_t expected_quic = {0};
   FD_TEST( fd_cstr_to_ip4_addr( "5.6.7.8", &expected_quic.addr ) );
-  expected_quic.port = fd_ushort_bswap( (ushort)10001U );
+  expected_quic.port = fd_ushort_bswap( 10001 );
   FD_TEST( state->bam_tpu_quic_addr.l==expected_quic.l );
   FD_TEST( state->prio_fee_recipient_set==1U );
-  FD_TEST( state->validator_commission_bps==2750U );
+  FD_TEST( state->validator_commission_bps==2750 );
   FD_TEST( 0==memcmp( state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
   FD_TEST( state->fee_cfg!=NULL );
   FD_TEST( state->fee_cfg->has_prio_fee_recipient==1U );
-  FD_TEST( state->fee_cfg->commission_bps==2750U );
+  FD_TEST( state->fee_cfg->commission_bps==2750 );
   FD_TEST( 0==memcmp( state->fee_cfg->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
   FD_TEST( state->fee_cfg->version==1UL );
 
@@ -1716,7 +1716,7 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
-                             (ulong)ostream.bytes_written,
+                             ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetConfig );
   FD_TEST( state->bam_contact_dirty==0U );
   FD_TEST( state->bam_tpu_addr.l==expected_tpu.l );
@@ -1730,7 +1730,7 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
-                             (ulong)ostream.bytes_written,
+                             ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetConfig );
   FD_TEST( state->bam_contact_dirty==1U );
   FD_TEST( state->bam_contact_avail==1U );
@@ -1772,7 +1772,7 @@ test_bam_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
   fd_bam_client_grpc_rx_msg( bam_state,
                              pb_buf,
-                             (ulong)ostream.bytes_written,
+                             ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetConfig );
 
   FD_TEST( shared_cfg->version==1UL );
@@ -1832,7 +1832,7 @@ test_bam_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp_update ) );
   fd_bam_client_grpc_rx_msg( bam_state,
                              pb_buf,
-                             (ulong)ostream.bytes_written,
+                             ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetConfig );
 
   FD_TEST( shared_cfg->version==2UL );
