@@ -16,6 +16,7 @@
 #include "../bundle/fd_bundle_crank.h"
 #include "../../util/fd_util.h"
 #include <stdbool.h>
+#include <stdint.h>
 #include "../../tango/fseq/fd_fseq.h"
 #include <limits.h>
 #include <string.h>
@@ -30,6 +31,14 @@ static long g_clock = 1L;
 __attribute__((weak)) long
 fd_bam_now( void ) {
   return g_clock;
+}
+
+static fd_bam_contact_update_t
+test_bam_read_gossip_update( fd_wksp_t * mem,
+                             ulong       chunk ) {
+  fd_bam_contact_update_t msg;
+  fd_memcpy( &msg, fd_chunk_to_laddr( mem, chunk ), sizeof(fd_bam_contact_update_t) );
+  return msg;
 }
 
 static void
@@ -125,6 +134,30 @@ test_bam_encode_batches_cb( pb_ostream_t *       stream,
 }
 
 static size_t
+test_bam_encode_scheduler_multi_batch_response( bam_types_AtomicTxnBatch * batches,
+                                                size_t                     batch_cnt,
+                                                uchar *                    out,
+                                                size_t                     out_sz ) {
+  test_bam_batch_encode_ctx_t batches_ctx = {
+      .batches   = batches,
+      .batch_cnt = batch_cnt
+  };
+
+  bam_types_MultipleAtomicTxnBatch multi = bam_types_MultipleAtomicTxnBatch_init_default;
+  multi.batches.funcs.encode = test_bam_encode_batches_cb;
+  multi.batches.arg          = &batches_ctx;
+
+  bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
+  resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
+  resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag;
+  resp.versioned_msg.v0.resp.multiple_atomic_txn_batch = multi;
+
+  pb_ostream_t ostream = pb_ostream_from_buffer( out, out_sz );
+  FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
+  return ostream.bytes_written;
+}
+
+static size_t
 test_bam_encode_scheduler_response( bam_types_Packet * packets,
                                     size_t             packet_cnt,
                                     uint32_t           seq_id,
@@ -141,23 +174,7 @@ test_bam_encode_scheduler_response( bam_types_Packet * packets,
   batch.packets.funcs.encode = test_bam_encode_packets_cb;
   batch.packets.arg          = &packets_ctx;
 
-  test_bam_batch_encode_ctx_t batches_ctx = {
-      .batches   = &batch,
-      .batch_cnt = 1UL
-  };
-
-  bam_types_MultipleAtomicTxnBatch multi = bam_types_MultipleAtomicTxnBatch_init_default;
-  multi.batches.funcs.encode = test_bam_encode_batches_cb;
-  multi.batches.arg          = &batches_ctx;
-
-  bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
-  resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
-  resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag;
-  resp.versioned_msg.v0.resp.multiple_atomic_txn_batch = multi;
-
-  pb_ostream_t ostream = pb_ostream_from_buffer( out, out_sz );
-  FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
-  return ostream.bytes_written;
+  return test_bam_encode_scheduler_multi_batch_response( &batch, 1UL, out, out_sz );
 }
 
 static size_t
@@ -179,6 +196,43 @@ test_bam_build_scheduler_batch_msg( uchar *  out,
     }
   }
   return test_bam_encode_scheduler_response( packets, 2UL, seq_id, out, out_sz );
+}
+
+static size_t
+test_bam_build_scheduler_heartbeat_msg( uchar * out,
+                                        size_t out_sz,
+                                        ulong  time_sent_microseconds ) {
+  bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
+  resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
+  resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_heart_beat_tag;
+  resp.versioned_msg.v0.resp.heart_beat.time_sent_microseconds = (uint64_t)time_sent_microseconds;
+
+  pb_ostream_t ostream = pb_ostream_from_buffer( out, out_sz );
+  FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
+  return ostream.bytes_written;
+}
+
+static void
+test_bam_send_scheduler_heartbeat( fd_bam_tile_t * state,
+                                   ulong          time_sent_microseconds ) {
+  uchar protobuf[64];
+  size_t protobuf_sz = test_bam_build_scheduler_heartbeat_msg( protobuf, sizeof(protobuf), time_sent_microseconds );
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+}
+
+static void
+test_bam_send_scheduler_bundle( fd_bam_tile_t * state,
+                                uint32_t        seq_id,
+                                int             revert_on_error ) {
+  uchar protobuf[256];
+  size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), seq_id, revert_on_error );
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 }
 
 typedef struct {
@@ -422,6 +476,103 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
 }
 
 static void
+/* Validates that a scheduler response carrying multiple AtomicTxnBatch entries
+   fans out into sequential fragments with the correct metadata for each batch. */
+test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+  test_bam_env_mock_builder_info( state );
+
+  zero_meta_ts( env->out_mcache, 3UL );
+
+  bam_types_Packet first_packets[1];
+  fd_memset( first_packets, 0, sizeof(first_packets) );
+  first_packets[0].data.size     = 1U;
+  first_packets[0].data.bytes[0] = (uchar)'m';
+
+  test_bam_packet_encode_ctx_t first_ctx = {
+      .packets    = first_packets,
+      .packet_cnt = 1UL
+  };
+
+  bam_types_Packet second_packets[2];
+  fd_memset( second_packets, 0, sizeof(second_packets) );
+  for( size_t i=0UL; i<2UL; i++ ) {
+    second_packets[ i ].data.size     = 1U;
+    second_packets[ i ].data.bytes[0] = (uchar)('n' + (int)i);
+    second_packets[ i ].has_meta = 1U;
+    second_packets[ i ].meta.has_flags = 1U;
+    second_packets[ i ].meta.flags.revert_on_error = 1U;
+  }
+
+  test_bam_packet_encode_ctx_t second_ctx = {
+      .packets    = second_packets,
+      .packet_cnt = 2UL
+  };
+
+  bam_types_AtomicTxnBatch batches[2];
+  batches[0] = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
+  batches[0].seq_id = 6U;
+  batches[0].max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  batches[0].packets.funcs.encode = test_bam_encode_packets_cb;
+  batches[0].packets.arg          = &first_ctx;
+
+  batches[1] = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
+  batches[1].seq_id = 7U;
+  batches[1].max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  batches[1].packets.funcs.encode = test_bam_encode_packets_cb;
+  batches[1].packets.arg          = &second_ctx;
+
+  uchar protobuf[512];
+  size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( batches, 2UL, protobuf, sizeof(protobuf) );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.txn_received_cnt==3UL );
+  FD_TEST( state->metrics.bundle_received_cnt==1UL );
+  FD_TEST( state->bundle_seq==7U );
+  FD_TEST( state->bundle_txn_cnt==2U );
+
+  fd_frag_meta_t * meta = env->out_mcache;
+  FD_TEST( meta[0].seq==0UL );
+  FD_TEST( meta[1].seq==1UL );
+  FD_TEST( meta[2].seq==2UL );
+
+  fd_txn_m_t * tx0 = fd_chunk_to_laddr( state->verify_out.mem, meta[0].chunk );
+  fd_txn_m_t * tx1 = fd_chunk_to_laddr( state->verify_out.mem, meta[1].chunk );
+  fd_txn_m_t * tx2 = fd_chunk_to_laddr( state->verify_out.mem, meta[2].chunk );
+
+  FD_TEST( tx0->block_engine.scheduler_seq_id==6U );
+  FD_TEST( tx0->block_engine.revert_on_error==0U );
+  FD_TEST( tx0->block_engine.batch_cnt==1U );
+
+  FD_TEST( tx1->block_engine.scheduler_seq_id==7U );
+  FD_TEST( tx1->block_engine.revert_on_error==1U );
+  FD_TEST( tx1->block_engine.batch_cnt==2U );
+  FD_TEST( tx1->block_engine.batch_idx==0U );
+  FD_TEST( tx1->block_engine.commission==state->builder_commission );
+
+  FD_TEST( tx2->block_engine.scheduler_seq_id==7U );
+  FD_TEST( tx2->block_engine.revert_on_error==1U );
+  FD_TEST( tx2->block_engine.batch_cnt==2U );
+  FD_TEST( tx2->block_engine.batch_idx==1U );
+  FD_TEST( tx2->block_engine.commission==state->builder_commission );
+
+  uchar const * payload0 = fd_txn_m_payload( tx0 );
+  uchar const * payload1 = fd_txn_m_payload( tx1 );
+  uchar const * payload2 = fd_txn_m_payload( tx2 );
+  FD_TEST( payload0[0]=='m' );
+  FD_TEST( payload1[0]=='n' );
+  FD_TEST( payload2[0]=='o' );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_bundle_forwarded( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -447,6 +598,36 @@ test_bam_bundle_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( first->block_engine.bundle_txn_cnt>=1UL );
   FD_TEST( first->block_engine.commission==state->builder_commission );
   FD_TEST( 0==memcmp( first->block_engine.commission_pubkey, state->builder_pubkey, 32UL ) );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+/* Ensures truncated scheduler responses trigger decode_fail accounting and
+   drop the message without emitting any downstream fragments. */
+test_bam_scheduler_truncated_message_dropped( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  fd_memset( env->out_mcache, 0, 3UL * sizeof(fd_frag_meta_t) );
+
+  uchar protobuf[256];
+  size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 5U, 0 );
+  FD_TEST( protobuf_sz>1UL );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz - 1UL,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.decode_fail_cnt==1UL );
+  FD_TEST( state->metrics.txn_received_cnt==0UL );
+  FD_TEST( state->metrics.bundle_received_cnt==0UL );
+  FD_TEST( state->metrics.packet_drop_cnt==0UL );
+  FD_TEST( env->stem_seqs[0]==0UL );
+  FD_TEST( env->out_mcache[0].seq==0UL );
+  FD_TEST( env->out_mcache[0].sz==0 );
 
   test_bam_env_destroy( env );
 }
@@ -781,6 +962,7 @@ test_bam_heartbeat_env_start( test_bam_env_t * env,
   state->keepalive->ts_last_rx = g_clock;
   state->keepalive->inflight   = 0;
   state->defer_reset = 0;
+  test_bam_keepalive_sync( state, g_clock );
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->bam_last_builder_heartbeat_ns==g_clock );
   FD_TEST( state->bam_last_validator_heartbeat_ns==g_clock );
@@ -877,20 +1059,14 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
 
 static void
 test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
-  // Pre-encoded bam_api.SchedulerResponse messages (nanopb framing) that
-  // drive the heartbeat timestamping logic, derived from src/disco/bam/proto/bam_api.proto
-
-  // SchedulerResponse { v0 { heart_beat { time_sent_microseconds: 1 } } }
-  static uchar heartbeat_msg[] = { 0x0a, 0x04, 0x0a, 0x02, 0x08, 0x01 };
-  // SchedulerResponse { v0 { multiple_atomic_txn_batch { /* field #1 (reserved/unused) set to 0 so the message is non-empty */ } } }
-  static uchar bundle_msg[]    = { 0x0a, 0x04, 0x12, 0x02, 0x08, 0x00 };
+  /* Uses helper-generated scheduler responses to drive heartbeat timestamping
+     and ensure batches refresh the watchdog deadline. */
 
   /* Heartbeat message updates timestamp */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
-    fd_bam_client_grpc_rx_msg( state, heartbeat_msg, sizeof(heartbeat_msg),
-                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    test_bam_send_scheduler_heartbeat( state, 1UL );
     long expected_ts = g_clock;
     FD_TEST( state->bam_last_builder_heartbeat_ns==expected_ts );
     FD_TEST( state->metrics.heartbeat_recv_cnt==1UL );
@@ -900,11 +1076,10 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
   /* 5.9 seconds after heartbeat should NOT timeout */
   {
     test_bam_env_t env[1];
-    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+   fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
-    fd_bam_client_grpc_rx_msg( state, heartbeat_msg, sizeof(heartbeat_msg),
-                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    test_bam_send_scheduler_heartbeat( state, 1UL );
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock>=0 );
@@ -917,8 +1092,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
-    fd_bam_client_grpc_rx_msg( state, heartbeat_msg, sizeof(heartbeat_msg),
-                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    test_bam_send_scheduler_heartbeat( state, 1UL );
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)2e8;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock==-1 );
@@ -930,8 +1104,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
-    fd_bam_client_grpc_rx_msg( state, bundle_msg, sizeof(bundle_msg),
-                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    test_bam_send_scheduler_bundle( state, 0U, 0 );
     long expected_ts = g_clock;
     FD_TEST( state->bam_last_builder_heartbeat_ns==expected_ts );
     test_bam_env_destroy( env );
@@ -943,8 +1116,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
-    fd_bam_client_grpc_rx_msg( state, bundle_msg, sizeof(bundle_msg),
-                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    test_bam_send_scheduler_bundle( state, 0U, 0 );
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock>=0 );
@@ -957,14 +1129,40 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
-    fd_bam_client_grpc_rx_msg( state, bundle_msg, sizeof(bundle_msg),
-                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    test_bam_send_scheduler_bundle( state, 0U, 0 );
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)2e8;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock==-1 );
     FD_TEST( charge_busy==1 );
     test_bam_env_destroy( env );
   }
+}
+
+static void
+/* Simulates repeated heartbeats just inside the timeout threshold to prove the
+   client stays connected while legitimate builder traffic keeps flowing. */
+test_bam_heartbeat_sustained_under_deadline( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+
+  long const under_timeout_delta = FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)5e7;
+  for( int i=0; i<3; i++ ) {
+    g_clock += under_timeout_delta;
+    test_bam_send_scheduler_heartbeat( state, 1UL );
+    FD_TEST( state->bam_last_builder_heartbeat_ns==g_clock );
+    FD_TEST( state->defer_reset==0U );
+    int charge_busy = 0;
+    g_clock += (long)2e7;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->metrics.transport_fail_cnt==0UL );
+    test_bam_keepalive_sync( state, g_clock );
+    FD_TEST( state->tcp_sock>=0 );
+    FD_TEST( state->tcp_sock_connected==1U );
+    FD_TEST( state->bam_stream_live==1U );
+  }
+  FD_TEST( state->metrics.heartbeat_recv_cnt==3UL );
+
+  test_bam_env_destroy( env );
 }
 
 static void
@@ -1656,6 +1854,103 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
+  /* Regression: if BAM withdraws its TPU override while the client is disconnected,
+     reconnecting should not re-publish stale contact info. Also exercises the
+     connected→disconnect→connected handshake to ensure we emit the expected
+     use_bam transitions. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  test_bam_env_mock_conn( env );
+  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
+  state->gossip_out = (fd_bam_out_ctx_t){
+      .idx    = 0UL,
+      .mem    = gossip_mem,
+      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
+  };
+  state->bundle_status_recent = FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED;
+
+  fd_bam_contact_update_t updates[4];
+  ulong                   update_cnt = 0UL;
+
+  bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_bam_config = true;
+  resp.bam_config.has_tpu_sock = true;
+  fd_memset( resp.bam_config.tpu_sock.ip, 0, sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_memcpy( resp.bam_config.tpu_sock.ip, "9.8.7.6", 7UL );
+  resp.bam_config.tpu_sock.port = 5000U;
+  resp.bam_config.has_tpu_fwd_sock = true;
+  fd_memset( resp.bam_config.tpu_fwd_sock.ip, 0, sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_memcpy( resp.bam_config.tpu_fwd_sock.ip, "4.3.2.1", 7UL );
+  resp.bam_config.tpu_fwd_sock.port = 6000U;
+
+  uchar pb_buf[ 256 ];
+  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+  ulong publish_chunk = state->gossip_out.chunk;
+  fd_bam_client_grpc_rx_msg( state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+
+  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update_cnt==1UL );
+  FD_TEST( updates[0].use_bam==FD_BAM_CONTACT_USE_BAM );
+
+  fd_ip4_port_t expected_tpu = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "9.8.7.6", &expected_tpu.addr ) );
+  expected_tpu.port = fd_ushort_bswap( 5000 );
+  FD_TEST( updates[0].tpu_addr.l==expected_tpu.l );
+
+  fd_ip4_port_t expected_quic = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "4.3.2.1", &expected_quic.addr ) );
+  expected_quic.port = fd_ushort_bswap( 6000 );
+  FD_TEST( updates[0].tpu_quic_addr.l==expected_quic.l );
+
+  publish_chunk = state->gossip_out.chunk;
+  fd_bam_update_contact_info( state,
+                              state->stem,
+                              FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING,
+                              FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update_cnt==2UL );
+  FD_TEST( updates[1].use_bam==FD_BAM_CONTACT_USE_DEFAULT );
+
+  state->bundle_status_recent = FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING;
+
+  resp = (bam_api_ConfigResponse)bam_api_ConfigResponse_init_default;
+  resp.has_bam_config = true;
+  resp.bam_config.has_tpu_sock = false;
+  resp.bam_config.has_tpu_fwd_sock = false;
+  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+  publish_chunk = state->gossip_out.chunk;
+  fd_bam_client_grpc_rx_msg( state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+
+  FD_TEST( state->bam_tpu_addr.l==0UL );
+  FD_TEST( state->bam_tpu_quic_addr.l==0UL );
+  FD_TEST( state->gossip_out.chunk==publish_chunk );
+  FD_TEST( update_cnt==2UL );
+
+  publish_chunk = state->gossip_out.chunk;
+  fd_bam_update_contact_info( state,
+                              state->stem,
+                              FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED,
+                              FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING );
+  FD_TEST( state->gossip_out.chunk==publish_chunk );
+  FD_TEST( update_cnt==2UL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -1986,6 +2281,8 @@ main( int     argc,
 
   test_bam_packets_forwarded( wksp );
   test_bam_bundle_forwarded( wksp );
+  test_bam_multiple_batches_forwarded( wksp );
+  test_bam_scheduler_truncated_message_dropped( wksp );
   test_bam_bundle_requires_builder_info( wksp );
   test_bam_bundle_rejects_mixed_revert_flags( wksp );
   test_bam_bundle_rejects_vote_transactions( wksp );
@@ -2005,12 +2302,14 @@ main( int     argc,
   test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( wksp );
   test_bam_heartbeat_timeout_forces_disconnect( wksp );
   test_bam_heartbeat_reset_extends_timeout( wksp );
+  test_bam_heartbeat_sustained_under_deadline( wksp );
   test_bam_client_status( wksp );
   test_bam_auth_challenge_response_sets_signature( wksp );
   test_bam_request_ctx_labels();
   test_bam_ctrl_updates_url_and_sni( wksp );
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
+  test_bam_gossip_reconnect_without_contact( wksp );
   test_bam_config_updates_contact_info( wksp );
   test_bam_fee_cfg_propagates_to_pack( wksp );
   test_bam_builder_fee_info( wksp );

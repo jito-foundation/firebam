@@ -116,7 +116,7 @@ fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
                                                   ctx->gossip_out.wmark );
 }
 
-static void
+void
 fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
                             fd_stem_context_t * stem,
                             int                 status,
