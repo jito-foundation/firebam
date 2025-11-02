@@ -188,8 +188,6 @@ struct fd_bam_tile {
   /* Bam contact info */
   fd_ip4_port_t bam_tpu_addr;      /* Latest TPU endpoint advertised by BAM */
   fd_ip4_port_t bam_tpu_quic_addr; /* Latest QUIC TPU endpoint advertised by BAM */
-  uint          bam_contact_active : 1; /* Contact info currently published to gossip */
-  uint          bam_contact_dirty  : 1; /* Gossip needs refresh with latest contact info */
 };
 
 typedef struct fd_bam_tile fd_bam_tile_t;
@@ -263,6 +261,11 @@ fd_bam_test_drive( fd_bam_tile_t * ctx,
 void
 fd_bam_tile_backoff( fd_bam_tile_t * ctx,
                         long               now );
+
+void
+fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
+                              fd_stem_context_t * stem,
+                              uint                use_bam );
 
 /* fd_bam_tile_should_stall returns 1 if forward progress should be
    temporarily prevented due to an error. */

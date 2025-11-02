@@ -83,7 +83,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   ctx->bundle_status_recent = (uchar)bundle_status;
 }
 
-static void
+void
 fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
                               fd_stem_context_t * stem,
                               uint                use_bam ) {
@@ -119,31 +119,23 @@ fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
 static void
 fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
                             fd_stem_context_t * stem,
-                            int                 status ) {
+                            int                 status,
+                            int                 prev_status ) {
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
 
-  int connected = ( status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
-  int have_contact = ctx->bam_tpu_addr.l!=0UL;
+  int const connected     = ( status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  int const was_connected = ( prev_status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  int const have_contact  = ctx->bam_tpu_addr.l!=0UL;
 
-  if( FD_UNLIKELY( connected && have_contact ) ) {
-    /* When the client hands us live TPU endpoints we only publish once per
-       connection or when the config actually changes.  The gossip tile
-       handles refreshing timers after we poke it.  bam_contact_dirty acts
-       as an edge detector so reconnects without new sockets do not spam
-       gossip, while a changed TPU tuple triggers an immediate update. */
-    if( FD_UNLIKELY( ctx->bam_contact_dirty || !ctx->bam_contact_active ) ) {
-      fd_bam_publish_gossip_update( ctx, stem, 1U );
-      ctx->bam_contact_active = 1U;
-      ctx->bam_contact_dirty  = 0U;
-    }
+  if( FD_UNLIKELY( connected && have_contact && !was_connected ) ) {
+    fd_bam_publish_gossip_update( ctx, stem, 1U );
     return;
   }
 
-  if( FD_UNLIKELY( ctx->bam_contact_active ) ) {
+  if( FD_UNLIKELY( was_connected && !connected && have_contact ) ) {
     /* A disconnect means Firedancer should resume advertising its local
        TPU ports so TPU clients do not get stuck targeting the BAM host. */
     fd_bam_publish_gossip_update( ctx, stem, 0U );
-    ctx->bam_contact_active = 0U;
   }
 }
 
@@ -268,6 +260,7 @@ after_credit( fd_bam_tile_t *  ctx,
   fd_bam_client_step( ctx, charge_busy );
 
   int bundle_status = fd_bam_client_status( ctx );
+  int prev_status   = ctx->bundle_status_recent;
   ctx->bundle_status_recent = (uchar)bundle_status;
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
     /* Expose BAM connectivity via a shared latch.  The verify tile uses
@@ -279,7 +272,7 @@ after_credit( fd_bam_tile_t *  ctx,
     ulong is_connected = (ulong)( bundle_status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
     fd_fseq_update( ctx->bam_status_fseq, is_connected );
   }
-  fd_bam_update_contact_info( ctx, stem, bundle_status );
+  fd_bam_update_contact_info( ctx, stem, bundle_status, prev_status );
 
   if( ctx->plugin_out.mem ) {
     if( FD_UNLIKELY( ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
@@ -970,8 +963,6 @@ unprivileged_init( fd_topo_t *      topo,
 
   ctx->bam_tpu_addr.l       = 0UL;
   ctx->bam_tpu_quic_addr.l  = 0UL;
-  ctx->bam_contact_active   = 0U;
-  ctx->bam_contact_dirty    = 0U;
 
   ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
   if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {

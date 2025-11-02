@@ -1661,7 +1661,6 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  FD_TEST( state->bam_contact_dirty==0U );
   FD_TEST( state->bam_tpu_addr.l==0UL );
   FD_TEST( state->bam_tpu_quic_addr.l==0UL );
 
@@ -1690,7 +1689,6 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_GetConfig );
 
   FD_TEST( state->bam_tpu_addr.l!=0UL );
-  FD_TEST( state->bam_contact_dirty==1U );
 
   fd_ip4_port_t expected_tpu = {0};
   FD_TEST( fd_cstr_to_ip4_addr( "1.2.3.4", &expected_tpu.addr ) );
@@ -1710,14 +1708,12 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( 0==memcmp( state->fee_cfg->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
   FD_TEST( state->fee_cfg->version==1UL );
 
-  state->bam_contact_dirty = 0U;
   ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetConfig );
-  FD_TEST( state->bam_contact_dirty==0U );
   FD_TEST( state->bam_tpu_addr.l==expected_tpu.l );
   FD_TEST( state->bam_tpu_quic_addr.l==expected_quic.l );
   FD_TEST( state->fee_cfg->version==1UL );
@@ -1731,9 +1727,21 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
                              pb_buf,
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetConfig );
-  FD_TEST( state->bam_contact_dirty==1U );
   FD_TEST( state->bam_tpu_addr.l!=0UL );
   FD_TEST( state->bam_tpu_addr.l==expected_tpu.l );
+  FD_TEST( state->bam_tpu_quic_addr.l==0UL );
+  FD_TEST( state->fee_cfg->version==1UL );
+
+  resp.bam_config.has_tpu_sock = false;
+  fd_memset( resp.bam_config.tpu_sock.ip, 0, sizeof( resp.bam_config.tpu_sock.ip ) );
+  resp.bam_config.tpu_sock.port = 0U;
+  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+  fd_bam_client_grpc_rx_msg( state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+  FD_TEST( state->bam_tpu_addr.l==0UL );
   FD_TEST( state->bam_tpu_quic_addr.l==0UL );
   FD_TEST( state->fee_cfg->version==1UL );
 

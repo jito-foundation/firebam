@@ -848,33 +848,31 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     }
 
     uchar had_contact = !!ctx->bam_tpu_addr.l;
-    ulong prev_quic  = ctx->bam_tpu_quic_addr.l;
+    ulong prev_quic   = ctx->bam_tpu_quic_addr.l;
+    int   contact_changed = 0;
 
     if( FD_LIKELY( have_tpu ) ) {
       /* Treat the QUIC tuple as optional: if BAM stops advertising it we
-         revert to the Firedancer default (0) and still flag the contact
-         info as changed so gossip releases the override cleanly. */
-      int quic_changed = have_tpu_quic ? ( prev_quic!=new_tpu_quic_addr.l )
-                                       : ( prev_quic!=0UL );
-      /* Signal the tile loop to republish once the connection comes up.
-         We keep the active flag separate so a reconnect without new
-         config still reuses the last good endpoints. */
-      if( FD_UNLIKELY( !had_contact || ctx->bam_tpu_addr.l!=new_tpu_addr.l || quic_changed ) ) {
-        ctx->bam_contact_dirty = 1U;
-      }
+         revert to the Firedancer default (0) and still treat it as an
+         update so gossip releases the override cleanly. */
+      fd_ip4_port_t next_quic = have_tpu_quic ? new_tpu_quic_addr : (fd_ip4_port_t){ .l = 0UL };
+      contact_changed = (!had_contact) ||
+                        ( ctx->bam_tpu_addr.l!=new_tpu_addr.l ) ||
+                        ( prev_quic!=next_quic.l );
       ctx->bam_tpu_addr      = new_tpu_addr;
-      ctx->bam_tpu_quic_addr = have_tpu_quic ? new_tpu_quic_addr : (fd_ip4_port_t){ .l = 0UL };
-      /* Record that BAM supplied usable endpoints.  The tile clears
-         bam_contact_dirty after it republishes, so reconnects without new
-         config continue advertising the last known override. */
+      ctx->bam_tpu_quic_addr = next_quic;
     } else {
-      /* BAM withdrew its TPU override; fall back to Firedancer defaults and
-         prompt gossip to restore the original contact info. */
-      if( FD_UNLIKELY( had_contact || prev_quic!=0UL ) ) {
-        ctx->bam_contact_dirty = 1U;
-      }
+      /* BAM withdrew its TPU override; fall back to Firedancer defaults
+         and prompt gossip to restore the original contact info. */
+      contact_changed = had_contact || ( prev_quic!=0UL );
       ctx->bam_tpu_addr.l      = 0UL;
       ctx->bam_tpu_quic_addr.l = 0UL;
+    }
+
+    if( FD_UNLIKELY( contact_changed ) ) {
+      if( FD_LIKELY( ctx->stem && ctx->bundle_status_recent==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED ) ) {
+        fd_bam_publish_gossip_update( ctx, ctx->stem, ctx->bam_tpu_addr.l ? 1U : 0U );
+      }
     }
 
     if( FD_LIKELY( ctx->fee_cfg ) ) {
@@ -974,7 +972,7 @@ fd_bam_send_heartbeat( fd_bam_tile_t * ctx,
   msg.which_versioned_msg        = bam_api_SchedulerMessage_v0_tag;
   msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_heart_beat_tag;
   bam_types_ValidatorHeartBeat hb = bam_types_ValidatorHeartBeat_init_default;
-  hb.time_sent_microseconds = (uint64_t)( fd_ulong_if( now>=0L, (ulong)now, 0UL ) / 1000UL );
+  hb.time_sent_microseconds = (ulong)fd_long_max(now / 1000, 0);
   msg.versioned_msg.v0.msg.heart_beat = hb;
   if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
     return;
