@@ -76,16 +76,16 @@ zero_meta_ts( fd_frag_meta_t * meta,
 static fd_bam_bundle_result_t
 test_make_bundle_result( ulong bundle_id ) {
   fd_bam_bundle_result_t res = {0};
-  res.bundle_id        = bundle_id;
+  res.seq_id        = (uint) bundle_id; //FIXME: broken!
   res.slot             = bundle_id + 1000UL;
   res.bundle_txn_cnt   = 2;
   res.txn_cnt          = 2;
   res.execution_success = 1;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   for( uint i=0U; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {
-    res.transaction_err[ i ]   = (uchar)0;
-    res.consumed_cus[ i ]      = (uint)( i + 1U );
-    res.sanitize_success[ i ]  = (uchar)1;
+    res.transaction_err[ i ]   = 0;
+    res.consumed_cus[ i ]      = i + 1;
+    res.sanitize_success[ i ]  = 1;
   }
   return res;
 }
@@ -650,7 +650,7 @@ test_bam_bundle_requires_builder_info( fd_wksp_t * wksp ) {
   FD_TEST( state->metrics.txn_received_cnt==0UL );
   FD_TEST( state->bam_pending_results==1UL );
   fd_bam_bundle_result_t const * res = &state->bam_results[ state->bam_results_head ];
-  FD_TEST( res->bundle_id==2UL );
+  FD_TEST( res->seq_id==2UL );
   FD_TEST( res->execution_success==0U );
   FD_TEST( res->txn_cnt==2U );
 
@@ -2320,9 +2320,9 @@ test_bam_bundle_result_queue_survives_reset( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_pending_results==3UL );
   FD_TEST( state->bam_results_head==0UL );
   FD_TEST( state->bam_results_tail==expected_tail );
-  FD_TEST( state->bam_results[0].bundle_id==100UL );
-  FD_TEST( state->bam_results[1].bundle_id==101UL );
-  FD_TEST( state->bam_results[2].bundle_id==102UL );
+  FD_TEST( state->bam_results[0].seq_id==100UL );
+  FD_TEST( state->bam_results[1].seq_id==101UL );
+  FD_TEST( state->bam_results[2].seq_id==102UL );
 
   test_bam_env_destroy( env );
 }

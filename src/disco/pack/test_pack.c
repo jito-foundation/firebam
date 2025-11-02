@@ -1692,7 +1692,7 @@ test_pack_bam_failure_reason_mapping( void ) {
   fd_bam_bundle_result_t res;
 
   fd_memset( &res, 0, sizeof( res ) );
-  res.bundle_id = 123UL;
+  res.seq_id = 123UL;
   fd_pack_assign_bam_failure_reason( &res, 0, FD_PACK_INSERT_REJECT_NONCE_PRIORITY );
   FD_TEST( res.has_deser_error==1 );
   FD_TEST( res.deser_reason==bam_types_DeserializationErrorReason_PRIORITIZATION_FAILURE );
@@ -1701,20 +1701,20 @@ test_pack_bam_failure_reason_mapping( void ) {
   FD_TEST( res.bundle_txn_cnt==1U );
 
   fd_memset( &res, 0, sizeof( res ) );
-  res.bundle_id = 456UL;
+  res.seq_id = 456UL;
   fd_pack_assign_bam_failure_reason( &res, 0, FD_PACK_INSERT_REJECT_DUPLICATE );
   FD_TEST( res.has_deser_error==1 );
   FD_TEST( res.deser_reason==bam_types_DeserializationErrorReason_FILTER_FAILURE );
   FD_TEST( res.deser_index==0U );
 
   fd_memset( &res, 0, sizeof( res ) );
-  res.bundle_id = 789UL;
+  res.seq_id = 789UL;
   fd_pack_assign_bam_failure_reason( &res, 0, FD_PACK_INSERT_REJECT_UNAFFORDABLE );
   FD_TEST( res.has_deser_error==0 );
   FD_TEST( res.transaction_err[0]==bam_types_TransactionErrorReason_INSUFFICIENT_FUNDS_FOR_FEE );
 
   fd_memset( &res, 0, sizeof( res ) );
-  res.bundle_id = 999UL;
+  res.seq_id = 999UL;
   fd_pack_assign_bam_failure_reason( &res, 2, 12345 );
   FD_TEST( res.has_generic_invalid==1 );
   FD_TEST( strstr( res.generic_invalid_msg, "pack rejected seq" )!=NULL );

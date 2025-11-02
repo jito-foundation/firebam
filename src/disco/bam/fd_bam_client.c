@@ -65,7 +65,7 @@ static fd_bam_bundle_result_t
 fd_bam_client_make_base_result( bam_types_AtomicTxnBatch const * batch,
                                 fd_bam_batch_ctx_t const *       state ) {
   fd_bam_bundle_result_t res = {0};
-  res.bundle_id = (ulong)batch->seq_id;
+  res.seq_id = (ulong)batch->seq_id;
   res.slot      = batch->max_schedule_slot;
   res.bundle_txn_cnt = state->packet_cnt;
   res.txn_cnt        = state->packet_cnt;
@@ -1006,7 +1006,7 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) return 0;
 
   bam_types_AtomicTxnBatchResult atomic_res = bam_types_AtomicTxnBatchResult_init_default;
-  atomic_res.seq_id = (uint32_t)res->bundle_id;
+  atomic_res.seq_id = res->seq_id;
 
   fd_bam_encode_ctx_t encode_ctx = { .res = res };
 

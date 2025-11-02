@@ -378,9 +378,9 @@ fd_pack_enqueue_bam_result( fd_pack_ctx_t * ctx,
                             fd_bam_bundle_result_t const * res ) {
   if( FD_UNLIKELY( !fd_pack_out_valid( &ctx->bundle_out ) && !fd_pack_out_valid( &ctx->bam_out ) ) ) return;
   if( FD_UNLIKELY( ctx->bam_results_pending>=FD_BAM_MAX_PENDING_RESULTS ) ) {
-    FD_LOG_WARNING(( "Dropping BAM bundle result (pack queue full): bundle_id=%lu slot=%lu txn_cnt=%u exec_success=%u sched_err=%u. "
+    FD_LOG_WARNING(( "Dropping BAM bundle result (pack queue full): seq_id=%u slot=%lu txn_cnt=%u exec_success=%u sched_err=%u. "
                  "This violates BAM protocol guarantees. Consider increasing FD_BAM_MAX_PENDING_RESULTS or investigating slow network.",
-                 res->bundle_id, res->slot, res->txn_cnt, res->execution_success, res->scheduling_error ));
+                 res->seq_id, res->slot, res->txn_cnt, res->execution_success, res->scheduling_error ));
     /* TODO: Implement backpressure mechanism to upstream tiles */
     FD_MCNT_INC( BAM, BUNDLE_RESULTS_DROPPED, 1UL );
     return;
@@ -432,7 +432,7 @@ fd_pack_publish_bam_results( fd_pack_ctx_t *     ctx,
     fd_bam_bundle_result_t const * res = &ctx->bam_results[ ctx->bam_results_head ];
     int published = fd_pack_publish_to_builder_outs( ctx,
                                                      stem,
-                                                     res->bundle_id,
+                                                     res->seq_id,
                                                      res,
                                                      sizeof(fd_bam_bundle_result_t),
                                                      fd_frag_meta_ts_comp( fd_tickcount() ) );
@@ -451,14 +451,12 @@ fd_pack_tile_drop_expired_bundles( fd_pack_ctx_t * ctx,
     if( FD_UNLIKELY( !meta ) ) return;
     if( FD_LIKELY( slot<=meta->bundle.max_schedule_slot ) ) return;
 
-    ulong bundle_id      = meta->bundle.bundle_id;
-    ulong bundle_txn_cnt = meta->bundle.bundle_txn_cnt;
-
     ulong removed = fd_pack_drop_best_bundle( ctx->pack );
     if( FD_UNLIKELY( !removed ) ) return;
 
+    ulong bundle_txn_cnt = meta->bundle.bundle_txn_cnt;
     fd_bam_bundle_result_t res = {
-      .bundle_id         = bundle_id,
+      .seq_id         = (uint)meta->bundle.bundle_id, // FIXME: broken!!!
       .slot              = slot,
       .bundle_txn_cnt    = (uchar)fd_ulong_min( bundle_txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ),
       .txn_cnt           = (uchar)fd_ulong_min( bundle_txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ),
@@ -1306,7 +1304,7 @@ after_frag( fd_pack_ctx_t *     ctx,
         ulong slot = ctx->leader_slot;
         if( FD_UNLIKELY( slot==ULONG_MAX ) ) slot = ctx->current_bundle->min_blockhash_slot;
         if( FD_UNLIKELY( slot==ULONG_MAX ) ) slot = 0UL;
-          res.bundle_id        = ctx->current_bundle->id;
+          res.seq_id        = (uint)ctx->current_bundle->id; //FIXME: this is broken
           res.slot             = slot;
           res.bundle_txn_cnt   = (uchar)fd_ulong_min( ctx->current_bundle->txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
           res.txn_cnt          = (uchar)fd_ulong_min( ctx->current_bundle->txn_received, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE );
@@ -1339,7 +1337,7 @@ after_frag( fd_pack_ctx_t *     ctx,
       if( FD_UNLIKELY( result<0 ) ) {
         if( FD_LIKELY( spot_txnp->bam_seq_id && !spot_txnp->bam_revert_on_error ) ) {
           fd_bam_bundle_result_t res = {0};
-          res.bundle_id         = spot_txnp->bam_seq_id;
+          res.seq_id         = spot_txnp->bam_seq_id;
           res.slot              = FD_LIKELY( ctx->leader_slot!=ULONG_MAX ) ? ctx->leader_slot : blockhash_slot;
           if( FD_UNLIKELY( res.slot==ULONG_MAX ) ) res.slot = 0UL;
           res.bundle_txn_cnt    = (uchar)(bam_batch_cnt ? bam_batch_cnt : 1);

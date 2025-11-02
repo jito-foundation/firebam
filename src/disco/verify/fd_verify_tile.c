@@ -113,7 +113,7 @@ after_frag( fd_verify_ctx_t *   ctx,
   fd_txn_t *  txnt = fd_txn_m_txn_t( txnm );
   txnm->txn_t_sz = (ushort)fd_txn_parse( fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, NULL );
 
-  int is_bundle = !!(txnm->block_engine.revert_on_error && txnm->block_engine.bundle_id);
+  int is_bundle = !!txnm->block_engine.revert_on_error;
 
   if( FD_UNLIKELY( is_bundle & (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
@@ -184,7 +184,7 @@ unprivileged_init( fd_topo_t *      topo,
   }
 
   ctx->bundle_failed = 0;
-  ctx->bundle_id     = 0UL;
+  ctx->bundle_id     = ULONG_MAX;
 
   memset( &ctx->metrics, 0, sizeof( ctx->metrics ) );
 

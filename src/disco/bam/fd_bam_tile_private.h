@@ -200,8 +200,8 @@ FD_FN_UNUSED static inline void
 fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
                        fd_bam_bundle_result_t const * res ) {
   if( FD_UNLIKELY( ctx->bam_pending_results>=FD_BAM_MAX_PENDING_RESULTS ) ) {
-    FD_LOG_WARNING(( "Dropping BAM bundle result (bam tile queue full): bundle_id=%lu slot=%lu txn_cnt=%u exec_success=%u sched_err=%u",
-                     res->bundle_id, res->slot, res->txn_cnt, res->execution_success, res->scheduling_error ));
+    FD_LOG_WARNING(( "Dropping BAM bundle result (bam tile queue full): seq_id=%u slot=%lu txn_cnt=%u exec_success=%u sched_err=%u",
+                     res->seq_id, res->slot, res->txn_cnt, res->execution_success, res->scheduling_error ));
     ctx->metrics.bundle_result_drop_cnt++;
     FD_MCNT_INC( BAM, BUNDLE_RESULTS_DROPPED, 1UL );
     return;

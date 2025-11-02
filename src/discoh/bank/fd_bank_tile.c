@@ -114,50 +114,35 @@ metrics_write( fd_bank_ctx_t * ctx ) {
 }
 
 static fd_bam_batch_state_t *
-fd_bank_batch_state_find( fd_bank_ctx_t * ctx,
-                          ulong           seq_id ) {
-  for( ulong i=0UL; i<FD_BAM_MAX_PENDING_RESULTS; i++ ) {
-    fd_bam_batch_state_t * state = &ctx->bam_batch_state[ i ];
-    if( FD_UNLIKELY( !state->in_use ) ) continue;
-    if( FD_LIKELY( state->res.bundle_id==seq_id ) ) return state;
-  }
-  return NULL;
-}
-
-static fd_bam_batch_state_t *
-fd_bank_batch_state_acquire( fd_bank_ctx_t * ctx ) {
-  for( ulong i=0UL; i<FD_BAM_MAX_PENDING_RESULTS; i++ ) {
-    fd_bam_batch_state_t * state = &ctx->bam_batch_state[ i ];
-    if( FD_UNLIKELY( state->in_use ) ) continue;
-    return state;
-  }
-  return NULL;
-}
-
-static fd_bam_batch_state_t *
 fd_bank_batch_state_prepare( fd_bank_ctx_t * ctx,
-                             ulong           seq_id,
+                             uint            seq_id,
                              ulong           slot,
                              uint            batch_cnt,
                              int             revert_on_error ) {
-  fd_bam_batch_state_t * state = fd_bank_batch_state_find( ctx, seq_id );
-  if( FD_UNLIKELY( !state ) ) {
-    state = fd_bank_batch_state_acquire( ctx );
-    if( FD_UNLIKELY( !state ) ) {
-      FD_LOG_WARNING(( "Dropping BAM batch result (bank buffer full): seq_id=%lu", seq_id ));
-      FD_MCNT_INC( BAM, BUNDLE_RESULTS_DROPPED, 1UL );
-      return NULL;
+
+  fd_bam_batch_state_t * state = NULL;
+  for( ushort i=0; i<FD_BAM_MAX_PENDING_RESULTS; i++ ) {
+    if( FD_UNLIKELY( !ctx->bam_batch_state[ i ].in_use ) ) continue;
+    if( FD_LIKELY( ctx->bam_batch_state[ i ].res.seq_id==seq_id ) ) {
+      state = &ctx->bam_batch_state[ i ];
+      break;
     }
-    state->in_use    = 1U;
-    state->seen_mask = 0U;
-    fd_memset( &state->res, 0, sizeof( state->res ) );
-    state->res.bundle_id         = seq_id;
-    state->res.slot              = slot;
-    state->res.bundle_txn_cnt    = (uchar)fd_uint_min( batch_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
-    state->res.txn_cnt           = (uchar)fd_uint_min( batch_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
-    state->res.execution_success = (uchar)( revert_on_error ? 0 : 1 );
-    state->res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   }
+  if( FD_UNLIKELY( !state ) ) {
+    FD_LOG_WARNING(( "Dropping BAM batch result (batch buffer full): seq_id=%u", seq_id ));
+    FD_MCNT_INC( BAM, BUNDLE_RESULTS_DROPPED, 1UL );
+    return NULL;
+  }
+
+  state->in_use    = 1U;
+  state->seen_mask = 0U;
+  fd_memset( &state->res, 0, sizeof( state->res ) );
+  state->res.seq_id         = seq_id;
+  state->res.slot              = slot;
+  state->res.bundle_txn_cnt    = (uchar)fd_uint_min( batch_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
+  state->res.txn_cnt           = (uchar)fd_uint_min( batch_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
+  state->res.execution_success = (uchar)( revert_on_error ? 0 : 1 );
+  state->res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   return state;
 }
 
@@ -247,7 +232,7 @@ publish_bundle_result( fd_bank_ctx_t * ctx,
   const ulong sz = sizeof(fd_bam_bundle_result_t);
   fd_memcpy( fd_chunk_to_laddr( ctx->bam_out_mem, ctx->bam_out_chunk ), result, sz );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
-  fd_stem_publish( stem, ctx->bam_out_idx, result->bundle_id, ctx->bam_out_chunk, sz, 0UL, 0UL, tspub );
+  fd_stem_publish( stem, ctx->bam_out_idx, result->seq_id, ctx->bam_out_chunk, sz, 0UL, 0UL, tspub );
   ctx->bam_out_chunk = fd_dcache_compact_next( ctx->bam_out_chunk, sz, ctx->bam_out_chunk0, ctx->bam_out_wmark );
 }
 
@@ -610,7 +595,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   }
 
   fd_bam_bundle_result_t result = {
-    .bundle_id          = ctx->_bundle_id,
+    .seq_id          = (uint)ctx->_bundle_id, //FIXME: broken!
     .slot               = slot,
     .bundle_txn_cnt     = (uchar)fd_ulong_min( ctx->_bundle_txn_cnt ? ctx->_bundle_txn_cnt : txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ),
     .txn_cnt            = (uchar)fd_ulong_min( txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ),

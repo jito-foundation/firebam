@@ -45,8 +45,8 @@ fd_pack_assign_bam_failure_reason( fd_bam_bundle_result_t * res,
       res->has_generic_invalid = 1;
       snprintf( res->generic_invalid_msg,
                 FD_BAM_GENERIC_INVALID_MSG_MAX,
-                "pack rejected seq %lu idx %u (code %d)",
-                res->bundle_id,
+                "pack rejected seq_id %u idx %u (code %d)",
+                res->seq_id,
                 idx,
                 result );
     }

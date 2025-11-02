@@ -17,7 +17,7 @@
 #define FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ULONG_MAX
 
 typedef struct {
-  ulong bundle_id;    /* Scheduler-assigned seq_id for this batch; mirrors AtomicTxnBatch.seq_id and is used to correlate results. 0 is valid for warmup traffic; ULONG_MAX is never produced. */
+  uint  seq_id;    /* Uniquely assigned for a single leader rotation. 0 is valid seq_id. UINT_MAX is never produced. */
   ulong slot;         /* Slot associated with the batch. Executed bundles use the bank/Poh slot, while pre-execution drops mirror AtomicTxnBatch.max_schedule_slot. 0 means the scheduler supplied no slot hint. */
   uchar bundle_txn_cnt; /* Declared transaction count from the scheduler, capped to FD_PACK_MAX_TXN_PER_BUNDLE. 0 until pack/bank has observed bundle metadata. */
   uchar txn_cnt;         /* Number of per-transaction result entries populated below. Consumers must only examine indices [0,txn_cnt); value saturates at FD_PACK_MAX_TXN_PER_BUNDLE. */

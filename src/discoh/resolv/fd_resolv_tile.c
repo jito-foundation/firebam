@@ -380,7 +380,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
     buffer.  If we later see the blockhash come to exist, we forward any
     buffered transactions to back. */
 
-  int is_bundle_member = !!(txnm->block_engine.revert_on_error && txnm->block_engine.bundle_id);
+  int is_bundle_member = !!txnm->block_engine.revert_on_error;
 
   if( FD_UNLIKELY( is_bundle_member && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
@@ -470,7 +470,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->round_robin_idx = tile->kind_id;
 
   ctx->bundle_failed = 0;
-  ctx->bundle_id     = 0UL;
+  ctx->bundle_id     = ULONG_MAX;
 
   ctx->completed_slot = 0UL;
   ctx->blockhash_ring_idx = 0UL;

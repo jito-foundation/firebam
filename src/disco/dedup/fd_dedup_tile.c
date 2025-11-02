@@ -6,6 +6,7 @@
 #include "../metrics/fd_metrics.h"
 
 #include <linux/unistd.h>
+#include <limits.h>
 
 /* fd_dedup provides services to deduplicate multiple streams of input
    fragments and present them to a mix of reliable and unreliable
@@ -158,7 +159,7 @@ after_frag( fd_dedup_ctx_t *    ctx,
   FD_TEST( txnm->payload_sz<=FD_TPU_MTU );
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
 
-  int is_bundle_member = !!(txnm->block_engine.revert_on_error && txnm->block_engine.bundle_id);
+  int is_bundle_member = !!txnm->block_engine.revert_on_error;
 
   if( FD_UNLIKELY( is_bundle_member && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
@@ -239,7 +240,7 @@ unprivileged_init( fd_topo_t *      topo,
   if( FD_UNLIKELY( !tcache ) ) FD_LOG_ERR(( "fd_tcache_new failed" ));
 
   ctx->bundle_failed = 0;
-  ctx->bundle_id     = 0UL;
+  ctx->bundle_id     = ULONG_MAX;
   ctx->bundle_idx    = 0UL;
 
   memset( &ctx->metrics, 0, sizeof( ctx->metrics ) );
