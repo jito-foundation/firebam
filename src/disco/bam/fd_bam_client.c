@@ -147,14 +147,11 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
      transition so gossip never advertises a half-cleared override. */
   ctx->defer_reset = 0;
 
-  if( FD_UNLIKELY( ctx->builder_info_avail ) ) {
-    long const valid_until = ctx->builder_info_valid_until;
-    if( FD_UNLIKELY( valid_until && now >= valid_until ) ) {
-      ctx->builder_info_avail       = 0;
-      ctx->builder_info_valid_until = 0L;
-    }
+  long const builder_info_valid_until = ctx->builder_info_valid_until;
+  if( FD_UNLIKELY( builder_info_valid_until && now >= builder_info_valid_until ) ) {
+    ctx->builder_info_valid_until = 0L;
   }
-  ctx->builder_info_wait        = 0;
+  ctx->bam_builder_info_inflight        = 0;
   ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
 
   memset( ctx->rtt, 0, sizeof(fd_rtt_estimate_t) );
@@ -529,7 +526,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   }
 
   if( state->revert_on_error ) {
-    if( FD_UNLIKELY( !ctx->builder_info_avail ) ) {
+    if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) {
       ctx->metrics.missing_builder_info_fail_cnt++;
       fd_bam_client_report_generic_invalid( ctx, batch, state, FD_BAM_ERR_MSG_BUILDER_INFO_UNAVAILABLE );
       return;
@@ -810,7 +807,6 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
                                cfg->builder_pubkey,
                                strnlen( cfg->builder_pubkey, sizeof(cfg->builder_pubkey) ) ));
     } else {
-      ctx->builder_info_avail        = 1;
       ctx->builder_info_valid_until  = fd_bam_now() + (long)( 60e9 * 5. );
     }
   }
@@ -851,16 +847,19 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
       }
     }
 
+    uchar had_contact = !!ctx->bam_tpu_addr.l;
+    ulong prev_quic  = ctx->bam_tpu_quic_addr.l;
+
     if( FD_LIKELY( have_tpu ) ) {
       /* Treat the QUIC tuple as optional: if BAM stops advertising it we
          revert to the Firedancer default (0) and still flag the contact
          info as changed so gossip releases the override cleanly. */
-      int quic_changed = have_tpu_quic ? ( ctx->bam_tpu_quic_addr.l!=new_tpu_quic_addr.l )
-                                       : ( ctx->bam_tpu_quic_addr.l!=0UL );
+      int quic_changed = have_tpu_quic ? ( prev_quic!=new_tpu_quic_addr.l )
+                                       : ( prev_quic!=0UL );
       /* Signal the tile loop to republish once the connection comes up.
          We keep the active flag separate so a reconnect without new
          config still reuses the last good endpoints. */
-      if( FD_UNLIKELY( !ctx->bam_contact_avail || ctx->bam_tpu_addr.l!=new_tpu_addr.l || quic_changed ) ) {
+      if( FD_UNLIKELY( !had_contact || ctx->bam_tpu_addr.l!=new_tpu_addr.l || quic_changed ) ) {
         ctx->bam_contact_dirty = 1U;
       }
       ctx->bam_tpu_addr      = new_tpu_addr;
@@ -868,14 +867,12 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
       /* Record that BAM supplied usable endpoints.  The tile clears
          bam_contact_dirty after it republishes, so reconnects without new
          config continue advertising the last known override. */
-      ctx->bam_contact_avail = 1U;
     } else {
       /* BAM withdrew its TPU override; fall back to Firedancer defaults and
          prompt gossip to restore the original contact info. */
-      if( FD_UNLIKELY( ctx->bam_contact_avail ) ) {
+      if( FD_UNLIKELY( had_contact || prev_quic!=0UL ) ) {
         ctx->bam_contact_dirty = 1U;
       }
-      ctx->bam_contact_avail = 0U;
       ctx->bam_tpu_addr.l      = 0UL;
       ctx->bam_tpu_quic_addr.l = 0UL;
     }
@@ -931,7 +928,7 @@ fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->bam_auth_ready ) ) return;
   if( FD_UNLIKELY( ctx->bam_stream || ctx->bam_stream_connecting ) ) return;
   if( FD_UNLIKELY( !ctx->grpc_client ) ) return;
-  if( FD_UNLIKELY( !ctx->builder_info_avail ) ) return;
+  if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) return;
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
 
   bam_types_AuthProof proof = bam_types_AuthProof_init_default;
@@ -1118,12 +1115,13 @@ fd_bam_drive( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !ctx->grpc_client ) ) return busy;
   if( FD_UNLIKELY( !fd_grpc_client_is_connected( ctx->grpc_client ) ) ) return busy;
 
-  if( FD_UNLIKELY( ctx->builder_info_avail ) ) {
-    long const valid_until = ctx->builder_info_valid_until;
-    if( FD_UNLIKELY( valid_until && now >= valid_until ) ) {
-      ctx->builder_info_avail      = 0;
-      ctx->bam_last_config_poll_ns = 0L;
-    }
+  long builder_info_valid_until = ctx->builder_info_valid_until;
+  int  builder_info_ready       = builder_info_valid_until!=0L;
+  if( FD_UNLIKELY( builder_info_ready && now >= builder_info_valid_until ) ) {
+    ctx->builder_info_valid_until = 0L;
+    ctx->bam_last_config_poll_ns  = 0L;
+    builder_info_valid_until      = 0L;
+    builder_info_ready            = 0;
   }
 
   if( FD_UNLIKELY( !ctx->bam_auth_ready && !ctx->bam_auth_inflight && !ctx->bam_stream ) ) {
@@ -1136,18 +1134,15 @@ fd_bam_drive( fd_bam_tile_t * ctx,
   }
 
   long const config_refresh_margin_ns = (long)5e9;
-  int need_config = 0;
-  if( FD_UNLIKELY( !ctx->builder_info_avail ) ) {
-    need_config = 1;
-  } else {
-    long const valid_until = ctx->builder_info_valid_until;
-    if( FD_UNLIKELY( !valid_until || now + config_refresh_margin_ns >= valid_until ) ) {
+  int need_config = builder_info_ready ? 0 : 1;
+  if( FD_UNLIKELY( builder_info_ready ) ) {
+    if( FD_UNLIKELY( now + config_refresh_margin_ns >= builder_info_valid_until ) ) {
       need_config = 1;
     }
   }
   if( FD_UNLIKELY( ctx->bam_last_config_poll_ns==0L ) ) need_config = 1;
   if( FD_UNLIKELY( need_config && !ctx->bam_config_inflight ) ) {
-    long const throttle_ns = ctx->builder_info_avail ? (long)5e9 : (long)1e9;
+    long const throttle_ns = builder_info_ready ? (long)5e9 : (long)1e9;
     if( FD_UNLIKELY( ctx->bam_last_config_poll_ns==0L ||
                      now - ctx->bam_last_config_poll_ns >= throttle_ns ) ) {
       fd_bam_request_config( ctx, now );
@@ -1385,7 +1380,7 @@ fd_bam_tile_publish_bundle_txn(
     uchar              batch_idx,
     uint               source_ipv4
 ) {
-  if( FD_UNLIKELY( !ctx->builder_info_avail ) ) {
+  if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) {
     ctx->metrics.missing_builder_info_fail_cnt++; /* unreachable */
     return;
   }
@@ -1456,7 +1451,7 @@ fd_bam_tile_publish_txn(
       .commission        = revert_on_error ? ctx->builder_commission : 0,
     },
   };
-  if( revert_on_error && ctx->builder_info_avail ) {
+  if( revert_on_error && ctx->builder_info_valid_until ) {
     memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL );
   } else {
     fd_memset( txnm->block_engine.commission_pubkey, 0, sizeof( txnm->block_engine.commission_pubkey ) );

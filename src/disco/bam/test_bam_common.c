@@ -109,8 +109,7 @@ test_bam_env_create( test_bam_env_t * env,
 
 FD_FN_UNUSED static void
 test_bam_env_mock_builder_info( fd_bam_tile_t * state ) {
-  state->builder_info_avail       = 1;
-  state->builder_info_wait        = 0;
+  state->bam_builder_info_inflight        = 0;
   state->builder_commission       = 7;
   state->builder_info_valid_until = fd_bam_now() + (long)1e9;
   for( ulong i=0UL; i<sizeof(state->builder_pubkey); i++ ) state->builder_pubkey[ i ] = (uchar)(i+1U);

@@ -124,12 +124,9 @@ struct fd_bam_tile {
   fd_grpc_client_metrics_t grpc_metrics[1];       /* Per-client metrics exported to fd_metrics */
   ulong                    map_seed;              /* Random seed used for header hashing */
 
-  /* Bundle authenticator */
   /* Bundle block builder info */
   uchar builder_pubkey[ 32 ];                     /* Builder identity fetched from BAM */
   uchar builder_commission;  /* in [0,100] (percent) */
-  uchar builder_info_avail : 1;  /* Block builder info available? (potentially stale) */
-  uchar builder_info_wait  : 1;  /* Request already in-flight? */
   long  builder_info_valid_until;                 /* Expiry timestamp for builder info */
   uchar prio_fee_recipient[ 32 ];                 /* Validator priority fee recipient advertised by BAM */
   ushort validator_commission_bps;                /* Validator commission basis points */
@@ -144,26 +141,27 @@ struct fd_bam_tile {
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
 
   /* BAM specific */
-  fd_grpc_h2_stream_t * bam_stream;               /* Active scheduler stream when subscribed */
-  long                  bam_last_builder_heartbeat_ns;  /* Last heartbeat ts from builders */
-  long                  bam_last_validator_heartbeat_ns;/* Last heartbeat ts from validator */
-  long                  bam_last_config_poll_ns;         /* Last config fetch attempt */
-  ushort                bam_pending_results;             /* Count of buffered bundle results */
-  ushort                bam_results_head;                /* FIFO head for bam_results ring */
-  ushort                bam_results_tail;                /* FIFO tail for bam_results ring */
-  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Ring of pending bundle outcomes */
-  fd_bam_leader_state_t  bam_leader_state;        /* Latest scheduler slot budget info */
-  uchar                 bam_url_pubkey[ 32 ];   /* Ed25519 pubkey derived from identity file */
-  char                  bam_validator_pubkey[ FD_BASE58_ENCODED_32_SZ ]; /* Base58 validator key */
-  char                  bam_auth_challenge[ 256 ];        /* Challenge text from BAM */
-  ushort                bam_auth_challenge_len;           /* Length of auth challenge string */
-  char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Latest auth response */
-  uint                  bam_stream_live       : 1;        /* Stream established and receiving */
-  uint                  bam_stream_connecting : 1;        /* Stream handshake in progress */
-  uint                  bam_auth_ready        : 1;        /* Challenge ready to be signed */
-  uint                  bam_auth_inflight     : 1;        /* Auth request currently outstanding */
-  uint                  bam_config_inflight   : 1;        /* Config RPC currently in flight */
-  uint                  bam_leader_pending    : 1;        /* Waiting on leader state response */
+  fd_grpc_h2_stream_t * bam_stream;               /* Current scheduler stream; NULL while unsubscribed or reconnecting */
+  long                  bam_last_builder_heartbeat_ns;  /* fd_bam_now() timestamp of last builder heartbeat (0 if none received) */
+  long                  bam_last_validator_heartbeat_ns;/* fd_bam_now() timestamp of last validator heartbeat (0 if none received) */
+  long                  bam_last_config_poll_ns;         /* fd_bam_now() timestamp of last config poll attempt (0 if never polled) */
+  ushort                bam_pending_results;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
+  ushort                bam_results_head;                /* Index of next result to flush (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
+  ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
+  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Ring buffer of bundle outcomes awaiting publication */
+  fd_bam_leader_state_t  bam_leader_state;        /* Cached leader-schedule budget received from the BAM node */
+  uchar                 bam_url_pubkey[ 32 ];   /* 32-byte Ed25519 validator key read from the identity file */
+  char                  bam_validator_pubkey[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
+  char                  bam_auth_challenge[ 256 ];        /* Latest auth challenge from BAM (bytes up to bam_auth_challenge_len valid) */
+  ushort                bam_auth_challenge_len;           /* Length of current auth challenge (0 <= len < sizeof(bam_auth_challenge)) */
+  char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Base58-encoded Ed25519 signature most recently sent to BAM */
+  uint                  bam_builder_info_inflight  : 1;  /* Reserved for builder-info RPC tracking (currently unused) */
+  uint                  bam_stream_live        : 1;  /* set once bam_stream is established and delivering messages */
+  uint                  bam_stream_connecting  : 1;  /* set during gRPC stream handshake before bam_stream_live */
+  uint                  bam_auth_ready         : 1;  /* set when bam_auth_challenge/_len contain a fresh challenge to sign */
+  uint                  bam_auth_inflight      : 1;  /* set while the auth RPC is pending */
+  uint                  bam_config_inflight    : 1;  /* set while a config RPC is pending */
+  uint                  bam_leader_pending     : 1;  /* set when awaiting a scheduler leader-state response */
 
   /* Error backoff */
   fd_rng_t rng[1];                                /* RNG used to randomize reconnects */
@@ -190,7 +188,6 @@ struct fd_bam_tile {
   /* Bam contact info */
   fd_ip4_port_t bam_tpu_addr;      /* Latest TPU endpoint advertised by BAM */
   fd_ip4_port_t bam_tpu_quic_addr; /* Latest QUIC TPU endpoint advertised by BAM */
-  uint          bam_contact_avail  : 1; /* BAM provided contact info at least once */
   uint          bam_contact_active : 1; /* Contact info currently published to gossip */
   uint          bam_contact_dirty  : 1; /* Gossip needs refresh with latest contact info */
 };

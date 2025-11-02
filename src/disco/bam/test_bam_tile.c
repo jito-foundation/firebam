@@ -1661,7 +1661,6 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  FD_TEST( state->bam_contact_avail==0U );
   FD_TEST( state->bam_contact_dirty==0U );
   FD_TEST( state->bam_tpu_addr.l==0UL );
   FD_TEST( state->bam_tpu_quic_addr.l==0UL );
@@ -1690,7 +1689,7 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetConfig );
 
-  FD_TEST( state->bam_contact_avail==1U );
+  FD_TEST( state->bam_tpu_addr.l!=0UL );
   FD_TEST( state->bam_contact_dirty==1U );
 
   fd_ip4_port_t expected_tpu = {0};
@@ -1733,7 +1732,7 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetConfig );
   FD_TEST( state->bam_contact_dirty==1U );
-  FD_TEST( state->bam_contact_avail==1U );
+  FD_TEST( state->bam_tpu_addr.l!=0UL );
   FD_TEST( state->bam_tpu_addr.l==expected_tpu.l );
   FD_TEST( state->bam_tpu_quic_addr.l==0UL );
   FD_TEST( state->fee_cfg->version==1UL );
@@ -1877,9 +1876,9 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
     FD_LOG_ERR(( "pb_encode fee info failed: %s", PB_GET_ERROR( &ostream ) ));
   }
 
-  FD_TEST( state->builder_info_avail==0U );
+  FD_TEST( state->builder_info_valid_until==0L );
   fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetConfig );
-  FD_TEST( state->builder_info_avail==1U );
+  FD_TEST( state->builder_info_valid_until!=0L );
   FD_TEST( state->builder_commission==5U );
   uchar decoded[32];
   FD_TEST( fd_base58_decode_32( resp.block_engine_config.builder_pubkey, decoded ) );

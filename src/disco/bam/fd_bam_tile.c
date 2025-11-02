@@ -123,8 +123,9 @@ fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
 
   int connected = ( status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  int have_contact = ctx->bam_tpu_addr.l!=0UL;
 
-  if( FD_UNLIKELY( connected && ctx->bam_contact_avail ) ) {
+  if( FD_UNLIKELY( connected && have_contact ) ) {
     /* When the client hands us live TPU endpoints we only publish once per
        connection or when the config actually changes.  The gossip tile
        handles refreshing timers after we poke it.  bam_contact_dirty acts
@@ -969,7 +970,6 @@ unprivileged_init( fd_topo_t *      topo,
 
   ctx->bam_tpu_addr.l       = 0UL;
   ctx->bam_tpu_quic_addr.l  = 0UL;
-  ctx->bam_contact_avail    = 0U;
   ctx->bam_contact_active   = 0U;
   ctx->bam_contact_dirty    = 0U;
 
