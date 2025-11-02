@@ -351,24 +351,28 @@ metric introduced.
 </enum>
 
 <tile name="bam">
-    <counter name="TransactionReceived" summary="Total count of transactions received from BAM, including transactions within bundles" />
-    <counter name="BundleReceived" summary="Total count of bundles received from BAM" />
-    <counter name="BundleResultsDropped" summary="Count of BAM bundle results dropped before publication" />
-    <counter name="PacketsDropped" summary="Count of BAM packets dropped before publication" />
-    <counter name="HeartbeatsSent" summary="Count of validator heartbeats sent to BAM" />
-    <counter name="HeartbeatsReceived" summary="Count of builder heartbeats received from BAM" />
-    <counter name="Errors" enum="BamError" summary="Number of BAM client errors encountered" />
-    <gauge name="HeapSize" summary="Workspace heap size used by the BAM client" />
-    <gauge name="HeapFreeBytes" summary="Approx free space in workspace used by the BAM client" />
-    <counter name="Keepalives" summary="Number of HTTP/2 PINGs acknowledged by the BAM node" />
-    <counter name="Connections" summary="Number of times the BAM client established a connection to the BAM node" />
-    <counter name="Disconnects" summary="Number of times the BAM client disconnected from the BAM node" />
-    <gauge name="Connected" summary="1 if connected to the BAM node, 0 if not" />
-    <gauge name="RttSample" summary="Latest BAM RTT sample at scrape time (nanoseconds)" />
-    <gauge name="RttSmoothed" summary="BAM RTT moving average (nanoseconds)" />
-    <gauge name="RttVar" summary="BAM RTT variance (nanoseconds)" />
+    <counter name="TransactionReceived" summary="Cumulative number of transactions accepted from the BAM node, including transactions unpacked from bundles" />
+    <counter name="BundleReceived" summary="Cumulative number of bundles received from the BAM node" />
+    <counter name="BundleResultsDropped" summary="Cumulative number of BAM bundle execution results discarded before publication" />
+    <counter name="PacketsDropped" summary="Cumulative number of BAM network packets dropped before forwarding to the TPU pipeline" />
+    <counter name="HeartbeatsSent" summary="Cumulative number of validator heartbeat messages sent to the BAM node" />
+    <counter name="HeartbeatsReceived" summary="Cumulative number of builder heartbeat messages received from the BAM node" />
+    <counter name="Errors" enum="BamError" summary="Cumulative number of BAM client errors encountered, bucketed by BamError" />
+    <gauge name="HeapSize" summary="Total workspace capacity reserved for the BAM tile (bytes)" />
+    <gauge name="HeapFreeBytes" summary="Estimated free capacity in the BAM tile workspace heap (bytes)" />
+    <counter name="Keepalives" summary="Cumulative number of HTTP/2 keepalive PINGs acknowledged by the BAM node" />
+    <counter name="Connections" summary="Cumulative number of successful BAM client connections established to the BAM node" />
+    <counter name="Disconnects" summary="Cumulative number of connection teardowns between the BAM client and BAM node" />
+    <counter name="ResultsSent" summary="Cumulative number of bundle execution result messages forwarded to the BAM node" />
+    <counter name="LeaderStateSent" summary="Cumulative number of leader state update messages sent to the BAM node" />
+    <gauge name="Connected" summary="Boolean gauge: 1 when the BAM client is connected to the BAM node, otherwise 0" />
+    <gauge name="RttSample" summary="Latest BAM round-trip time sample captured at scrape time (nanoseconds)" />
+    <gauge name="RttSmoothed" summary="Exponentially smoothed BAM round-trip time estimate (nanoseconds)" />
+    <gauge name="RttVar" summary="Smoothed variance of the BAM round-trip time estimator (nanoseconds)" />
+    <gauge name="ResultsQueueDepth" summary="Current number of bundle execution results buffered for BAM feedback" />
+    <gauge name="RuntimeEnabled" summary="Boolean gauge: 1 when BAM runtime mode is enabled, 0 when running in fallback mode" />
     <histogram name="MessageRxDelayNanos" min="100000" max="1000000000">
-        <summary>Message receive delay in nanoseconds from BAM node to BAM client</summary>
+        <summary>Distribution of message receive delays from the BAM node to the BAM client (nanoseconds)</summary>
     </histogram>
 </tile>
 

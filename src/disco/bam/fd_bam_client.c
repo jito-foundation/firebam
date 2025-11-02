@@ -1032,6 +1032,8 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
   if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
     return 0;
   }
+  ctx->metrics.result_sent_cnt++;
+  FD_MCNT_INC( BAM, RESULTS_SENT, 1UL );
   return 1;
 }
 
@@ -1050,7 +1052,13 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
   msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_leader_state_tag;
   msg.versioned_msg.v0.msg.leader_state = ls;
 
-  return fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
+  const int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
+  if( FD_UNLIKELY( send_res ) ) {
+    ctx->metrics.leader_state_sent_cnt++;
+    FD_MCNT_INC( BAM, LEADER_STATE_SENT, 1UL );
+  }
+
+  return send_res;
 }
 
 static int
@@ -1627,6 +1635,8 @@ fd_bam_client_grpc_rx_timeout(
   (void)deadline_kind;
   FD_LOG_WARNING(( "Request timed out: %s", fd_bam_request_ctx_cstr( request_ctx ) ));
   fd_bam_tile_t * ctx = app_ctx;
+  ctx->metrics.timeout_fail_cnt++;
+  FD_MCNT_INC( BAM, ERRORS_TIMEOUT, 1UL );
   ctx->defer_reset = 1;
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:

@@ -881,26 +881,30 @@
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| <span class="metrics-name">bam_&#8203;transaction_&#8203;received</span> | counter | Total count of transactions received from BAM, including transactions within bundles |
-| <span class="metrics-name">bam_&#8203;bundle_&#8203;received</span> | counter | Total count of bundles received from BAM |
-| <span class="metrics-name">bam_&#8203;bundle_&#8203;results_&#8203;dropped</span> | counter | Count of BAM bundle results dropped before publication |
-| <span class="metrics-name">bam_&#8203;packets_&#8203;dropped</span> | counter | Count of BAM packets dropped before publication |
-| <span class="metrics-name">bam_&#8203;heartbeats_&#8203;sent</span> | counter | Count of validator heartbeats sent to BAM |
-| <span class="metrics-name">bam_&#8203;heartbeats_&#8203;received</span> | counter | Count of builder heartbeats received from BAM |
-| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">protobuf</span>"} | counter | Number of BAM client errors encountered (Protobuf decode/encode error) |
-| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">transport</span>"} | counter | Number of BAM client errors encountered (Transport error) |
-| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">timeout</span>"} | counter | Number of BAM client errors encountered (I/O timeout) |
-| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">no_&#8203;fee_&#8203;info</span>"} | counter | Number of BAM client errors encountered (Bundle dropped due to missing fee info) |
-| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">ssl_&#8203;alloc</span>"} | counter | Number of BAM client errors encountered (OpenSSL alloc fail) |
-| <span class="metrics-name">bam_&#8203;heap_&#8203;size</span> | gauge | Workspace heap size used by the BAM client |
-| <span class="metrics-name">bam_&#8203;heap_&#8203;free_&#8203;bytes</span> | gauge | Approx free space in workspace used by the BAM client |
-| <span class="metrics-name">bam_&#8203;keepalives</span> | counter | Number of HTTP/2 PINGs acknowledged by the BAM node |
-| <span class="metrics-name">bam_&#8203;connections</span> | counter | Number of times the BAM client established a connection to the BAM node |
-| <span class="metrics-name">bam_&#8203;disconnects</span> | counter | Number of times the BAM client disconnected from the BAM node |
-| <span class="metrics-name">bam_&#8203;connected</span> | gauge | 1 if connected to the BAM node, 0 if not |
-| <span class="metrics-name">bam_&#8203;rtt_&#8203;sample</span> | gauge | Latest BAM RTT sample at scrape time (nanoseconds) |
-| <span class="metrics-name">bam_&#8203;rtt_&#8203;smoothed</span> | gauge | BAM RTT moving average (nanoseconds) |
-| <span class="metrics-name">bam_&#8203;rtt_&#8203;var</span> | gauge | BAM RTT variance (nanoseconds) |
-| <span class="metrics-name">bam_&#8203;message_&#8203;rx_&#8203;delay_&#8203;nanos</span> | histogram | Message receive delay in nanoseconds from BAM node to BAM client |
+| <span class="metrics-name">bam_&#8203;transaction_&#8203;received</span> | counter | Cumulative number of transactions accepted from the BAM node, including transactions unpacked from bundles |
+| <span class="metrics-name">bam_&#8203;bundle_&#8203;received</span> | counter | Cumulative number of bundles received from the BAM node |
+| <span class="metrics-name">bam_&#8203;bundle_&#8203;results_&#8203;dropped</span> | counter | Cumulative number of BAM bundle execution results discarded before publication |
+| <span class="metrics-name">bam_&#8203;packets_&#8203;dropped</span> | counter | Cumulative number of BAM network packets dropped before forwarding to the TPU pipeline |
+| <span class="metrics-name">bam_&#8203;heartbeats_&#8203;sent</span> | counter | Cumulative number of validator heartbeat messages sent to the BAM node |
+| <span class="metrics-name">bam_&#8203;heartbeats_&#8203;received</span> | counter | Cumulative number of builder heartbeat messages received from the BAM node |
+| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">protobuf</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (Protobuf decode/encode error) |
+| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">transport</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (Transport error) |
+| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">timeout</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (I/O timeout) |
+| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">no_&#8203;fee_&#8203;info</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (Bundle dropped due to missing fee info) |
+| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">ssl_&#8203;alloc</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (OpenSSL alloc fail) |
+| <span class="metrics-name">bam_&#8203;heap_&#8203;size</span> | gauge | Total workspace capacity reserved for the BAM tile (bytes) |
+| <span class="metrics-name">bam_&#8203;heap_&#8203;free_&#8203;bytes</span> | gauge | Estimated free capacity in the BAM tile workspace heap (bytes) |
+| <span class="metrics-name">bam_&#8203;keepalives</span> | counter | Cumulative number of HTTP/2 keepalive PINGs acknowledged by the BAM node |
+| <span class="metrics-name">bam_&#8203;connections</span> | counter | Cumulative number of successful BAM client connections established to the BAM node |
+| <span class="metrics-name">bam_&#8203;disconnects</span> | counter | Cumulative number of connection teardowns between the BAM client and BAM node |
+| <span class="metrics-name">bam_&#8203;results_&#8203;sent</span> | counter | Cumulative number of bundle execution result messages forwarded to the BAM node |
+| <span class="metrics-name">bam_&#8203;leader_&#8203;state_&#8203;sent</span> | counter | Cumulative number of leader state update messages sent to the BAM node |
+| <span class="metrics-name">bam_&#8203;connected</span> | gauge | Boolean gauge: 1 when the BAM client is connected to the BAM node, otherwise 0 |
+| <span class="metrics-name">bam_&#8203;rtt_&#8203;sample</span> | gauge | Latest BAM round-trip time sample captured at scrape time (nanoseconds) |
+| <span class="metrics-name">bam_&#8203;rtt_&#8203;smoothed</span> | gauge | Exponentially smoothed BAM round-trip time estimate (nanoseconds) |
+| <span class="metrics-name">bam_&#8203;rtt_&#8203;var</span> | gauge | Smoothed variance of the BAM round-trip time estimator (nanoseconds) |
+| <span class="metrics-name">bam_&#8203;results_&#8203;queue_&#8203;depth</span> | gauge | Current number of bundle execution results buffered for BAM feedback |
+| <span class="metrics-name">bam_&#8203;runtime_&#8203;enabled</span> | gauge | Boolean gauge: 1 when BAM runtime mode is enabled, 0 when running in fallback mode |
+| <span class="metrics-name">bam_&#8203;message_&#8203;rx_&#8203;delay_&#8203;nanos</span> | histogram | Distribution of message receive delays from the BAM node to the BAM client (nanoseconds) |
 
 </div>

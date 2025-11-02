@@ -61,11 +61,16 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, DISCONNECTS,            ctx->metrics.disconnect_cnt            );
   FD_MCNT_SET( BAM, ERRORS_PROTOBUF,        ctx->metrics.decode_fail_cnt           );
   FD_MCNT_SET( BAM, ERRORS_TRANSPORT,       ctx->metrics.transport_fail_cnt        );
+  FD_MCNT_SET( BAM, ERRORS_TIMEOUT,         ctx->metrics.timeout_fail_cnt          );
   FD_MCNT_SET( BAM, ERRORS_NO_FEE_INFO,     ctx->metrics.missing_builder_info_fail_cnt );
+  FD_MCNT_SET( BAM, RESULTS_SENT,           ctx->metrics.result_sent_cnt           );
+  FD_MCNT_SET( BAM, LEADER_STATE_SENT,      ctx->metrics.leader_state_sent_cnt     );
 
   FD_MGAUGE_SET( BAM, RTT_SAMPLE,   (ulong)ctx->rtt->latest_rtt   );
   FD_MGAUGE_SET( BAM, RTT_SMOOTHED, (ulong)ctx->rtt->smoothed_rtt );
   FD_MGAUGE_SET( BAM, RTT_VAR,      (ulong)ctx->rtt->var_rtt      );
+  FD_MGAUGE_SET( BAM, RESULTS_QUEUE_DEPTH, (ulong)ctx->bam_pending_results );
+  FD_MGAUGE_SET( BAM, RUNTIME_ENABLED,     (ulong)ctx->runtime_enabled );
 
   FD_MHIST_COPY( BAM, MESSAGE_RX_DELAY_NANOS, ctx->metrics.msg_rx_delay );
 

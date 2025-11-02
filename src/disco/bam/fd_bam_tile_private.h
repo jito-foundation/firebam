@@ -55,7 +55,11 @@ struct fd_bam_metrics {
 
   ulong decode_fail_cnt;
   ulong transport_fail_cnt;
+  ulong timeout_fail_cnt;
   ulong missing_builder_info_fail_cnt;
+
+  ulong result_sent_cnt;
+  ulong leader_state_sent_cnt;
 
   fd_histf_t msg_rx_delay[1];
 };
