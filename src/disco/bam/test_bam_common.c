@@ -66,8 +66,8 @@ test_bam_env_create( test_bam_env_t * env,
     .chunk  = 0UL,
     .wmark  = fd_dcache_compact_wmark( dcache, dcache, FD_TPU_PARSED_MTU )
   };
-  state->plugin_out = (fd_bam_out_ctx_t){ .idx=ULONG_MAX };
-  state->gossip_out = (fd_bam_out_ctx_t){ .idx=ULONG_MAX };
+  state->plugin_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
+  state->gossip_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
   state->tcp_sock        = -1;
   state->keylog_fd       = -1;
   state->so_rcvbuf       = 4096;
@@ -125,17 +125,17 @@ test_bam_env_mock_conn_empty( test_bam_env_t * env ) {
   state->keepalive->ts_last_rx = ts_start;
   state->keepalive->ts_deadline = ts_start + (long)1e9;
 
-  if( FD_UNLIKELY( env->server_sock>=0 ) ) {
-    FD_TEST( 0==close( env->server_sock ) );
+  if( FD_UNLIKELY( env->server_sock >= 0 ) ) {
+    FD_TEST( 0 == close( env->server_sock ) );
     env->server_sock = -1;
   }
-  if( FD_UNLIKELY( state->tcp_sock>=0 ) ) {
-    FD_TEST( 0==close( state->tcp_sock ) );
+  if( FD_UNLIKELY( state->tcp_sock >= 0 ) ) {
+    FD_TEST( 0 == close( state->tcp_sock ) );
     state->tcp_sock = -1;
   }
 
   int sockpair[2] = { -1, -1 };
-  FD_TEST( 0==socketpair( AF_UNIX, SOCK_STREAM, 0, sockpair ) );
+  FD_TEST( 0 == socketpair( AF_UNIX, SOCK_STREAM, 0, sockpair ) );
   env->server_sock    = sockpair[0];
   state->tcp_sock     = sockpair[1];
 }
@@ -155,17 +155,17 @@ test_bam_env_mock_conn( test_bam_env_t * env ) {
   test_bam_env_mock_builder_info( state );
   test_bam_env_mock_h2_hs( state );
   state->bam_stream_live = 1;
-  FD_TEST( fd_bam_client_status( state )==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
 }
 
 static void
 test_bam_env_destroy( test_bam_env_t * env ) {
-  if( env->server_sock>=0 ) {
-    FD_TEST( 0==close( env->server_sock ) );
+  if( env->server_sock >= 0 ) {
+    FD_TEST( 0 == close( env->server_sock ) );
     env->server_sock = -1;
   }
-  if( env->state->tcp_sock>=0 ) {
-    FD_TEST( 0==close( env->state->tcp_sock ) );
+  if( env->state->tcp_sock >= 0 ) {
+    FD_TEST( 0 == close( env->state->tcp_sock ) );
     env->state->tcp_sock = -1;
   }
   if( env->state->fee_cfg ) {

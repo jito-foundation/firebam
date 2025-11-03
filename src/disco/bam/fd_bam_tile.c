@@ -84,7 +84,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->used_sz  );
 
   int bundle_status = fd_bam_client_status( ctx );
-  FD_MGAUGE_SET( BAM, CONNECTED, bundle_status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  FD_MGAUGE_SET( BAM, CONNECTED, bundle_status == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
   ctx->bundle_status_recent = (uchar)bundle_status;
 }
 
@@ -128,9 +128,9 @@ fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
                             int                 prev_status ) {
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
 
-  int const connected     = ( status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
-  int const was_connected = ( prev_status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
-  int const have_contact  = ctx->bam_tpu_addr.l!=0UL;
+  int const connected     = ( status == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  int const was_connected = ( prev_status == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  int const have_contact  = ctx->bam_tpu_addr.l != 0UL;
 
   if( FD_UNLIKELY( connected && have_contact && !was_connected ) ) {
     fd_bam_publish_gossip_update( ctx, stem, 1U );
@@ -154,12 +154,12 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   int  status          = fd_bam_client_status( ctx );
   long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
   long now_ns          = fd_log_wallclock();
-  if( FD_UNLIKELY( status!=FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED && now_ns>log_next_ns ) ) {
+  if( FD_UNLIKELY( status != FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED && now_ns > log_next_ns ) ) {
     FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
     ctx->last_bundle_status_log_nanos = now_ns;
   }
 
-  if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
+  if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch ) == FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
     fd_memcpy( ctx->bam_url_pubkey, ctx->keyswitch->bytes, 32UL );
     fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_validator_pubkey );
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
@@ -179,12 +179,12 @@ bam_during_frag( fd_bam_tile_t * ctx,
   (void)sig;
   (void)ctl;
 
-  if( FD_LIKELY( in_idx==ctx->bank_bam_in_idx ) ) {
-    if( FD_UNLIKELY( sz!=sizeof(fd_bam_bundle_result_t) ) ) {
+  if( FD_LIKELY( in_idx == ctx->bank_bam_in_idx ) ) {
+    if( FD_UNLIKELY( sz != sizeof(fd_bam_bundle_result_t) ) ) {
       FD_LOG_WARNING(( "Unexpected BAM bundle result size %lu", sz ));
       return;
     }
-    if( FD_UNLIKELY( ( chunk<ctx->bank_in.chunk0 ) | ( chunk>ctx->bank_in.wmark ) ) ) {
+    if( FD_UNLIKELY( ( chunk < ctx->bank_in.chunk0 ) | ( chunk > ctx->bank_in.wmark ) ) ) {
       FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->bank_in.chunk0, ctx->bank_in.wmark ));
       return;
     }
@@ -192,9 +192,9 @@ bam_during_frag( fd_bam_tile_t * ctx,
     return;
   }
 
-  if( FD_UNLIKELY( in_idx==ctx->pack_leader_in_idx ) ) {
-    if( FD_LIKELY( sz==sizeof(fd_bam_leader_state_t) ) ) {
-      if( FD_UNLIKELY( ( chunk<ctx->leader_in.chunk0 ) | ( chunk>ctx->leader_in.wmark ) ) ) {
+  if( FD_UNLIKELY( in_idx == ctx->pack_leader_in_idx ) ) {
+    if( FD_LIKELY( sz == sizeof(fd_bam_leader_state_t) ) ) {
+      if( FD_UNLIKELY( ( chunk < ctx->leader_in.chunk0 ) | ( chunk > ctx->leader_in.wmark ) ) ) {
         FD_LOG_WARNING(( "BAM leader state chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
         return;
       }
@@ -203,8 +203,8 @@ bam_during_frag( fd_bam_tile_t * ctx,
       ctx->bam_leader_pending = 1U;
       return;
     }
-    if( FD_LIKELY( sz==sizeof(fd_bam_bundle_result_t) ) ) {
-      if( FD_UNLIKELY( ( chunk<ctx->leader_in.chunk0 ) | ( chunk>ctx->leader_in.wmark ) ) ) {
+    if( FD_LIKELY( sz == sizeof(fd_bam_bundle_result_t) ) ) {
+      if( FD_UNLIKELY( ( chunk < ctx->leader_in.chunk0 ) | ( chunk > ctx->leader_in.wmark ) ) ) {
         FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
         return;
       }
@@ -274,7 +274,7 @@ after_credit( fd_bam_tile_t *  ctx,
        transport, auth, and scheduler stream are fully live, so toggling
        the latch here guarantees peers see a consistent "BAM owns TPU"
        window. */
-    ulong is_connected = (ulong)( bundle_status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+    ulong is_connected = (ulong)( bundle_status == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
     fd_fseq_update( ctx->bam_status_fseq, is_connected );
   }
   fd_bam_update_contact_info( ctx, stem, bundle_status, prev_status );
@@ -323,9 +323,9 @@ parse_url( fd_url_t *   url_,
   }
 
   /* FIXME the URL scheme path technically shouldn't contain slashes */
-  if( url->scheme_len==8UL && fd_memeq( url->scheme, "https://", 8UL ) ) {
+  if( url->scheme_len == 8UL && fd_memeq( url->scheme, "https://", 8UL ) ) {
     *is_ssl = 1;
-  } else if( url->scheme_len==7UL && fd_memeq( url->scheme, "http://", 7UL ) ) {
+  } else if( url->scheme_len == 7UL && fd_memeq( url->scheme, "http://", 7UL ) ) {
     *is_ssl = 0;
   } else {
     goto scheme_err;
@@ -345,7 +345,7 @@ parse_url( fd_url_t *   url_,
     char port_cstr[6];
     fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( port_cstr ), url->port, url->port_len ) );
     ulong port_no = fd_cstr_to_ulong( port_cstr );
-    if( FD_UNLIKELY( !port_no || port_no>USHORT_MAX ) ) goto invalid_port;
+    if( FD_UNLIKELY( !port_no || port_no > USHORT_MAX ) ) goto invalid_port;
 
     *tcp_port = (ushort)port_no;
   }
@@ -412,7 +412,7 @@ fd_bam_tile_format_url( fd_bam_tile_t const * ctx,
                     (int)ctx->server_fqdn_len,
                     ctx->server_fqdn,
                     (uint)ctx->server_tcp_port );
-  if( FD_UNLIKELY( n<0 ) ) dst[0] = '\0';
+  if( FD_UNLIKELY( n < 0 ) ) dst[0] = '\0';
 }
 
 static void
@@ -497,7 +497,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     need_reset = 1;
   }
 
-  if( (command & FD_BAM_CTRL_CMD_ENABLE) && (new_enable!=ctx->runtime_enabled) ) {
+  if( (command & FD_BAM_CTRL_CMD_ENABLE) && (new_enable != ctx->runtime_enabled) ) {
     ctx->runtime_enabled = new_enable;
     need_reset = 1;
     if( new_enable ) clear_backoff_after_reset = 1;
@@ -528,11 +528,11 @@ static void
 fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->ctrl ) ) return;
 
-  // wait until we receive a new request
+  /* Wait until we receive a new request. */
   for( ;; ) {
     long state = FD_VOLATILE_CONST( ctx->ctrl->state );
-    if( FD_LIKELY( state!=FD_BAM_CTRL_STATE_REQUEST ) ) return;
-    if( FD_ATOMIC_CAS( &ctx->ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_APPLYING )==FD_BAM_CTRL_STATE_REQUEST )
+    if( FD_LIKELY( state != FD_BAM_CTRL_STATE_REQUEST ) ) return;
+    if( FD_ATOMIC_CAS( &ctx->ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_APPLYING ) == FD_BAM_CTRL_STATE_REQUEST )
       break;
   }
 
@@ -665,7 +665,7 @@ fd_ossl_keylog_callback( SSL const *  ssl,
     { .iov_base=(void *)line, .iov_len=line_len },
     { .iov_base=(void *)"\n", .iov_len=1UL }
   };
-  if( FD_UNLIKELY( writev( ctx->keylog_fd, iovs, 2 )!=(long)line_len+1 ) ) {
+  if( FD_UNLIKELY( writev( ctx->keylog_fd, iovs, 2 ) != (long)line_len+1 ) ) {
     FD_LOG_WARNING(( "write(keylog) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
   }
 }
@@ -699,14 +699,14 @@ fd_bam_tile_load_certs( SSL_CTX * ssl_ctx ) {
     }
   }
 
-  if( FD_UNLIKELY( errno && errno!=ENOENT ) ) {
+  if( FD_UNLIKELY( errno && errno != ENOENT ) ) {
     FD_LOG_ERR(( "readdir(%s) failed (%i-%s)", default_dir, errno, fd_io_strerror( errno ) ));
   }
 
   STACK_OF(X509) * cert_list = X509_STORE_get1_all_certs( ca_certs );
   FD_LOG_INFO(( "Loaded %d CA certs from %s into OpenSSL", sk_X509_num( cert_list ), default_dir ));
-  if( fd_log_level_logfile()==0 ) {
-    for( int i=0; i<sk_X509_num( cert_list ); i++ ) {
+  if( fd_log_level_logfile() == 0 ) {
+    for( int i=0; i < sk_X509_num( cert_list ); i++ ) {
       X509 * cert = sk_X509_value( cert_list, i );
       FD_LOG_DEBUG(( "Loaded CA cert \"%s\"", X509_NAME_oneline( X509_get_subject_name( cert ), NULL, 0 ) ));
     }
@@ -715,7 +715,7 @@ fd_bam_tile_load_certs( SSL_CTX * ssl_ctx ) {
 
   SSL_CTX_set_cert_store( ssl_ctx, ca_certs );
 
-  if( FD_UNLIKELY( 0!=closedir( dir ) ) ) {
+  if( FD_UNLIKELY( 0 != closedir( dir ) ) ) {
     FD_LOG_ERR(( "closedir(%s) failed (%i-%s)", default_dir, errno, fd_io_strerror( errno ) ));
   }
 }
@@ -759,7 +759,7 @@ fd_bam_tile_init_openssl( fd_bam_tile_t * ctx,
     FD_LOG_ERR(( "SSL_CTX_set_min_proto_version(ssl_ctx,TLS1_3_VERSION) failed" ));
   }
 
-  if( FD_UNLIKELY( 0!=SSL_CTX_set_alpn_protos( ssl_ctx, (const unsigned char *)"\x02h2", 3 ) ) ) {
+  if( FD_UNLIKELY( 0 != SSL_CTX_set_alpn_protos( ssl_ctx, (const unsigned char *)"\x02h2", 3 ) ) ) {
     FD_LOG_ERR(( "SSL_CTX_set_alpn_protos failed" ));
   }
 
@@ -852,7 +852,7 @@ privileged_init( fd_topo_t *      topo,
   fd_memset( ctx->prio_fee_recipient, 0, sizeof( ctx->prio_fee_recipient ) );
 
   ulong bam_fee_cfg_obj_id = fd_pod_query_ulong( topo->props, "bam_fee_cfg", ULONG_MAX );
-  if( FD_LIKELY( bam_fee_cfg_obj_id!=ULONG_MAX ) ) {
+  if( FD_LIKELY( bam_fee_cfg_obj_id != ULONG_MAX ) ) {
     ctx->fee_cfg = fd_topo_obj_laddr( topo, bam_fee_cfg_obj_id );
     fd_memset( ctx->fee_cfg, 0, sizeof(fd_bam_fee_cfg_t) );
   } else {
@@ -860,7 +860,7 @@ privileged_init( fd_topo_t *      topo,
   }
 
   ulong bam_ctrl_obj_id = fd_pod_query_ulong( topo->props, "bam_ctrl", ULONG_MAX );
-  if( FD_LIKELY( bam_ctrl_obj_id!=ULONG_MAX ) ) {
+  if( FD_LIKELY( bam_ctrl_obj_id != ULONG_MAX ) ) {
     ctx->ctrl = fd_topo_obj_laddr( topo, bam_ctrl_obj_id );
     fd_memset( ctx->ctrl, 0, sizeof(fd_bam_ctrl_t) );
     ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
@@ -890,16 +890,16 @@ static void
 unprivileged_init( fd_topo_t *      topo,
                    fd_topo_tile_t * tile ) {
   fd_bam_tile_t * ctx = fd_topo_obj_laddr( topo, tile->tile_obj_id );
-  if( FD_UNLIKELY( tile->kind_id!=0 ) ) {
+  if( FD_UNLIKELY( tile->kind_id != 0 ) ) {
     FD_LOG_ERR(( "There can only be one bam tile" ));
   }
 
   ulong sign_in_idx = fd_topo_find_tile_in_link( topo, tile, "sign_bam", tile->kind_id );
-  if( FD_UNLIKELY( sign_in_idx==ULONG_MAX ) ) FD_LOG_ERR(( "Missing sign_bam link" ));
+  if( FD_UNLIKELY( sign_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing sign_bam link" ));
   fd_topo_link_t const * sign_in  = &topo->links[ tile->in_link_id[ sign_in_idx ] ];
 
   ulong sign_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_sign", tile->kind_id );
-  if( FD_UNLIKELY( sign_out_idx==ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_sign link" ));
+  if( FD_UNLIKELY( sign_out_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_sign link" ));
   fd_topo_link_t const * sign_out = &topo->links[ tile->out_link_id[ sign_out_idx ] ];
 
   if( FD_UNLIKELY( !fd_keyguard_client_join( fd_keyguard_client_new(
@@ -916,7 +916,7 @@ unprivileged_init( fd_topo_t *      topo,
   FD_TEST( ctx->keyswitch );
 
   ulong bank_in_idx = fd_topo_find_tile_in_link( topo, tile, "bank_bam", tile->kind_id );
-  if( bank_in_idx!=ULONG_MAX ) {
+  if( bank_in_idx != ULONG_MAX ) {
     ctx->bank_bam_in_idx = bank_in_idx;
     fd_topo_link_t const * bank_in = &topo->links[ tile->in_link_id[ bank_in_idx ] ];
     ctx->bank_in.mem    = topo->workspaces[ topo->objs[ bank_in->dcache_obj_id ].wksp_id ].wksp;
@@ -925,7 +925,7 @@ unprivileged_init( fd_topo_t *      topo,
   }
 
   ulong leader_in_idx = fd_topo_find_tile_in_link( topo, tile, "pack_bam", tile->kind_id );
-  if( leader_in_idx!=ULONG_MAX ) {
+  if( leader_in_idx != ULONG_MAX ) {
     ctx->pack_leader_in_idx = leader_in_idx;
     fd_topo_link_t const * leader_in = &topo->links[ tile->in_link_id[ leader_in_idx ] ];
     ctx->leader_in.mem    = topo->workspaces[ topo->objs[ leader_in->dcache_obj_id ].wksp_id ].wksp;
@@ -936,21 +936,21 @@ unprivileged_init( fd_topo_t *      topo,
   }
 
   ulong verify_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_verif", tile->kind_id );
-  if( FD_UNLIKELY( verify_out_idx==ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_verif link" ));
+  if( FD_UNLIKELY( verify_out_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_verif link" ));
   ctx->verify_out = bam_out_link( topo, &topo->links[ tile->out_link_id[ verify_out_idx ] ], verify_out_idx );
 
   ulong plugin_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_plugi", tile->kind_id );
-  if( plugin_out_idx!=ULONG_MAX ) {
+  if( plugin_out_idx != ULONG_MAX ) {
     ctx->plugin_out = bam_out_link( topo, &topo->links[ tile->out_link_id[ plugin_out_idx ] ], plugin_out_idx );
   } else {
-    ctx->plugin_out = (fd_bam_out_ctx_t){ .idx=ULONG_MAX };
+    ctx->plugin_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
   }
 
   ulong gossip_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_gossip", tile->kind_id );
-  if( gossip_out_idx!=ULONG_MAX ) {
+  if( gossip_out_idx != ULONG_MAX ) {
     ctx->gossip_out = bam_out_link( topo, &topo->links[ tile->out_link_id[ gossip_out_idx ] ], gossip_out_idx );
   } else {
-    ctx->gossip_out = (fd_bam_out_ctx_t){ .idx=ULONG_MAX };
+    ctx->gossip_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
   }
 
   /* Set socket receive buffer size */
@@ -970,7 +970,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_tpu_quic_addr.l  = 0UL;
 
   ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
-  if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
+  if( FD_LIKELY( bam_status_obj_id != ULONG_MAX ) ) {
     ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
     if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "bam tile missing bam_status fseq" ));
     /* Start disconnected so a late BAM connect transitions the flag to 1
@@ -1018,16 +1018,16 @@ populate_allowed_fds( fd_topo_t const *      topo,
                       int *                  out_fds ) {
   fd_bam_tile_t * ctx = fd_topo_obj_laddr( topo, tile->tile_obj_id );
 
-  if( FD_UNLIKELY( out_fds_cnt<5UL ) ) FD_LOG_ERR(( "out_fds_cnt %lu", out_fds_cnt ));
+  if( FD_UNLIKELY( out_fds_cnt < 5UL ) ) FD_LOG_ERR(( "out_fds_cnt %lu", out_fds_cnt ));
 
   ulong out_cnt = 0UL;
   out_fds[ out_cnt++ ] = 2; /* stderr */
-  if( FD_LIKELY( -1!=fd_log_private_logfile_fd() ) )
+  if( FD_LIKELY( -1 != fd_log_private_logfile_fd() ) )
     out_fds[ out_cnt++ ] = fd_log_private_logfile_fd(); /* logfile */
   if( FD_LIKELY( ctx->netdb_fds->etc_hosts >= 0 ) )
     out_fds[ out_cnt++ ] = ctx->netdb_fds->etc_hosts;
   out_fds[ out_cnt++ ] = ctx->netdb_fds->etc_resolv_conf;
-  if( FD_UNLIKELY( ctx->keylog_fd>=0 ) )
+  if( FD_UNLIKELY( ctx->keylog_fd >= 0 ) )
     out_fds[ out_cnt++ ] = ctx->keylog_fd;
   return out_cnt;
 }

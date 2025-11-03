@@ -43,7 +43,7 @@ typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
   bam_types_Packet    packets[ FD_PACK_MAX_TXN_PER_BUNDLE ];   /* decoded packet cache; indices [0,packet_cnt) valid */
   uchar               packet_cnt;                              /* number of packets collected; 0..FD_PACK_MAX_TXN_PER_BUNDLE */
-  uchar               revert_on_error;                         /* 0/1 flag mirrored from packet meta; only meaningful when revert_flag_set!=0 */
+  uchar               revert_on_error;                         /* 0/1 flag mirrored from packet meta; only meaningful when revert_flag_set != 0 */
   uchar               revert_flag_set;                         /* 0 before first flag observed, 1 after; prevents defaulting to revert_on_error=0 */
   uchar               drop_reason;                             /* FD_BAM_BATCH_DROP_* value describing rejection path */
   uchar               has_deser_error;                         /* boolean: 1 when deser_reason/index populated */
@@ -136,7 +136,7 @@ void
 fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   long now = fd_bam_now();
   if( FD_UNLIKELY( ctx->tcp_sock >= 0 ) ) {
-    if( FD_UNLIKELY( 0!=close( ctx->tcp_sock ) ) ) {
+    if( FD_UNLIKELY( 0 != close( ctx->tcp_sock ) ) ) {
       FD_LOG_ERR(( "close(tcp_sock=%i) failed (%i-%s)", ctx->tcp_sock, errno, fd_io_strerror( errno ) ));
     }
     ctx->tcp_sock = -1;
@@ -181,18 +181,18 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
      scheduler stream comes up.  The server expects every dispatched
      bundle to eventually produce a result; dropping them here would lose
      that guarantee. */
-  // ctx->bam_pending_results        = 0UL;
-  // ctx->bam_results_head           = 0UL;
-  // ctx->bam_results_tail           = 0UL;
+  /* ctx->bam_pending_results        = 0UL; */
+  /* ctx->bam_results_head           = 0UL; */
+  /* ctx->bam_results_tail           = 0UL; */
   ctx->bam_leader_pending         = 0U;
 }
 
 static int
 fd_bam_client_do_connect( fd_bam_tile_t const * ctx,
                              uint                     ip4_addr ) {
-  if( FD_UNLIKELY( ctx->tcp_sock<0 ) ) return EBADF;
+  if( FD_UNLIKELY( ctx->tcp_sock < 0 ) ) return EBADF;
 
-  if( FD_UNLIKELY( ip4_addr==0U ) ) {
+  if( FD_UNLIKELY( ip4_addr == 0U ) ) {
     int so_err = 0;
     socklen_t so_err_sz = sizeof(so_err);
     if( FD_UNLIKELY( getsockopt( ctx->tcp_sock, SOL_SOCKET, SO_ERROR, &so_err, &so_err_sz ) ) ) {
@@ -232,21 +232,21 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
   ctx->server_ip4_addr = ip4_addr;
 
   int tcp_sock = socket( AF_INET, SOCK_STREAM|SOCK_CLOEXEC, 0 );
-  if( FD_UNLIKELY( tcp_sock<0 ) ) {
+  if( FD_UNLIKELY( tcp_sock < 0 ) ) {
     FD_LOG_ERR(( "socket(AF_INET,SOCK_STREAM|SOCK_CLOEXEC,0) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
   }
   ctx->tcp_sock = tcp_sock;
 
-  if( FD_UNLIKELY( 0!=setsockopt( tcp_sock, SOL_SOCKET, SO_RCVBUF, &ctx->so_rcvbuf, sizeof(int) ) ) ) {
+  if( FD_UNLIKELY( 0 != setsockopt( tcp_sock, SOL_SOCKET, SO_RCVBUF, &ctx->so_rcvbuf, sizeof(int) ) ) ) {
     FD_LOG_ERR(( "setsockopt(SOL_SOCKET,SO_RCVBUF,%i) failed (%i-%s)", ctx->so_rcvbuf, errno, fd_io_strerror( errno ) ));
   }
 
   int tcp_nodelay = 1;
-  if( FD_UNLIKELY( 0!=setsockopt( tcp_sock, SOL_TCP, TCP_NODELAY, &tcp_nodelay, sizeof(int) ) ) ) {
+  if( FD_UNLIKELY( 0 != setsockopt( tcp_sock, SOL_TCP, TCP_NODELAY, &tcp_nodelay, sizeof(int) ) ) ) {
     FD_LOG_ERR(( "setsockopt failed (%d-%s)", errno, fd_io_strerror( errno ) ));
   }
 
-  if( FD_UNLIKELY( fcntl( tcp_sock, F_SETFL, O_NONBLOCK )==-1 ) ) {
+  if( FD_UNLIKELY( fcntl( tcp_sock, F_SETFL, O_NONBLOCK ) == -1 ) ) {
     FD_LOG_ERR(( "fcntl(tcp_sock,F_SETFL,O_NONBLOCK) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
   }
 
@@ -262,7 +262,7 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
 
   int connect_err = fd_bam_client_do_connect( ctx, ip4_addr );
   if( FD_UNLIKELY( connect_err ) ) {
-    if( FD_UNLIKELY( connect_err!=EINPROGRESS ) ) {
+    if( FD_UNLIKELY( connect_err != EINPROGRESS ) ) {
       FD_LOG_WARNING(( "connect(tcp_sock," FD_IP4_ADDR_FMT ":%u) failed (%i-%s)",
                       FD_IP4_ADDR_FMT_ARGS( ip4_addr ), ctx->server_tcp_port,
                       connect_err, fd_io_strerror( connect_err ) ));
@@ -329,7 +329,7 @@ fd_bam_encode_committed_cb( pb_ostream_t *          stream,
     txn_res.cus_consumed               = res->consumed_cus[ i ];
     txn_res.feepayer_balance_lamports  = 0UL;
     txn_res.loaded_accounts_data_size  = 0U;
-    txn_res.execution_success          = ( res->sanitize_success[ i ] && res->transaction_err[ i ]==0U );
+    txn_res.execution_success          = ( res->sanitize_success[ i ] && res->transaction_err[ i ] == 0U );
     if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
     if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_TransactionCommittedResult_fields, &txn_res ) ) ) return false;
   }
@@ -352,7 +352,7 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
   *out = (bam_types_NotCommitted)bam_types_NotCommitted_init_default;
 
   if( FD_UNLIKELY( res->has_deser_error ) ) {
-    if( FD_UNLIKELY( res->deser_reason>_bam_types_DeserializationErrorReason_MAX ) ) {
+    if( FD_UNLIKELY( res->deser_reason > _bam_types_DeserializationErrorReason_MAX ) ) {
       out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
       snprintf( out->reason.generic_invalid.message,
                 sizeof(out->reason.generic_invalid.message),
@@ -375,8 +375,8 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
     return;
   }
 
-  if( FD_UNLIKELY( res->scheduling_error!=FD_BAM_SCHED_ERR_NONE ) ) {
-    if( FD_LIKELY( res->scheduling_error<=_bam_types_SchedulingError_MAX ) ) {
+  if( FD_UNLIKELY( res->scheduling_error != FD_BAM_SCHED_ERR_NONE ) ) {
+    if( FD_LIKELY( res->scheduling_error <= _bam_types_SchedulingError_MAX ) ) {
       out->which_reason                 = bam_types_NotCommitted_scheduling_error_tag;
       out->reason.scheduling_error      = (bam_types_SchedulingError)res->scheduling_error;
     } else {
@@ -466,7 +466,7 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     }
 
     uchar flag_set = packet.meta.flags.revert_on_error ? 1 : 0;
-    if( state->revert_flag_set && state->revert_on_error!=flag_set ) {
+    if( state->revert_flag_set && state->revert_on_error != flag_set ) {
       FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
       state->drop_reason     = FD_BAM_BATCH_DROP_MIXED_FLAGS;
       if( FD_LIKELY( !state->has_deser_error ) ) {
@@ -519,7 +519,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     return;
   }
 
-  if( FD_UNLIKELY( state->packet_cnt==0U ) ) {
+  if( FD_UNLIKELY( state->packet_cnt == 0U ) ) {
     fd_bam_client_report_deser_error( ctx, batch, state, bam_types_DeserializationErrorReason_EMPTY, 0 );
     ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
     return;
@@ -620,11 +620,11 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
   bool          eof = false;
   int           seen_batch = 0;
   while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
-    if( FD_UNLIKELY( tag!=bam_types_MultipleAtomicTxnBatch_batches_tag ) ) {
+    if( FD_UNLIKELY( tag != bam_types_MultipleAtomicTxnBatch_batches_tag ) ) {
       if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
       continue;
     }
-    if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+    if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
       if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
       continue;
     }
@@ -665,7 +665,7 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
   while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
     switch( tag ) {
     case bam_api_SchedulerResponseV0_heart_beat_tag: {
-      if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+      if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
         if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
         break;
       }
@@ -684,7 +684,7 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
       break;
     }
     case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag: {
-      if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+      if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
         if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
         break;
       }
@@ -711,7 +711,7 @@ fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !time_sent_microseconds ) ) return;
   ulong tsorig_ns = time_sent_microseconds * 1000UL;
   long  now_ns    = fd_bam_now();
-  ulong now_u     = fd_ulong_if( now_ns>=0L, (ulong)now_ns, 0UL );
+  ulong now_u     = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
   fd_histf_sample( ctx->metrics.msg_rx_delay, fd_ulong_sat_sub( now_u, tsorig_ns ) );
 }
 
@@ -752,7 +752,7 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   }
 
   size_t challenge_len = strnlen( resp.challenge_to_sign, sizeof(resp.challenge_to_sign) );
-  if( FD_UNLIKELY( challenge_len==sizeof(resp.challenge_to_sign) ) ) {
+  if( FD_UNLIKELY( challenge_len == sizeof(resp.challenge_to_sign) ) ) {
     ctx->bam_auth_inflight = 0;
     FD_LOG_WARNING(( "AuthChallengeResponse challenge not NUL terminated" ));
     return 0;
@@ -841,7 +841,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     if( cfg->has_tpu_sock ) {
       uint ip4;
       if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_sock.ip, &ip4 ) ) &&
-          FD_LIKELY( cfg->tpu_sock.port>0 && cfg->tpu_sock.port<=USHORT_MAX ) ) {
+          FD_LIKELY( cfg->tpu_sock.port > 0 && cfg->tpu_sock.port <= USHORT_MAX ) ) {
         new_tpu_addr.addr = ip4;
         new_tpu_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_sock.port );
         have_tpu = 1;
@@ -855,7 +855,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     if( cfg->has_tpu_fwd_sock ) {
       uint ip4;
       if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_fwd_sock.ip, &ip4 ) ) &&
-          FD_LIKELY( cfg->tpu_fwd_sock.port>0 && cfg->tpu_fwd_sock.port<=USHORT_MAX ) ) {
+          FD_LIKELY( cfg->tpu_fwd_sock.port > 0 && cfg->tpu_fwd_sock.port <= USHORT_MAX ) ) {
         new_tpu_quic_addr.addr = ip4;
         new_tpu_quic_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_fwd_sock.port );
         have_tpu_quic = 1;
@@ -876,20 +876,20 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
          update so gossip releases the override cleanly. */
       fd_ip4_port_t next_quic = have_tpu_quic ? new_tpu_quic_addr : (fd_ip4_port_t){ .l = 0UL };
       contact_changed = (!had_contact) ||
-                        ( ctx->bam_tpu_addr.l!=new_tpu_addr.l ) ||
-                        ( prev_quic!=next_quic.l );
+                        ( ctx->bam_tpu_addr.l != new_tpu_addr.l ) ||
+                        ( prev_quic != next_quic.l );
       ctx->bam_tpu_addr      = new_tpu_addr;
       ctx->bam_tpu_quic_addr = next_quic;
     } else {
       /* BAM withdrew its TPU override; fall back to Firedancer defaults
          and prompt gossip to restore the original contact info. */
-      contact_changed = had_contact || ( prev_quic!=0UL );
+      contact_changed = had_contact || ( prev_quic != 0UL );
       ctx->bam_tpu_addr.l      = 0UL;
       ctx->bam_tpu_quic_addr.l = 0UL;
     }
 
     if( FD_UNLIKELY( contact_changed ) ) {
-      if( FD_LIKELY( ctx->stem && ctx->bundle_status_recent==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED ) ) {
+      if( FD_LIKELY( ctx->stem && ctx->bundle_status_recent == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED ) ) {
         fd_bam_publish_gossip_update( ctx, ctx->stem, ctx->bam_tpu_addr.l ? 1U : 0U );
       }
     }
@@ -899,7 +899,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
       ushort new_commission_bps = (ushort)fd_uint_min( cfg->commission_bps, 10000U );
       int  updated            = 0;
 
-      if( FD_UNLIKELY( ctx->validator_commission_bps!=new_commission_bps ) ) {
+      if( FD_UNLIKELY( ctx->validator_commission_bps != new_commission_bps ) ) {
         ctx->validator_commission_bps = new_commission_bps;
         updated = 1;
       }
@@ -1097,8 +1097,8 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
 
   while( pb_decode_tag( istream, &wire_type, &tag, &eof ) ) {
     version_tag = tag;
-    if( tag==bam_api_SchedulerResponse_v0_tag ) {
-      if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+    if( tag == bam_api_SchedulerResponse_v0_tag ) {
+      if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
         if( FD_UNLIKELY( !pb_skip_field( istream, wire_type ) ) ) goto fail;
         continue;
       }
@@ -1115,7 +1115,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
 
   if( FD_UNLIKELY( !eof ) ) goto fail;
   if( FD_UNLIKELY( !seen_v0 ) ) {
-    if( version_tag && version_tag!=bam_api_SchedulerResponse_v0_tag ) {
+    if( version_tag && version_tag != bam_api_SchedulerResponse_v0_tag ) {
       FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", (unsigned)version_tag ));
       ctx->metrics.transport_fail_cnt++;
       ctx->defer_reset = 1;
@@ -1141,7 +1141,7 @@ fd_bam_drive( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !fd_grpc_client_is_connected( ctx->grpc_client ) ) ) return busy;
 
   long builder_info_valid_until = ctx->builder_info_valid_until;
-  int  builder_info_ready       = builder_info_valid_until!=0L;
+  int  builder_info_ready       = builder_info_valid_until != 0L;
   if( FD_UNLIKELY( builder_info_ready && now >= builder_info_valid_until ) ) {
     ctx->builder_info_valid_until = 0L;
     ctx->bam_last_config_poll_ns  = 0L;
@@ -1165,10 +1165,10 @@ fd_bam_drive( fd_bam_tile_t * ctx,
       need_config = 1;
     }
   }
-  if( FD_UNLIKELY( ctx->bam_last_config_poll_ns==0L ) ) need_config = 1;
+  if( FD_UNLIKELY( ctx->bam_last_config_poll_ns == 0L ) ) need_config = 1;
   if( FD_UNLIKELY( need_config && !ctx->bam_config_inflight ) ) {
     long const throttle_ns = builder_info_ready ? (long)5e9 : (long)1e9;
-    if( FD_UNLIKELY( ctx->bam_last_config_poll_ns==0L ||
+    if( FD_UNLIKELY( ctx->bam_last_config_poll_ns == 0L ||
                      now - ctx->bam_last_config_poll_ns >= throttle_ns ) ) {
       fd_bam_request_config( ctx, now );
       busy = 1;
@@ -1177,7 +1177,7 @@ fd_bam_drive( fd_bam_tile_t * ctx,
 
   long const heartbeat_ns = (long)5e9;
   if( FD_LIKELY( ctx->bam_stream && ctx->bam_stream_live ) ) {
-    if( FD_UNLIKELY( ( ctx->bam_last_validator_heartbeat_ns==0L ) ||
+    if( FD_UNLIKELY( ( ctx->bam_last_validator_heartbeat_ns == 0L ) ||
                      ( now - ctx->bam_last_validator_heartbeat_ns >= heartbeat_ns ) ) ) {
       fd_bam_send_heartbeat( ctx, now );
       busy = 1;
@@ -1251,10 +1251,10 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
       { .fd = ctx->tcp_sock, .events = POLLOUT }
     };
     int poll_res = poll( pfds, 1, 0 );
-    if( FD_UNLIKELY( poll_res<0 ) ) {
+    if( FD_UNLIKELY( poll_res < 0 ) ) {
       FD_LOG_ERR(( "poll(tcp_sock) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
     }
-    if( poll_res==0 ) return;
+    if( poll_res == 0 ) return;
 
     if( pfds[0].revents & (POLLERR|POLLHUP) ) {
       int connect_err = fd_bam_client_do_connect( ctx, 0U );
@@ -1331,10 +1331,10 @@ static void
 fd_bam_client_log_status( fd_bam_tile_t * ctx ) {
   int status = fd_bam_client_status( ctx );
 
-  int const connected_now    = ( status==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
-  int const connected_before = ( ctx->bundle_status_logged==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  int const connected_now    = ( status == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  int const connected_before = ( ctx->bundle_status_logged == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
 
-  if( FD_UNLIKELY( connected_now!=connected_before ) ) {
+  if( FD_UNLIKELY( connected_now != connected_before ) ) {
     long ts = fd_log_wallclock();
     if( FD_LIKELY( ts-(ctx->last_bundle_status_log_nanos) >= (long)1e6 ) ) {
       if( connected_now ) {
@@ -1400,7 +1400,7 @@ static void
 fd_bam_tile_publish_bundle_txn(
     fd_bam_tile_t * ctx,
     void const *       txn,
-    ulong              txn_sz,  /* <=FD_TXN_MTU */
+    ulong              txn_sz,  /* <= FD_TXN_MTU */
     uchar              bundle_txn_cnt,
     uchar              batch_idx,
     uint               source_ipv4
@@ -1450,7 +1450,7 @@ static void
 fd_bam_tile_publish_txn(
     fd_bam_tile_t * ctx,
     void const *       txn,
-    ulong              txn_sz,  /* <=FD_TXN_MTU */
+    ulong              txn_sz,  /* <= FD_TXN_MTU */
     ulong              max_schedule_slot,
     uint               scheduler_seq_id,
     uchar              batch_idx,
@@ -1583,7 +1583,7 @@ fd_bam_client_grpc_rx_end(
     fd_grpc_resp_hdrs_t * resp
 ) {
   fd_bam_tile_t * ctx = app_ctx;
-  if( FD_UNLIKELY( resp->h2_status!=200 ) ) {
+  if( FD_UNLIKELY( resp->h2_status != 200 ) ) {
     FD_LOG_WARNING(( "gRPC request failed (HTTP status %u)", resp->h2_status ));
     fd_bam_client_request_failed( ctx, request_ctx );
     return;
@@ -1612,13 +1612,13 @@ fd_bam_client_grpc_rx_end(
     break;
   }
 
-  if( FD_UNLIKELY( resp->grpc_status!=FD_GRPC_STATUS_OK ) ) {
+  if( FD_UNLIKELY( resp->grpc_status != FD_GRPC_STATUS_OK ) ) {
     FD_LOG_INFO(( "gRPC request failed (gRPC status %u-%s): %.*s",
                   resp->grpc_status, fd_grpc_status_cstr( resp->grpc_status ),
                   (int)resp->grpc_msg_len, resp->grpc_msg ));
     fd_bam_client_request_failed( ctx, request_ctx );
-    if( resp->grpc_status==FD_GRPC_STATUS_UNAUTHENTICATED ||
-        resp->grpc_status==FD_GRPC_STATUS_PERMISSION_DENIED ) {
+    if( resp->grpc_status == FD_GRPC_STATUS_UNAUTHENTICATED ||
+        resp->grpc_status == FD_GRPC_STATUS_PERMISSION_DENIED ) {
       ctx->bam_auth_ready         = 0;
       ctx->bam_auth_challenge_len = 0;
     }

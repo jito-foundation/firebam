@@ -59,7 +59,7 @@ static fd_bam_ctrl_t *
 join_bam_ctrl( config_t * config ) {
   fd_topo_t * topo = &config->topo;
   ulong bam_ctrl_obj_id = fd_pod_query_ulong( topo->props, "bam_ctrl", ULONG_MAX );
-  if( FD_UNLIKELY( bam_ctrl_obj_id==ULONG_MAX ) )
+  if( FD_UNLIKELY( bam_ctrl_obj_id == ULONG_MAX ) )
     FD_LOG_ERR(( "BAM runtime control is unavailable (was BAM enabled when Firedancer was started?)" ));
 
   fd_topo_obj_t * obj = &topo->objs[ bam_ctrl_obj_id ];
@@ -80,11 +80,11 @@ set_bam_apply_request( args_t *   args,
                        config_t * config,
                        fd_bam_ctrl_t * ctrl ) {
   long state = FD_VOLATILE_CONST( ctrl->state );
-  if( FD_UNLIKELY( state==FD_BAM_CTRL_STATE_REQUEST ||
-                   state==FD_BAM_CTRL_STATE_APPLYING ) )
+  if( FD_UNLIKELY( state == FD_BAM_CTRL_STATE_REQUEST ||
+                   state == FD_BAM_CTRL_STATE_APPLYING ) )
     FD_LOG_ERR(( "Another BAM configuration update is in progress" ));
 
-  if( state==FD_BAM_CTRL_STATE_SUCCESS || state==FD_BAM_CTRL_STATE_ERROR )
+  if( state == FD_BAM_CTRL_STATE_SUCCESS || state == FD_BAM_CTRL_STATE_ERROR )
     /* Make sure the tile sees a fresh request after a previous completion/error path. */
     FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
 
@@ -115,7 +115,7 @@ set_bam_apply_request( args_t *   args,
      taking ownership via CAS, so polling here is sufficient for synchronization. */
   for( ;; ) {
     long st = FD_VOLATILE_CONST( ctrl->state );
-    if( st==FD_BAM_CTRL_STATE_SUCCESS || st==FD_BAM_CTRL_STATE_ERROR )
+    if( st == FD_BAM_CTRL_STATE_SUCCESS || st == FD_BAM_CTRL_STATE_ERROR )
       break;
     if( FD_UNLIKELY( fd_log_wallclock() - start_ns > timeout_ns ) ) {
       FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
@@ -124,7 +124,7 @@ set_bam_apply_request( args_t *   args,
     usleep( 10000 ); /* 10ms */
   }
 
-  if( FD_UNLIKELY( ctrl->state==FD_BAM_CTRL_STATE_ERROR ) ) {
+  if( FD_UNLIKELY( ctrl->state == FD_BAM_CTRL_STATE_ERROR ) ) {
     char err_buf[ FD_BAM_CTRL_ERR_MAX ];
     fd_bam_ctrl_copy_str( err_buf, sizeof(err_buf), ctrl->error );
     FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;

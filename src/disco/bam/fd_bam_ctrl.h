@@ -5,7 +5,7 @@
 #include <string.h>
 
 #define FD_BAM_CTRL_URL_MAX 256UL
-#define FD_BAM_CTRL_URL_FORMAT_OVERHEAD 15UL // https:// + port separator + 5 digit port + NULL terminator
+#define FD_BAM_CTRL_URL_FORMAT_OVERHEAD 15UL /* https:// + port separator + 5 digit port + NULL terminator */
 #define FD_BAM_CTRL_SNI_MAX 256UL
 #define FD_BAM_CTRL_ERR_MAX 128UL
 

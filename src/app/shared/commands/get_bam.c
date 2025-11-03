@@ -13,7 +13,7 @@ get_bam_cmd_fn( args_t *   args FD_PARAM_UNUSED,
                 config_t * config ) {
   fd_topo_t * topo = &config->topo;
   ulong bam_ctrl_obj_id = fd_pod_query_ulong( topo->props, "bam_ctrl", ULONG_MAX );
-  if( FD_UNLIKELY( bam_ctrl_obj_id==ULONG_MAX ) )
+  if( FD_UNLIKELY( bam_ctrl_obj_id == ULONG_MAX ) )
     FD_LOG_ERR(( "BAM runtime control is unavailable (was BAM enabled when Firedancer was started?)" ));
 
   fd_topo_obj_t * obj = &topo->objs[ bam_ctrl_obj_id ];
@@ -31,7 +31,7 @@ get_bam_cmd_fn( args_t *   args FD_PARAM_UNUSED,
      settle so this command prints a consistent snapshot. */
   for( ;; ) {
     long st = FD_VOLATILE_CONST( ctrl->state );
-    if( st!=FD_BAM_CTRL_STATE_REQUEST && st!=FD_BAM_CTRL_STATE_APPLYING )
+    if( st != FD_BAM_CTRL_STATE_REQUEST && st != FD_BAM_CTRL_STATE_APPLYING )
       break;
     if( FD_UNLIKELY( fd_log_wallclock() - start_ns > timeout_ns ) ) {
       fd_topo_leave_workspaces( topo );
