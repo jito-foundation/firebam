@@ -1110,11 +1110,7 @@ during_frag( fd_pack_ctx_t * ctx,
         ctx->current_bundle->bundle = fd_pack_insert_bundle_init( ctx->pack, ctx->current_bundle->_txn, ctx->current_bundle->txn_cnt );
       }
       ctx->cur_spot                           = ctx->current_bundle->bundle[ ctx->current_bundle->txn_received ];
-      ulong bundle_max_slot = txnm->block_engine.max_schedule_slot
-                              ? txnm->block_engine.max_schedule_slot
-                              : ULONG_MAX;
-      ctx->current_bundle->max_schedule_slot = fd_ulong_min( ctx->current_bundle->max_schedule_slot,
-                                                             bundle_max_slot );
+      ctx->current_bundle->max_schedule_slot = fd_ulong_min( ctx->current_bundle->max_schedule_slot, txnm->block_engine.max_schedule_slot);
       ctx->bundle_meta.bundle.max_schedule_slot = ctx->current_bundle->max_schedule_slot;
       ctx->current_bundle->min_blockhash_slot = fd_ulong_min( ctx->current_bundle->min_blockhash_slot, sig );
     } else {
