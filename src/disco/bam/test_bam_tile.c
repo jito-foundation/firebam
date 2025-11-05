@@ -440,6 +440,9 @@ test_bam_decode_last_message( fd_bam_tile_t *              state,
   *client->request_tx_op = (fd_h2_tx_op_t){0};
 }
 
+/* Verify that scheduler batches without revert_on_error are fanned out
+ * as individual bundle-sourced transactions with fragment metadata.
+ */
 static void
 test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -468,9 +471,9 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( fd_memeq( env->out_mcache, expected, sizeof(expected) ) );
 
   fd_txn_m_t * first = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
-  FD_TEST( first->source_tpu    == FD_TXN_M_TPU_SOURCE_BUNDLE );
+  FD_TEST( first->source_tpu    == FD_TXN_M_TPU_SOURCE_BAM );
   FD_TEST( first->block_engine.bundle_id == 0UL );
-  FD_TEST( first->block_engine.bundle_txn_cnt == 1UL );
+  FD_TEST( first->bam.batch_cnt == 1UL );
 
   test_bam_env_destroy( env );
 }

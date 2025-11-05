@@ -11,6 +11,7 @@
 #define FD_TXN_M_TPU_SOURCE_GOSSIP (3UL)
 #define FD_TXN_M_TPU_SOURCE_BUNDLE (4UL)
 #define FD_TXN_M_TPU_SOURCE_SEND   (5UL)
+#define FD_TXN_M_TPU_SOURCE_BAM    (6UL)
 
 struct fd_txn_m {
   /* The computed slot that this transaction is referencing, aka. the

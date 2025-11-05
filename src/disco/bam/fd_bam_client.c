@@ -1416,7 +1416,7 @@ fd_bam_tile_publish_bundle_txn(
     .payload_sz     = txn_sz,
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
-    .source_tpu     = FD_TXN_M_TPU_SOURCE_BUNDLE,
+    .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
     .block_engine   = {
       .commission     = ctx->builder_commission,
     },
@@ -1462,7 +1462,7 @@ fd_bam_tile_publish_txn(
     .payload_sz     = (ushort)txn_sz,
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
-    .source_tpu     = FD_TXN_M_TPU_SOURCE_BUNDLE,
+    .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
     .block_engine   = {.commission = ctx->builder_commission}, // FIXME: check if we need to do this?
     .bam = {
       .max_schedule_slot = max_schedule_slot,
