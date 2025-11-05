@@ -4,13 +4,13 @@
 
 void
 fd_pack_assign_bam_failure_reason( fd_bam_bundle_result_t * res,
-                                   ushort                   idx,
+                                   uchar                    idx,
                                    int                      result ) {
   if( FD_UNLIKELY( !res ) ) return;
-  if( FD_UNLIKELY( idx>=FD_PACK_MAX_TXN_PER_BUNDLE ) ) idx = (uint)FD_PACK_MAX_TXN_PER_BUNDLE - 1U;
-  ushort new_cnt = idx + 1;
+  if( FD_UNLIKELY( idx>=FD_PACK_MAX_TXN_PER_BUNDLE ) ) idx = (uchar)(FD_PACK_MAX_TXN_PER_BUNDLE - 1U); // FIXME: is this correct?
+  ushort new_cnt = (ushort)(idx + 1U);
   if( FD_UNLIKELY( res->txn_cnt<=idx ) )
-    res->txn_cnt = (uchar)fd_uint_min( new_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
+    res->txn_cnt = (uchar)fd_ushort_min( new_cnt, FD_PACK_MAX_TXN_PER_BUNDLE );
   if( FD_UNLIKELY( res->bundle_txn_cnt<=idx ) )
     res->bundle_txn_cnt = (uchar)fd_uint_min( new_cnt, (uint)FD_PACK_MAX_TXN_PER_BUNDLE );
   res->sanitize_success[ idx ] = 1;
@@ -19,7 +19,7 @@ fd_pack_assign_bam_failure_reason( fd_bam_bundle_result_t * res,
   case FD_PACK_INSERT_REJECT_NONCE_PRIORITY:
     res->has_deser_error = 1;
     res->deser_reason    = bam_types_DeserializationErrorReason_PRIORITIZATION_FAILURE;
-    res->deser_index     = (uchar)idx;
+    res->deser_index     = idx;
     break;
   case FD_PACK_INSERT_REJECT_UNAFFORDABLE:
     res->transaction_err[ idx ] = bam_types_TransactionErrorReason_INSUFFICIENT_FUNDS_FOR_FEE;
@@ -38,7 +38,7 @@ fd_pack_assign_bam_failure_reason( fd_bam_bundle_result_t * res,
   case FD_PACK_INSERT_REJECT_NONCE_CONFLICT:
     res->has_deser_error = 1;
     res->deser_reason    = bam_types_DeserializationErrorReason_FILTER_FAILURE;
-    res->deser_index     = (uchar)idx;
+    res->deser_index     = idx;
     break;
   default:
     if( FD_LIKELY( !res->has_generic_invalid ) ) {

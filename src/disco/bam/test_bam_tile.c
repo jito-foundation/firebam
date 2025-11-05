@@ -184,9 +184,9 @@ test_bam_build_scheduler_batch_msg( uchar *  out,
                                     int      revert_on_error ) {
   bam_types_Packet packets[ 2 ];
   fd_memset( packets, 0, sizeof( packets ) );
-  for( size_t i=0UL; i<2UL; i++ ) {
-    packets[ i ].data.size = (pb_size_t)( i + 1UL );
-    for( pb_size_t j=0U; j<packets[ i ].data.size; j++ ) {
+  for( size_t i=0; i<2; i++ ) {
+    packets[ i ].data.size = (pb_size_t)(i + 1);
+    for( pb_size_t j=0; j<packets[ i ].data.size; j++ ) {
       packets[ i ].data.bytes[ j ] = (uchar)( 'A' + (int)i + (int)j );
     }
     if( revert_on_error ) {
@@ -546,20 +546,20 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
   fd_txn_m_t * tx1 = fd_chunk_to_laddr( state->verify_out.mem, meta[1].chunk );
   fd_txn_m_t * tx2 = fd_chunk_to_laddr( state->verify_out.mem, meta[2].chunk );
 
-  FD_TEST( tx0->block_engine.scheduler_seq_id == 6U );
-  FD_TEST( tx0->block_engine.revert_on_error == 0U );
-  FD_TEST( tx0->block_engine.batch_cnt == 1U );
+  FD_TEST( tx0->bam.seq_id == 6U );
+  FD_TEST( tx0->bam.revert_on_error == 0U );
+  FD_TEST( tx0->bam.batch_cnt == 1U );
 
-  FD_TEST( tx1->block_engine.scheduler_seq_id == 7U );
-  FD_TEST( tx1->block_engine.revert_on_error == 1U );
-  FD_TEST( tx1->block_engine.batch_cnt == 2U );
-  FD_TEST( tx1->block_engine.batch_idx == 0U );
+  FD_TEST( tx1->bam.seq_id == 7U );
+  FD_TEST( tx1->bam.revert_on_error == 1U );
+  FD_TEST( tx1->bam.batch_cnt == 2U );
+  FD_TEST( tx1->bam.batch_idx == 0U );
   FD_TEST( tx1->block_engine.commission == state->builder_commission );
 
-  FD_TEST( tx2->block_engine.scheduler_seq_id == 7U );
-  FD_TEST( tx2->block_engine.revert_on_error == 1U );
-  FD_TEST( tx2->block_engine.batch_cnt == 2U );
-  FD_TEST( tx2->block_engine.batch_idx == 1U );
+  FD_TEST( tx2->bam.seq_id == 7U );
+  FD_TEST( tx2->bam.revert_on_error == 1U );
+  FD_TEST( tx2->bam.batch_cnt == 2U );
+  FD_TEST( tx2->bam.batch_idx == 1U );
   FD_TEST( tx2->block_engine.commission == state->builder_commission );
 
   uchar const * payload0 = fd_txn_m_payload( tx0 );

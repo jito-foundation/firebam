@@ -42,7 +42,7 @@ enum {
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
   bam_types_Packet    packets[ FD_PACK_MAX_TXN_PER_BUNDLE ];   /* decoded packet cache; indices [0,packet_cnt) valid */
-  uchar               packet_cnt;                              /* number of packets collected; 0..FD_PACK_MAX_TXN_PER_BUNDLE */
+  uchar               packet_cnt;                              /* number of packets collected; [0,FD_PACK_MAX_TXN_PER_BUNDLE) */
   uchar               revert_on_error;                         /* 0/1 flag mirrored from packet meta; only meaningful when revert_flag_set != 0 */
   uchar               revert_flag_set;                         /* 0 before first flag observed, 1 after; prevents defaulting to revert_on_error=0 */
   uchar               drop_reason;                             /* FD_BAM_BATCH_DROP_* value describing rejection path */
@@ -65,7 +65,7 @@ static fd_bam_bundle_result_t
 fd_bam_client_make_base_result( bam_types_AtomicTxnBatch const * batch,
                                 fd_bam_batch_ctx_t const *       state ) {
   fd_bam_bundle_result_t res = {0};
-  res.seq_id = (ulong)batch->seq_id;
+  res.seq_id = batch->seq_id;
   res.slot      = batch->max_schedule_slot;
   res.bundle_txn_cnt = state->packet_cnt;
   res.txn_cnt        = state->packet_cnt;
@@ -107,7 +107,7 @@ fd_bam_drive( fd_bam_tile_t * ctx,
 static void
 fd_bam_tile_publish_bundle_txn( fd_bam_tile_t * ctx,
                                 void const *    txn,
-                                ulong           txn_sz,
+                                ushort          txn_sz,
                                 uchar           bundle_txn_cnt,
                                 uchar           batch_idx,
                                 uint            source_ipv4 );
@@ -120,7 +120,7 @@ fd_bam_tile_publish_txn( fd_bam_tile_t * ctx,
                          uint            scheduler_seq_id,
                          uchar           batch_idx,
                          uchar           batch_cnt,
-                         int             revert_on_error,
+                         uchar           revert_on_error,
                          uint            source_ipv4 );
 
 static void
@@ -465,7 +465,7 @@ fd_bam_collect_packet( pb_istream_t *         stream,
       return false;
     }
 
-    uchar flag_set = packet.meta.flags.revert_on_error ? 1 : 0;
+    uchar flag_set = packet.meta.flags.revert_on_error ? 1 : 0; // FIXME: Check if correct
     if( state->revert_flag_set && state->revert_on_error != flag_set ) {
       FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
       state->drop_reason     = FD_BAM_BATCH_DROP_MIXED_FLAGS;
@@ -538,7 +538,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     for( uchar i=0; i<state->packet_cnt; i++ ) {
       fd_bam_tile_publish_bundle_txn( ctx,
                                       state->packets[i].data.bytes,
-                                      state->packets[i].data.size,
+                                      (ushort)state->packets[i].data.size,
                                       state->packet_cnt,
                                       i,
                                       0 );
@@ -1400,7 +1400,7 @@ static void
 fd_bam_tile_publish_bundle_txn(
     fd_bam_tile_t * ctx,
     void const *       txn,
-    ulong              txn_sz,  /* <= FD_TXN_MTU */
+    ushort             txn_sz,  /* <= FD_TXN_MTU */
     uchar              bundle_txn_cnt,
     uchar              batch_idx,
     uint               source_ipv4
@@ -1413,33 +1413,31 @@ fd_bam_tile_publish_bundle_txn(
   fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
   *txnm = (fd_txn_m_t) {
     .reference_slot = 0UL,
-    .payload_sz     = (ushort)txn_sz,
+    .payload_sz     = txn_sz,
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BUNDLE,
     .block_engine   = {
-      .bundle_id         = (ulong)ctx->bundle_seq,
-      .bundle_txn_cnt    = (ulong)bundle_txn_cnt,
+      .commission     = ctx->builder_commission,
+    },
+    .bam = {
       .max_schedule_slot = ctx->bundle_max_schedule_slot,
-      .scheduler_seq_id  = ctx->bundle_seq,
-      .batch_cnt         = (ushort)bundle_txn_cnt,
-      .batch_idx         = (ushort)batch_idx,
-      .revert_on_error   = 1U,
-      .commission        = ctx->builder_commission,
+      .seq_id            = ctx->bundle_seq,
+      .batch_cnt         = bundle_txn_cnt,
+      .batch_idx         = batch_idx,
+      .revert_on_error   = 1, // FIXME: check if this is correct
     },
   };
-  memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL );
+  memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL ); //TODO: check if we should still do this
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
 
   ulong sz  = fd_txn_m_realized_footprint( txnm, 0, 0 );
-  ulong sig = 1UL;
 
   if( FD_UNLIKELY( !ctx->stem ) ) {
     FD_LOG_CRIT(( "ctx->stem not set. This is a bug." ));
   }
 
-  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_bam_now() );
-  fd_stem_publish( ctx->stem, ctx->verify_out.idx, sig, ctx->verify_out.chunk, sz, 0UL, 0UL, tspub );
+  fd_stem_publish( ctx->stem, ctx->verify_out.idx, 1, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
   ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
   ctx->metrics.txn_received_cnt++;
 }
@@ -1452,10 +1450,10 @@ fd_bam_tile_publish_txn(
     void const *       txn,
     ulong              txn_sz,  /* <= FD_TXN_MTU */
     ulong              max_schedule_slot,
-    uint               scheduler_seq_id,
+    uint               seq_id,
     uchar              batch_idx,
     uchar              batch_cnt,
-    int                revert_on_error,
+    uchar              revert_on_error,
     uint               source_ipv4
 ) {
   fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
@@ -1465,33 +1463,29 @@ fd_bam_tile_publish_txn(
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BUNDLE,
-    .block_engine   = {
-      .bundle_id         = (ulong)scheduler_seq_id,
-      .bundle_txn_cnt    = revert_on_error ? (ulong)batch_cnt : 1UL,
+    .block_engine   = {.commission = ctx->builder_commission}, // FIXME: check if we need to do this?
+    .bam = {
       .max_schedule_slot = max_schedule_slot,
-      .scheduler_seq_id  = scheduler_seq_id,
-      .batch_cnt         = (ushort)batch_cnt,
-      .batch_idx         = (ushort)batch_idx,
-      .revert_on_error   = (uchar)revert_on_error,
-      .commission        = revert_on_error ? ctx->builder_commission : 0,
+      .seq_id            = seq_id,
+      .batch_cnt         = batch_cnt,
+      .batch_idx         = batch_idx,
+      .revert_on_error   = revert_on_error,
     },
   };
   if( revert_on_error && ctx->builder_info_valid_until ) {
-    memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL );
+    memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL ); //TODO: check if we should still do this
   } else {
     fd_memset( txnm->block_engine.commission_pubkey, 0, sizeof( txnm->block_engine.commission_pubkey ) );
   }
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
 
   ulong sz  = fd_txn_m_realized_footprint( txnm, 0, 0 );
-  ulong sig = 0UL;
 
   if( FD_UNLIKELY( !ctx->stem ) ) {
     FD_LOG_CRIT(( "ctx->stem not set. This is a bug." ));
   }
 
-  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_bam_now() );
-  fd_stem_publish( ctx->stem, ctx->verify_out.idx, sig, ctx->verify_out.chunk, sz, 0UL, 0UL, tspub );
+  fd_stem_publish( ctx->stem, ctx->verify_out.idx, 0, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
   ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
   ctx->metrics.txn_received_cnt++;
 }

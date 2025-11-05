@@ -159,7 +159,7 @@ after_frag( fd_dedup_ctx_t *    ctx,
   FD_TEST( txnm->payload_sz<=FD_TPU_MTU );
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
 
-  int is_bundle_member = !!txnm->block_engine.revert_on_error;
+  int is_bundle_member = !!txnm->bam.revert_on_error; //FIXME: this is probably incorrect
 
   if( FD_UNLIKELY( is_bundle_member && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
@@ -240,7 +240,7 @@ unprivileged_init( fd_topo_t *      topo,
   if( FD_UNLIKELY( !tcache ) ) FD_LOG_ERR(( "fd_tcache_new failed" ));
 
   ctx->bundle_failed = 0;
-  ctx->bundle_id     = ULONG_MAX;
+  ctx->bundle_id     = 0UL;
   ctx->bundle_idx    = 0UL;
 
   memset( &ctx->metrics, 0, sizeof( ctx->metrics ) );

@@ -7,7 +7,7 @@
 
 void
 fd_pack_assign_bam_failure_reason( fd_bam_bundle_result_t * res,
-                                   ushort                   idx,
+                                   uchar                    idx,
                                    int                      result );
 
 #endif /* HEADER_fd_pack_bam_result_h */

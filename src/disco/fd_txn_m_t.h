@@ -50,28 +50,24 @@ struct fd_txn_m {
        the block engine, and the validator will crank the tip payment
        program with these values, if it is not using them already.
        These fields are only provided on the first transaction in a
-       bundle.
-
-       scheduler_seq_id mirrors the seq_id provided by the scheduler
-       stream.  It is propagated for all batches regardless of revert
-       semantics so downstream stages can correlate execution results.
-       batch_cnt indexes how many transactions are expected in the
-       batch and batch_idx is the zero-based ordinal of this
-       transaction inside that batch.  revert_on_error matches the BAM
-       flag indicating whether partial failures should revert the
-       batch. */
+       bundle. */
     ulong bundle_id;
     ulong bundle_txn_cnt;
-    ulong max_schedule_slot;
-    uint  scheduler_seq_id;
-    ushort batch_cnt;
-    ushort batch_idx;
-    uchar revert_on_error;
     uchar commission;
     uchar commission_pubkey[ 32 ];
-    uchar _block_engine_pad[ 6 ]; /* maintains 8-byte alignment */
 
   } block_engine;
+
+  struct {
+    /* If the transaction is part of a bundle, the bundle_id will be
+       non-zero, and if this transaction is the first one in the
+       bundle, bundle_txn_cnt will be non-zero. */
+      ulong max_schedule_slot;
+      uint  seq_id;  // propagated so downstream stages can correlate execution results
+      uchar  batch_cnt; // how many transactions are expected in the batch
+      uchar  batch_idx; // index of this transaction inside the batch
+      uchar revert_on_error;
+  } bam;
 
   /* There are three additional fields at the end here, which are
      variable length and not included in the size of this struct. txn_t

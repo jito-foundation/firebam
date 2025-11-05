@@ -380,7 +380,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
     buffer.  If we later see the blockhash come to exist, we forward any
     buffered transactions to back. */
 
-  int is_bundle_member = !!txnm->block_engine.revert_on_error;
+  int is_bundle_member = !!txnm->bam.revert_on_error;// FIXME: this is likely wrong
 
   if( FD_UNLIKELY( is_bundle_member && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;

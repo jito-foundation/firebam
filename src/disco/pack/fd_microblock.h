@@ -78,10 +78,9 @@ struct __attribute__((aligned(64))) fd_txn_p {
 
   /* BAM metadata propagated from the scheduler */
   uint   bam_seq_id;
-  ushort bam_batch_cnt;
-  ushort bam_batch_idx;
+  uchar  bam_batch_cnt;
+  uchar  bam_batch_idx;
   uchar  bam_revert_on_error;
-  uchar  _bam_pad[3];
 
   /* Populated by pack, bank.  A combination of the bitfields
      FD_TXN_P_FLAGS_* defined above.  The bank sets the high byte with

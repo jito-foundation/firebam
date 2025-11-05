@@ -34,12 +34,9 @@ typedef struct {
   void const * _bank;
   ulong _pack_idx;
   ulong _txn_idx;
-  int   _is_bundle;      /* Non-zero while handling bundle fragments (vs microblocks). */
-  ulong _bundle_id;      /* Bundle id from the pack trailer. Trailer bytes are dropped, so caching is
-                            the only way to surface the id in BAM results; stays 0 outside bundle flow. */
-  ulong _bundle_txn_cnt; /* Bundle-wide declared txn count preserved for BAM reporting. Once the trailer
-                            is copied out, there is no other source, so we fall back to the runtime txn_cnt
-                            only when the trailer field is unset (non-bundle path). */
+  uchar is_bundle;
+  uint seq_id;
+  uchar bundle_txn_cnt;
 
   ulong * busy_fseq;
 
@@ -198,9 +195,9 @@ during_frag( fd_bank_ctx_t * ctx,
   ctx->_bank = trailer->bank;
   ctx->_pack_idx = trailer->pack_idx;
   ctx->_txn_idx = trailer->pack_txn_idx;
-  ctx->_is_bundle = trailer->is_bundle;
-  ctx->_bundle_id = trailer->bundle_id;
-  ctx->_bundle_txn_cnt = trailer->bundle_txn_cnt;
+  ctx->is_bundle = (uchar)trailer->is_bundle;
+  ctx->seq_id = trailer->seq_id;
+  ctx->bundle_txn_cnt = trailer->bundle_txn_cnt;
 }
 
 static void
@@ -372,7 +369,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     if( FD_UNLIKELY( !seq_id ) ) continue;
     if( FD_UNLIKELY( txn->bam_revert_on_error ) ) continue;
 
-    uint batch_cnt = txn->bam_batch_cnt ? txn->bam_batch_cnt : 1U;
+    uint batch_cnt = txn->bam_batch_cnt ? txn->bam_batch_cnt : 1U; // FIXME: is this correct?
     uint batch_idx = txn->bam_batch_idx;
     if( FD_UNLIKELY( batch_idx >= FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
       FD_LOG_WARNING(( "Ignoring BAM batch index %u (>= %lu) for seq_id=%u", batch_idx, FD_PACK_MAX_TXN_PER_BUNDLE, seq_id ));
@@ -595,9 +592,9 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   }
 
   fd_bam_bundle_result_t result = {
-    .seq_id          = (uint)ctx->_bundle_id, //FIXME: broken!
+    .seq_id          = ctx->seq_id,
     .slot               = slot,
-    .bundle_txn_cnt     = (uchar)fd_ulong_min( ctx->_bundle_txn_cnt ? ctx->_bundle_txn_cnt : txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ),
+    .bundle_txn_cnt     = (uchar)fd_ulong_min( ctx->bundle_txn_cnt ? ctx->bundle_txn_cnt : txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ),
     .txn_cnt            = (uchar)fd_ulong_min( txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ),
     .execution_success  = (uchar)( execution_success ? 1 : 0 ),
     .scheduling_error   = FD_BAM_SCHED_ERR_NONE
@@ -671,7 +668,7 @@ after_frag( fd_bank_ctx_t *     ctx,
     ctx->rebates_for_slot = slot;
   }
 
-  if( FD_UNLIKELY( ctx->_is_bundle ) ) handle_bundle( ctx, seq, sig, sz, tspub, stem );
+  if( FD_UNLIKELY( ctx->is_bundle ) ) handle_bundle( ctx, seq, sig, sz, tspub, stem );
   else                                 handle_microblock( ctx, seq, sig, sz, tspub, stem );
 
   /* TODO: Use fancier logic to coalesce rebates e.g. and move this to
