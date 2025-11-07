@@ -1,11 +1,12 @@
 #define _GNU_SOURCE
-#include "get_bam.h"
 
+#include "../fd_config.h"
 #include "../fd_action.h"
 #include "../../../disco/bam/fd_bam_ctrl.h"
 #include "../../../util/pod/fd_pod.h"
 #include "../../../util/fd_util.h"
 
+#include <string.h>
 #include <unistd.h>
 
 void
@@ -30,7 +31,7 @@ get_bam_cmd_fn( args_t *   args FD_PARAM_UNUSED,
   /* When a set-bam request is inflight the tile is mutating current_* fields; wait for it to
      settle so this command prints a consistent snapshot. */
   for( ;; ) {
-    long st = FD_VOLATILE_CONST( ctrl->state );
+    uchar st = FD_VOLATILE_CONST( ctrl->state );
     if( st != FD_BAM_CTRL_STATE_REQUEST && st != FD_BAM_CTRL_STATE_APPLYING )
       break;
     if( FD_UNLIKELY( fd_log_wallclock() - start_ns > timeout_ns ) ) {
@@ -42,9 +43,9 @@ get_bam_cmd_fn( args_t *   args FD_PARAM_UNUSED,
 
   int enabled = (int)FD_VOLATILE_CONST( ctrl->current_enable );
   char url_buf[ FD_BAM_CTRL_URL_MAX ];
-  fd_bam_ctrl_copy_str( url_buf, sizeof(url_buf), ctrl->current_url );
+  strlcpy( url_buf, ctrl->current_url, sizeof(url_buf) );
   char sni_buf[ FD_BAM_CTRL_SNI_MAX ];
-  fd_bam_ctrl_copy_str( sni_buf, sizeof(sni_buf), ctrl->current_sni );
+  strlcpy( sni_buf, ctrl->current_sni, sizeof(sni_buf) );
 
   fd_topo_leave_workspaces( topo );
 

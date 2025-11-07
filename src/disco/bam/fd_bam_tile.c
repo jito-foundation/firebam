@@ -399,31 +399,18 @@ fd_bam_tile_parse_runtime_endpoint( char const * url_cstr,
 }
 
 static void
-fd_bam_tile_format_url( fd_bam_tile_t const * ctx,
-                        char *                dst,
-                        ulong                 dst_sz ) {
-  if( FD_UNLIKELY( !dst || !dst_sz ) ) return;
-  if( FD_UNLIKELY( ctx->server_fqdn_len >= dst_sz ) ) {
-    fd_memset( dst, 0, dst_sz );
-    return;
-  }
-  int n = snprintf( dst, dst_sz, "%s://%.*s:%u",
-                    ctx->is_ssl ? "https" : "http",
-                    (int)ctx->server_fqdn_len,
-                    ctx->server_fqdn,
-                    (uint)ctx->server_tcp_port );
-  if( FD_UNLIKELY( n < 0 ) ) dst[0] = '\0';
-}
-
-static void
 fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->ctrl ) ) return;
+  // FIXME: check if `http` already in server_fqdn, if so, dont prepend
+  int n = snprintf( ctx->ctrl->current_url, sizeof(ctx->ctrl->current_url), "%s://%.*s:%u",
+                    ctx->is_ssl ? "https" : "http",
+                    ctx->server_fqdn_len,
+                    ctx->server_fqdn,
+                    ctx->server_tcp_port );
+  if( FD_UNLIKELY( n < 0 ) ) ctx->ctrl->current_url[0] = '\0';
   ctx->ctrl->current_enable = ctx->runtime_enabled;
   ctx->ctrl->enable         = ctx->runtime_enabled;
-  char url_buf[ FD_BAM_CTRL_URL_MAX + FD_BAM_CTRL_URL_FORMAT_OVERHEAD ];
-  fd_bam_tile_format_url( ctx, url_buf, sizeof(url_buf) );
-  fd_bam_ctrl_copy_str( ctx->ctrl->current_url, FD_BAM_CTRL_URL_MAX, url_buf );
-  fd_bam_ctrl_copy_str( ctx->ctrl->current_sni, FD_BAM_CTRL_SNI_MAX, ctx->server_sni );
+  strlcpy( ctx->ctrl->current_sni, ctx->server_sni, FD_BAM_CTRL_SNI_MAX );
 }
 
 static int
@@ -464,13 +451,13 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
 
   char new_sni[ FD_BAM_CTRL_SNI_MAX ];
   if( command & FD_BAM_CTRL_CMD_SNI ) {
-    fd_bam_ctrl_copy_str( new_sni, sizeof(new_sni), sni );
+    strlcpy( new_sni, sni, sizeof(new_sni) );
     if( FD_UNLIKELY( !new_sni[0] ) )
-      fd_bam_ctrl_copy_str( new_sni, sizeof(new_sni), new_host );
+      strlcpy( new_sni, new_host, sizeof(new_sni) );
   } else if( command & FD_BAM_CTRL_CMD_URL ) {
-    fd_bam_ctrl_copy_str( new_sni, sizeof(new_sni), new_host );
+    strlcpy( new_sni, new_host, sizeof(new_sni) );
   } else {
-    fd_bam_ctrl_copy_str( new_sni, sizeof(new_sni), ctx->server_sni );
+    strlcpy( new_sni, ctx->server_sni, sizeof(new_sni) );
   }
 
   uchar new_enable = ctx->runtime_enabled;
@@ -530,14 +517,12 @@ fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
 
   /* Wait until we receive a new request. */
   for( ;; ) {
-    long state = FD_VOLATILE_CONST( ctx->ctrl->state );
+    uchar state = FD_VOLATILE_CONST( ctx->ctrl->state );
     if( FD_LIKELY( state != FD_BAM_CTRL_STATE_REQUEST ) ) return;
     if( FD_ATOMIC_CAS( &ctx->ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_APPLYING ) == FD_BAM_CTRL_STATE_REQUEST )
       break;
   }
 
-  uint command = ctx->ctrl->command;
-  uint enable  = ctx->ctrl->enable;
   char url[ FD_BAM_CTRL_URL_MAX ];
   char sni[ FD_BAM_CTRL_SNI_MAX ];
   fd_memcpy( url, ctx->ctrl->url, sizeof(url) );
@@ -545,15 +530,15 @@ fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
 
   char err[ FD_BAM_CTRL_ERR_MAX ];
   err[0] = '\0';
-  int rc = fd_bam_tile_apply_ctrl_request( ctx, command, enable, url, sni, err, sizeof(err) );
+  int rc = fd_bam_tile_apply_ctrl_request( ctx, ctx->ctrl->command, ctx->ctrl->enable, url, sni, err, sizeof(err) );
   if( FD_UNLIKELY( rc ) ) {
-    fd_bam_ctrl_copy_str( ctx->ctrl->error, FD_BAM_CTRL_ERR_MAX, err );
+    strlcpy( ctx->ctrl->error, err, FD_BAM_CTRL_ERR_MAX );
     FD_COMPILER_MFENCE();
     FD_VOLATILE( ctx->ctrl->state ) = FD_BAM_CTRL_STATE_ERROR;
     return;
   }
 
-  fd_bam_ctrl_copy_str( ctx->ctrl->error, FD_BAM_CTRL_ERR_MAX, "" );
+  strlcpy( ctx->ctrl->error, "", FD_BAM_CTRL_ERR_MAX );
   FD_COMPILER_MFENCE();
   FD_VOLATILE( ctx->ctrl->state ) = FD_BAM_CTRL_STATE_SUCCESS;
 }
@@ -866,8 +851,8 @@ privileged_init( fd_topo_t *      topo,
     ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
     ctx->ctrl->enable         = 1;
     ctx->ctrl->current_enable = 1;
-    fd_bam_ctrl_copy_str( ctx->ctrl->current_url, FD_BAM_CTRL_URL_MAX, tile->bam.url );
-    fd_bam_ctrl_copy_str( ctx->ctrl->current_sni, FD_BAM_CTRL_SNI_MAX, tile->bam.sni );
+    strlcpy( ctx->ctrl->current_url, tile->bam.url, FD_BAM_CTRL_URL_MAX );
+    strlcpy( ctx->ctrl->current_sni, tile->bam.sni, FD_BAM_CTRL_SNI_MAX );
   } else {
     ctx->ctrl = NULL;
   }

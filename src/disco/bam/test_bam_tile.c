@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #ifndef FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED
 #define FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_DISCONNECTED (0)
 #define FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING   (1)
@@ -1838,8 +1840,8 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
 
   ctrl->current_enable = 1U;
   ctrl->enable         = 1U;
-  fd_bam_ctrl_copy_str( ctrl->current_url, FD_BAM_CTRL_URL_MAX, "https://initial.builder.test:443" );
-  fd_bam_ctrl_copy_str( ctrl->current_sni, FD_BAM_CTRL_SNI_MAX, host );
+  strlcpy( ctrl->current_url, "https://initial.builder.test:443", FD_BAM_CTRL_URL_MAX );
+  strlcpy( ctrl->current_sni, host, FD_BAM_CTRL_SNI_MAX );
   ctrl->state = FD_BAM_CTRL_STATE_IDLE;
 }
 
@@ -1861,8 +1863,8 @@ test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
 
   ctrl.command = FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI;
   ctrl.enable  = 1U;
-  fd_bam_ctrl_copy_str( ctrl.url, FD_BAM_CTRL_URL_MAX, "http://new.example.com:8899" );
-  fd_bam_ctrl_copy_str( ctrl.sni, FD_BAM_CTRL_SNI_MAX, "custom.sni.invalid" );
+  strlcpy( ctrl.url, "http://new.example.com:8899", FD_BAM_CTRL_URL_MAX );
+  strlcpy( ctrl.sni, "custom.sni.invalid", FD_BAM_CTRL_SNI_MAX );
   ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
 
   fd_bam_tile_housekeeping( ctx );
@@ -1949,7 +1951,7 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
 
   ctrl.command = FD_BAM_CTRL_CMD_URL;
   ctrl.enable  = 1U;
-  fd_bam_ctrl_copy_str( ctrl.url, FD_BAM_CTRL_URL_MAX, "not a url" );
+  strlcpy( ctrl.url, "not a url", FD_BAM_CTRL_URL_MAX );
   ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
 
   fd_bam_tile_housekeeping( ctx );

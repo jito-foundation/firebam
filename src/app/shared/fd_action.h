@@ -34,13 +34,11 @@ union fdctl_args {
   } set_identity;
 
   struct {
-    int  has_enable;
-    int  enable;
-    int  has_url;
-    char url[ FD_BAM_CTRL_URL_MAX ];
-    int  has_sni;
-    char sni[ FD_BAM_CTRL_SNI_MAX ];
-    /* Flags mirror CLI options so we can send partial updates without clobbering other fields. */
+    char         enable; /* -1 => retain current enable state, 0 => disable BAM runtime, 1 => enable */
+    char const * url;    /* BAM control endpoint; NULL => no change, empty string => clear URL */
+    char const * sni;    /* TLS SNI override; NULL => no change, empty string => clear override */
+    /* Edge cases: CLI rejects simultaneous --enable/--disable, requires at least one change, and
+       forwards empty strings so callers can intentionally clear URL/SNI. */
   } set_bam;
 
   struct {

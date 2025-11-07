@@ -1,5 +1,5 @@
 #define _GNU_SOURCE
-#include "set_bam.h"
+#include "../fd_config.h"
 
 #include "../fd_action.h"
 #include "../../../disco/bam/fd_bam_ctrl.h"
@@ -8,18 +8,18 @@
 #include "../../../util/net/fd_net_headers.h"
 
 #include <limits.h>
+#include <string.h>
 #include <unistd.h>
 
 void
 set_bam_cmd_args( int *    pargc,
                   char *** pargv,
                   args_t * args ) {
-  args->set_bam.has_enable = 0;
-  args->set_bam.has_url    = 0;
-  args->set_bam.has_sni    = 0;
-  args->set_bam.enable     = 0;
-  fd_memset( args->set_bam.url, 0, sizeof(args->set_bam.url) );
-  fd_memset( args->set_bam.sni, 0, sizeof(args->set_bam.sni) );
+  /* Start with sentinel "no change" values.  enable stays at -1 until the user requests
+     --enable/--disable, while NULL pointers mean URL/SNI should not be modified. */
+  args->set_bam.enable = -1;
+  args->set_bam.url    = NULL;
+  args->set_bam.sni    = NULL;
 
   int enable_flag  = fd_env_strip_cmdline_contains( pargc, pargv, "--enable" );
   int disable_flag = fd_env_strip_cmdline_contains( pargc, pargv, "--disable" );
@@ -27,31 +27,29 @@ set_bam_cmd_args( int *    pargc,
     FD_LOG_ERR(( "Cannot pass both --enable and --disable" ));
 
   if( enable_flag ) {
-    args->set_bam.has_enable = 1;
-    args->set_bam.enable     = 1;
+    args->set_bam.enable = 1;
   } else if( disable_flag ) {
-    args->set_bam.has_enable = 1;
-    args->set_bam.enable     = 0;
+    args->set_bam.enable = 0;
   }
 
   char const * url = fd_env_strip_cmdline_cstr( pargc, pargv, "--url", NULL, NULL );
   if( url ) {
-    args->set_bam.has_url = 1;
-    fd_bam_ctrl_copy_str( args->set_bam.url, sizeof(args->set_bam.url), url );
+    /* Empty string is a valid input; it clears the URL when copied into the control struct. */
+    args->set_bam.url = url;
   }
 
   char const * sni = fd_env_strip_cmdline_cstr( pargc, pargv, "--sni", NULL, NULL );
   if( sni ) {
-    args->set_bam.has_sni = 1;
-    fd_bam_ctrl_copy_str( args->set_bam.sni, sizeof(args->set_bam.sni), sni );
+    /* Likewise, an empty string erases an existing SNI override. */
+    args->set_bam.sni = sni;
   }
 
   if( FD_UNLIKELY( *pargc ) )
     FD_LOG_ERR(( "Usage: fdctl set-bam [--enable|--disable] [--url <url>] [--sni <domain>]" ));
 
-  if( FD_UNLIKELY( !args->set_bam.has_enable &&
-                   !args->set_bam.has_url &&
-                   !args->set_bam.has_sni ) )
+  if( FD_UNLIKELY( args->set_bam.enable<0 &&
+                   !args->set_bam.url &&
+                   !args->set_bam.sni ) )
     FD_LOG_ERR(( "Usage: fdctl set-bam [--enable|--disable] [--url <url>] [--sni <domain>]" ));
 }
 
@@ -79,7 +77,7 @@ static void
 set_bam_apply_request( args_t *   args,
                        config_t * config,
                        fd_bam_ctrl_t * ctrl ) {
-  long state = FD_VOLATILE_CONST( ctrl->state );
+  uchar state = FD_VOLATILE_CONST( ctrl->state );
   if( FD_UNLIKELY( state == FD_BAM_CTRL_STATE_REQUEST ||
                    state == FD_BAM_CTRL_STATE_APPLYING ) )
     FD_LOG_ERR(( "Another BAM configuration update is in progress" ));
@@ -89,20 +87,20 @@ set_bam_apply_request( args_t *   args,
     FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
 
   uchar command = 0;
-  if( args->set_bam.has_enable ) command |= FD_BAM_CTRL_CMD_ENABLE;
-  if( args->set_bam.has_url    ) command |= FD_BAM_CTRL_CMD_URL;
-  if( args->set_bam.has_sni    ) command |= FD_BAM_CTRL_CMD_SNI;
+  if( args->set_bam.enable>=0 ) command |= FD_BAM_CTRL_CMD_ENABLE;
+  if( args->set_bam.url     ) command |= FD_BAM_CTRL_CMD_URL;
+  if( args->set_bam.sni     ) command |= FD_BAM_CTRL_CMD_SNI;
   if( FD_UNLIKELY( !command ) )
     FD_LOG_ERR(( "No BAM configuration changes requested" ));
 
   ctrl->command = command;
-  ctrl->enable  = args->set_bam.has_enable ? (uchar)args->set_bam.enable : ctrl->current_enable;
+  ctrl->enable  = args->set_bam.enable>=0 ? (uchar)args->set_bam.enable : ctrl->current_enable;
 
-  if( args->set_bam.has_url ) fd_bam_ctrl_copy_str( ctrl->url, sizeof(ctrl->url), args->set_bam.url );
-  else                        fd_bam_ctrl_copy_str( ctrl->url, sizeof(ctrl->url), ctrl->current_url );
+  if( args->set_bam.url ) strlcpy( ctrl->url, args->set_bam.url, sizeof(ctrl->url) );
+  else                    strlcpy( ctrl->url, ctrl->current_url, sizeof(ctrl->url) );
 
-  if( args->set_bam.has_sni ) fd_bam_ctrl_copy_str( ctrl->sni, sizeof(ctrl->sni), args->set_bam.sni );
-  else                        fd_bam_ctrl_copy_str( ctrl->sni, sizeof(ctrl->sni), ctrl->current_sni );
+  if( args->set_bam.sni ) strlcpy( ctrl->sni, args->set_bam.sni, sizeof(ctrl->sni) );
+  else                    strlcpy( ctrl->sni, ctrl->current_sni, sizeof(ctrl->sni) );
 
   ctrl->error[0] = '\0';
 
@@ -114,7 +112,7 @@ set_bam_apply_request( args_t *   args,
   /* Busy-wait until the bam tile processes the request.  The tile only touches state after
      taking ownership via CAS, so polling here is sufficient for synchronization. */
   for( ;; ) {
-    long st = FD_VOLATILE_CONST( ctrl->state );
+    uchar st = FD_VOLATILE_CONST( ctrl->state );
     if( st == FD_BAM_CTRL_STATE_SUCCESS || st == FD_BAM_CTRL_STATE_ERROR )
       break;
     if( FD_UNLIKELY( fd_log_wallclock() - start_ns > timeout_ns ) ) {
@@ -126,16 +124,16 @@ set_bam_apply_request( args_t *   args,
 
   if( FD_UNLIKELY( ctrl->state == FD_BAM_CTRL_STATE_ERROR ) ) {
     char err_buf[ FD_BAM_CTRL_ERR_MAX ];
-    fd_bam_ctrl_copy_str( err_buf, sizeof(err_buf), ctrl->error );
+    strlcpy( err_buf, ctrl->error, sizeof(err_buf) );
     FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
     FD_LOG_ERR(( "Failed to update BAM configuration: %s", err_buf[0] ? err_buf : "unknown error" ));
   }
 
   int enabled = (int)FD_VOLATILE_CONST( ctrl->current_enable );
   char url_buf[ FD_BAM_CTRL_URL_MAX ];
-  fd_bam_ctrl_copy_str( url_buf, sizeof(url_buf), ctrl->current_url );
+  strlcpy( url_buf, ctrl->current_url, sizeof(url_buf) );
   char sni_buf[ FD_BAM_CTRL_SNI_MAX ];
-  fd_bam_ctrl_copy_str( sni_buf, sizeof(sni_buf), ctrl->current_sni );
+  strlcpy( sni_buf, ctrl->current_sni, sizeof(sni_buf) );
   FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
 
   if( sni_buf[0] )
