@@ -1840,8 +1840,8 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
 
   ctrl->current_enable = 1U;
   ctrl->enable         = 1U;
-  strlcpy( ctrl->current_url, "https://initial.builder.test:443", FD_BAM_CTRL_URL_MAX );
-  strlcpy( ctrl->current_sni, host, FD_BAM_CTRL_SNI_MAX );
+  strlcpy( ctrl->current_url, "https://initial.builder.test:443", FD_URL_MAX );
+  strlcpy( ctrl->current_sni, host, FD_SNI_BUF_MAX );
   ctrl->state = FD_BAM_CTRL_STATE_IDLE;
 }
 
@@ -1863,8 +1863,8 @@ test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
 
   ctrl.command = FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI;
   ctrl.enable  = 1U;
-  strlcpy( ctrl.url, "http://new.example.com:8899", FD_BAM_CTRL_URL_MAX );
-  strlcpy( ctrl.sni, "custom.sni.invalid", FD_BAM_CTRL_SNI_MAX );
+  strlcpy( ctrl.url, "http://new.example.com:8899", FD_URL_MAX );
+  strlcpy( ctrl.sni, "custom.sni.invalid", FD_SNI_BUF_MAX );
   ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
 
   fd_bam_tile_housekeeping( ctx );
@@ -1951,7 +1951,7 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
 
   ctrl.command = FD_BAM_CTRL_CMD_URL;
   ctrl.enable  = 1U;
-  strlcpy( ctrl.url, "not a url", FD_BAM_CTRL_URL_MAX );
+  strlcpy( ctrl.url, "not a url", FD_URL_MAX );
   ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
 
   fd_bam_tile_housekeeping( ctx );

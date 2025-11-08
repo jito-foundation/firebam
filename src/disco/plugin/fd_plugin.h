@@ -1,6 +1,8 @@
 #ifndef HEADER_fd_src_disco_plugin_fd_plugin_h
 #define HEADER_fd_src_disco_plugin_fd_plugin_h
 
+#include "../../waltz/http/fd_url.h"
+
 #define FD_PLUGIN_MSG_SLOT_ROOTED                   ( 0UL)
 #define FD_PLUGIN_MSG_SLOT_OPTIMISTICALLY_CONFIRMED ( 1UL)
 #define FD_PLUGIN_MSG_SLOT_COMPLETED                ( 2UL)
@@ -102,7 +104,7 @@ FD_STATIC_ASSERT( sizeof(fd_vote_update_msg_t) <= FD_GOSSIP_LINK_MSG_SIZE, fd_vo
 
 typedef struct {
   char name[ 16 ];
-  char url[ 256 ];
+  char url[ FD_URL_MAX ];
   char ip_cstr[ 40 ]; /* IPv4 or IPv6 cstr */
   int status;
 } fd_plugin_msg_block_engine_update_t;

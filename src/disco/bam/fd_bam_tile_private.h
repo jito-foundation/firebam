@@ -85,7 +85,7 @@ struct fd_bam_tile {
   fd_bam_in_ctx_t  bank_in;                       /* Bank bundle ingress dcache context */
   fd_bam_in_ctx_t  leader_in;                     /* Pack tile ingress for leader state/results */
 
-  uint is_ssl : 1;                                /* Non-zero when TLS is negotiated */
+  uchar is_ssl : 1;                                /* Non-zero when TLS is negotiated */
   int  keylog_fd;                                 /* TLS key log output fd (-1 when disabled) */
 # if FD_HAS_OPENSSL
   /* OpenSSL */
@@ -97,9 +97,9 @@ struct fd_bam_tile {
   /* Config */
   fd_bam_ctrl_t * ctrl;                           /* Runtime control shared object (NULL when tile launched without admin support) */
   uchar   runtime_enabled;                          /* Whether BAM runtime connectivity is enabled */
-  char   server_fqdn[ 256 ]; /* cstr; hostname configured for BAM endpoint */
+  char   server_fqdn[ FD_FQDN_BUF_MAX ]; /* cstr; hostname configured for BAM endpoint */
   ushort server_fqdn_len;                         /* Length of server_fqdn (no terminator) */
-  char   server_sni[ 256 ]; /* cstr; optional override for TLS SNI */
+  char   server_sni[ FD_SNI_BUF_MAX ]; /* cstr; optional override for TLS SNI */
   ushort server_sni_len;                          /* Length of server_sni (no terminator) */
   ushort server_tcp_port;                         /* Remote TCP port for gRPC */
   fd_bam_fee_cfg_t * fee_cfg;                     /* Shared fee configuration exported to peers */

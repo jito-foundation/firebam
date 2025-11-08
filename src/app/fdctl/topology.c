@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "../shared/fd_config.h"
 
 #include <stdalign.h>
@@ -521,12 +522,10 @@ fd_topo_initialize( config_t * config ) {
       tile->bundle.keepalive_interval_nanos = config->tiles.bundle.keepalive_interval_millis * (ulong)1e6;
       tile->bundle.tls_cert_verify = !!config->tiles.bundle.tls_cert_verify;
     } else if( FD_UNLIKELY( !strcmp( tile->name, "bam" ) ) ) {
-      strncpy( tile->bam.url, config->tiles.bam.url, sizeof(tile->bam.url) );
-      tile->bam.url_len = strnlen( tile->bam.url, 255 );
-      strncpy( tile->bam.sni, config->tiles.bam.tls_domain_name, 256 );
-      tile->bam.sni_len = strnlen( tile->bam.sni, 255 );
-      strncpy( tile->bam.identity_key_path, config->paths.identity_key, sizeof(tile->bam.identity_key_path) );
-      strncpy( tile->bam.key_log_path, config->development.bundle.ssl_key_log_file, sizeof(tile->bam.key_log_path) );
+      tile->bam.url_len = strlcpy( tile->bam.url, config->tiles.bam.url, sizeof(tile->bam.url) );
+      tile->bam.sni_len = strlcpy( tile->bam.sni, config->tiles.bam.tls_domain_name, sizeof(tile->bam.sni) );
+      strlcpy( tile->bam.identity_key_path, config->paths.identity_key, sizeof(tile->bam.identity_key_path) );
+      strlcpy( tile->bam.key_log_path, config->development.bundle.ssl_key_log_file, sizeof(tile->bam.key_log_path) );
       tile->bam.buf_sz = config->development.bundle.buffer_size_kib<<10;
       tile->bam.ssl_heap_sz = config->development.bundle.ssl_heap_size_mib<<20;
       tile->bam.keepalive_interval_nanos = config->tiles.bam.keepalive_interval_millis * (ulong)1e6;

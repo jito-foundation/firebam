@@ -30,6 +30,14 @@ typedef struct fd_url fd_url_t;
 #define FD_URL_ERR_HOST_OVERSZ 2
 #define FD_URL_ERR_USERINFO    3
 
+
+/* RFC 1035 caps a DNS name (aka FQDN) at 255 bytes, excluding the
+   terminating NUL.  TLS SNI hostnames (RFC 6066) share the same limit. */
+#define FD_FQDN_BUF_MAX (255UL+1UL)
+#define FD_SNI_BUF_MAX FD_FQDN_BUF_MAX
+#define FD_URL_FORMAT_OVERHEAD 14UL /* https:// + port separator + 5 digit port */
+#define FD_URL_MAX (FD_FQDN_BUF_MAX+FD_URL_FORMAT_OVERHEAD)
+
 FD_PROTOTYPES_BEGIN
 
 /* fd_url_parse_cstr is a basic URL parser.  It is not RFC compliant.

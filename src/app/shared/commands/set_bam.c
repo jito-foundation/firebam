@@ -130,9 +130,9 @@ set_bam_apply_request( args_t *   args,
   }
 
   int enabled = (int)FD_VOLATILE_CONST( ctrl->current_enable );
-  char url_buf[ FD_BAM_CTRL_URL_MAX ];
+  char url_buf[ FD_URL_MAX ];
   strlcpy( url_buf, ctrl->current_url, sizeof(url_buf) );
-  char sni_buf[ FD_BAM_CTRL_SNI_MAX ];
+  char sni_buf[ FD_SNI_BUF_MAX ];
   strlcpy( sni_buf, ctrl->current_sni, sizeof(sni_buf) );
   FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
 

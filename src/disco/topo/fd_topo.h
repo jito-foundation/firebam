@@ -6,6 +6,7 @@
 #include "../../waltz/xdp/fd_xdp1.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../util/net/fd_net_headers.h"
+#include "../../waltz/http/fd_url.h"
 
 /* Maximum number of workspaces that may be present in a topology. */
 #define FD_TOPO_MAX_WKSPS         (256UL)
@@ -215,7 +216,7 @@ struct fd_topo_tile {
     } dedup;
 
     struct {
-      char  url[ 256 ];
+      char  url[ FD_URL_MAX ];
       ulong url_len;
       char  sni[ 256 ];
       ulong sni_len;
@@ -229,9 +230,9 @@ struct fd_topo_tile {
     } bundle;
 
     struct {
-      char  url[ 256 ];
+      char  url[ FD_URL_MAX ];
       ulong url_len;
-      char  sni[ 256 ];
+      char  sni[ FD_SNI_BUF_MAX ];
       ulong sni_len;
       char  identity_key_path[ PATH_MAX ];
       char  key_log_path[ PATH_MAX ];

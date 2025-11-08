@@ -239,9 +239,9 @@ fd_bam_tile_publish_block_engine_update(
             FD_IP4_ADDR_FMT,
             FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ) );
 
-  update->status = (uchar)ctx->bundle_status_recent;
+  update->status = ctx->bundle_status_recent;
 
-  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_bam_now() );
+  ulong tspub = fd_frag_meta_ts_comp( fd_bam_now() );
   fd_stem_publish(
       stem,
       ctx->plugin_out.idx,
@@ -282,18 +282,37 @@ after_credit( fd_bam_tile_t *  ctx,
   if( ctx->plugin_out.mem ) {
     if( FD_UNLIKELY( ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
       fd_bam_tile_publish_block_engine_update( ctx, stem );
-      ctx->bundle_status_plugin = (uchar)ctx->bundle_status_recent;
+      ctx->bundle_status_plugin = ctx->bundle_status_recent;
       *charge_busy = 1;
     }
   }
 }
 
+/* parse_url is the shared validator/runtime URL gate.  It accepts a
+   http(s):// URL, fills an fd_url_t scratch, and extracts the transport
+   flags we care about:
+     - Only `http://` and `https://` schemes are permitted.  Anything
+       else (including missing schemes or stray slashes) is rejected.
+       The `context` string is echoed in the log so operators know which
+       knob supplied the bad value.  When `fatal` is non-zero the helper
+       terminates the tile with FD_LOG_ERR, otherwise it degrades to a
+       warning and returns -1 so callers can surface a friendlier error.
+     - If the URL omits an explicit port we default to 443 and then flip
+       `is_ssl` based on the scheme so downstream sockets know whether
+       to open TLS.  When a port is provided it must be numeric, at most
+       5 digits, and fall within 1..65535; we treat zero, overflow, or
+       garbage characters as a hard failure.
+     - Host names larger than 255 bytes are rejected up-front so later
+       copy_into buffers (which are sized for DNS labels) stay bounded.
+   The function does not enforce the host being non-empty—that is left to
+   the caller because some control paths treat an empty host differently
+   (e.g. surfacing a custom error message). */
 static int
 parse_url( fd_url_t *   url_,
            char const * url_str,
            ulong        url_str_len,
            ushort *     tcp_port,
-           _Bool *      is_ssl,
+           uchar *      is_ssl,
            char const * context,
            int          fatal ) {
 
@@ -308,17 +327,14 @@ parse_url( fd_url_t *   url_,
       if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`: must start with `http://` or `https://`", context, (int)url_str_len, url_str ));
       FD_LOG_WARNING(( "Invalid %s `%.*s`: must start with `http://` or `https://`", context, (int)url_str_len, url_str ));
       return -1;
-      break;
     case FD_URL_ERR_HOST_OVERSZ:
       if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`: domain name is too long", context, (int)url_str_len, url_str ));
       FD_LOG_WARNING(( "Invalid %s `%.*s`: domain name is too long", context, (int)url_str_len, url_str ));
       return -1;
-      break;
     default:
       if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`", context, (int)url_str_len, url_str ));
       FD_LOG_WARNING(( "Invalid %s `%.*s`", context, (int)url_str_len, url_str ));
       return -1;
-      break;
     }
   }
 
@@ -333,7 +349,7 @@ parse_url( fd_url_t *   url_,
 
   /* Parse port number */
 
-  *tcp_port = 443;
+  *tcp_port = 443; // FIXME: only set this if https found
   if( url->port_len ) {
     if( FD_UNLIKELY( url->port_len > 5 ) ) {
     invalid_port:
@@ -360,44 +376,6 @@ parse_url( fd_url_t *   url_,
   return 0;
 }
 
-static int
-fd_bam_tile_parse_runtime_endpoint( char const * url_cstr,
-                                    ushort *     tcp_port,
-                                    int *        is_ssl,
-                                    char *       host_buf,
-                                    ulong *      host_len,
-                                    char *       err,
-                                    ulong        err_sz ) {
-  ulong url_len = strlen( url_cstr );
-  if( FD_UNLIKELY( !url_len ) ) {
-    if( err_sz ) fd_cstr_printf( err, err_sz, NULL, "BAM URL must be non-empty" );
-    return -1;
-  }
-
-  fd_url_t url[1];
-  ushort tmp_port = *tcp_port;
-  _Bool tmp_ssl = (_Bool)(*is_ssl);
-  if( FD_UNLIKELY( parse_url( url, url_cstr, url_len, &tmp_port, &tmp_ssl, "runtime BAM url", 0 ) ) ) {
-    if( err_sz ) fd_cstr_printf( err, err_sz, NULL, "Invalid BAM URL `%s`", url_cstr );
-    return -1;
-  }
-  if( FD_UNLIKELY( !url->host_len ) ) {
-    if( err_sz ) fd_cstr_printf( err, err_sz, NULL, "BAM URL `%s` missing host", url_cstr );
-    return -1;
-  }
-  if( FD_UNLIKELY( url->host_len >= FD_BAM_CTRL_URL_MAX ) ) {
-    if( err_sz ) fd_cstr_printf( err, err_sz, NULL, "BAM host name too long" );
-    return -1;
-  }
-
-  fd_memcpy( host_buf, url->host, url->host_len );
-  host_buf[ url->host_len ] = '\0';
-  *host_len = url->host_len;
-  *tcp_port = tmp_port;
-  *is_ssl   = (int)tmp_ssl;
-  return 0;
-}
-
 static void
 fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->ctrl ) ) return;
@@ -410,33 +388,52 @@ fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( n < 0 ) ) ctx->ctrl->current_url[0] = '\0';
   ctx->ctrl->current_enable = ctx->runtime_enabled;
   ctx->ctrl->enable         = ctx->runtime_enabled;
-  strlcpy( ctx->ctrl->current_sni, ctx->server_sni, FD_BAM_CTRL_SNI_MAX );
+  strlcpy( ctx->ctrl->current_sni, ctx->server_sni, FD_SNI_BUF_MAX );
 }
 
-static int
+static char
 fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
-                                uint            command,
-                                uint            enable,
-                                char const *    url,
-                                char const *    sni,
                                 char *          err,
                                 ulong           err_sz ) {
+  uchar command = ctx->ctrl->command;
   if( FD_UNLIKELY( !command ) ) {
-    if( err_sz ) fd_cstr_printf( err, err_sz, NULL, "No BAM update requested" );
+    fd_cstr_printf( err, err_sz, NULL, "No BAM update requested" );
     return -1;
   }
 
   ushort new_port = ctx->server_tcp_port;
-  int    new_ssl  = ctx->is_ssl;
-  char   new_host[ 256 ];
-  ulong  new_host_len = ctx->server_fqdn_len;
-  fd_memcpy( new_host, ctx->server_fqdn, fd_ulong_min( sizeof(new_host)-1UL, new_host_len ) );
-  new_host[ new_host_len ] = '\0';
+  uchar  new_ssl  = ctx->is_ssl;
+  char   new_host[ FD_FQDN_BUF_MAX ];
+  ushort new_host_len;
 
   if( command & FD_BAM_CTRL_CMD_URL ) {
-    if( FD_UNLIKELY( fd_bam_tile_parse_runtime_endpoint( url, &new_port, &new_ssl, new_host, &new_host_len, err, err_sz ) ) ) {
+    ulong url_len = strlen( ctx->ctrl->url );
+    if( FD_UNLIKELY( !url_len ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "BAM URL must be non-empty" );
       return -1;
     }
+
+    fd_url_t runtime_url;
+    ushort parse_port = new_port;
+    uchar  parse_ssl  = new_ssl;
+    if( FD_UNLIKELY( parse_url( &runtime_url, ctx->ctrl->url, url_len, &parse_port, &parse_ssl, "runtime BAM url", 0 ) ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "Invalid BAM URL `%s`", ctx->ctrl->url );
+      return -1;
+    }
+    if( FD_UNLIKELY( !runtime_url.host_len ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "BAM URL `%s` missing host", ctx->ctrl->url );
+      return -1;
+    }
+    if( FD_UNLIKELY( runtime_url.host_len >= FD_FQDN_BUF_MAX ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "BAM host name too long" );
+      return -1;
+    }
+
+    fd_memcpy( new_host, runtime_url.host, runtime_url.host_len );
+    new_host[ runtime_url.host_len ] = '\0';
+    new_host_len = (ushort)runtime_url.host_len;
+    new_port = parse_port;
+    new_ssl  = parse_ssl;
 #if !FD_HAS_OPENSSL
     if( FD_UNLIKELY( new_ssl ) ) {
       /* CLI can introduce TLS endpoints at runtime; without OpenSSL we must refuse early
@@ -447,11 +444,13 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
       return -1;
     }
 #endif
+  } else {
+    new_host_len = (ushort)strlcpy( new_host, ctx->server_fqdn, sizeof(new_host) );
   }
 
-  char new_sni[ FD_BAM_CTRL_SNI_MAX ];
+  char new_sni[ FD_SNI_BUF_MAX ];
   if( command & FD_BAM_CTRL_CMD_SNI ) {
-    strlcpy( new_sni, sni, sizeof(new_sni) );
+    strlcpy( new_sni, ctx->ctrl->sni, sizeof(new_sni) );
     if( FD_UNLIKELY( !new_sni[0] ) )
       strlcpy( new_sni, new_host, sizeof(new_sni) );
   } else if( command & FD_BAM_CTRL_CMD_URL ) {
@@ -462,13 +461,12 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
 
   uchar new_enable = ctx->runtime_enabled;
   if( command & FD_BAM_CTRL_CMD_ENABLE )
-    new_enable = !!enable;
+    new_enable = !!ctx->ctrl->enable;
 
   int need_reset = 0;
   int clear_backoff_after_reset = 0; /* Track whether we should nuke backoff state after reset so re-enable connects immediately. */
   if( command & FD_BAM_CTRL_CMD_URL ) {
-    fd_memset( ctx->server_fqdn, 0, sizeof(ctx->server_fqdn) );
-    fd_memcpy( ctx->server_fqdn, new_host, new_host_len );
+    strlcpy( ctx->server_fqdn, new_host, sizeof(ctx->server_fqdn) );
     ctx->server_fqdn_len = (ushort)fd_ulong_min( new_host_len, (ulong)USHORT_MAX );
     ctx->server_tcp_port = new_port;
     ctx->is_ssl          = !!new_ssl;
@@ -476,9 +474,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   }
 
   if( command & (FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI) ) {
-    fd_memset( ctx->server_sni, 0, sizeof(ctx->server_sni) );
-    ulong sni_len = strlen( new_sni );
-    fd_memcpy( ctx->server_sni, new_sni, sni_len );
+    ulong sni_len = strlcpy( ctx->server_sni, new_sni, sizeof(ctx->server_sni) );
     ctx->server_sni_len = (ushort)fd_ulong_min( sni_len, (ulong)USHORT_MAX );
     fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
     need_reset = 1;
@@ -507,7 +503,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   }
 
   fd_bam_tile_ctrl_update_current( ctx );
-  if( err_sz ) err[0] = '\0';
+  err[0] = '\0';
   return 0;
 }
 
@@ -523,14 +519,9 @@ fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
       break;
   }
 
-  char url[ FD_BAM_CTRL_URL_MAX ];
-  char sni[ FD_BAM_CTRL_SNI_MAX ];
-  fd_memcpy( url, ctx->ctrl->url, sizeof(url) );
-  fd_memcpy( sni, ctx->ctrl->sni, sizeof(sni) );
-
   char err[ FD_BAM_CTRL_ERR_MAX ];
   err[0] = '\0';
-  int rc = fd_bam_tile_apply_ctrl_request( ctx, ctx->ctrl->command, ctx->ctrl->enable, url, sni, err, sizeof(err) );
+  char rc = fd_bam_tile_apply_ctrl_request( ctx, err, sizeof(err) );
   if( FD_UNLIKELY( rc ) ) {
     strlcpy( ctx->ctrl->error, err, FD_BAM_CTRL_ERR_MAX );
     FD_COMPILER_MFENCE();
@@ -547,7 +538,7 @@ static void
 fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
                                fd_topo_tile_t const * tile ) {
   fd_url_t url[1];
-  _Bool is_ssl = 0;
+  uchar is_ssl = 0;
   parse_url(
       url,
       tile->bam.url, tile->bam.url_len,
@@ -851,8 +842,8 @@ privileged_init( fd_topo_t *      topo,
     ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
     ctx->ctrl->enable         = 1;
     ctx->ctrl->current_enable = 1;
-    strlcpy( ctx->ctrl->current_url, tile->bam.url, FD_BAM_CTRL_URL_MAX );
-    strlcpy( ctx->ctrl->current_sni, tile->bam.sni, FD_BAM_CTRL_SNI_MAX );
+    strlcpy( ctx->ctrl->current_url, tile->bam.url, FD_URL_MAX );
+    strlcpy( ctx->ctrl->current_sni, tile->bam.sni, FD_SNI_BUF_MAX );
   } else {
     ctx->ctrl = NULL;
   }
