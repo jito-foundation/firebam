@@ -288,94 +288,6 @@ after_credit( fd_bam_tile_t *  ctx,
   }
 }
 
-/* parse_url is the shared validator/runtime URL gate.  It accepts a
-   http(s):// URL, fills an fd_url_t scratch, and extracts the transport
-   flags we care about:
-     - Only `http://` and `https://` schemes are permitted.  Anything
-       else (including missing schemes or stray slashes) is rejected.
-       The `context` string is echoed in the log so operators know which
-       knob supplied the bad value.  When `fatal` is non-zero the helper
-       terminates the tile with FD_LOG_ERR, otherwise it degrades to a
-       warning and returns -1 so callers can surface a friendlier error.
-     - If the URL omits an explicit port we default to 443 and then flip
-       `is_ssl` based on the scheme so downstream sockets know whether
-       to open TLS.  When a port is provided it must be numeric, at most
-       5 digits, and fall within 1..65535; we treat zero, overflow, or
-       garbage characters as a hard failure.
-     - Host names larger than 255 bytes are rejected up-front so later
-       copy_into buffers (which are sized for DNS labels) stay bounded.
-   The function does not enforce the host being non-empty—that is left to
-   the caller because some control paths treat an empty host differently
-   (e.g. surfacing a custom error message). */
-static int
-parse_url( fd_url_t *   url_,
-           char const * url_str,
-           ulong        url_str_len,
-           ushort *     tcp_port,
-           uchar *      is_ssl,
-           char const * context,
-           int          fatal ) {
-
-  /* Parse URL */
-
-  int url_err[1];
-  fd_url_t * url = fd_url_parse_cstr( url_, url_str, url_str_len, url_err );
-  if( FD_UNLIKELY( !url ) ) {
-    switch( *url_err ) {
-    scheme_err:
-    case FD_URL_ERR_SCHEME:
-      if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`: must start with `http://` or `https://`", context, (int)url_str_len, url_str ));
-      FD_LOG_WARNING(( "Invalid %s `%.*s`: must start with `http://` or `https://`", context, (int)url_str_len, url_str ));
-      return -1;
-    case FD_URL_ERR_HOST_OVERSZ:
-      if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`: domain name is too long", context, (int)url_str_len, url_str ));
-      FD_LOG_WARNING(( "Invalid %s `%.*s`: domain name is too long", context, (int)url_str_len, url_str ));
-      return -1;
-    default:
-      if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`", context, (int)url_str_len, url_str ));
-      FD_LOG_WARNING(( "Invalid %s `%.*s`", context, (int)url_str_len, url_str ));
-      return -1;
-    }
-  }
-
-  /* FIXME the URL scheme path technically shouldn't contain slashes */
-  if( url->scheme_len == 8UL && fd_memeq( url->scheme, "https://", 8UL ) ) {
-    *is_ssl = 1;
-  } else if( url->scheme_len == 7UL && fd_memeq( url->scheme, "http://", 7UL ) ) {
-    *is_ssl = 0;
-  } else {
-    goto scheme_err;
-  }
-
-  /* Parse port number */
-
-  *tcp_port = 443; // FIXME: only set this if https found
-  if( url->port_len ) {
-    if( FD_UNLIKELY( url->port_len > 5 ) ) {
-    invalid_port:
-      if( fatal ) FD_LOG_ERR(( "Invalid %s `%.*s`: invalid port number", context, (int)url_str_len, url_str ));
-      FD_LOG_WARNING(( "Invalid %s `%.*s`: invalid port number", context, (int)url_str_len, url_str ));
-      return -1;
-    }
-
-    char port_cstr[6];
-    fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( port_cstr ), url->port, url->port_len ) );
-    ulong port_no = fd_cstr_to_ulong( port_cstr );
-    if( FD_UNLIKELY( !port_no || port_no > USHORT_MAX ) ) goto invalid_port;
-
-    *tcp_port = (ushort)port_no;
-  }
-
-  /* Resolve domain */
-
-  if( FD_UNLIKELY( url->host_len > 255 ) ) {
-    if( fatal ) FD_LOG_CRIT(( "Invalid url->host_len" )); /* unreachable */
-    FD_LOG_WARNING(( "Invalid %s `%.*s`: domain name is too long", context, (int)url_str_len, url_str ));
-    return -1;
-  }
-  return 0;
-}
-
 static void
 fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->ctrl ) ) return;
@@ -416,7 +328,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     fd_url_t runtime_url;
     ushort parse_port = new_port;
     uchar  parse_ssl  = new_ssl;
-    if( FD_UNLIKELY( parse_url( &runtime_url, ctx->ctrl->url, url_len, &parse_port, &parse_ssl, "runtime BAM url", 0 ) ) ) {
+    if( FD_UNLIKELY( fd_url_parse_endpoint( &runtime_url, ctx->ctrl->url, url_len, &parse_port, &parse_ssl, "runtime BAM url" ) < 0 ) ) {
       fd_cstr_printf( err, err_sz, NULL, "Invalid BAM URL `%s`", ctx->ctrl->url );
       return -1;
     }
@@ -539,16 +451,15 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
                                fd_topo_tile_t const * tile ) {
   fd_url_t url[1];
   uchar is_ssl = 0;
-  parse_url(
+  int res = fd_url_parse_endpoint(
       url,
       tile->bam.url, tile->bam.url_len,
       &ctx->server_tcp_port,
       &is_ssl,
-      "[tiles.bam.url]",
-      1
+      "[tiles.bam.url]"
   );
-  if( FD_UNLIKELY( url->host_len > 255 ) ) {
-    FD_LOG_CRIT(( "Invalid url->host_len" )); /* unreachable */
+  if( FD_UNLIKELY( res < 0 ) ) {
+    FD_LOG_CRIT(( "Failed to parse BAM endpoint" ));
   }
   fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_fqdn ), url->host, url->host_len ) );
   ctx->server_fqdn_len = (ushort)fd_ulong_min( url->host_len, (ulong)USHORT_MAX );
