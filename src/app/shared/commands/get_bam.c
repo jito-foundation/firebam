@@ -41,11 +41,11 @@ get_bam_cmd_fn( args_t *   args FD_PARAM_UNUSED,
     usleep( 5000 );
   }
 
-  uchar enabled = FD_VOLATILE_CONST( ctrl->current_enable );
+  uchar enabled = FD_VOLATILE_CONST( ctrl->enable );
   char url_buf[ FD_URL_MAX ];
-  strlcpy( url_buf, ctrl->current_url, sizeof(url_buf) );
+  strlcpy( url_buf, ctrl->url, sizeof(url_buf) );
   char sni_buf[ FD_SNI_BUF_MAX ];
-  strlcpy( sni_buf, ctrl->current_sni, sizeof(sni_buf) );
+  strlcpy( sni_buf, ctrl->sni, sizeof(sni_buf) );
 
   fd_topo_leave_workspaces( topo );
 

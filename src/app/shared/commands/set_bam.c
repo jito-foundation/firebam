@@ -94,13 +94,11 @@ set_bam_apply_request( args_t *   args,
     FD_LOG_ERR(( "No BAM configuration changes requested" ));
 
   ctrl->command = command;
-  ctrl->enable  = args->set_bam.enable>=0 ? (uchar)args->set_bam.enable : ctrl->current_enable;
+  if( args->set_bam.enable>=0 ) ctrl->enable = (uchar)args->set_bam.enable;
 
   if( args->set_bam.url ) strlcpy( ctrl->url, args->set_bam.url, sizeof(ctrl->url) );
-  else                    strlcpy( ctrl->url, ctrl->current_url, sizeof(ctrl->url) );
 
   if( args->set_bam.sni ) strlcpy( ctrl->sni, args->set_bam.sni, sizeof(ctrl->sni) );
-  else                    strlcpy( ctrl->sni, ctrl->current_sni, sizeof(ctrl->sni) );
 
   ctrl->error[0] = '\0';
 
@@ -129,11 +127,11 @@ set_bam_apply_request( args_t *   args,
     FD_LOG_ERR(( "Failed to update BAM configuration: %s", err_buf[0] ? err_buf : "unknown error" ));
   }
 
-  uchar enabled = FD_VOLATILE_CONST( ctrl->current_enable );
+  uchar enabled = FD_VOLATILE_CONST( ctrl->enable );
   char url_buf[ FD_URL_MAX ];
-  strlcpy( url_buf, ctrl->current_url, sizeof(url_buf) );
+  strlcpy( url_buf, ctrl->url, sizeof(url_buf) );
   char sni_buf[ FD_SNI_BUF_MAX ];
-  strlcpy( sni_buf, ctrl->current_sni, sizeof(sni_buf) );
+  strlcpy( sni_buf, ctrl->sni, sizeof(sni_buf) );
   FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
 
   if( sni_buf[0] )

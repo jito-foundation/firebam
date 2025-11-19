@@ -1836,10 +1836,9 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
   ctx->server_tcp_port = 443;
   ctx->is_ssl          = 1;
 
-  ctrl->current_enable = 1U;
   ctrl->enable         = 1U;
-  strlcpy( ctrl->current_url, "https://initial.builder.test:443", FD_URL_MAX );
-  strlcpy( ctrl->current_sni, host, FD_SNI_BUF_MAX );
+  strlcpy( ctrl->url, "https://initial.builder.test:443", FD_URL_MAX );
+  strlcpy( ctrl->sni, host, FD_SNI_BUF_MAX );
   ctrl->state = FD_BAM_CTRL_STATE_IDLE;
 }
 
@@ -1868,9 +1867,9 @@ test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
   fd_bam_tile_housekeeping( ctx );
 
   FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
-  FD_TEST( ctrl.current_enable == 1U );
-  FD_TEST( !strcmp( ctrl.current_url, "http://new.example.com:8899" ) );
-  FD_TEST( !strcmp( ctrl.current_sni, "custom.sni.invalid" ) );
+  FD_TEST( ctrl.enable == 1U );
+  FD_TEST( !strcmp( ctrl.url, "http://new.example.com:8899" ) );
+  FD_TEST( !strcmp( ctrl.sni, "custom.sni.invalid" ) );
   FD_TEST( ctx->enabled == 1 );
   FD_TEST( ctx->server_tcp_port == 8899 );
   FD_TEST( !strcmp( ctx->server_fqdn, "new.example.com" ) );
@@ -1918,10 +1917,10 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   fd_bam_tile_housekeeping( ctx );
 
   FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
-  FD_TEST( ctrl.current_enable == 0U );
+  FD_TEST( ctrl.enable == 0U );
   FD_TEST( ctx->enabled == 0 );
   FD_TEST( fd_fseq_query( fseq ) == 0UL );
-  FD_TEST( !strcmp( ctrl.current_url, "https://initial.builder.test:443" ) );
+  FD_TEST( !strcmp( ctrl.url, "https://initial.builder.test:443" ) );
 
   FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
   FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
@@ -1956,7 +1955,7 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
 
   FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_ERROR );
   FD_TEST( strstr( ctrl.error, "Invalid BAM URL" ) != NULL );
-  FD_TEST( !strcmp( ctrl.current_url, "https://initial.builder.test:443" ) );
+  FD_TEST( !strcmp( ctrl.url, "https://initial.builder.test:443" ) );
   FD_TEST( !strcmp( ctx->server_fqdn, "initial.builder.test" ) );
   FD_TEST( ctx->enabled == 1 );
 

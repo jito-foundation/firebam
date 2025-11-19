@@ -22,12 +22,6 @@ typedef struct fd_bam_ctrl {
   char url[ FD_URL_MAX ];   /* Requested URL */
   char sni[ FD_SNI_BUF_MAX ];   /* Requested SNI override (optional) */
   char error[ FD_BAM_CTRL_ERR_MAX ]; /* Error message returned on failure */
-
-  // cached values for get_bam to read from
-  // TODO: try and remove these, to avoid having so much state
-  uchar current_enable;              /* Currently applied enable flag */
-  char current_url[ FD_URL_MAX ]; /* Currently applied URL */
-  char current_sni[ FD_SNI_BUF_MAX ]; /* Currently applied SNI */
 } fd_bam_ctrl_t;
 
 #endif /* HEADER_fd_src_disco_bam_fd_bam_ctrl_h */

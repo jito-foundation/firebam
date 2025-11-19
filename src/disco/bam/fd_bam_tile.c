@@ -300,12 +300,12 @@ fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
                     ctx->server_fqdn,
                     ctx->server_tcp_port );
   if( FD_UNLIKELY( n < 0 ) ) {
-    ctx->ctrl->current_url[0] = '\0';
+    ctx->ctrl->url[0] = '\0';
     return -1;
   }
-  strlcpy(ctx->ctrl->current_url, buf, (size_t)n);
-  strlcpy( ctx->ctrl->current_sni, ctx->server_sni, FD_SNI_BUF_MAX );
-  ctx->ctrl->current_enable = ctx->enabled;
+  strlcpy(ctx->ctrl->url, buf, (size_t)n);
+  strlcpy( ctx->ctrl->sni, ctx->server_sni, FD_SNI_BUF_MAX );
+  ctx->ctrl->enable = ctx->enabled;
   return 0;
 }
 
@@ -443,6 +443,8 @@ fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
   char rc = fd_bam_tile_apply_ctrl_request( ctx, err, sizeof(err) );
   if( FD_UNLIKELY( rc ) ) {
     strlcpy( ctx->ctrl->error, err, FD_BAM_CTRL_ERR_MAX );
+    /* Revert the request fields to the actual state so set-bam sees the correct values next time */
+    fd_bam_tile_ctrl_update_current( ctx );
     FD_COMPILER_MFENCE();
     FD_VOLATILE( ctx->ctrl->state ) = FD_BAM_CTRL_STATE_ERROR;
     return;
@@ -761,9 +763,9 @@ privileged_init( fd_topo_t *      topo,
     ctx->ctrl = fd_topo_obj_laddr( topo, bam_ctrl_obj_id );
     fd_memset( ctx->ctrl, 0, sizeof(fd_bam_ctrl_t) );
     ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
-    ctx->ctrl->current_enable = ctx->enabled;
-    strlcpy( ctx->ctrl->current_url, tile->bam.url, FD_URL_MAX );
-    strlcpy( ctx->ctrl->current_sni, tile->bam.sni, FD_SNI_BUF_MAX );
+    ctx->ctrl->enable = ctx->enabled;
+    strlcpy( ctx->ctrl->url, tile->bam.url, FD_URL_MAX );
+    strlcpy( ctx->ctrl->sni, tile->bam.sni, FD_SNI_BUF_MAX );
   } else {
     ctx->ctrl = NULL;
   }
