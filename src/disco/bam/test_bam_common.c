@@ -59,6 +59,7 @@ test_bam_env_create( test_bam_env_t * env,
   for( ulong i=0UL; i<sizeof(state->bam_url_pubkey); i++ ) state->bam_url_pubkey[ i ] = (uchar)( i + 1U );
   fd_base58_encode_32( state->bam_url_pubkey, NULL, state->bam_validator_pubkey );
   state->stem = env->stem;
+  state->enabled = 1;
   state->verify_out = (fd_bam_out_ctx_t) {
     .idx    = 0UL,
     .mem    = dcache,
@@ -85,8 +86,8 @@ test_bam_env_create( test_bam_env_t * env,
   state->fee_cfg = fd_wksp_alloc_laddr( wksp, alignof(fd_bam_fee_cfg_t), sizeof(fd_bam_fee_cfg_t), 1UL );
   FD_TEST( state->fee_cfg );
   fd_memset( state->fee_cfg, 0, sizeof(fd_bam_fee_cfg_t) );
-  state->fee_cfg_version = 0UL;
-  state->validator_commission_bps = 0U;
+  state->fee_cfg_version = 0U;
+  state->commission_bps = 0U;
   state->prio_fee_recipient_set = 0U;
   fd_memset( state->prio_fee_recipient, 0, sizeof( state->prio_fee_recipient ) );
 

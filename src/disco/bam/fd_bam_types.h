@@ -40,8 +40,8 @@ typedef struct {
 } fd_bam_leader_state_t;
 
 typedef struct {
-  fd_ip4_port_t tpu_addr;      /* TPU socket (TCP) advertised by BAM */
-  fd_ip4_port_t tpu_quic_addr; /* QUIC forwarding socket advertised by BAM. Optional override; zeroed if unused */
+  fd_ip4_port_t tpu_addr;      /* TPU socket advertised by BAM */
+  fd_ip4_port_t tpu_fwd_addr;  /* TPU fwd socket advertised by BAM. */
   uint          use_bam;       /* `FD_BAM_CONTACT_USE_*` selector. Non-zero when BAM overrides contact info */
 } fd_bam_contact_update_t;
 
@@ -49,7 +49,7 @@ typedef struct {
   uchar prio_fee_recipient[ 32 ]; /* Decoded priority fee recipient pubkey */
   uint  commission_bps;           /* Validator commission expressed in basis points */
   uint  has_prio_fee_recipient;   /* Non-zero when prio_fee_recipient contains a valid pubkey */
-  ulong version;                  /* Monotonically increasing update counter */
+  uint  version;                  /* Monotonically increasing update counter */
 } fd_bam_fee_cfg_t;
 
 #define FD_BAM_CONTACT_USE_DEFAULT ((uint)0U)

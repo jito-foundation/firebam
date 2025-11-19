@@ -94,16 +94,14 @@ struct fd_bam_tile {
   fd_alloc_t * ssl_alloc;                         /* Allocator backing OpenSSL init */
 # endif /* FD_HAS_OPENSSL */
 
-  /* Config */
-  fd_bam_ctrl_t * ctrl;                           /* Runtime control shared object (NULL when tile launched without admin support) */
-  uchar   runtime_enabled;                          /* Whether BAM runtime connectivity is enabled */
+  /* Currently running config, values loaded via TOML and updated by set_bam admin control */
+  fd_bam_ctrl_t * ctrl;                  /* Runtime control shared object (NULL when tile launched without admin support) */
+  uchar  enabled;                        /* Whether BAM runtime is enabled by the operator */
   char   server_fqdn[ FD_FQDN_BUF_MAX ]; /* cstr; hostname configured for BAM endpoint */
-  ushort server_fqdn_len;                         /* Length of server_fqdn (no terminator) */
-  char   server_sni[ FD_SNI_BUF_MAX ]; /* cstr; optional override for TLS SNI */
-  ushort server_sni_len;                          /* Length of server_sni (no terminator) */
-  ushort server_tcp_port;                         /* Remote TCP port for gRPC */
-  fd_bam_fee_cfg_t * fee_cfg;                     /* Shared fee configuration exported to peers */
-  ulong              fee_cfg_version;             /* Last version published to fee_cfg */
+  ushort server_fqdn_len;                /* Length of server_fqdn (no terminator) */
+  char   server_sni[ FD_SNI_BUF_MAX ];   /* cstr; optional override for TLS SNI */
+  ushort server_sni_len;                 /* Length of server_sni (no terminator) */
+  ushort server_tcp_port;                /* Remote TCP port for gRPC */
 
   /* Resolver */
   fd_netdb_fds_t netdb_fds[1];                    /* fd_netdb handles for async DNS lookups */
@@ -128,13 +126,19 @@ struct fd_bam_tile {
   fd_grpc_client_metrics_t grpc_metrics[1];       /* Per-client metrics exported to fd_metrics */
   ulong                    map_seed;              /* Random seed used for header hashing */
 
-  /* Bundle block builder info */
+  /* ConfigResponse BlockEngineBuilderConfig values */
   uchar builder_pubkey[ 32 ];                     /* Builder identity fetched from BAM */
-  uchar builder_commission;  /* in [0,100] (percent) */
+  uchar builder_commission;                       /* commission as a percentage (0-100) */
   long  builder_info_valid_until;                 /* Expiry timestamp for builder info */
-  uchar prio_fee_recipient[ 32 ];                 /* Validator priority fee recipient advertised by BAM */
-  ushort validator_commission_bps;                /* Validator commission basis points */
+  uchar prio_fee_recipient[ 32 ];                 /* Recipient pubkey of the priority fee commission */
+  ushort commission_bps;                          /* commission basis points */
   uchar prio_fee_recipient_set;                   /* Flag indicating prio_fee_recipient populated */
+
+  /* ConfigResponse BamConfig values */
+  fd_bam_fee_cfg_t * fee_cfg;          /* Shared fee configuration exported to peers */
+  uint               fee_cfg_version;  /* Last version published to fee_cfg */
+  fd_ip4_port_t bam_tpu_addr;          /* Latest TPU endpoint advertised by BAM */
+  fd_ip4_port_t bam_tpu_fwd_addr;      /* Latest TPU Forward endpoint advertised by BAM */
 
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).
@@ -188,10 +192,6 @@ struct fd_bam_tile {
   uchar bundle_status_plugin;  /* last 'plugin' update written */
   uchar bundle_status_logged;
   long  last_bundle_status_log_nanos;
-
-  /* Bam contact info */
-  fd_ip4_port_t bam_tpu_addr;      /* Latest TPU endpoint advertised by BAM */
-  fd_ip4_port_t bam_tpu_quic_addr; /* Latest QUIC TPU endpoint advertised by BAM */
 };
 
 typedef struct fd_bam_tile fd_bam_tile_t;
@@ -214,7 +214,7 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
 /* Define 'request_ctx' IDs to identify different types of gRPC calls */
 
 #define FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge               0
-#define FD_BAM_CLIENT_REQ_BAM_GetConfig                      1
+#define FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig               1
 #define FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream            2
 
 FD_PROTOTYPES_BEGIN

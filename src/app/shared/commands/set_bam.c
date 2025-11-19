@@ -129,7 +129,7 @@ set_bam_apply_request( args_t *   args,
     FD_LOG_ERR(( "Failed to update BAM configuration: %s", err_buf[0] ? err_buf : "unknown error" ));
   }
 
-  int enabled = (int)FD_VOLATILE_CONST( ctrl->current_enable );
+  uchar enabled = FD_VOLATILE_CONST( ctrl->current_enable );
   char url_buf[ FD_URL_MAX ];
   strlcpy( url_buf, ctrl->current_url, sizeof(url_buf) );
   char sni_buf[ FD_SNI_BUF_MAX ];

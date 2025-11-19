@@ -904,7 +904,7 @@
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;smoothed</span> | gauge | Exponentially smoothed BAM round-trip time estimate (nanoseconds) |
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;var</span> | gauge | Smoothed variance of the BAM round-trip time estimator (nanoseconds) |
 | <span class="metrics-name">bam_&#8203;results_&#8203;queue_&#8203;depth</span> | gauge | Current number of bundle execution results buffered for BAM feedback |
-| <span class="metrics-name">bam_&#8203;runtime_&#8203;enabled</span> | gauge | Boolean gauge: 1 when BAM runtime mode is enabled, 0 when running in fallback mode |
+| <span class="metrics-name">bam_&#8203;enabled</span> | gauge | Boolean gauge: 1 when BAM is enabled by user, 0 when disabled |
 | <span class="metrics-name">bam_&#8203;message_&#8203;rx_&#8203;delay_&#8203;nanos</span> | histogram | Distribution of message receive delays from the BAM node to the BAM client (nanoseconds) |
 
 </div>

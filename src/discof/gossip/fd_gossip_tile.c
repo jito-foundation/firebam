@@ -418,8 +418,8 @@ fd_gossip_apply_bam_update( fd_gossip_tile_ctx_t *             ctx,
 
     /* QUIC is optional; keep advertising the Firedancer port unless BAM
        provides a full override so we do not emit zeroed sockets. */
-    if( FD_LIKELY( update->tpu_quic_addr.addr && update->tpu_quic_addr.port ) )
-      desired_tpu_quic = update->tpu_quic_addr;
+    if( FD_LIKELY( update->tpu_fwd_addr.addr && update->tpu_fwd_addr.port ) )
+      desired_tpu_quic = update->tpu_fwd_addr;
   }
 
   int const override_changed = ctx->bam_override_active != (uint)use_bam;

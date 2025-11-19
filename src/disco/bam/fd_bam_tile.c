@@ -70,7 +70,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, RTT_SMOOTHED, (ulong)ctx->rtt->smoothed_rtt );
   FD_MGAUGE_SET( BAM, RTT_VAR,      (ulong)ctx->rtt->var_rtt      );
   FD_MGAUGE_SET( BAM, RESULTS_QUEUE_DEPTH, (ulong)ctx->bam_pending_results );
-  FD_MGAUGE_SET( BAM, RUNTIME_ENABLED,     (ulong)ctx->runtime_enabled );
+  FD_MGAUGE_SET( BAM, ENABLED,      (ulong)ctx->enabled );
 
   FD_MHIST_COPY( BAM, MESSAGE_RX_DELAY_NANOS, ctx->metrics.msg_rx_delay );
 
@@ -84,7 +84,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->used_sz  );
 
   int bundle_status = fd_bam_client_status( ctx );
-  FD_MGAUGE_SET( BAM, CONNECTED, bundle_status == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  FD_MGAUGE_SET( BAM, CONNECTED, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
   ctx->bundle_status_recent = (uchar)bundle_status;
 }
 
@@ -103,7 +103,7 @@ fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
   msg->use_bam = use_bam ? FD_BAM_CONTACT_USE_BAM : FD_BAM_CONTACT_USE_DEFAULT;
   if( FD_LIKELY( use_bam ) ) {
     msg->tpu_addr      = ctx->bam_tpu_addr;
-    msg->tpu_quic_addr = ctx->bam_tpu_quic_addr;
+    msg->tpu_fwd_addr = ctx->bam_tpu_fwd_addr;
   }
 
   ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_bam_now() );
@@ -128,8 +128,8 @@ fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
                             int                 prev_status ) {
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
 
-  int const connected     = ( status == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
-  int const was_connected = ( prev_status == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  int const connected     = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+  int const was_connected = ( prev_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
   int const have_contact  = ctx->bam_tpu_addr.l != 0UL;
 
   if( FD_UNLIKELY( connected && have_contact && !was_connected ) ) {
@@ -154,7 +154,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   int  status          = fd_bam_client_status( ctx );
   long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
   long now_ns          = fd_log_wallclock();
-  if( FD_UNLIKELY( status != FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED && now_ns > log_next_ns ) ) {
+  if( FD_UNLIKELY( status != FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED && now_ns > log_next_ns ) ) {
     FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
     ctx->last_bundle_status_log_nanos = now_ns;
   }
@@ -217,10 +217,11 @@ bam_during_frag( fd_bam_tile_t * ctx,
 }
 
 static void
-fd_bam_tile_publish_block_engine_update(
+fd_bam_tile_publish_gui_update(
     fd_bam_tile_t *  ctx,
     fd_stem_context_t * stem
 ) {
+  // TODO: implement this for BAM, currently its a copy from `fd_bundle_tile.c`
   fd_plugin_msg_block_engine_update_t * update =
       fd_chunk_to_laddr( ctx->plugin_out.mem, ctx->plugin_out.chunk );
   memset( update, 0, sizeof(fd_plugin_msg_block_engine_update_t) );
@@ -245,7 +246,7 @@ fd_bam_tile_publish_block_engine_update(
   fd_stem_publish(
       stem,
       ctx->plugin_out.idx,
-      FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE,
+      FD_PLUGIN_MSG_BAM_UPDATE,
       ctx->plugin_out.chunk,
       sizeof(fd_plugin_msg_block_engine_update_t),
       0UL, /* ctl */
@@ -268,39 +269,44 @@ after_credit( fd_bam_tile_t *  ctx,
   int prev_status   = ctx->bundle_status_recent;
   ctx->bundle_status_recent = (uchar)bundle_status;
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
-    /* Expose BAM connectivity via a shared latch.  The verify tile uses
+    /* Expose BAM connectivity via a shared latch. The verify tile uses
        this to pause QUIC/bundle traffic when BAM has taken over leader
        duties.  fd_bam_client_status only returns CONNECTED once the
-       transport, auth, and scheduler stream are fully live, so toggling
-       the latch here guarantees peers see a consistent "BAM owns TPU"
-       window. */
-    ulong is_connected = (ulong)( bundle_status == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
-    fd_fseq_update( ctx->bam_status_fseq, is_connected );
+       transport, auth, and scheduler stream are fully live, else
+       immediately release the TPU back to default Firedancer behaviour */
+    ulong bam_active = (ulong)( ctx->enabled &&
+                                bundle_status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+    fd_fseq_update( ctx->bam_status_fseq, bam_active );
   }
   fd_bam_update_contact_info( ctx, stem, bundle_status, prev_status );
 
   if( ctx->plugin_out.mem ) {
     if( FD_UNLIKELY( ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
-      fd_bam_tile_publish_block_engine_update( ctx, stem );
+      fd_bam_tile_publish_gui_update( ctx, stem );
       ctx->bundle_status_plugin = ctx->bundle_status_recent;
       *charge_busy = 1;
     }
   }
 }
 
-static void
+static int
 fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
-  if( FD_UNLIKELY( !ctx->ctrl ) ) return;
+  if( FD_UNLIKELY( !ctx->ctrl ) ) return -1;
+  char buf[FD_URL_MAX];
   // FIXME: check if `http` already in server_fqdn, if so, dont prepend
-  int n = snprintf( ctx->ctrl->current_url, sizeof(ctx->ctrl->current_url), "%s://%.*s:%u",
+  int n = snprintf( buf, FD_URL_MAX, "%s://%.*s:%u",
                     ctx->is_ssl ? "https" : "http",
                     ctx->server_fqdn_len,
                     ctx->server_fqdn,
                     ctx->server_tcp_port );
-  if( FD_UNLIKELY( n < 0 ) ) ctx->ctrl->current_url[0] = '\0';
-  ctx->ctrl->current_enable = ctx->runtime_enabled;
-  ctx->ctrl->enable         = ctx->runtime_enabled;
+  if( FD_UNLIKELY( n < 0 ) ) {
+    ctx->ctrl->current_url[0] = '\0';
+    return -1;
+  }
+  strlcpy(ctx->ctrl->current_url, buf, (size_t)n);
   strlcpy( ctx->ctrl->current_sni, ctx->server_sni, FD_SNI_BUF_MAX );
+  ctx->ctrl->current_enable = ctx->enabled;
+  return 0;
 }
 
 static char
@@ -327,7 +333,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
 
     fd_url_t runtime_url;
     ushort parse_port = new_port;
-    uchar  parse_ssl  = new_ssl;
+    _Bool  parse_ssl  = new_ssl;
     if( FD_UNLIKELY( fd_url_parse_endpoint( &runtime_url, ctx->ctrl->url, url_len, &parse_port, &parse_ssl, "runtime BAM url" ) < 0 ) ) {
       fd_cstr_printf( err, err_sz, NULL, "Invalid BAM URL `%s`", ctx->ctrl->url );
       return -1;
@@ -371,10 +377,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     strlcpy( new_sni, ctx->server_sni, sizeof(new_sni) );
   }
 
-  uchar new_enable = ctx->runtime_enabled;
-  if( command & FD_BAM_CTRL_CMD_ENABLE )
-    new_enable = !!ctx->ctrl->enable;
-
+  uchar new_enable = ( command & FD_BAM_CTRL_CMD_ENABLE ) ? !!ctx->ctrl->enable : ctx->enabled;
   int need_reset = 0;
   int clear_backoff_after_reset = 0; /* Track whether we should nuke backoff state after reset so re-enable connects immediately. */
   if( command & FD_BAM_CTRL_CMD_URL ) {
@@ -392,8 +395,8 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     need_reset = 1;
   }
 
-  if( (command & FD_BAM_CTRL_CMD_ENABLE) && (new_enable != ctx->runtime_enabled) ) {
-    ctx->runtime_enabled = new_enable;
+  if( (command & FD_BAM_CTRL_CMD_ENABLE) && (new_enable != ctx->enabled) ) {
+    ctx->enabled = new_enable;
     need_reset = 1;
     if( new_enable ) clear_backoff_after_reset = 1;
   }
@@ -407,14 +410,18 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
       ctx->backoff_reset = 0L;
       ctx->backoff_iter  = 0U;
     }
-    if( FD_UNLIKELY( !ctx->runtime_enabled && ctx->bam_status_fseq ) )
+    if( FD_UNLIKELY( !ctx->enabled && ctx->bam_status_fseq ) )
       /* Force the shared status latch low immediately when BAM is
          disabled so downstream tiles resume QUIC/bundle input without
          waiting for TCP timeouts. */
       fd_fseq_update( ctx->bam_status_fseq, 0UL );
   }
 
-  fd_bam_tile_ctrl_update_current( ctx );
+  if ( FD_UNLIKELY( fd_bam_tile_ctrl_update_current( ctx ) < 0 ) ) {
+    FD_LOG_WARNING(( "Failed to update BAM config" ));
+    return -1;
+  }
+
   err[0] = '\0';
   return 0;
 }
@@ -450,7 +457,7 @@ static void
 fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
                                fd_topo_tile_t const * tile ) {
   fd_url_t url[1];
-  uchar is_ssl = 0;
+  _Bool is_ssl = 0;
   int res = fd_url_parse_endpoint(
       url,
       tile->bam.url, tile->bam.url_len,
@@ -459,7 +466,7 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
       "[tiles.bam.url]"
   );
   if( FD_UNLIKELY( res < 0 ) ) {
-    FD_LOG_CRIT(( "Failed to parse BAM endpoint" ));
+    FD_LOG_CRIT(( "Failed to parse BAM endpoint" )); // TODO: dont crash
   }
   fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_fqdn ), url->host, url->host_len ) );
   ctx->server_fqdn_len = (ushort)fd_ulong_min( url->host_len, (ulong)USHORT_MAX );
@@ -478,7 +485,10 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
     FD_LOG_ERR(( "This build does not include OpenSSL. To install OpenSSL, re-run ./deps.sh and do a clean re build." ));
   }
 #endif
-  fd_bam_tile_ctrl_update_current( ctx );
+
+  if ( FD_UNLIKELY( fd_bam_tile_ctrl_update_current( ctx ) < 0 ) ) {
+    FD_LOG_WARNING(( "Failed to update BAM config" ));
+  }
 }
 
 #if FD_HAS_OPENSSL
@@ -732,9 +742,9 @@ privileged_init( fd_topo_t *      topo,
     FD_LOG_CRIT(( "fd_rng_join failed" )); /* unreachable */
   }
 
-  ctx->runtime_enabled = 1;
-  ctx->fee_cfg_version = 0UL;
-  ctx->validator_commission_bps = 0U;
+  ctx->enabled = 1;
+  ctx->fee_cfg_version = 0U;
+  ctx->commission_bps = 0U;
   ctx->prio_fee_recipient_set   = 0U;
   fd_memset( ctx->prio_fee_recipient, 0, sizeof( ctx->prio_fee_recipient ) );
 
@@ -751,8 +761,7 @@ privileged_init( fd_topo_t *      topo,
     ctx->ctrl = fd_topo_obj_laddr( topo, bam_ctrl_obj_id );
     fd_memset( ctx->ctrl, 0, sizeof(fd_bam_ctrl_t) );
     ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
-    ctx->ctrl->enable         = 1;
-    ctx->ctrl->current_enable = 1;
+    ctx->ctrl->current_enable = ctx->enabled;
     strlcpy( ctx->ctrl->current_url, tile->bam.url, FD_URL_MAX );
     strlcpy( ctx->ctrl->current_sni, tile->bam.sni, FD_SNI_BUF_MAX );
   } else {
@@ -850,11 +859,11 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->keepalive_interval = (long)tile->bam.keepalive_interval_nanos;
 
   ctx->bundle_status_plugin = 127;
-  ctx->bundle_status_recent = FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_DISCONNECTED;
+  ctx->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->last_bundle_status_log_nanos = fd_log_wallclock();
 
   ctx->bam_tpu_addr.l       = 0UL;
-  ctx->bam_tpu_quic_addr.l  = 0UL;
+  ctx->bam_tpu_fwd_addr.l  = 0UL;
 
   ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
   if( FD_LIKELY( bam_status_obj_id != ULONG_MAX ) ) {

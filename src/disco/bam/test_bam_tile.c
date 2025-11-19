@@ -838,10 +838,8 @@ test_bam_bundle_rejects_oversized_packet( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
 
   bam_types_Packet packets[1];
-  fd_memset( packets, 0, sizeof( packets ) );
-  packets[0].data.size = (pb_size_t)( FD_TXN_MTU + 1UL );
-  for( pb_size_t i=0U; i<packets[0].data.size; i++ ) {
-    packets[0].data.bytes[ i ] = (uchar)( i & 0xFF );
+  for( pb_size_t i=0U; i<FD_TXN_MTU; i++ ) {
+    packets[0].data.bytes[ i ] = (uchar)i;
   }
 
   uchar protobuf[ 4096 ];
@@ -1090,7 +1088,7 @@ test_bam_heartbeat_env_start( test_bam_env_t * env,
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
-  state->runtime_enabled = 1;
+  state->enabled = 1;
   state->keepalive->ts_deadline = LONG_MAX;
   state->keepalive->ts_last_tx = g_clock;
   state->keepalive->ts_last_rx = g_clock;
@@ -1188,7 +1186,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
-    state->runtime_enabled = 0;
+    state->enabled = 0;
     int charge_busy = 0;
     g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e9;
     fd_bam_client_step( state, &charge_busy );
@@ -1815,7 +1813,7 @@ test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( fd_wksp
 static void
 test_bam_request_ctx_labels( void ) {
   FD_TEST( 0 == strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ), "BamGetAuthChallenge" ) );
-  FD_TEST( 0 == strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_GetConfig ), "BamGetBuilderConfig" ) );
+  FD_TEST( 0 == strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig ), "BamGetBuilderConfig" ) );
   FD_TEST( 0 == strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream ), "BamInitSchedulerStream" ) );
   FD_TEST( 0 == strcmp( fd_bam_request_ctx_cstr( 99UL ), "unknown" ) );
 }
@@ -1827,7 +1825,7 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
   fd_memset( ctrl, 0, sizeof(fd_bam_ctrl_t) );
 
   /* Mirror the on-startup state: control block idle, HTTPS endpoint configured, BAM enabled. */
-  ctx->runtime_enabled = 1;
+  ctx->enabled = 1;
   char const * host = "initial.builder.test";
   ulong host_len = strlen( host );
   FD_TEST( host_len < sizeof( ctx->server_fqdn ) );
@@ -1873,7 +1871,7 @@ test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
   FD_TEST( ctrl.current_enable == 1U );
   FD_TEST( !strcmp( ctrl.current_url, "http://new.example.com:8899" ) );
   FD_TEST( !strcmp( ctrl.current_sni, "custom.sni.invalid" ) );
-  FD_TEST( ctx->runtime_enabled == 1 );
+  FD_TEST( ctx->enabled == 1 );
   FD_TEST( ctx->server_tcp_port == 8899 );
   FD_TEST( !strcmp( ctx->server_fqdn, "new.example.com" ) );
   FD_TEST( ctx->server_fqdn_len == strlen( "new.example.com" ) );
@@ -1921,7 +1919,7 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
 
   FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
   FD_TEST( ctrl.current_enable == 0U );
-  FD_TEST( ctx->runtime_enabled == 0 );
+  FD_TEST( ctx->enabled == 0 );
   FD_TEST( fd_fseq_query( fseq ) == 0UL );
   FD_TEST( !strcmp( ctrl.current_url, "https://initial.builder.test:443" ) );
 
@@ -1960,7 +1958,7 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
   FD_TEST( strstr( ctrl.error, "Invalid BAM URL" ) != NULL );
   FD_TEST( !strcmp( ctrl.current_url, "https://initial.builder.test:443" ) );
   FD_TEST( !strcmp( ctx->server_fqdn, "initial.builder.test" ) );
-  FD_TEST( ctx->runtime_enabled == 1 );
+  FD_TEST( ctx->enabled == 1 );
 
   ctx->keyswitch = NULL;
   test_bam_env_destroy( env );
@@ -2008,7 +2006,7 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
                              ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 1UL );
@@ -2019,10 +2017,10 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   expected_tpu.port = fd_ushort_bswap( 5000 );
   FD_TEST( updates[0].tpu_addr.l == expected_tpu.l );
 
-  fd_ip4_port_t expected_quic = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "4.3.2.1", &expected_quic.addr ) );
-  expected_quic.port = fd_ushort_bswap( 6000 );
-  FD_TEST( updates[0].tpu_quic_addr.l == expected_quic.l );
+  fd_ip4_port_t expected_tpu_fwd = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "4.3.2.1", &expected_tpu_fwd.addr ) );
+  expected_tpu_fwd.port = fd_ushort_bswap( 6000 );
+  FD_TEST( updates[0].tpu_fwd_addr.l == expected_tpu_fwd.l );
 
   publish_chunk = state->gossip_out.chunk;
   fd_bam_update_contact_info( state,
@@ -2045,10 +2043,10 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
                              ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
   FD_TEST( state->bam_tpu_addr.l == 0UL );
-  FD_TEST( state->bam_tpu_quic_addr.l == 0UL );
+  FD_TEST( state->bam_tpu_fwd_addr.l == 0UL );
   FD_TEST( state->gossip_out.chunk == publish_chunk );
   FD_TEST( update_cnt == 2UL );
 
@@ -2064,13 +2062,89 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
+  state->gossip_out = (fd_bam_out_ctx_t){
+      .idx    = 0UL,
+      .mem    = gossip_mem,
+      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
+  };
+  state->bundle_status_recent = FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED;
+
+  fd_bam_contact_update_t updates[3];
+  ulong                   update_cnt = 0UL;
+
+  /* Initial BamConfig should publish the override while runtime is enabled. */
+  bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_bam_config = true;
+  resp.bam_config.has_tpu_sock = true;
+  fd_memset( resp.bam_config.tpu_sock.ip, 0, sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_memcpy( resp.bam_config.tpu_sock.ip, "9.9.9.9", 7UL );
+  resp.bam_config.tpu_sock.port = 7000U;
+  resp.bam_config.has_tpu_fwd_sock = true;
+  fd_memset( resp.bam_config.tpu_fwd_sock.ip, 0, sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_memcpy( resp.bam_config.tpu_fwd_sock.ip, "8.8.8.8", 7UL );
+  resp.bam_config.tpu_fwd_sock.port = 7001U;
+
+  uchar pb_buf[ 256 ];
+  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+  ulong publish_chunk = state->gossip_out.chunk;
+  fd_bam_client_grpc_rx_msg( state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+
+  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update_cnt == 1UL );
+  FD_TEST( updates[0].use_bam == FD_BAM_CONTACT_USE_BAM );
+
+  fd_ip4_port_t expected_tpu = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &expected_tpu.addr ) );
+  expected_tpu.port = fd_ushort_bswap( 7000 );
+  FD_TEST( updates[0].tpu_addr.l == expected_tpu.l );
+
+  fd_ip4_port_t expected_tpu_fwd = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &expected_tpu_fwd.addr ) );
+  expected_tpu_fwd.port = fd_ushort_bswap( 7001 );
+  FD_TEST( updates[0].tpu_fwd_addr.l == expected_tpu_fwd.l );
+
+  /* Disabling runtime should immediately revert gossip to the Firedancer defaults. */
+  publish_chunk = state->gossip_out.chunk;
+  state->enabled = 0;
+  fd_bam_update_contact_info( state, state->stem, state->bundle_status_recent, state->bundle_status_recent );
+  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update_cnt == 2UL );
+  FD_TEST( updates[1].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
+
+  /* Re-enabling runtime while still connected should republish the BamConfig address. */
+  publish_chunk = state->gossip_out.chunk;
+  state->enabled = 1;
+  fd_bam_update_contact_info( state, state->stem, state->bundle_status_recent, state->bundle_status_recent );
+  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update_cnt == 3UL );
+  FD_TEST( updates[2].use_bam == FD_BAM_CONTACT_USE_BAM );
+  FD_TEST( updates[2].tpu_addr.l == expected_tpu.l );
+  FD_TEST( updates[2].tpu_fwd_addr.l == expected_tpu_fwd.l );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
   FD_TEST( state->bam_tpu_addr.l == 0UL );
-  FD_TEST( state->bam_tpu_quic_addr.l == 0UL );
+  FD_TEST( state->bam_tpu_fwd_addr.l == 0UL );
 
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
@@ -2094,7 +2168,7 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
                              ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
   FD_TEST( state->bam_tpu_addr.l != 0UL );
 
@@ -2103,12 +2177,12 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   expected_tpu.port = fd_ushort_bswap( 9000 );
   FD_TEST( state->bam_tpu_addr.l == expected_tpu.l );
 
-  fd_ip4_port_t expected_quic = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "5.6.7.8", &expected_quic.addr ) );
-  expected_quic.port = fd_ushort_bswap( 10001 );
-  FD_TEST( state->bam_tpu_quic_addr.l == expected_quic.l );
+  fd_ip4_port_t expected_tpu_fwd = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "5.6.7.8", &expected_tpu_fwd.addr ) );
+  expected_tpu_fwd.port = fd_ushort_bswap( 10001 );
+  FD_TEST( state->bam_tpu_fwd_addr.l == expected_tpu_fwd.l );
   FD_TEST( state->prio_fee_recipient_set == 1U );
-  FD_TEST( state->validator_commission_bps == 2750 );
+  FD_TEST( state->commission_bps == 2750 );
   FD_TEST( 0 == memcmp( state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
   FD_TEST( state->fee_cfg != NULL );
   FD_TEST( state->fee_cfg->has_prio_fee_recipient == 1U );
@@ -2121,9 +2195,9 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
                              ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
   FD_TEST( state->bam_tpu_addr.l == expected_tpu.l );
-  FD_TEST( state->bam_tpu_quic_addr.l == expected_quic.l );
+  FD_TEST( state->bam_tpu_fwd_addr.l == expected_tpu_fwd.l );
   FD_TEST( state->fee_cfg->version == 1UL );
 
   resp.bam_config.has_tpu_fwd_sock = false;
@@ -2134,10 +2208,10 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
                              ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
   FD_TEST( state->bam_tpu_addr.l != 0UL );
   FD_TEST( state->bam_tpu_addr.l == expected_tpu.l );
-  FD_TEST( state->bam_tpu_quic_addr.l == 0UL );
+  FD_TEST( state->bam_tpu_fwd_addr.l == 0UL );
   FD_TEST( state->fee_cfg->version == 1UL );
 
   resp.bam_config.has_tpu_sock = false;
@@ -2148,9 +2222,9 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
                              ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
   FD_TEST( state->bam_tpu_addr.l == 0UL );
-  FD_TEST( state->bam_tpu_quic_addr.l == 0UL );
+  FD_TEST( state->bam_tpu_fwd_addr.l == 0UL );
   FD_TEST( state->fee_cfg->version == 1UL );
 
   test_bam_env_destroy( env );
@@ -2188,7 +2262,7 @@ test_bam_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
   fd_bam_client_grpc_rx_msg( bam_state,
                              pb_buf,
                              ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
   FD_TEST( shared_cfg->version == 1UL );
   FD_TEST( shared_cfg->has_prio_fee_recipient == 1U );
@@ -2248,7 +2322,7 @@ test_bam_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
   fd_bam_client_grpc_rx_msg( bam_state,
                              pb_buf,
                              ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetConfig );
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
   FD_TEST( shared_cfg->version == 2UL );
   FD_TEST( shared_cfg->commission_bps == 10000U );
@@ -2293,7 +2367,7 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   }
 
   FD_TEST( state->builder_info_valid_until == 0L );
-  fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetConfig );
+  fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
   FD_TEST( state->builder_info_valid_until != 0L );
   FD_TEST( state->builder_commission == 5U );
   uchar decoded[32];
@@ -2424,6 +2498,7 @@ main( int     argc,
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
   test_bam_gossip_reconnect_without_contact( wksp );
+  test_bam_runtime_toggle_updates_gossip( wksp );
   test_bam_config_updates_contact_info( wksp );
   test_bam_fee_cfg_propagates_to_pack( wksp );
   test_bam_builder_fee_info( wksp );

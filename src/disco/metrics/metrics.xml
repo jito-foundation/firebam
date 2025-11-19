@@ -370,7 +370,7 @@ metric introduced.
     <gauge name="RttSmoothed" summary="Exponentially smoothed BAM round-trip time estimate (nanoseconds)" />
     <gauge name="RttVar" summary="Smoothed variance of the BAM round-trip time estimator (nanoseconds)" />
     <gauge name="ResultsQueueDepth" summary="Current number of bundle execution results buffered for BAM feedback" />
-    <gauge name="RuntimeEnabled" summary="Boolean gauge: 1 when BAM runtime mode is enabled, 0 when running in fallback mode" />
+    <gauge name="Enabled" summary="Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled" />
     <histogram name="MessageRxDelayNanos" min="100000" max="1000000000">
         <summary>Distribution of message receive delays from the BAM node to the BAM client (nanoseconds)</summary>
     </histogram>

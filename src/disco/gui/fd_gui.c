@@ -1704,6 +1704,12 @@ fd_gui_plugin_message( fd_gui_t *    gui,
       fd_gui_handle_block_engine_update( gui, msg );
       break;
     }
+    case FD_PLUGIN_MSG_BAM_UPDATE: {
+      // TODO: update this for BAM!
+      FD_LOG_INFO(( "BAM update: %s", (char *)msg ));
+      fd_gui_handle_block_engine_update( gui, msg );
+      break;
+    }
     default:
       FD_LOG_ERR(( "Unhandled plugin msg: 0x%lx", plugin_msg ));
       break;

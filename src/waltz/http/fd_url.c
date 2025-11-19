@@ -81,7 +81,7 @@ fd_url_parse_endpoint( fd_url_t *   url_,
                        char const * url_str,
                        ulong        url_str_len,
                        ushort *     tcp_port,
-                       uchar *      is_ssl,
+                       _Bool *      is_ssl,
                        char const * context
                        ) {
   /* Parse URL */

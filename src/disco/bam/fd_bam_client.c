@@ -789,7 +789,7 @@ fd_bam_request_config( fd_bam_tile_t * ctx,
   fd_grpc_h2_stream_t * request = fd_grpc_client_request_start_ex(
       ctx->grpc_client,
       path, sizeof(path)-1,
-      FD_BAM_CLIENT_REQ_BAM_GetConfig,
+      FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig,
       &bam_api_ConfigRequest_msg, &req,
       NULL, 0,
       1
@@ -830,113 +830,108 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     }
   }
 
-  if( FD_LIKELY( resp.has_bam_config ) ) {
-    bam_types_BamConfig const * cfg = &resp.bam_config;
+  if( FD_UNLIKELY( !resp.has_bam_config ) ) {
+    FD_LOG_WARNING(( "Missing BAM config in ConfigResponse" ));
+    return;
+  }
 
-    fd_ip4_port_t new_tpu_addr = ctx->bam_tpu_addr;
-    fd_ip4_port_t new_tpu_quic_addr = ctx->bam_tpu_quic_addr;
-    int have_tpu = 0;
-    int have_tpu_quic = 0;
+  bam_types_BamConfig const * cfg = &resp.bam_config;
 
-    if( cfg->has_tpu_sock ) {
-      uint ip4;
-      if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_sock.ip, &ip4 ) ) &&
-          FD_LIKELY( cfg->tpu_sock.port > 0 && cfg->tpu_sock.port <= USHORT_MAX ) ) {
-        new_tpu_addr.addr = ip4;
-        new_tpu_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_sock.port );
-        have_tpu = 1;
-      } else {
-        FD_LOG_WARNING(( "Invalid BAM TPU socket in ConfigResponse (ip=%s port=%u)",
-                         cfg->tpu_sock.ip,
-                         cfg->tpu_sock.port ));
-      }
-    }
+  fd_ip4_port_t new_tpu_addr = ctx->bam_tpu_addr;
+  fd_ip4_port_t new_tpu_fwd_addr = ctx->bam_tpu_fwd_addr;
+  _Bool have_tpu = 0;
+  _Bool have_tpu_fwd = 0;
 
-    if( cfg->has_tpu_fwd_sock ) {
-      uint ip4;
-      if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_fwd_sock.ip, &ip4 ) ) &&
-          FD_LIKELY( cfg->tpu_fwd_sock.port > 0 && cfg->tpu_fwd_sock.port <= USHORT_MAX ) ) {
-        new_tpu_quic_addr.addr = ip4;
-        new_tpu_quic_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_fwd_sock.port );
-        have_tpu_quic = 1;
-      } else {
-        FD_LOG_WARNING(( "Invalid BAM TPU forward socket in ConfigResponse (ip=%s port=%u)",
-                         cfg->tpu_fwd_sock.ip,
-                         cfg->tpu_fwd_sock.port ));
-      }
-    }
-
-    uchar had_contact = !!ctx->bam_tpu_addr.l;
-    ulong prev_quic   = ctx->bam_tpu_quic_addr.l;
-    int   contact_changed = 0;
-
-    if( FD_LIKELY( have_tpu ) ) {
-      /* Treat the QUIC tuple as optional: if BAM stops advertising it we
-         revert to the Firedancer default (0) and still treat it as an
-         update so gossip releases the override cleanly. */
-      fd_ip4_port_t next_quic = have_tpu_quic ? new_tpu_quic_addr : (fd_ip4_port_t){ .l = 0UL };
-      contact_changed = (!had_contact) ||
-                        ( ctx->bam_tpu_addr.l != new_tpu_addr.l ) ||
-                        ( prev_quic != next_quic.l );
-      ctx->bam_tpu_addr      = new_tpu_addr;
-      ctx->bam_tpu_quic_addr = next_quic;
+  if( cfg->has_tpu_sock ) {
+    uint ip4;
+    if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_sock.ip, &ip4 ) ) &&
+        FD_LIKELY( cfg->tpu_sock.port > 0 && cfg->tpu_sock.port <= USHORT_MAX ) ) {
+      new_tpu_addr.addr = ip4;
+      new_tpu_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_sock.port );
+      have_tpu = 1;
     } else {
-      /* BAM withdrew its TPU override; fall back to Firedancer defaults
-         and prompt gossip to restore the original contact info. */
-      contact_changed = had_contact || ( prev_quic != 0UL );
-      ctx->bam_tpu_addr.l      = 0UL;
-      ctx->bam_tpu_quic_addr.l = 0UL;
+      FD_LOG_WARNING(( "Invalid BAM TPU socket in ConfigResponse (ip=%s port=%u)",
+                       cfg->tpu_sock.ip,
+                       cfg->tpu_sock.port ));
     }
+  }
 
-    if( FD_UNLIKELY( contact_changed ) ) {
-      if( FD_LIKELY( ctx->stem && ctx->bundle_status_recent == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED ) ) {
-        fd_bam_publish_gossip_update( ctx, ctx->stem, ctx->bam_tpu_addr.l ? 1U : 0U );
-      }
+  if( cfg->has_tpu_fwd_sock ) {
+    uint ip4;
+    if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_fwd_sock.ip, &ip4 ) ) &&
+        FD_LIKELY( cfg->tpu_fwd_sock.port > 0 && cfg->tpu_fwd_sock.port <= USHORT_MAX ) ) {
+      new_tpu_fwd_addr.addr = ip4;
+      new_tpu_fwd_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_fwd_sock.port );
+      have_tpu_fwd = 1;
+    } else {
+      FD_LOG_WARNING(( "Invalid BAM TPU forward socket in ConfigResponse (ip=%s port=%u)",
+                       cfg->tpu_fwd_sock.ip,
+                       cfg->tpu_fwd_sock.port ));
     }
+  }
 
-    if( FD_LIKELY( ctx->fee_cfg ) ) {
-      /* Clamp validator commission to the exportable range to avoid overflowing consumers. */
-      ushort new_commission_bps = (ushort)fd_uint_min( cfg->commission_bps, 10000U );
-      int  updated            = 0;
+  uchar had_contact = !!ctx->bam_tpu_addr.l && !!ctx->bam_tpu_fwd_addr.l;
+  _Bool contact_changed = false;
+  if( FD_LIKELY( have_tpu && have_tpu_fwd ) ) {
+    /* If BAM stops advertising TPU, we revert to the Firedancer default (0)
+     * and still treat it as an update, so gossip reverts cleanly. */
+    contact_changed = (!had_contact) ||
+                      ( ctx->bam_tpu_addr.l != new_tpu_addr.l ) ||
+                      ( ctx->bam_tpu_fwd_addr.l != new_tpu_fwd_addr.l );
+    ctx->bam_tpu_addr     = new_tpu_addr;
+    ctx->bam_tpu_fwd_addr = new_tpu_fwd_addr;
+  } else {
+    /* BAM withdrew its TPU override; fall back to Firedancer defaults
+       and prompt gossip to restore the original contact info. */
+    FD_LOG_WARNING(( "Reverting BAM TPU config, TPU: %i, TPU_FWD: %i", have_tpu, have_tpu_fwd ));
+    contact_changed = had_contact;
+    ctx->bam_tpu_addr.l     = 0UL;
+    ctx->bam_tpu_fwd_addr.l = 0UL;
+  }
 
-      if( FD_UNLIKELY( ctx->validator_commission_bps != new_commission_bps ) ) {
-        ctx->validator_commission_bps = new_commission_bps;
-        updated = 1;
+  if( FD_UNLIKELY( contact_changed ) )
+    // TODO: verify if we successfully connected to BAM at this point before gossiping out to the solana cluster
+    fd_bam_update_contact_info( ctx, ctx->stem, FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED, ctx->bundle_status_recent );
+
+  // update fee config
+  _Bool bam_config_fee_updated = false;
+  ushort new_commission_bps = (ushort)fd_uint_min( cfg->commission_bps, 10000U );
+  if( FD_UNLIKELY( ctx->commission_bps != new_commission_bps ) ) {
+    ctx->commission_bps = new_commission_bps;
+    bam_config_fee_updated = 1;
+  }
+
+  if( cfg->prio_fee_recipient_pubkey[0] ) {
+    uchar decoded[ 32 ];
+    if( FD_LIKELY( fd_base58_decode_32( cfg->prio_fee_recipient_pubkey, decoded ) ) ) {
+      /* Either we have not seen a key before, or the pubkey changed. */
+      if( FD_UNLIKELY( !ctx->prio_fee_recipient_set || !!memcmp( ctx->prio_fee_recipient, decoded, sizeof( decoded ) ) ) ) {
+        fd_memcpy( ctx->prio_fee_recipient, decoded, sizeof( decoded ) );
+        ctx->prio_fee_recipient_set = 1U;
+        bam_config_fee_updated = true;
       }
-
-      if( cfg->prio_fee_recipient_pubkey[0] ) {
-        uchar decoded[ 32 ];
-        if( FD_LIKELY( fd_base58_decode_32( cfg->prio_fee_recipient_pubkey, decoded ) ) ) {
-          /* Either we have not seen a key before, or the pubkey changed. */
-          if( FD_UNLIKELY( !ctx->prio_fee_recipient_set || !!memcmp( ctx->prio_fee_recipient, decoded, sizeof( decoded ) ) ) ) {
-            fd_memcpy( ctx->prio_fee_recipient, decoded, sizeof( decoded ) );
-            ctx->prio_fee_recipient_set = 1U;
-            updated = 1;
-          }
-        } else {
-          FD_LOG_HEXDUMP_WARNING(( "Invalid priority fee recipient pubkey in ConfigResponse",
-                                   cfg->prio_fee_recipient_pubkey,
-                                   strnlen( cfg->prio_fee_recipient_pubkey, sizeof( cfg->prio_fee_recipient_pubkey ) ) ));
-        }
-      } else if( FD_UNLIKELY( ctx->prio_fee_recipient_set ) ) {
-        /* BAM sent no pubkey, so update state to match. */
-        fd_memset( ctx->prio_fee_recipient, 0, sizeof( ctx->prio_fee_recipient ) );
-        ctx->prio_fee_recipient_set = 0U;
-        updated = 1;
-      }
-
-      if( FD_UNLIKELY( updated ) ) {
-        /* Broadcast the new validator fee settings to shared memory readers. */
-        ctx->fee_cfg_version++;
-        fd_bam_fee_cfg_t * fee_cfg = ctx->fee_cfg;
-        fd_memcpy( fee_cfg->prio_fee_recipient, ctx->prio_fee_recipient, sizeof( fee_cfg->prio_fee_recipient ) );
-        fee_cfg->commission_bps         = ctx->validator_commission_bps;
-        fee_cfg->has_prio_fee_recipient = ctx->prio_fee_recipient_set;
-        FD_COMPILER_MFENCE();
-        fee_cfg->version = ctx->fee_cfg_version;
-        FD_COMPILER_MFENCE();
-      }
+    } else {
+      FD_LOG_HEXDUMP_WARNING(( "Invalid priority fee recipient pubkey in ConfigResponse",
+                               cfg->prio_fee_recipient_pubkey,
+                               strnlen( cfg->prio_fee_recipient_pubkey, sizeof( cfg->prio_fee_recipient_pubkey ) ) ));
     }
+  } else if( FD_UNLIKELY( ctx->prio_fee_recipient_set ) ) {
+    /* BAM sent no pubkey, so update the state to match. */
+    fd_memset( ctx->prio_fee_recipient, 0, sizeof( ctx->prio_fee_recipient ) );
+    ctx->prio_fee_recipient_set = 0U;
+    bam_config_fee_updated = true;
+  }
+
+  if( FD_UNLIKELY( bam_config_fee_updated ) ) {
+    /* Broadcast the new validator fee settings to shared memory readers. */
+    ctx->fee_cfg_version++;
+    fd_bam_fee_cfg_t * fee_cfg = ctx->fee_cfg;
+    fd_memcpy( fee_cfg->prio_fee_recipient, ctx->prio_fee_recipient, sizeof( fee_cfg->prio_fee_recipient ) );
+    fee_cfg->commission_bps         = ctx->commission_bps;
+    fee_cfg->has_prio_fee_recipient = ctx->prio_fee_recipient_set;
+    FD_COMPILER_MFENCE();
+    fee_cfg->version = ctx->fee_cfg_version;
+    FD_COMPILER_MFENCE();
   }
 }
 
@@ -1232,7 +1227,7 @@ static void
 fd_bam_client_step1( fd_bam_tile_t * ctx,
                        int *              charge_busy ) {
 
-  if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->runtime_enabled ) ) ) {
+  if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) ) {
     /* Admin can pause BAM without tearing the tile down; skip reconnect/IO until re-enabled. */
     return;
   }
@@ -1535,7 +1530,7 @@ fd_bam_client_grpc_rx_msg(
       fd_bam_tile_backoff( ctx, fd_bam_now() );
     }
     break;
-  case FD_BAM_CLIENT_REQ_BAM_GetConfig:
+  case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
     fd_bam_handle_config( ctx, &istream );
     ctx->bam_config_inflight = 0;
     break;
@@ -1557,7 +1552,7 @@ fd_bam_client_request_failed( fd_bam_tile_t * ctx,
     ctx->bam_auth_ready          = 0;
     ctx->bam_auth_challenge_len  = 0;
     break;
-  case FD_BAM_CLIENT_REQ_BAM_GetConfig:
+  case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
     ctx->bam_config_inflight = 0;
     break;
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
@@ -1593,7 +1588,7 @@ fd_bam_client_grpc_rx_end(
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     ctx->bam_auth_inflight = 0;
     break;
-  case FD_BAM_CLIENT_REQ_BAM_GetConfig:
+  case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
     ctx->bam_config_inflight = 0;
     break;
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
@@ -1638,7 +1633,7 @@ fd_bam_client_grpc_rx_timeout(
     ctx->bam_auth_ready          = 0;
     ctx->bam_auth_challenge_len  = 0;
     break;
-  case FD_BAM_CLIENT_REQ_BAM_GetConfig:
+  case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
     ctx->bam_config_inflight = 0;
     break;
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
@@ -1733,7 +1728,7 @@ fd_bam_request_ctx_cstr( ulong request_ctx ) {
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     return "BamGetAuthChallenge";
-  case FD_BAM_CLIENT_REQ_BAM_GetConfig:
+  case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
     return "BamGetBuilderConfig";
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
     return "BamInitSchedulerStream";

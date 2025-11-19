@@ -18,10 +18,13 @@
 typedef struct fd_bam_ctrl {
   uchar state;                       /* FD_BAM_CTRL_STATE_* */
   uchar command;                     /* FD_BAM_CTRL_CMD_* bitset */
-  uchar enable;                      /* Desired enable state (0/1) */
+  uchar enable;                      /* Desired enable state (0/1), set by set_bam.c */
   char url[ FD_URL_MAX ];   /* Requested URL */
   char sni[ FD_SNI_BUF_MAX ];   /* Requested SNI override (optional) */
   char error[ FD_BAM_CTRL_ERR_MAX ]; /* Error message returned on failure */
+
+  // cached values for get_bam to read from
+  // TODO: try and remove these, to avoid having so much state
   uchar current_enable;              /* Currently applied enable flag */
   char current_url[ FD_URL_MAX ]; /* Currently applied URL */
   char current_sni[ FD_SNI_BUF_MAX ]; /* Currently applied SNI */

@@ -134,7 +134,7 @@ typedef struct _bam_types_Meta {
     bam_types_PacketFlags flags;
 } bam_types_Meta;
 
-typedef PB_BYTES_ARRAY_T(2048) bam_types_Packet_data_t;
+typedef PB_BYTES_ARRAY_T(1232) bam_types_Packet_data_t;
 /* A Solana network packet */
 typedef struct _bam_types_Packet {
     bam_types_Packet_data_t data;
@@ -546,7 +546,7 @@ extern const pb_msgdesc_t bam_types_BamConfig_msg;
 #define bam_types_Meta_size                      17
 #define bam_types_NotCommitted_size              261
 #define bam_types_PacketFlags_size               4
-#define bam_types_Packet_size                    2070
+#define bam_types_Packet_size                    1254
 #define bam_types_PohTimeout_size                0
 #define bam_types_Socket_size                    71
 #define bam_types_TransactionCommittedResult_size 25

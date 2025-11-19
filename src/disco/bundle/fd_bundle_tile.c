@@ -154,7 +154,7 @@ static void
 fd_bundle_tile_parse_endpoint( fd_bundle_tile_t *     ctx,
                                fd_topo_tile_t const * tile ) {
   fd_url_t url[1];
-  uchar is_ssl = 0;
+  _Bool is_ssl = 0;
   int res = fd_url_parse_endpoint(
       url,
       tile->bundle.url, tile->bundle.url_len,

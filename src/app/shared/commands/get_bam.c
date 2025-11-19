@@ -41,7 +41,7 @@ get_bam_cmd_fn( args_t *   args FD_PARAM_UNUSED,
     usleep( 5000 );
   }
 
-  int enabled = (int)FD_VOLATILE_CONST( ctrl->current_enable );
+  uchar enabled = FD_VOLATILE_CONST( ctrl->current_enable );
   char url_buf[ FD_URL_MAX ];
   strlcpy( url_buf, ctrl->current_url, sizeof(url_buf) );
   char sni_buf[ FD_SNI_BUF_MAX ];
