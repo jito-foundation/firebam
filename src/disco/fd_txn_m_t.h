@@ -60,14 +60,12 @@ struct fd_txn_m {
   } block_engine;
 
   struct {
-    /* If the transaction is part of a bundle, the bundle_id will be
-       non-zero, and if this transaction is the first one in the
-       bundle, bundle_txn_cnt will be non-zero. */
-      ulong max_schedule_slot;
-      uint  seq_id;  // propagated so downstream stages can correlate execution results
-      uchar  batch_cnt; // how many transactions are expected in the batch
-      uchar  batch_idx; // index of this transaction inside the batch
-      uchar revert_on_error;
+      /* An 'atomic transaction batch' is a bundle of transactions that must be processed together */
+      ulong max_schedule_slot; // Solana slot for which this bundle is valid for (inclusive). eg if we're building slot 100, and max_schedule_slot == 100, process the txn
+      uint  seq_id;  // unique for a single leader rotation, propagated so downstream stages can correlate execution results
+      uchar batch_cnt; // how many transactions are expected in the batch
+      uchar batch_idx; // index of this transaction inside the batch
+      uchar revert_on_error : 1; // boolean value
   } bam;
 
   /* There are three additional fields at the end here, which are
