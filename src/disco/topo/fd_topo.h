@@ -240,6 +240,7 @@ struct fd_topo_tile {
       ulong ssl_heap_sz;
       ulong keepalive_interval_nanos;
       uchar tls_cert_verify : 1;
+      uchar enabled         : 1;
     } bam;
 
     struct {

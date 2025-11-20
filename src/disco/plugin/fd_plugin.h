@@ -117,4 +117,28 @@ typedef struct {
 #define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING   (1)
 #define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED    (2)
 
+typedef struct {
+  char  name[ 16 ];
+  char  url[ FD_URL_MAX ];
+  char  sni[ FD_SNI_BUF_MAX ];
+  char  ip_cstr[ 40 ];    /* IPv4 or IPv6 cstr */
+  char  tpu_cstr[ 22 ];   /* "a.b.c.d:port" */
+  char  tpu_fwd_cstr[ 22 ];
+  uchar status;           /* FD_PLUGIN_MSG_BAM_UPDATE_STATUS_* */
+  uchar enabled;          /* Non-zero when operator enabled BAM */
+  float rtt_sample;       /* Latest RTT sample (ns) */
+  float rtt_smoothed;     /* Smoothed RTT estimate (ns) */
+  float rtt_var;          /* Smoothed RTT variation (ns) */
+  ushort bam_pending_results; /* Pending results queued to BAM */
+  ulong heartbeat_sent;   /* Validator heartbeats sent */
+  ulong heartbeat_recv;   /* Builder heartbeats received */
+  ulong txn_received;     /* Transactions accepted from BAM */
+  ulong bundle_received;  /* Bundles accepted from BAM */
+  ulong packet_drop;      /* Network packet drops before TPU */
+  ulong err_protobuf;     /* Protobuf decode failures */
+  ulong err_transport;    /* Transport-layer failures */
+  ulong err_timeout;      /* Timeout failures */
+  ulong err_no_fee_info;  /* Missing fee info failures */
+} fd_plugin_msg_bam_update_t;
+
 #endif /* HEADER_fd_src_disco_plugin_fd_plugin_h */

@@ -309,7 +309,7 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_link( topo, "votel_plugin", "plugin_in",    128UL,                                    8UL,                          1UL );
     /**/                 fd_topob_link( topo, "valcfg_plugi", "plugin_in",    128UL,                                    608UL,                        1UL );
     if( FD_UNLIKELY( bam_enabled ) )
-      fd_topob_link( topo, "bam_plugi",  "bam_plugi",  65536UL,                                  sizeof(fd_plugin_msg_block_engine_update_t), 1UL );
+      fd_topob_link( topo, "bam_plugi",  "bam_plugi",  65536UL,                                  sizeof(fd_plugin_msg_bam_update_t), 1UL );
 
     /**/                 fd_topob_tile( topo, "plugin",  "plugin",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0, 0 );
 

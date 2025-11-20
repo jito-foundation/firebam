@@ -183,6 +183,7 @@ struct fd_bam_tile {
   fd_bam_out_ctx_t    plugin_out;                    /* Output ring for plugin status updates */
   fd_bam_out_ctx_t    gossip_out;       /* Stem output buffer used for BAM gossip updates */
   ulong *             bam_status_fseq; /* Shared latch written with BAM status (0=inactive,1=active) */
+  uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
 
   /* App metrics */
   fd_bam_metrics_t metrics;                         /* Tile-local counters flushed to metrics */
@@ -192,6 +193,7 @@ struct fd_bam_tile {
   uchar bundle_status_plugin;  /* last 'plugin' update written */
   uchar bundle_status_logged;
   long  last_bundle_status_log_nanos;
+  long  last_gui_publish_nanos;
 };
 
 typedef struct fd_bam_tile fd_bam_tile_t;

@@ -889,9 +889,11 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     ctx->bam_tpu_fwd_addr.l = 0UL;
   }
 
-  if( FD_UNLIKELY( contact_changed ) )
+  if( FD_UNLIKELY( contact_changed ) ) {
     // TODO: verify if we successfully connected to BAM at this point before gossiping out to the solana cluster
     fd_bam_update_contact_info( ctx, ctx->stem, FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED, ctx->bundle_status_recent );
+    ctx->gui_dirty = 1U;
+  }
 
   // update fee config
   _Bool bam_config_fee_updated = false;
@@ -1464,7 +1466,7 @@ fd_bam_tile_publish_txn(
       .seq_id            = seq_id,
       .batch_cnt         = batch_cnt,
       .batch_idx         = batch_idx,
-      .revert_on_error   = revert_on_error,
+      .revert_on_error   = !!revert_on_error,
     },
   };
   if( revert_on_error && ctx->builder_info_valid_until ) {

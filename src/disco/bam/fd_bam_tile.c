@@ -7,6 +7,7 @@
 #include "../../waltz/http/fd_url.h"
 #include "../../tango/fseq/fd_fseq.h"
 #include "../../util/pod/fd_pod_format.h"
+#include "../../util/net/fd_ip4.h"
 
 #include <errno.h>
 #include <dirent.h> /* opendir */
@@ -154,6 +155,13 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   int  status          = fd_bam_client_status( ctx );
   long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
   long now_ns          = fd_log_wallclock();
+
+  if( FD_LIKELY( ctx->plugin_out.mem ) ) {
+    long next_gui_refresh = ctx->last_gui_publish_nanos + (long)5e9;
+    if( FD_UNLIKELY( now_ns > next_gui_refresh ) )
+      ctx->gui_dirty = 1U;
+  }
+
   if( FD_UNLIKELY( status != FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED && now_ns > log_next_ns ) ) {
     FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
     ctx->last_bundle_status_log_nanos = now_ns;
@@ -221,26 +229,57 @@ fd_bam_tile_publish_gui_update(
     fd_bam_tile_t *  ctx,
     fd_stem_context_t * stem
 ) {
-  // TODO: implement this for BAM, currently its a copy from `fd_bundle_tile.c`
-  fd_plugin_msg_block_engine_update_t * update =
+  fd_plugin_msg_bam_update_t * update =
       fd_chunk_to_laddr( ctx->plugin_out.mem, ctx->plugin_out.chunk );
-  memset( update, 0, sizeof(fd_plugin_msg_block_engine_update_t) );
+  memset( update, 0, sizeof(fd_plugin_msg_bam_update_t) );
 
-  strncpy( update->name, "bam", sizeof(update->name) );
+  strlcpy( update->name, "bam", sizeof( update->name ));
 
   /* Deliberately silently truncates */
-  snprintf( update->url, sizeof(update->url), "%s://%.*s:%u",
+  snprintf( update->url, sizeof( update->url ), "%s://%.*s:%u",
             ctx->is_ssl ? "https" : "http",
             (int)ctx->server_fqdn_len,
             ctx->server_fqdn,
             ctx->server_tcp_port );
 
+  strlcpy( update->sni, ctx->server_sni, sizeof( update->sni ) );
+
   /* Format IPv4 string */
-  snprintf( update->ip_cstr, sizeof(update->ip_cstr),
+  snprintf( update->ip_cstr, sizeof( update->ip_cstr ),
             FD_IP4_ADDR_FMT,
             FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ) );
 
-  update->status = ctx->bundle_status_recent;
+  if( FD_LIKELY( ctx->bam_tpu_addr.l ) ) {
+    snprintf( update->tpu_cstr, sizeof( update->tpu_cstr ),
+              FD_IP4_ADDR_FMT ":%u",
+              FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu_addr.addr ),
+              (uint)fd_ushort_bswap( ctx->bam_tpu_addr.port ) );
+  }
+
+  if( FD_LIKELY( ctx->bam_tpu_fwd_addr.l ) ) {
+    snprintf( update->tpu_fwd_cstr, sizeof( update->tpu_fwd_cstr ),
+              FD_IP4_ADDR_FMT ":%u",
+              FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu_fwd_addr.addr ),
+              (uint)fd_ushort_bswap( ctx->bam_tpu_fwd_addr.port ) );
+  }
+
+  update->status  = ctx->bundle_status_recent; // FIXME: this is probably wrong
+  update->enabled = ctx->enabled;
+
+  /* Propagate metrics to the GUI so operators can see health without scraping a Prom endpoint. */
+  update->rtt_sample    = ctx->rtt->latest_rtt;
+  update->rtt_smoothed  = ctx->rtt->smoothed_rtt;
+  update->rtt_var       = ctx->rtt->var_rtt;
+  update->bam_pending_results = ctx->bam_pending_results;
+  update->heartbeat_sent = ctx->metrics.heartbeat_sent_cnt;
+  update->heartbeat_recv = ctx->metrics.heartbeat_recv_cnt;
+  update->txn_received   = ctx->metrics.txn_received_cnt;
+  update->bundle_received= ctx->metrics.bundle_received_cnt;
+  update->packet_drop    = ctx->metrics.packet_drop_cnt;
+  update->err_protobuf   = ctx->metrics.decode_fail_cnt;
+  update->err_transport  = ctx->metrics.transport_fail_cnt;
+  update->err_timeout    = ctx->metrics.timeout_fail_cnt;
+  update->err_no_fee_info= ctx->metrics.missing_builder_info_fail_cnt;
 
   ulong tspub = fd_frag_meta_ts_comp( fd_bam_now() );
   fd_stem_publish(
@@ -248,12 +287,13 @@ fd_bam_tile_publish_gui_update(
       ctx->plugin_out.idx,
       FD_PLUGIN_MSG_BAM_UPDATE,
       ctx->plugin_out.chunk,
-      sizeof(fd_plugin_msg_block_engine_update_t),
+      sizeof(fd_plugin_msg_bam_update_t),
       0UL, /* ctl */
       0UL, /* seq */
       tspub
   );
-  ctx->plugin_out.chunk = fd_dcache_compact_next( ctx->plugin_out.chunk, sizeof(fd_plugin_msg_block_engine_update_t), ctx->plugin_out.chunk0, ctx->plugin_out.wmark );
+  ctx->last_gui_publish_nanos = fd_log_wallclock();
+  ctx->plugin_out.chunk = fd_dcache_compact_next( ctx->plugin_out.chunk, sizeof(fd_plugin_msg_bam_update_t), ctx->plugin_out.chunk0, ctx->plugin_out.wmark );
 }
 
 static void
@@ -281,9 +321,10 @@ after_credit( fd_bam_tile_t *  ctx,
   fd_bam_update_contact_info( ctx, stem, bundle_status, prev_status );
 
   if( ctx->plugin_out.mem ) {
-    if( FD_UNLIKELY( ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
+    if( FD_UNLIKELY( ctx->gui_dirty || ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
       fd_bam_tile_publish_gui_update( ctx, stem );
       ctx->bundle_status_plugin = ctx->bundle_status_recent;
+      ctx->gui_dirty = 0U;
       *charge_busy = 1;
     }
   }
@@ -422,6 +463,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     return -1;
   }
 
+  ctx->gui_dirty = 1U;
   err[0] = '\0';
   return 0;
 }
@@ -744,7 +786,7 @@ privileged_init( fd_topo_t *      topo,
     FD_LOG_CRIT(( "fd_rng_join failed" )); /* unreachable */
   }
 
-  ctx->enabled = 1;
+  ctx->enabled = !!tile->bam.enabled;
   ctx->fee_cfg_version = 0U;
   ctx->commission_bps = 0U;
   ctx->prio_fee_recipient_set   = 0U;
@@ -863,6 +905,8 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bundle_status_plugin = 127;
   ctx->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->last_bundle_status_log_nanos = fd_log_wallclock();
+  ctx->last_gui_publish_nanos = fd_log_wallclock();
+  ctx->gui_dirty = 1U;
 
   ctx->bam_tpu_addr.l       = 0UL;
   ctx->bam_tpu_fwd_addr.l  = 0UL;
