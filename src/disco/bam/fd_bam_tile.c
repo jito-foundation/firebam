@@ -92,22 +92,19 @@ metrics_write( fd_bam_tile_t * ctx ) {
 void
 fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
                               fd_stem_context_t * stem,
-                              uint                use_bam ) {
+                              _Bool               use_bam ) {
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
 
-  /* The gossip tile reads these control messages and mutates its local
-     contact-info state.  Keep the payload minimal so the reliable bus
-     round-trips quickly. */
+  /* Gossip tile reads these messages and mutates its local contact-info state. */
   fd_bam_contact_update_t * msg =
       fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
   fd_memset( msg, 0, sizeof(fd_bam_contact_update_t) );
-  msg->use_bam = use_bam ? FD_BAM_CONTACT_USE_BAM : FD_BAM_CONTACT_USE_DEFAULT;
   if( FD_LIKELY( use_bam ) ) {
-    msg->tpu_addr      = ctx->bam_tpu_addr;
+    msg->use_bam      = FD_BAM_CONTACT_USE_BAM;
+    msg->tpu_addr     = ctx->bam_tpu_addr;
     msg->tpu_fwd_addr = ctx->bam_tpu_fwd_addr;
   }
 
-  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_bam_now() );
   fd_stem_publish( stem,
                    ctx->gossip_out.idx,
                    FD_BAM_STEM_SIG_GOSSIP_UPDATE,
@@ -115,34 +112,11 @@ fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
                    sizeof(fd_bam_contact_update_t),
                    0UL,
                    0UL,
-                   tspub );
+                   fd_frag_meta_ts_comp( fd_bam_now() ) );
   ctx->gossip_out.chunk = fd_dcache_compact_next( ctx->gossip_out.chunk,
                                                   sizeof(fd_bam_contact_update_t),
                                                   ctx->gossip_out.chunk0,
                                                   ctx->gossip_out.wmark );
-}
-
-void
-fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
-                            fd_stem_context_t * stem,
-                            int                 status,
-                            int                 prev_status ) {
-  if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
-
-  int const connected     = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
-  int const was_connected = ( prev_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
-  int const have_contact  = ctx->bam_tpu_addr.l != 0UL;
-
-  if( FD_UNLIKELY( connected && have_contact && !was_connected ) ) {
-    fd_bam_publish_gossip_update( ctx, stem, 1U );
-    return;
-  }
-
-  if( FD_UNLIKELY( was_connected && !connected && have_contact ) ) {
-    /* A disconnect means Firedancer should resume advertising its local
-       TPU ports so TPU clients do not get stuck targeting the BAM host. */
-    fd_bam_publish_gossip_update( ctx, stem, 0U );
-  }
 }
 
 static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
@@ -306,7 +280,10 @@ after_credit( fd_bam_tile_t *  ctx,
   fd_bam_client_step( ctx, charge_busy );
 
   int bundle_status = fd_bam_client_status( ctx );
-  int prev_status   = ctx->bundle_status_recent;
+  _Bool bam_active = ( ctx->enabled && bundle_status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+  if ( FD_UNLIKELY( ctx->bundle_status_recent != bundle_status ) ) {
+    fd_bam_publish_gossip_update( ctx, ctx->stem, bam_active );
+  }
   ctx->bundle_status_recent = (uchar)bundle_status;
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
     /* Expose BAM connectivity via a shared latch. The verify tile uses
@@ -314,11 +291,8 @@ after_credit( fd_bam_tile_t *  ctx,
        duties.  fd_bam_client_status only returns CONNECTED once the
        transport, auth, and scheduler stream are fully live, else
        immediately release the TPU back to default Firedancer behaviour */
-    ulong bam_active = (ulong)( ctx->enabled &&
-                                bundle_status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
-    fd_fseq_update( ctx->bam_status_fseq, bam_active );
+    fd_fseq_update( ctx->bam_status_fseq, (ulong)bam_active );
   }
-  fd_bam_update_contact_info( ctx, stem, bundle_status, prev_status );
 
   if( ctx->plugin_out.mem ) {
     if( FD_UNLIKELY( ctx->gui_dirty || ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {

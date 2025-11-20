@@ -271,13 +271,7 @@ fd_bam_tile_backoff( fd_bam_tile_t * ctx,
 void
 fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
                               fd_stem_context_t * stem,
-                              uint                use_bam );
-
-void
-fd_bam_update_contact_info( fd_bam_tile_t *    ctx,
-                            fd_stem_context_t * stem,
-                            int                 status,
-                            int                 prev_status );
+                              _Bool               use_bam );
 
 /* fd_bam_tile_should_stall returns 1 if forward progress should be
    temporarily prevented due to an error. */

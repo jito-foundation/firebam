@@ -456,7 +456,7 @@ fd_pack_tile_drop_expired_bundles( fd_pack_ctx_t * ctx,
 
     ulong bundle_txn_cnt = meta->bundle.bundle_txn_cnt;
     fd_bam_bundle_result_t res = {
-      .seq_id         = meta->bundle.seq_id, // FIXME: broken!!!
+      .seq_id         = meta->bundle.seq_id, // FIXME: should include max_schedule_slot!!!
       .slot              = slot,
       .bundle_txn_cnt    = (uchar)fd_ulong_min( bundle_txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ), // FIXME: is this correct
       .txn_cnt           = (uchar)fd_ulong_min( bundle_txn_cnt, (ulong)FD_PACK_MAX_TXN_PER_BUNDLE ), // FIXME: is this correct?
@@ -1089,7 +1089,7 @@ during_frag( fd_pack_ctx_t * ctx,
         }
         ctx->current_bundle->active             = 1U;
         ctx->current_bundle->id                 = bundle_id;
-        ctx->current_bundle->txn_cnt            = txnm->block_engine.bundle_txn_cnt;
+        ctx->current_bundle->txn_cnt            = txnm->bam.batch_cnt ? txnm->bam.batch_cnt : txnm->block_engine.bundle_txn_cnt;
         ctx->current_bundle->min_blockhash_slot = ULONG_MAX;
         ctx->current_bundle->max_schedule_slot  = txnm->bam.max_schedule_slot;
         ctx->current_bundle->txn_received       = 0UL;
@@ -1103,7 +1103,7 @@ during_frag( fd_pack_ctx_t * ctx,
         }
         ctx->bundle_meta.builder.commission = txnm->block_engine.commission;
         memcpy( ctx->bundle_meta.builder.commission_pubkey->b, txnm->block_engine.commission_pubkey, 32UL );
-        ctx->bundle_meta.bundle.seq_id         = (uint)bundle_id; // FIXME: this is wrong
+        ctx->bundle_meta.bundle.seq_id         = txnm->bam.seq_id;
         ctx->bundle_meta.bundle.bundle_txn_cnt    = (uchar)ctx->current_bundle->txn_cnt;
         ctx->bundle_meta.bundle.max_schedule_slot = ctx->current_bundle->max_schedule_slot;
 

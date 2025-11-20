@@ -545,16 +545,16 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     }
     ctx->metrics.bundle_received_cnt++;
   } else {
-    for (uchar i = 0; i < state->packet_cnt; i++) {
-      fd_bam_tile_publish_txn(ctx,
-                              state->packets[i].data.bytes,
-                              state->packets[i].data.size,
-                              batch->max_schedule_slot,
-                              batch->seq_id,
-                              i,
-                              state->packet_cnt,
-                              0,
-                              0);
+    for( uchar i=0; i<state->packet_cnt; i++ ) {
+      fd_bam_tile_publish_txn( ctx,
+                               state->packets[i].data.bytes,
+                               state->packets[i].data.size,
+                               batch->max_schedule_slot,
+                               batch->seq_id,
+                               0, // treat as individual transactions
+                               1,
+                               0,
+                               0 );
     }
   }
   ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
@@ -836,11 +836,8 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   }
 
   bam_types_BamConfig const * cfg = &resp.bam_config;
-
-  fd_ip4_port_t new_tpu_addr = ctx->bam_tpu_addr;
-  fd_ip4_port_t new_tpu_fwd_addr = ctx->bam_tpu_fwd_addr;
-  _Bool have_tpu = 0;
-  _Bool have_tpu_fwd = 0;
+  fd_ip4_port_t new_tpu_addr = {0};
+  fd_ip4_port_t new_tpu_fwd_addr = {0};
 
   if( cfg->has_tpu_sock ) {
     uint ip4;
@@ -848,7 +845,6 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
         FD_LIKELY( cfg->tpu_sock.port > 0 && cfg->tpu_sock.port <= USHORT_MAX ) ) {
       new_tpu_addr.addr = ip4;
       new_tpu_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_sock.port );
-      have_tpu = 1;
     } else {
       FD_LOG_WARNING(( "Invalid BAM TPU socket in ConfigResponse (ip=%s port=%u)",
                        cfg->tpu_sock.ip,
@@ -862,7 +858,6 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
         FD_LIKELY( cfg->tpu_fwd_sock.port > 0 && cfg->tpu_fwd_sock.port <= USHORT_MAX ) ) {
       new_tpu_fwd_addr.addr = ip4;
       new_tpu_fwd_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_fwd_sock.port );
-      have_tpu_fwd = 1;
     } else {
       FD_LOG_WARNING(( "Invalid BAM TPU forward socket in ConfigResponse (ip=%s port=%u)",
                        cfg->tpu_fwd_sock.ip,
@@ -870,29 +865,24 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     }
   }
 
-  uchar had_contact = !!ctx->bam_tpu_addr.l && !!ctx->bam_tpu_fwd_addr.l;
-  _Bool contact_changed = false;
-  if( FD_LIKELY( have_tpu && have_tpu_fwd ) ) {
-    /* If BAM stops advertising TPU, we revert to the Firedancer default (0)
-     * and still treat it as an update, so gossip reverts cleanly. */
-    contact_changed = (!had_contact) ||
-                      ( ctx->bam_tpu_addr.l != new_tpu_addr.l ) ||
-                      ( ctx->bam_tpu_fwd_addr.l != new_tpu_fwd_addr.l );
-    ctx->bam_tpu_addr     = new_tpu_addr;
-    ctx->bam_tpu_fwd_addr = new_tpu_fwd_addr;
-  } else {
-    /* BAM withdrew its TPU override; fall back to Firedancer defaults
-       and prompt gossip to restore the original contact info. */
-    FD_LOG_WARNING(( "Reverting BAM TPU config, TPU: %i, TPU_FWD: %i", have_tpu, have_tpu_fwd ));
-    contact_changed = had_contact;
-    ctx->bam_tpu_addr.l     = 0UL;
-    ctx->bam_tpu_fwd_addr.l = 0UL;
-  }
+  _Bool contact_changed = ( new_tpu_addr.l != ctx->bam_tpu_addr.l ) ||
+      ( new_tpu_addr.port != ctx->bam_tpu_addr.port ) ||
+      ( new_tpu_fwd_addr.l != ctx->bam_tpu_fwd_addr.l ) ||
+      ( new_tpu_fwd_addr.port != ctx->bam_tpu_fwd_addr.port );
 
   if( FD_UNLIKELY( contact_changed ) ) {
+    /* A disconnect means Firedancer should resume advertising its local
+       TPU ports so TPU clients do not get stuck targeting the BAM host. */
+    _Bool has_contact = !!new_tpu_addr.l && new_tpu_addr.port > 0 && !!new_tpu_fwd_addr.l && new_tpu_fwd_addr.port > 0;
+    if ( FD_UNLIKELY( !has_contact ) ) {
+      FD_LOG_WARNING(( "Reverting BAM TPU config, due to BAM reset" ));
+    }
     // TODO: verify if we successfully connected to BAM at this point before gossiping out to the solana cluster
-    fd_bam_update_contact_info( ctx, ctx->stem, FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED, ctx->bundle_status_recent );
+    ctx->bam_tpu_addr     = new_tpu_addr;
+    ctx->bam_tpu_fwd_addr = new_tpu_fwd_addr;
+
     ctx->gui_dirty = 1U;
+    fd_bam_publish_gossip_update( ctx, ctx->stem, has_contact );
   }
 
   // update fee config
@@ -1415,6 +1405,8 @@ fd_bam_tile_publish_bundle_txn(
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
     .block_engine   = {
+      // .bundle_id      = ctx->bundle_seq, // BAM should not set these fields!
+      // .bundle_txn_cnt = bundle_txn_cnt,
       .commission     = ctx->builder_commission,
     },
     .bam = {

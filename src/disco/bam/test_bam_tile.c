@@ -838,7 +838,8 @@ test_bam_bundle_rejects_oversized_packet( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
 
   bam_types_Packet packets[1];
-  for( pb_size_t i=0U; i<FD_TXN_MTU; i++ ) {
+  packets[0].data.size = FD_TXN_MTU;
+  for( pb_size_t i=0U; i<packets[0].data.size; i++ ) {
     packets[0].data.bytes[ i ] = (uchar)i;
   }
 
@@ -2022,10 +2023,7 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   FD_TEST( updates[0].tpu_fwd_addr.l == expected_tpu_fwd.l );
 
   publish_chunk = state->gossip_out.chunk;
-  fd_bam_update_contact_info( state,
-                              state->stem,
-                              FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING,
-                              FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  fd_bam_publish_gossip_update( state, state->stem, 1);
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 2UL );
   FD_TEST( updates[1].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
@@ -2050,10 +2048,7 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   FD_TEST( update_cnt == 2UL );
 
   publish_chunk = state->gossip_out.chunk;
-  fd_bam_update_contact_info( state,
-                              state->stem,
-                              FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED,
-                              FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING );
+  fd_bam_publish_gossip_update( state, state->stem, 1);
   FD_TEST( state->gossip_out.chunk == publish_chunk );
   FD_TEST( update_cnt == 2UL );
 
@@ -2118,7 +2113,7 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   /* Disabling runtime should immediately revert gossip to the Firedancer defaults. */
   publish_chunk = state->gossip_out.chunk;
   state->enabled = 0;
-  fd_bam_update_contact_info( state, state->stem, state->bundle_status_recent, state->bundle_status_recent );
+  fd_bam_publish_gossip_update( state, state->stem, 0);
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 2UL );
   FD_TEST( updates[1].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
@@ -2126,7 +2121,7 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   /* Re-enabling runtime while still connected should republish the BamConfig address. */
   publish_chunk = state->gossip_out.chunk;
   state->enabled = 1;
-  fd_bam_update_contact_info( state, state->stem, state->bundle_status_recent, state->bundle_status_recent );
+  fd_bam_publish_gossip_update( state, state->stem, 1);
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 3UL );
   FD_TEST( updates[2].use_bam == FD_BAM_CONTACT_USE_BAM );

@@ -65,7 +65,7 @@ struct fd_txn_m {
       uint  seq_id;  // unique for a single leader rotation, propagated so downstream stages can correlate execution results
       uchar batch_cnt; // how many transactions are expected in the batch
       uchar batch_idx; // index of this transaction inside the batch
-      uchar revert_on_error : 1; // boolean value
+      uchar revert_on_error; // boolean value
   } bam;
 
   /* There are three additional fields at the end here, which are
