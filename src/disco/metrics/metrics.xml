@@ -342,6 +342,40 @@ metric introduced.
     <int value="5" name="SslAlloc" label="OpenSSL alloc fail" />
 </enum>
 
+<enum name="BamError">
+    <int value="1" name="Protobuf" label="Protobuf decode/encode error" />
+    <int value="2" name="Transport" label="Transport error" />
+    <int value="3" name="Timeout" label="I/O timeout" />
+    <int value="4" name="NoFeeInfo" label="Bundle dropped due to missing fee info" />
+    <int value="5" name="SslAlloc" label="OpenSSL alloc fail" />
+</enum>
+
+<tile name="bam">
+    <counter name="TransactionReceived" summary="Cumulative number of transactions accepted from the BAM node, including transactions unpacked from bundles" />
+    <counter name="BundleReceived" summary="Cumulative number of bundles received from the BAM node" />
+    <counter name="BundleResultsDropped" summary="Cumulative number of BAM bundle execution results discarded before publication" />
+    <counter name="PacketsDropped" summary="Cumulative number of BAM network packets dropped before forwarding to the TPU pipeline" />
+    <counter name="HeartbeatsSent" summary="Cumulative number of validator heartbeat messages sent to the BAM node" />
+    <counter name="HeartbeatsReceived" summary="Cumulative number of builder heartbeat messages received from the BAM node" />
+    <counter name="Errors" enum="BamError" summary="Cumulative number of BAM client errors encountered, bucketed by BamError" />
+    <gauge name="HeapSize" summary="Total workspace capacity reserved for the BAM tile (bytes)" />
+    <gauge name="HeapFreeBytes" summary="Estimated free capacity in the BAM tile workspace heap (bytes)" />
+    <counter name="Keepalives" summary="Cumulative number of HTTP/2 keepalive PINGs acknowledged by the BAM node" />
+    <counter name="Connections" summary="Cumulative number of successful BAM client connections established to the BAM node" />
+    <counter name="Disconnects" summary="Cumulative number of connection teardowns between the BAM client and BAM node" />
+    <counter name="ResultsSent" summary="Cumulative number of bundle execution result messages forwarded to the BAM node" />
+    <counter name="LeaderStateSent" summary="Cumulative number of leader state update messages sent to the BAM node" />
+    <gauge name="Connected" summary="Boolean gauge: 1 when the BAM client is connected to the BAM node, otherwise 0" />
+    <gauge name="RttSample" summary="Latest BAM round-trip time sample captured at scrape time (nanoseconds)" />
+    <gauge name="RttSmoothed" summary="Exponentially smoothed BAM round-trip time estimate (nanoseconds)" />
+    <gauge name="RttVar" summary="Smoothed variance of the BAM round-trip time estimator (nanoseconds)" />
+    <gauge name="ResultsQueueDepth" summary="Current number of bundle execution results buffered for BAM feedback" />
+    <gauge name="Enabled" summary="Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled" />
+    <histogram name="MessageRxDelayNanos" min="100000" max="1000000000">
+        <summary>Distribution of message receive delays from the BAM node to the BAM client (nanoseconds)</summary>
+    </histogram>
+</tile>
+
 <tile name="bundle">
     <counter name="TransactionReceived" summary="Total count of transactions received, including transactions within bundles" />
     <counter name="PacketReceived" summary="Total count of packets received" />

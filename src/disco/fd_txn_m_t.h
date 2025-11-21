@@ -11,6 +11,7 @@
 #define FD_TXN_M_TPU_SOURCE_GOSSIP (3UL)
 #define FD_TXN_M_TPU_SOURCE_BUNDLE (4UL)
 #define FD_TXN_M_TPU_SOURCE_SEND   (5UL)
+#define FD_TXN_M_TPU_SOURCE_BAM    (6UL)
 
 struct fd_txn_m {
   /* The computed slot that this transaction is referencing, aka. the
@@ -56,9 +57,16 @@ struct fd_txn_m {
     uchar commission;
     uchar commission_pubkey[ 32 ];
 
-    /* alignof is 8, so 7 bytes of padding here */
-
   } block_engine;
+
+  struct {
+      /* An 'atomic transaction batch' is a bundle of transactions that must be processed together */
+      ulong max_schedule_slot; // Solana slot for which this bundle is valid for (inclusive). eg if we're building slot 100, and max_schedule_slot == 100, process the txn
+      uint  seq_id;  // unique for a single leader rotation, propagated so downstream stages can correlate execution results
+      uchar batch_cnt; // how many transactions are expected in the batch
+      uchar batch_idx; // index of this transaction inside the batch
+      uchar revert_on_error; // boolean value
+  } bam;
 
   /* There are three additional fields at the end here, which are
      variable length and not included in the size of this struct. txn_t

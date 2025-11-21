@@ -16,6 +16,7 @@
 #include "../../util/net/fd_net_headers.h"
 
 #include "../store/util.h"
+#include "../../disco/bam/fd_bam_types.h"
 
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -31,6 +32,7 @@
 #define IN_KIND_NET     (1)
 #define IN_KIND_SEND    (2)
 #define IN_KIND_SIGN    (4)
+#define IN_KIND_BAM     (8)
 #define MAX_IN_LINKS    (8)
 
 static volatile ulong * fd_shred_version;
@@ -137,6 +139,11 @@ struct fd_gossip_tile_ctx {
   fd_gossip_peer_addr_t tpu_quic_my_addr;
   fd_gossip_peer_addr_t tpu_vote_my_addr;
   fd_gossip_peer_addr_t repair_serve_addr;
+  fd_bam_contact_update_t pending_bam_update; /* Snapshot delivered by BAM tile */
+  fd_ip4_port_t           default_tpu_addr;   /* Firedancer bootstrap TPU address */
+  fd_ip4_port_t           default_tpu_quic_addr; /* Firedancer bootstrap QUIC address */
+  uint                    bam_update_pending : 1;  /* BAM update waiting for post-processing */
+  uint                    bam_override_active : 1; /* Whether BAM currently overrides TPU contact */
   ushort                gossip_listen_port;
 
   fd_frag_meta_t * net_out_mcache;
@@ -313,6 +320,7 @@ before_frag( fd_gossip_tile_ctx_t * ctx,
              ulong                  seq FD_PARAM_UNUSED,
              ulong                  sig ) {
   uint in_kind = ctx->in_kind[ in_idx ];
+  if( in_kind == IN_KIND_BAM ) return 0;
   return in_kind != IN_KIND_SEND && fd_disco_netmux_sig_proto( sig ) != DST_PROTO_GOSSIP;
 }
 
@@ -338,10 +346,113 @@ during_frag( fd_gossip_tile_ctx_t * ctx,
     return;
   }
 
+  if( in_kind == IN_KIND_BAM ) {
+    /* Messages from the BAM tile are small control updates.  Defer the
+       actual mutation to after_frag so we can reuse the tile's existing
+       single-threaded update path and avoid holding onto the chunk. */
+    if( FD_UNLIKELY( sz!=sizeof(fd_bam_contact_update_t) ) ) {
+      FD_LOG_WARNING(( "Unexpected BAM contact update size %lu", sz ));
+      return;
+    }
+    if( FD_UNLIKELY( chunk<in_ctx->chunk0 || chunk>in_ctx->wmark ) ) {
+      FD_LOG_WARNING(( "BAM contact update chunk %lu out of range [%lu,%lu]", chunk, in_ctx->chunk0, in_ctx->wmark ));
+      return;
+    }
+    fd_bam_contact_update_t const * update = (fd_bam_contact_update_t const *)fd_chunk_to_laddr( in_ctx->mem, chunk );
+    ctx->pending_bam_update = *update;
+    ctx->bam_update_pending = 1U;
+    return;
+  }
+
   if( in_kind!=IN_KIND_NET ) return;
 
   void const * src = fd_net_rx_translate_frag( &ctx->in_links[ in_idx ].net_rx, chunk, ctl, sz );
   fd_memcpy( ctx->gossip_buffer, src, sz );
+}
+
+static void
+fd_gossip_refresh_self_contact_info( fd_gossip_tile_ctx_t * ctx ) {
+  if( FD_UNLIKELY( !ctx || !ctx->contact_info_table ) ) return;
+  fd_contact_info_elem_t * self =
+      fd_contact_info_table_query( ctx->contact_info_table, &ctx->identity_public_key, NULL );
+  if( FD_UNLIKELY( !self ) ) {
+    if( FD_UNLIKELY( fd_contact_info_table_is_full( ctx->contact_info_table ) ) ) {
+      FD_LOG_WARNING(( "Contact info table full; unable to refresh self contact info" ));
+      return;
+    }
+    self = fd_contact_info_table_insert( ctx->contact_info_table, &ctx->identity_public_key );
+    fd_contact_info_init( &self->contact_info );
+  }
+
+  fd_contact_info_t const * my_contact = fd_gossip_get_my_contact( ctx->gossip );
+  if( FD_UNLIKELY( !my_contact ) ) return;
+
+  /* fd_gossip maintains the canonical contact-info struct.  Mirror it back
+     into the CRDS table so later lookups (e.g. repair) observe the same
+     ports the cluster will hear about. */
+  fd_contact_info_from_ci_v2( &my_contact->ci_crd, &self->contact_info );
+}
+
+static void
+fd_gossip_apply_bam_update( fd_gossip_tile_ctx_t *             ctx,
+                            fd_bam_contact_update_t const * update ) {
+  if( FD_UNLIKELY( !update ) ) return;
+
+  int const use_bam = ( update->use_bam==FD_BAM_CONTACT_USE_BAM );
+
+  fd_ip4_port_t desired_tpu      = ctx->default_tpu_addr;
+  fd_ip4_port_t desired_tpu_quic = ctx->default_tpu_quic_addr;
+  /* Start from the Firedancer defaults; BAM selectively overrides these
+     when it wants us to point the cluster at the block engine. */
+
+  if( FD_LIKELY( use_bam ) ) {
+    /* Reject overrides that drop the TPU socket entirely; fall back to the
+       Firedancer defaults so listeners are never pointed at an unusable
+       address. */
+    if( FD_UNLIKELY( !update->tpu_addr.addr || !update->tpu_addr.port ) ) {
+      FD_LOG_WARNING(( "Received BAM contact update with empty TPU address" ));
+      return;
+    }
+
+    desired_tpu = update->tpu_addr;
+
+    /* QUIC is optional; keep advertising the Firedancer port unless BAM
+       provides a full override so we do not emit zeroed sockets. */
+    if( FD_LIKELY( update->tpu_fwd_addr.addr && update->tpu_fwd_addr.port ) )
+      desired_tpu_quic = update->tpu_fwd_addr;
+  }
+
+  int const override_changed = ctx->bam_override_active != (uint)use_bam;
+  int const tpu_changed      = ctx->tpu_my_addr.l != desired_tpu.l;
+  int const quic_changed     = ctx->tpu_quic_my_addr.l != desired_tpu_quic.l;
+
+  /* Avoid redundant rebroadcasts; upstream sends periodic refreshes so we
+     only react when the effective contact info actually is different. */
+  if( FD_UNLIKELY( !( override_changed | tpu_changed | quic_changed ) ) )
+    return;
+
+  ctx->bam_override_active = use_bam ? 1U : 0U;
+  ctx->tpu_my_addr         = desired_tpu;
+  ctx->tpu_quic_my_addr    = desired_tpu_quic;
+
+  FD_LOG_NOTICE(( "%s TPU contact info to " FD_IP4_ADDR_FMT ":%u (quic " FD_IP4_ADDR_FMT ":%u)",
+                  use_bam ? "Overriding" : "Restoring",
+                  FD_IP4_ADDR_FMT_ARGS( desired_tpu.addr ),
+                  fd_ushort_bswap( desired_tpu.port ),
+                  FD_IP4_ADDR_FMT_ARGS( desired_tpu_quic.addr ),
+                  fd_ushort_bswap( desired_tpu_quic.port ) ));
+
+  int const rc = fd_gossip_update_tpu_addr( ctx->gossip, &ctx->tpu_my_addr, &ctx->tpu_quic_my_addr );
+  if( FD_UNLIKELY( rc ) )
+    FD_LOG_WARNING(( "Failed to update gossip TPU contact info (rc=%d)", rc ));
+
+  /* A BAM override might only change the metadata in our local CRDS entry;
+     make sure the table reflects the new values before we rebroadcast. */
+  fd_gossip_refresh_self_contact_info( ctx );
+
+  /* Force a contact-info push so peers hear about the override immediately
+     instead of waiting for the normal heartbeat timer. */
+  fd_gossip_force_contact_info_push( ctx->gossip );
 }
 
 static void
@@ -354,6 +465,16 @@ after_frag( fd_gossip_tile_ctx_t * ctx,
             ulong                  tspub  FD_PARAM_UNUSED,
             fd_stem_context_t *    stem ) {
   uint in_kind = ctx->in_kind[ in_idx ];
+
+  if( in_kind==IN_KIND_BAM ) {
+    if( FD_LIKELY( ctx->bam_update_pending ) ) {
+      /* Only mutate gossip state once per input event so we keep the
+         usual ordering guarantees relative to other network traffic. */
+      fd_gossip_apply_bam_update( ctx, &ctx->pending_bam_update );
+      ctx->bam_update_pending = 0U;
+    }
+    return;
+  }
 
   if( in_kind==IN_KIND_SEND ) {
     fd_crds_data_t vote_txn_crds;
@@ -606,6 +727,8 @@ unprivileged_init( fd_topo_t *      topo,
       continue;
     } else if( 0==strcmp( link->name, "send_txns" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_SEND;
+    } else if( 0==strcmp( link->name, "bam_gossip" ) ) {
+      ctx->in_kind[ in_idx ] = IN_KIND_BAM;
     } else if( 0==strcmp( link->name, "sign_gossip" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_SIGN;
       sign_link_in_idx = in_idx;
@@ -784,10 +907,19 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->repair_serve_addr.addr = tile->gossip.ip_addr;
   ctx->repair_serve_addr.port = fd_ushort_bswap( tile->gossip.repair_serve_port );
 
+  /* Remember the Firedancer-provided ports so we can fall back when the
+     BAM connection drops or asks us to relinquish the override. */
+  ctx->default_tpu_addr      = ctx->tpu_my_addr;
+  ctx->default_tpu_quic_addr = ctx->tpu_quic_my_addr;
+  ctx->bam_update_pending    = 0U;
+  ctx->bam_override_active   = 0U;
+  ctx->pending_bam_update    = (fd_bam_contact_update_t){0};
+
   fd_gossip_update_tvu_addr( ctx->gossip, &ctx->tvu_my_addr );
   fd_gossip_update_tpu_addr( ctx->gossip, &ctx->tpu_my_addr, &ctx->tpu_quic_my_addr );
   fd_gossip_update_tpu_vote_addr( ctx->gossip, &ctx->tpu_vote_my_addr );
   fd_gossip_update_repair_addr( ctx->gossip, &ctx->repair_serve_addr );
+  fd_gossip_refresh_self_contact_info( ctx );
   fd_gossip_settime( ctx->gossip, fd_log_wallclock() );
   fd_gossip_start( ctx->gossip );
 

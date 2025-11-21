@@ -30,6 +30,14 @@ typedef struct fd_url fd_url_t;
 #define FD_URL_ERR_HOST_OVERSZ 2
 #define FD_URL_ERR_USERINFO    3
 
+
+/* RFC 1035 caps a DNS name (aka FQDN) at 255 bytes, excluding the
+   terminating NUL.  TLS SNI hostnames (RFC 6066) share the same limit. */
+#define FD_FQDN_BUF_MAX (255UL+1UL)
+#define FD_SNI_BUF_MAX FD_FQDN_BUF_MAX
+#define FD_URL_FORMAT_OVERHEAD 14UL /* https:// + port separator + 5 digit port */
+#define FD_URL_MAX (FD_FQDN_BUF_MAX+FD_URL_FORMAT_OVERHEAD)
+
 FD_PROTOTYPES_BEGIN
 
 /* fd_url_parse_cstr is a basic URL parser.  It is not RFC compliant.
@@ -46,6 +54,28 @@ fd_url_parse_cstr( fd_url_t *   url,
                    char const * url_str,
                    ulong        url_str_len,
                    int *        opt_err );
+
+
+/* Shared validator/runtime URL gate.
+   Accepts a http(s):// URL, fills fd_url_t `url` parameter.
+     - Only `http://` and `https://` schemes are permitted.  Anything
+       else (including missing schemes or stray slashes) is rejected.
+       The `context` string is echoed in the log so operators know which
+       knob supplied the bad value.
+     - If the URL omits an explicit port we default to 443/80 and then flip
+       `is_ssl` based on the scheme so downstream sockets know whether
+       to open TLS.
+     - Host names larger than 255 bytes are rejected
+   The function does not enforce the host being non-empty—that is left to
+   the caller because some control paths treat an empty host differently
+   (e.g. surfacing a custom error message). */
+int
+fd_url_parse_endpoint( fd_url_t *   url_,
+                       char const * url_str,
+                       ulong        url_str_len,
+                       ushort *     tcp_port,
+                       _Bool *      is_ssl,
+                       char const * context);
 
 /* fd_url_unescape undoes % escapes in-place. */
 

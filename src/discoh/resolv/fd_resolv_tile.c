@@ -380,12 +380,14 @@ after_frag( fd_resolv_ctx_t *   ctx,
     buffer.  If we later see the blockhash come to exist, we forward any
     buffered transactions to back. */
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  int is_bundle_member = !!txnm->bam.revert_on_error;// FIXME: this is likely wrong
+
+  if( FD_UNLIKELY( is_bundle_member && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
     ctx->bundle_id     = txnm->block_engine.bundle_id;
   }
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && ctx->bundle_failed ) ) {
+  if( FD_UNLIKELY( is_bundle_member && ctx->bundle_failed ) ) {
     ctx->metrics.bundle_peer_failure_cnt++;
     return;
   }
@@ -395,13 +397,12 @@ after_frag( fd_resolv_ctx_t *   ctx,
   if( FD_LIKELY( blockhash ) ) {
     txnm->reference_slot = blockhash->slot;
     if( FD_UNLIKELY( txnm->reference_slot+151UL<ctx->completed_slot ) ) {
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+      if( FD_UNLIKELY( is_bundle_member ) ) ctx->bundle_failed = 1;
       ctx->metrics.blockhash_expired++;
       return;
     }
   }
 
-  int is_bundle_member = !!txnm->block_engine.bundle_id;
   int is_durable_nonce = fd_resolv_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
 
   if( FD_UNLIKELY( !is_bundle_member && !is_durable_nonce && !blockhash ) ) {
@@ -437,7 +438,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
   if( FD_UNLIKELY( txnt->addr_table_adtl_cnt ) ) {
     if( FD_UNLIKELY( !ctx->root_bank ) ) {
       FD_MCNT_INC( RESOLV, NO_BANK_DROP, 1 );
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+      if( FD_UNLIKELY( is_bundle_member ) ) ctx->bundle_failed = 1;
       return;
     }
 
@@ -446,7 +447,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
     ctx->metrics.lut[ (ulong)((long)FD_METRICS_COUNTER_RESOLV_LUT_RESOLVED_CNT+result-1L) ]++;
 
     if( FD_UNLIKELY( result!=FD_BANK_ABI_TXN_INIT_SUCCESS ) ) {
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+      if( FD_UNLIKELY( is_bundle_member ) ) ctx->bundle_failed = 1;
       return;
     }
   }
@@ -469,7 +470,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->round_robin_idx = tile->kind_id;
 
   ctx->bundle_failed = 0;
-  ctx->bundle_id     = 0UL;
+  ctx->bundle_id     = ULONG_MAX;
 
   ctx->completed_slot = 0UL;
   ctx->blockhash_ring_idx = 0UL;

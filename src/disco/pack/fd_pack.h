@@ -527,6 +527,12 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
    have an alignment of at least GCD( 64, bundle_meta_sz ). */
 void const * fd_pack_peek_bundle_meta( fd_pack_t const * pack );
 
+/* fd_pack_drop_best_bundle removes the highest priority schedulable bundle
+   from the pack treap if present. It returns the number of transactions
+   removed (0 if no bundle was dropped). */
+
+ulong fd_pack_drop_best_bundle( fd_pack_t * pack );
+
 /* fd_pack_set_initializer_bundles_ready sets the IB state machine state
    (see long initializer bundle comment above) to the [Ready] state.
    This function makes it easy to use bundles without initializer
