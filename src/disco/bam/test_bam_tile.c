@@ -1924,6 +1924,42 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
 }
 
 FD_FN_UNUSED static void
+test_bam_ctrl_enable_from_disabled_start( fd_wksp_t * wksp ) {
+  /* Ensure a tile launched with BAM disabled can be enabled via runtime control. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * ctx = env->state;
+
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_defaults( ctx, &ctrl );
+
+  ctx->enabled = 0;
+  ctrl.enable  = 0U;
+
+  static fd_keyswitch_t keyswitch = {0};
+  keyswitch.magic = FD_KEYSWITCH_MAGIC;
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  keyswitch.param = 0UL;
+  ctx->keyswitch = &keyswitch;
+
+  ctrl.command = FD_BAM_CTRL_CMD_ENABLE;
+  ctrl.enable  = 1U;
+  ctrl.state   = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( ctrl.enable == 1U );
+  FD_TEST( ctx->enabled == 1 );
+  FD_TEST( !strcmp( ctrl.url, "https://initial.builder.test:443" ) );
+  FD_TEST( !strcmp( ctx->ctrl->error, "" ) );
+
+  ctx->keyswitch = NULL;
+
+  test_bam_env_destroy( env );
+}
+
+FD_FN_UNUSED static void
 test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
   /* Invalid runtime URLs should surface an error without mutating existing configuration. */
   test_bam_env_t env[1];
@@ -2042,8 +2078,13 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   FD_TEST( updates[2].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
 
   /* If BAM contact is absent, should publish empty ip:port for tpu+tpu_fwd to revert */
+  publish_chunk = state->gossip_out.chunk;
   fd_bam_publish_gossip_update( state, state->stem, 1 );
-  // TODO: check that new gossip update was published here
+  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update_cnt == 4UL );
+  FD_TEST( updates[3].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
+  FD_TEST( updates[3].tpu_addr.l == 0UL );
+  FD_TEST( updates[3].tpu_fwd_addr.l == 0UL );
 
   test_bam_env_destroy( env );
 }
@@ -2120,6 +2161,58 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   FD_TEST( updates[2].use_bam == FD_BAM_CONTACT_USE_BAM );
   FD_TEST( updates[2].tpu_addr.l == expected_tpu.l );
   FD_TEST( updates[2].tpu_fwd_addr.l == expected_tpu_fwd.l );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_gossip_update_requires_full_contact( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
+  state->gossip_out = (fd_bam_out_ctx_t){
+      .idx    = 0UL,
+      .mem    = gossip_mem,
+      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
+  };
+
+  fd_ip4_port_t bam_tpu = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "7.7.7.7", &bam_tpu.addr ) );
+  bam_tpu.port = fd_ushort_bswap( 8899 );
+
+  /* Missing forward address should not advertise BAM contact info. */
+  state->bam_tpu_addr     = bam_tpu;
+  state->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
+  ulong publish_chunk = state->gossip_out.chunk;
+  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update.use_bam == FD_BAM_CONTACT_USE_DEFAULT );
+
+  /* Missing both sockets should also fall back to defaults. */
+  state->bam_tpu_addr     = (fd_ip4_port_t){0};
+  state->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
+  publish_chunk = state->gossip_out.chunk;
+  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update.use_bam == FD_BAM_CONTACT_USE_DEFAULT );
+
+  /* Full contact info should publish BAM overrides. */
+  fd_ip4_port_t bam_tpu_fwd = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "6.6.6.6", &bam_tpu_fwd.addr ) );
+  bam_tpu_fwd.port = fd_ushort_bswap( 9999 );
+  state->bam_tpu_addr     = bam_tpu;
+  state->bam_tpu_fwd_addr = bam_tpu_fwd;
+  publish_chunk = state->gossip_out.chunk;
+  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update.use_bam == FD_BAM_CONTACT_USE_BAM );
+  FD_TEST( update.tpu_addr.l == bam_tpu.l );
+  FD_TEST( update.tpu_fwd_addr.l == bam_tpu_fwd.l );
 
   test_bam_env_destroy( env );
 }
@@ -2483,9 +2576,11 @@ main( int     argc,
   test_bam_request_ctx_labels();
   test_bam_ctrl_updates_url_and_sni( wksp );
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
+  test_bam_ctrl_enable_from_disabled_start( wksp );
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
   test_bam_gossip_reconnect_without_contact( wksp );
   test_bam_runtime_toggle_updates_gossip( wksp );
+  test_bam_gossip_update_requires_full_contact( wksp );
   test_bam_config_updates_contact_info( wksp );
   test_bam_fee_cfg_propagates_to_pack( wksp );
   test_bam_builder_fee_info( wksp );

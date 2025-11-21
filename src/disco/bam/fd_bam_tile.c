@@ -99,7 +99,11 @@ fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
   fd_bam_contact_update_t * msg =
       fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
   fd_memset( msg, 0, sizeof(fd_bam_contact_update_t) );
-  if( FD_LIKELY( use_bam ) ) {
+
+  uint publish_bam = (uint)( use_bam &&
+                             ctx->bam_tpu_addr.addr && ctx->bam_tpu_addr.port &&
+                             ctx->bam_tpu_fwd_addr.addr && ctx->bam_tpu_fwd_addr.port );
+  if( FD_LIKELY( publish_bam ) ) {
     msg->use_bam      = FD_BAM_CONTACT_USE_BAM;
     msg->tpu_addr     = ctx->bam_tpu_addr;
     msg->tpu_fwd_addr = ctx->bam_tpu_fwd_addr;
