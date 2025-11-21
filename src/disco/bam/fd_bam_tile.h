@@ -6,6 +6,18 @@
 struct fd_bam_tile;
 typedef struct fd_bam_tile fd_bam_tile_t;
 
+#define FD_BAM_CLIENT_REQUEST_TIMEOUT ((long)8e9) /* 8 seconds */
+
+#define FD_BAM_AUTH_LABEL "X_OFF_CHAIN_JITO_BAM_V1\0"
+static char const fd_bam_auth_label[] = FD_BAM_AUTH_LABEL;
+
+enum {
+    FD_BAM_BATCH_DROP_NONE         = 0,
+    FD_BAM_BATCH_DROP_PROTO        = 1,
+    FD_BAM_BATCH_DROP_OVERSIZE     = 2,
+    FD_BAM_BATCH_DROP_MIXED_FLAGS  = 3
+  };
+
 FD_PROTOTYPES_BEGIN
 
 extern fd_topo_run_tile_t fd_tile_bam;

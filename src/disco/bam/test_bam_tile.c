@@ -17,6 +17,8 @@
 #include <limits.h>
 #include <string.h>
 
+#include "fd_bam_tile.h"
+
 static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL, 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
 
 
@@ -1100,7 +1102,7 @@ test_bam_heartbeat_env_start( test_bam_env_t * env,
 
 static void
 test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
-  /* Test 1: Timeout triggers when heartbeat exceeds 6 seconds */
+  /* Test 1: Watchdog drops the connection once the builder heartbeat is stale (>6s) while streams are live. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
@@ -1113,7 +1115,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* Test 2: No timeout when heartbeat timestamp is 0L (uninitialized) */
+  /* Test 2: An uninitialized heartbeat timestamp (0L) should never trip the watchdog. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
@@ -1126,7 +1128,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* Test 3: No timeout when stream is not live */
+  /* Test 3: If the scheduler stream is down, the watchdog should stay idle even with stale timestamps. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
@@ -1138,7 +1140,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* Test 4: No timeout just before the threshold */
+  /* Test 4: Just before the 6s boundary we should not disconnect (off-by-one guard). */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
@@ -1149,7 +1151,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* Test 5: Timeout at exact boundary ( >= 6 seconds should trigger) */
+  /* Test 5: The exact 6s boundary should still trigger a disconnect. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
@@ -1161,7 +1163,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* Test 6: Timeout at boundary + 1ns */
+  /* Test 6: Boundary +1ns also triggers, proving the comparison is inclusive. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
@@ -1173,7 +1175,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* Test 7: No timeout when runtime is disabled */
+  /* Test 7: Disabling BAM runtime should bypass the watchdog entirely. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
@@ -1191,8 +1193,9 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
   /* Uses helper-generated scheduler responses to drive heartbeat timestamping
      and ensure batches refresh the watchdog deadline. */
 
-  /* Heartbeat message updates timestamp */
+  /* Heartbeat message updates timestamp to prove unsolicited pings refresh the deadline. */
   {
+    /* Subtest: direct heartbeat bumps the builder heartbeat timestamp. */
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     test_bam_send_scheduler_heartbeat( state, 1UL );
@@ -1202,8 +1205,9 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* 5.9 seconds after heartbeat should NOT timeout */
+  /* 5.9 seconds after heartbeat should NOT timeout: verifies a recent heartbeat defers disconnect. */
   {
+    /* Subtest: watchdog stays armed-but-waiting when heartbeat is recent. */
     test_bam_env_t env[1];
    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
@@ -1215,8 +1219,9 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* 6.1 seconds after heartbeat SHOULD timeout */
+  /* 6.1 seconds after heartbeat SHOULD timeout: ensures the refreshed deadline still enforces the same limit. */
   {
+    /* Subtest: once heartbeat ages past the limit we disconnect even after refresh. */
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
@@ -1229,8 +1234,9 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* Bundle batches update timestamp */
+  /* Bundle batches update timestamp because executing work should also count as liveness. */
   {
+    /* Subtest: executing a bundle refreshes watchdog like a heartbeat. */
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     test_bam_send_scheduler_bundle( state, 0U, 0 );
@@ -1239,7 +1245,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* 5.9 seconds after bundle should NOT timeout */
+  /* 5.9 seconds after bundle should NOT timeout: confirms bundle-driven refresh behaves like heartbeats. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
@@ -1252,7 +1258,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* 6.1 seconds after bundle SHOULD timeout */
+  /* 6.1 seconds after bundle SHOULD timeout: the refreshed deadline still enforces the same bound. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
@@ -1346,17 +1352,13 @@ test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
   state->bam_last_config_poll_ns = g_clock;
 
   char const challenge[] = "challenge-123";
-  fd_memset( state->bam_auth_challenge, 0, sizeof(state->bam_auth_challenge) );
-  memcpy( state->bam_auth_challenge, challenge, sizeof(challenge) );
-  state->bam_auth_challenge_len = (uint)sizeof(challenge) - 1U;
+  state->bam_auth_challenge_len = (ushort)strlcpy( state->bam_auth_challenge, challenge, sizeof(challenge) );
 
   char const signature[] = "sig-abcdef";
-  fd_memset( state->bam_auth_signature, 0, sizeof(state->bam_auth_signature) );
-  memcpy( state->bam_auth_signature, signature, sizeof(signature) );
+  strlcpy( state->bam_auth_signature, signature, sizeof(signature) );
 
   char const validator_key[] = "validator-key-test";
-  fd_memset( state->bam_validator_pubkey, 0, sizeof(state->bam_validator_pubkey) );
-  memcpy( state->bam_validator_pubkey, validator_key, sizeof(validator_key) );
+  strlcpy( state->bam_validator_pubkey, validator_key, sizeof(validator_key) );
 
   fd_bam_test_drive( state, g_clock );
 
@@ -1382,7 +1384,9 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  ulong const depth = 8UL;
+  ulong const depth        = 8UL;
+  ulong const request_mtu  = 256UL;
+  ulong const response_mtu = 64UL;
 
   void * request_mem = fd_wksp_alloc_laddr(
       wksp, fd_mcache_align(), fd_mcache_footprint( depth, 0UL ), 1UL );
@@ -1398,25 +1402,32 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
       fd_mcache_new( response_mem, depth, 0UL, 0UL ) );
   FD_TEST( response_mcache );
 
-  uchar * request_data = fd_wksp_alloc_laddr( wksp, FD_WKSP_ALIGN_DEFAULT, 256UL, 1UL );
-  uchar * response_data = fd_wksp_alloc_laddr( wksp, FD_WKSP_ALIGN_DEFAULT, 64UL, 1UL );
-  FD_TEST( request_data && response_data );
+  ulong request_data_sz = fd_dcache_req_data_sz( request_mtu, depth, 1UL, 1 );
+  void * request_dcache_shmem = fd_wksp_alloc_laddr( wksp, fd_dcache_align(), fd_dcache_footprint( request_data_sz, 0UL ), 1UL );
+  FD_TEST( request_dcache_shmem );
+  uchar * request_data = fd_dcache_join( fd_dcache_new( request_dcache_shmem, request_data_sz, 0UL ) );
+  FD_TEST( request_data );
 
-  fd_memset( request_data, 0, 256UL );
-  fd_memset( response_data, 0, 64UL );
+  ulong response_data_sz = fd_dcache_req_data_sz( response_mtu, depth, 1UL, 1 );
+  void * response_dcache_shmem = fd_wksp_alloc_laddr( wksp, fd_dcache_align(), fd_dcache_footprint( response_data_sz, 0UL ), 1UL );
+  FD_TEST( response_dcache_shmem );
+  uchar * response_data = fd_dcache_join( fd_dcache_new( response_dcache_shmem, response_data_sz, 0UL ) );
+  FD_TEST( response_data );
 
   FD_TEST( fd_keyguard_client_new( state->keyguard_client,
                                    request_mcache, request_data,
-                                   response_mcache, response_data, sizeof(request_data) ) ); // FIXME: check if request_mtu value is correct!
+                                   response_mcache, response_data, request_mtu ) );
 
   uchar signature[ 64 ];
-  for( ulong i=0UL; i<64UL; i++ ) signature[ i ] = (uchar)( i + 1UL );
-  fd_memcpy( response_data, signature, sizeof(signature) );
+  for( uchar i=0; i<64; i++ ) signature[ i ] = (uchar)( i + 1 );
+  ulong resp_chunk = state->keyguard_client->response_chunk0;
+  fd_memcpy( fd_chunk_to_laddr( state->keyguard_client->response_mem, resp_chunk ),
+             signature, sizeof(signature) );
   fd_mcache_publish( response_mcache,
                      depth,
                      state->keyguard_client->response_seq,
                      0UL,
-                     0UL,
+                     resp_chunk,
                      sizeof(signature),
                      0UL,
                      0UL,
@@ -1425,8 +1436,7 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
   bam_api_AuthChallengeResponse resp = bam_api_AuthChallengeResponse_init_default;
   char const challenge[] = "unit-test-challenge";
   FD_TEST( strlen( challenge ) < sizeof( resp.challenge_to_sign ) );
-  fd_memset( resp.challenge_to_sign, 0, sizeof( resp.challenge_to_sign ) );
-  fd_memcpy( resp.challenge_to_sign, challenge, strlen( challenge ) );
+  strlcpy( resp.challenge_to_sign, challenge, sizeof( challenge ) );
 
   uchar pb_buf[ 128 ];
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
@@ -1434,8 +1444,7 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
 
   state->bam_auth_inflight = 1U;
   char const validator_key[] = "validator-pubkey-test";
-  fd_memset( state->bam_validator_pubkey, 0, sizeof( state->bam_validator_pubkey ) );
-  fd_memcpy( state->bam_validator_pubkey, validator_key, strlen( validator_key ) );
+  strlcpy( state->bam_validator_pubkey, validator_key, sizeof( validator_key ) );
 
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
@@ -1452,12 +1461,11 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
   FD_TEST( 0 == strcmp( state->bam_auth_signature, expected_sig ) );
   FD_TEST( state->keyguard_client->request_seq == 1UL );
 
-  static char const label[] = "X_OFF_CHAIN_JITO_BAM_V1\0";
-  size_t const label_len = sizeof( label ) - 1UL;
+  size_t const label_len = sizeof( FD_BAM_AUTH_LABEL ) - 1UL;
   size_t const challenge_len = strlen( challenge );
   uchar expected_payload[ 256 ];
   FD_TEST( label_len + challenge_len <= sizeof( expected_payload ) );
-  fd_memcpy( expected_payload, label, label_len );
+  fd_memcpy( expected_payload, FD_BAM_AUTH_LABEL, label_len );
   fd_memcpy( expected_payload + label_len, challenge, challenge_len );
   FD_TEST( 0 == memcmp( request_data, expected_payload, label_len + challenge_len ) );
 
@@ -1465,14 +1473,10 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
       request_mcache + fd_mcache_line_idx( 0UL, depth );
   FD_TEST( req_meta->sz == (ushort)( label_len + challenge_len ) );
 
-  fd_wksp_free_laddr( request_data );
-  fd_wksp_free_laddr( response_data );
-  void * request_shmem = fd_mcache_leave( request_mcache );
-  FD_TEST( request_shmem );
-  fd_wksp_free_laddr( fd_mcache_delete( request_shmem ) );
-  void * response_shmem = fd_mcache_leave( response_mcache );
-  FD_TEST( response_shmem );
-  fd_wksp_free_laddr( fd_mcache_delete( response_shmem ) );
+  fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( request_data ) ) );
+  fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( response_data ) ) );
+  fd_wksp_free_laddr( fd_mcache_delete( fd_mcache_leave( request_mcache ) ) );
+  fd_wksp_free_laddr( fd_mcache_delete( fd_mcache_leave( response_mcache ) ) );
 
   test_bam_env_destroy( env );
 }
@@ -1993,6 +1997,119 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
+  /* A healthy BAM tile should advertise the TPU endpoints supplied by BamConfig. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
+  state->gossip_out = (fd_bam_out_ctx_t){
+      .idx    = 0UL,
+      .mem    = gossip_mem,
+      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
+  };
+  state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED;
+
+  bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_bam_config = true;
+  resp.bam_config.has_tpu_sock = true;
+  strlcpy( resp.bam_config.tpu_sock.ip, "10.20.30.40", sizeof( resp.bam_config.tpu_sock.ip ) );
+  resp.bam_config.tpu_sock.port = 1122U;
+  resp.bam_config.has_tpu_fwd_sock = true;
+  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  resp.bam_config.tpu_fwd_sock.port = 3344U;
+
+  uchar pb_buf[ 256 ];
+  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+
+  ulong publish_chunk = state->gossip_out.chunk;
+  fd_bam_client_grpc_rx_msg( state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+
+  fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update.use_bam == FD_BAM_CONTACT_USE_BAM );
+
+  fd_ip4_port_t expected_tpu = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "10.20.30.40", &expected_tpu.addr ) );
+  expected_tpu.port = fd_ushort_bswap( 1122 );
+  FD_TEST( update.tpu_addr.l == expected_tpu.l );
+
+  fd_ip4_port_t expected_tpu_fwd = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "11.12.13.14", &expected_tpu_fwd.addr ) );
+  expected_tpu_fwd.port = fd_ushort_bswap( 3344 );
+  FD_TEST( update.tpu_fwd_addr.l == expected_tpu_fwd.l );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
+  /* If either BamConfig address is absent, the tile should force gossip back to defaults. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
+  state->gossip_out = (fd_bam_out_ctx_t){
+      .idx    = 0UL,
+      .mem    = gossip_mem,
+      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
+  };
+  state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED;
+  state->enabled = 1;
+
+  fd_ip4_port_t bam_tpu = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "12.34.56.78", &bam_tpu.addr ) );
+  bam_tpu.port = fd_ushort_bswap( 2222 );
+  fd_ip4_port_t bam_tpu_fwd = {0};
+  FD_TEST( fd_cstr_to_ip4_addr( "98.76.54.32", &bam_tpu_fwd.addr ) );
+  bam_tpu_fwd.port = fd_ushort_bswap( 3333 );
+  state->bam_tpu_addr     = bam_tpu;
+  state->bam_tpu_fwd_addr = bam_tpu_fwd;
+
+  fd_bam_contact_update_t updates[3];
+  ulong update_cnt = 0UL;
+
+  ulong publish_chunk = state->gossip_out.chunk;
+  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( updates[0].use_bam == FD_BAM_CONTACT_USE_BAM );
+  FD_TEST( updates[0].tpu_addr.l == bam_tpu.l );
+  FD_TEST( updates[0].tpu_fwd_addr.l == bam_tpu_fwd.l );
+
+  /* Missing TPU endpoint should revert to Firedancer defaults. */
+  state->bam_tpu_addr = (fd_ip4_port_t){0};
+  publish_chunk = state->gossip_out.chunk;
+  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( updates[1].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
+  FD_TEST( updates[1].tpu_addr.l == 0UL );
+  FD_TEST( updates[1].tpu_fwd_addr.l == 0UL );
+
+  /* Missing forward endpoint should also revert to defaults. */
+  state->bam_tpu_addr     = bam_tpu;
+  state->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
+  publish_chunk = state->gossip_out.chunk;
+  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( updates[2].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
+  FD_TEST( updates[2].tpu_addr.l == 0UL );
+  FD_TEST( updates[2].tpu_fwd_addr.l == 0UL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   /* Regression: if BAM withdraws its TPU override while the client is disconnected,
      reconnecting should not re-publish stale contact info. Also exercises the
@@ -2019,12 +2136,10 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  fd_memset( resp.bam_config.tpu_sock.ip, 0, sizeof( resp.bam_config.tpu_sock.ip ) );
-  fd_memcpy( resp.bam_config.tpu_sock.ip, "9.8.7.6", 7UL );
+  strlcpy( resp.bam_config.tpu_sock.ip, "9.8.7.6", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 5000U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  fd_memset( resp.bam_config.tpu_fwd_sock.ip, 0, sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
-  fd_memcpy( resp.bam_config.tpu_fwd_sock.ip, "4.3.2.1", 7UL );
+  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "4.3.2.1", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 6000U;
 
   uchar pb_buf[ 256 ];
@@ -2113,12 +2228,10 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  fd_memset( resp.bam_config.tpu_sock.ip, 0, sizeof( resp.bam_config.tpu_sock.ip ) );
-  fd_memcpy( resp.bam_config.tpu_sock.ip, "9.9.9.9", 7UL );
+  strlcpy( resp.bam_config.tpu_sock.ip, "9.9.9.9", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 7000U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  fd_memset( resp.bam_config.tpu_fwd_sock.ip, 0, sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
-  fd_memcpy( resp.bam_config.tpu_fwd_sock.ip, "8.8.8.8", 7UL );
+  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "8.8.8.8", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 7001U;
 
   uchar pb_buf[ 256 ];
@@ -2230,12 +2343,10 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  fd_memset( resp.bam_config.tpu_sock.ip, 0, sizeof( resp.bam_config.tpu_sock.ip ) );
-  fd_memcpy( resp.bam_config.tpu_sock.ip, "1.2.3.4", 7UL );
+  strlcpy( resp.bam_config.tpu_sock.ip, "1.2.3.4", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 9000U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  fd_memset( resp.bam_config.tpu_fwd_sock.ip, 0, sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
-  fd_memcpy( resp.bam_config.tpu_fwd_sock.ip, "5.6.7.8", 7UL );
+  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "5.6.7.8", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 10001U;
   uchar prio_fee_raw[ 32 ];
   for( ulong i=0UL; i<32UL; i++ ) prio_fee_raw[ i ] = (uchar)( i + 7U );
@@ -2326,12 +2437,10 @@ test_bam_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  fd_memset( resp.bam_config.tpu_sock.ip, 0, sizeof( resp.bam_config.tpu_sock.ip ) );
-  fd_memcpy( resp.bam_config.tpu_sock.ip, "1.1.1.1", 7UL );
+  strlcpy( resp.bam_config.tpu_sock.ip, "1.1.1.1", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 8000U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  fd_memset( resp.bam_config.tpu_fwd_sock.ip, 0, sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
-  fd_memcpy( resp.bam_config.tpu_fwd_sock.ip, "2.2.2.2", 7UL );
+  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "2.2.2.2", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 9000U;
   uchar prio_fee_raw[ 32 ];
   for( ulong i=0UL; i<32UL; i++ ) prio_fee_raw[ i ] = (uchar)( i + 11U );
@@ -2578,6 +2687,8 @@ main( int     argc,
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_enable_from_disabled_start( wksp );
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
+  test_bam_gossip_publishes_bam_config_contact( wksp );
+  test_bam_gossip_resets_when_contact_missing( wksp );
   test_bam_gossip_reconnect_without_contact( wksp );
   test_bam_runtime_toggle_updates_gossip( wksp );
   test_bam_gossip_update_requires_full_contact( wksp );
@@ -2589,6 +2700,9 @@ main( int     argc,
 
   fd_wksp_usage_t wksp_usage;
   FD_TEST( fd_wksp_usage( wksp, NULL, 0UL, &wksp_usage ) );
+  if( wksp_usage.free_cnt!=wksp_usage.total_cnt ) {
+    FD_LOG_WARNING(( "wksp leak: free_cnt=%lu total_cnt=%lu", wksp_usage.free_cnt, wksp_usage.total_cnt ));
+  }
   FD_TEST( wksp_usage.free_cnt == wksp_usage.total_cnt );
 
   fd_wksp_delete_anonymous( wksp );

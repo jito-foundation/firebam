@@ -123,9 +123,12 @@ after_frag( fd_plugin_ctx_t *   ctx,
       FD_TEST( sig==FD_PLUGIN_MSG_SLOT_OPTIMISTICALLY_CONFIRMED );
       break;
     }
-    case IN_KIND_BUNDLE:
-    case IN_KIND_BAM: {
+    case IN_KIND_BUNDLE: {
       FD_TEST( sig==FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE );
+      break;
+    }
+    case IN_KIND_BAM: {
+      FD_TEST( sig==FD_PLUGIN_MSG_BAM_UPDATE );
       break;
     }
     case IN_KIND_VALCFG: {

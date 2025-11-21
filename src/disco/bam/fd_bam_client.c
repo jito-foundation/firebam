@@ -4,6 +4,7 @@
 #include "fd_bam_tile_private.h"
 #include "proto/bam_api.pb.h"
 #include "proto/bam_types.pb.h"
+#include "fd_bam_tile.h"
 #include "fd_bam_errors.h"
 #include "../keyguard/fd_keyguard.h"
 #include "../fd_txn_m.h"
@@ -20,25 +21,8 @@
 #include <errno.h>
 #include <unistd.h> /* close */
 #include <poll.h> /* poll */
-#include <sys/socket.h> /* socket */
-#include <stdio.h>
-#include <string.h>
-#include <limits.h>
 #include <netinet/in.h>
-#include <netinet/ip.h>
 #include <netinet/tcp.h>
-
-#define FD_BAM_CLIENT_REQUEST_TIMEOUT ((long)8e9) /* 8 seconds */
-
-#define FD_BAM_AUTH_LABEL "X_OFF_CHAIN_JITO_BAM_V1\0"
-static char const fd_bam_auth_label[] = FD_BAM_AUTH_LABEL;
-
-enum {
-  FD_BAM_BATCH_DROP_NONE         = 0,
-  FD_BAM_BATCH_DROP_PROTO        = 1,
-  FD_BAM_BATCH_DROP_OVERSIZE     = 2,
-  FD_BAM_BATCH_DROP_MIXED_FLAGS  = 3
-};
 
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */

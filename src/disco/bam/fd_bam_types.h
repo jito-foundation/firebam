@@ -11,8 +11,8 @@
 
 /* FD_BAM_MAX_PENDING_RESULTS is the bundle result queue depth, so long disconnects
  * don't drop SchedulerMessage payloads. */
-#define FD_BAM_MAX_PENDING_RESULTS 2048UL
-#define FD_BAM_GENERIC_INVALID_MSG_MAX 96UL
+#define FD_BAM_MAX_PENDING_RESULTS 2048U
+#define FD_BAM_GENERIC_INVALID_MSG_MAX 96U
 
 #define FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ULONG_MAX
 
@@ -52,10 +52,10 @@ typedef struct {
   uint  version;                  /* Monotonically increasing update counter */
 } fd_bam_fee_cfg_t;
 
-#define FD_BAM_CONTACT_USE_DEFAULT ((uint)0U)
-#define FD_BAM_CONTACT_USE_BAM     ((uint)1U)
+#define FD_BAM_CONTACT_USE_DEFAULT (0)
+#define FD_BAM_CONTACT_USE_BAM     (1)
 
-#define FD_BAM_STEM_SIG_GOSSIP_UPDATE (5UL)
+#define FD_BAM_STEM_SIG_GOSSIP_UPDATE (5)
 
 #define FD_BAM_SCHED_ERR_NONE            USHORT_MAX
 #define FD_BAM_SCHED_ERR_POH_TIMEOUT     bam_types_SchedulingError_POH_TIMEOUT

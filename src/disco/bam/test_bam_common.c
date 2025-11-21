@@ -175,7 +175,12 @@ test_bam_env_destroy( test_bam_env_t * env ) {
     env->state->fee_cfg = NULL;
   }
   fd_wksp_free_laddr( fd_mcache_delete( fd_mcache_leave( env->out_mcache ) ) );
-  fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( env->out_dcache ) ) );
+  void * dcache_shmem = fd_dcache_leave( env->out_dcache );
+  FD_TEST( dcache_shmem );
+  FD_TEST( fd_dcache_join( dcache_shmem ) ); /* sanity check header before delete */
+  void * dcache_deleted = fd_dcache_delete( dcache_shmem );
+  FD_TEST( dcache_deleted );
+  fd_wksp_free_laddr( dcache_deleted );
   fd_wksp_free_laddr( env->state->grpc_client_mem );
   fd_memset( env, 0, sizeof(test_bam_env_t) );
 }

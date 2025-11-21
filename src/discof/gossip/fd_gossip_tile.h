@@ -5,6 +5,7 @@
 #include "../../flamenco/gossip/fd_gossip.h"
 #include "../../disco/keyguard/fd_keyguard_client.h"
 #include "../../disco/keyguard/fd_keyswitch.h"
+#include "../../disco/bam/fd_bam_types.h"
 
 typedef struct {
   int         kind;
@@ -18,6 +19,10 @@ struct fd_gossip_tile_ctx {
   fd_gossip_t * gossip;
 
   fd_contact_info_t my_contact_info[1];
+  fd_ip4_port_t default_tpu;
+  fd_ip4_port_t default_tpu_fwd;
+  fd_ip4_port_t default_tpu_quic;
+  fd_ip4_port_t default_tpu_fwd_quic;
 
   fd_stem_context_t * stem;
 
@@ -84,5 +89,10 @@ struct fd_gossip_ping_update {
 typedef struct fd_gossip_ping_update fd_gossip_ping_update_t;
 
 extern fd_topo_run_tile_t fd_tile_gossip;
+
+void
+fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
+                                  fd_bam_contact_update_t const * update,
+                                  long                            now );
 
 #endif /* HEADER_fd_src_discof_gossip_fd_gossip_tile_h */
