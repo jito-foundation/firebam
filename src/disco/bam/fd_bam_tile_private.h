@@ -340,7 +340,7 @@ fd_bam_client_grpc_rx_timeout(
    - gRPC bundle and packet subscriptions are live
    - HTTP/2 PING exchange was done recently
 
-   Return codes are compatible with FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_{...}. */
+   Return codes are FD_PLUGIN_MSG_BAM_UPDATE_STATUS_{...}. */
 
 int
 fd_bam_client_status( fd_bam_tile_t const * ctx );

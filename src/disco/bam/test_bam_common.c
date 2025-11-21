@@ -1,5 +1,6 @@
 #include "fd_bam_tile_private.h"
 #include "../metrics/fd_metrics.h"
+#include "../plugin/fd_plugin.h"
 #include "../fd_txn_m_t.h"
 #include "../../waltz/grpc/fd_grpc_client_private.h"
 #include <sys/socket.h>
@@ -156,7 +157,7 @@ test_bam_env_mock_conn( test_bam_env_t * env ) {
   test_bam_env_mock_builder_info( state );
   test_bam_env_mock_h2_hs( state );
   state->bam_stream_live = 1;
-  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
 }
 
 static void

@@ -318,7 +318,7 @@ fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
     ctx->ctrl->url[0] = '\0';
     return -1;
   }
-  strlcpy(ctx->ctrl->url, buf, (size_t)n);
+  strlcpy(ctx->ctrl->url, buf, (size_t)n+1);
   strlcpy( ctx->ctrl->sni, ctx->server_sni, FD_SNI_BUF_MAX );
   ctx->ctrl->enable = ctx->enabled;
   return 0;

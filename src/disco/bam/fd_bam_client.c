@@ -482,13 +482,14 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     state->revert_flag_set = 1;
   }
 
-  if( FD_UNLIKELY( packet.data.size > FD_TXN_MTU ) ) {
+  ulong declared_sz = fd_ulong_max( packet.data.size, packet.meta.size );
+  if( FD_UNLIKELY( declared_sz > FD_TXN_MTU ) ) {
     if( FD_LIKELY( state->ctx ) ) {
       state->ctx->metrics.packet_drop_cnt++;
       FD_MCNT_INC( BAM, PACKETS_DROPPED, 1UL );
     }
-    FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding MTU (%u>%lu); dropping batch",
-                     packet.data.size, FD_TXN_MTU ));
+    FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding MTU (%lu>%lu); dropping batch",
+                     declared_sz, FD_TXN_MTU ));
     state->drop_reason = FD_BAM_BATCH_DROP_OVERSIZE;
     if( FD_LIKELY( !state->has_generic_invalid ) ) {
       state->has_generic_invalid = 1;
@@ -1318,8 +1319,8 @@ static void
 fd_bam_client_log_status( fd_bam_tile_t * ctx ) {
   int status = fd_bam_client_status( ctx );
 
-  int const connected_now    = ( status == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
-  int const connected_before = ( ctx->bundle_status_logged == FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED );
+  int const connected_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+  int const connected_before = ( ctx->bundle_status_logged == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
 
   if( FD_UNLIKELY( connected_now != connected_before ) ) {
     long ts = fd_log_wallclock();
@@ -1404,11 +1405,7 @@ fd_bam_tile_publish_bundle_txn(
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
-    .block_engine   = {
-      // .bundle_id      = ctx->bundle_seq, // BAM should not set these fields!
-      // .bundle_txn_cnt = bundle_txn_cnt,
-      .commission     = ctx->builder_commission,
-    },
+    .block_engine   = {0},
     .bam = {
       .max_schedule_slot = ctx->bundle_max_schedule_slot,
       .seq_id            = ctx->bundle_seq,
@@ -1417,7 +1414,6 @@ fd_bam_tile_publish_bundle_txn(
       .revert_on_error   = 1, // FIXME: check if this is correct
     },
   };
-  memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL ); //TODO: check if we should still do this
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
 
   ulong sz  = fd_txn_m_realized_footprint( txnm, 0, 0 );
@@ -1452,7 +1448,7 @@ fd_bam_tile_publish_txn(
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
-    .block_engine   = {.commission = ctx->builder_commission}, // FIXME: check if we need to do this?
+    .block_engine   = {0},
     .bam = {
       .max_schedule_slot = max_schedule_slot,
       .seq_id            = seq_id,
@@ -1461,11 +1457,6 @@ fd_bam_tile_publish_txn(
       .revert_on_error   = !!revert_on_error,
     },
   };
-  if( revert_on_error && ctx->builder_info_valid_until ) {
-    memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL ); //TODO: check if we should still do this
-  } else {
-    fd_memset( txnm->block_engine.commission_pubkey, 0, sizeof( txnm->block_engine.commission_pubkey ) );
-  }
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
 
   ulong sz  = fd_txn_m_realized_footprint( txnm, 0, 0 );
@@ -1664,9 +1655,9 @@ fd_grpc_client_callbacks_t fd_bam_client_grpc_callbacks = {
 };
 
 /* Decrease verbosity */
-#define DISCONNECTED FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_DISCONNECTED
-#define CONNECTING   FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING
-#define CONNECTED    FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED
+#define DISCONNECTED FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED
+#define CONNECTING   FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING
+#define CONNECTED    FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED
 
 int
 fd_bam_client_status( fd_bam_tile_t const * ctx ) {

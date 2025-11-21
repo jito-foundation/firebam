@@ -1079,7 +1079,12 @@ during_frag( fd_pack_ctx_t * ctx,
     }
 
 
-    ulong bundle_id = txnm->block_engine.bundle_id;
+    ulong bundle_id      = ( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM )
+                               ? txnm->bam.seq_id
+                               : txnm->block_engine.bundle_id;
+    ulong bundle_txn_cnt = ( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM )
+                               ? txnm->bam.batch_cnt
+                               : txnm->block_engine.bundle_txn_cnt;
     if( FD_UNLIKELY( txnm->bam.revert_on_error ) ) { // FIXME: check this is correct conditional
       ctx->is_bundle = 1;
       if( FD_LIKELY( !ctx->current_bundle->active || bundle_id!=ctx->current_bundle->id ) ) {
@@ -1089,7 +1094,7 @@ during_frag( fd_pack_ctx_t * ctx,
         }
         ctx->current_bundle->active             = 1U;
         ctx->current_bundle->id                 = bundle_id;
-        ctx->current_bundle->txn_cnt            = txnm->bam.batch_cnt ? txnm->bam.batch_cnt : txnm->block_engine.bundle_txn_cnt;
+        ctx->current_bundle->txn_cnt            = bundle_txn_cnt;
         ctx->current_bundle->min_blockhash_slot = ULONG_MAX;
         ctx->current_bundle->max_schedule_slot  = txnm->bam.max_schedule_slot;
         ctx->current_bundle->txn_received       = 0UL;
@@ -1104,7 +1109,7 @@ during_frag( fd_pack_ctx_t * ctx,
         ctx->bundle_meta.builder.commission = txnm->block_engine.commission;
         memcpy( ctx->bundle_meta.builder.commission_pubkey->b, txnm->block_engine.commission_pubkey, 32UL );
         ctx->bundle_meta.bundle.seq_id         = txnm->bam.seq_id;
-        ctx->bundle_meta.bundle.bundle_txn_cnt    = (uchar)ctx->current_bundle->txn_cnt;
+        ctx->bundle_meta.bundle.bundle_txn_cnt = (uchar)ctx->current_bundle->txn_cnt;
         ctx->bundle_meta.bundle.max_schedule_slot = ctx->current_bundle->max_schedule_slot;
 
         ctx->current_bundle->bundle = fd_pack_insert_bundle_init( ctx->pack, ctx->current_bundle->_txn, ctx->current_bundle->txn_cnt );
