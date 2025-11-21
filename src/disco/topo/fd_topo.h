@@ -6,6 +6,7 @@
 #include "../../waltz/xdp/fd_xdp1.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../util/net/fd_net_headers.h"
+#include "../../waltz/http/fd_url.h"
 
 /* Maximum number of workspaces that may be present in a topology. */
 #define FD_TOPO_MAX_WKSPS         (256UL)
@@ -255,7 +256,7 @@ struct fd_topo_tile {
     } dedup;
 
     struct {
-      char  url[ 256 ];
+      char  url[ FD_URL_MAX ];
       ulong url_len;
       char  sni[ 256 ];
       ulong sni_len;
@@ -265,7 +266,22 @@ struct fd_topo_tile {
       ulong ssl_heap_sz;
       ulong keepalive_interval_nanos;
       uchar tls_cert_verify : 1;
+      int   mode;
     } bundle;
+
+    struct {
+      char  url[ FD_URL_MAX ];
+      ulong url_len;
+      char  sni[ FD_SNI_BUF_MAX ];
+      ulong sni_len;
+      char  identity_key_path[ PATH_MAX ];
+      char  key_log_path[ PATH_MAX ];
+      ulong buf_sz;
+      ulong ssl_heap_sz;
+      ulong keepalive_interval_nanos;
+      uchar tls_cert_verify : 1;
+      uchar enabled         : 1;
+    } bam;
 
     struct {
       ulong max_pending_transactions;
@@ -279,7 +295,7 @@ struct fd_topo_tile {
         uchar tip_distribution_program_addr[ 32 ];
         uchar tip_payment_program_addr[ 32 ];
         uchar tip_distribution_authority[ 32 ];
-        ulong commission_bps;
+        uint  commission_bps;
         char  identity_key_path[ PATH_MAX ];
         char  vote_account_path[ PATH_MAX ]; /* or pubkey is okay */
       } bundle;

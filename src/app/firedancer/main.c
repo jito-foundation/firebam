@@ -75,6 +75,7 @@ extern fd_topo_run_tile_t fd_tile_gui;
 extern fd_topo_run_tile_t fd_tile_rpc;
 extern fd_topo_run_tile_t fd_tile_plugin;
 extern fd_topo_run_tile_t fd_tile_bundle;
+extern fd_topo_run_tile_t fd_tile_bam;
 extern fd_topo_run_tile_t fd_tile_genesi;
 extern fd_topo_run_tile_t fd_tile_ipecho;
 
@@ -110,6 +111,7 @@ fd_topo_run_tile_t * TILES[] = {
   &fd_tile_rpc,
   &fd_tile_plugin,
   &fd_tile_bundle,
+  &fd_tile_bam,
   &fd_tile_gossvf,
   &fd_tile_gossip,
   &fd_tile_repair,

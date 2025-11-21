@@ -43,5 +43,12 @@ scratch_directory = "/data/fd1"
     tip_payment_program_addr = "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
     tip_distribution_authority = "B1mrQSpdeMU9gCvkJ6VsXVVoYjRGkNA7TtjMyqxrhecH"
 
+[tiles.bam]
+    enabled = true
+    url = "http://testnet.bam.jito.wtf"
+    tls_domain_name = ""
+    keepalive_interval_millis = 5000
+    tls_cert_verify = false
+
 [tiles.gui]
     gui_listen_address = "0.0.0.0"

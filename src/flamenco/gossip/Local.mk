@@ -19,4 +19,5 @@ $(call run-unit-test,test_gossip)
 
 ifdef FD_HAS_HOSTED
 $(call make-fuzz-test,fuzz_gossip_msg_parse,fuzz_gossip_msg_parse,fd_flamenco fd_ballet fd_util)
+$(call make-unit-test,test_gossip_contact_info,test_gossip_contact_info,fd_flamenco fd_ballet fd_util)
 endif

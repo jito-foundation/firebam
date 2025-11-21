@@ -1,6 +1,7 @@
 #include "fd_gui_printf.h"
 #include "fd_gui_config_parse.h"
 
+#include "../plugin/fd_plugin.h"
 #include "../../waltz/http/fd_http_server_private.h"
 #include "../../ballet/utf8/fd_utf8.h"
 #include "../../disco/fd_txn_m.h"
@@ -477,6 +478,39 @@ fd_gui_printf_block_engine( fd_gui_t * gui ) {
 }
 
 void
+fd_gui_printf_bam( fd_gui_t * gui ) {
+  jsonp_open_envelope( gui, "bam", "update" );
+    jsonp_open_object( gui, "value" );
+      jsonp_string( gui, "name",   gui->bam.name );
+      jsonp_string( gui, "url",    gui->bam.url );
+      jsonp_string( gui, "sni",    gui->bam.sni );
+      jsonp_string( gui, "ip",     gui->bam.ip_cstr );
+      jsonp_string( gui, "tpu",    gui->bam.tpu_cstr );
+      jsonp_string( gui, "tpu_fwd",gui->bam.tpu_fwd_cstr );
+      jsonp_ulong(  gui, "enabled", gui->bam.enabled );
+      if( FD_LIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) )      jsonp_string( gui, "status", "connecting" );
+      else if( FD_LIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED ) ) jsonp_string( gui, "status", "connected" );
+      else                                                                               jsonp_string( gui, "status", "disconnected" );
+
+      jsonp_double( gui, "rtt_sample_nanos",   (double)gui->bam.rtt_sample );
+      jsonp_double( gui, "rtt_smoothed_nanos", (double)gui->bam.rtt_smoothed );
+      jsonp_double( gui, "rtt_var_nanos",      (double)gui->bam.rtt_var );
+      jsonp_ulong( gui, "bam_pending_results",gui->bam.bam_pending_results );
+      jsonp_ulong( gui, "heartbeat_sent",     gui->bam.heartbeat_sent );
+      jsonp_ulong( gui, "heartbeat_recv",     gui->bam.heartbeat_recv );
+      jsonp_ulong( gui, "txn_received",       gui->bam.txn_received );
+      jsonp_ulong( gui, "bundle_received",    gui->bam.bundle_received );
+      jsonp_ulong( gui, "packet_drop",        gui->bam.packet_drop );
+      jsonp_ulong( gui, "err_protobuf",       gui->bam.err_protobuf );
+      jsonp_ulong( gui, "err_transport",      gui->bam.err_transport );
+      jsonp_ulong( gui, "err_timeout",        gui->bam.err_timeout );
+      jsonp_ulong( gui, "err_no_fee_info",    gui->bam.err_no_fee_info );
+      jsonp_ulong( gui, "err_ssl_alloc",      gui->bam.err_ssl_alloc );
+    jsonp_close_object( gui );
+  jsonp_close_envelope( gui );
+}
+
+void
 fd_gui_printf_tiles( fd_gui_t * gui ) {
   jsonp_open_envelope( gui->http, "summary", "tiles" );
     jsonp_open_array( gui->http, "value" );
@@ -621,6 +655,7 @@ fd_gui_printf_waterfall( fd_gui_t *               gui,
       jsonp_ulong( gui->http, "udp",             cur->in.udp    - prev->in.udp );
       jsonp_ulong( gui->http, "gossip",          cur->in.gossip - prev->in.gossip );
       jsonp_ulong( gui->http, "block_engine",    cur->in.block_engine - prev->in.block_engine );
+      jsonp_ulong( gui->http, "bam",             cur->in.bam    - prev->in.bam );
     jsonp_close_object( gui->http );
 
     jsonp_open_object( gui->http, "out" );
@@ -1680,6 +1715,10 @@ fd_gui_printf_slot_transactions_request( fd_gui_t * gui,
                 case FD_TXN_M_TPU_SOURCE_SEND  : {
                   jsonp_string( gui->http, NULL, "send");
                   break;
+                }
+                case FD_TXN_M_TPU_SOURCE_BAM: {
+                      jsonp_string( gui, NULL, "bam");
+                      break;
                 }
                 default: FD_LOG_ERR(("unknown tpu"));
               }

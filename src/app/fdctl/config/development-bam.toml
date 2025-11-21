@@ -1,0 +1,13 @@
+[development]
+    sandbox = false
+    [development.netns]
+        enabled = true
+[net]
+    interface = "veth_test_xdp_0"
+
+[tiles.bam]
+    enabled = true
+    url = "http://127.0.0.1:50055"
+    tls_domain_name = ""
+    keepalive_interval_millis = 5000
+    tls_cert_verify = false

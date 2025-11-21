@@ -1218,6 +1218,28 @@ user = ""
         # this option to 'false'.
         tls_cert_verify = true
 
+    [tiles.bam]
+        # True if a BAM tile should be enabled. The BAM tile connects
+        # to a BAM scheduler endpoint and streams bundle scheduling
+        # results in parallel to the traditional bundle tile.
+        enabled = false
+
+        # The URL of the BAM scheduler endpoint to connect to.
+        url = ""
+
+        # Optional override for the TLS domain name presented by the
+        # BAM scheduler endpoint. If empty, the host portion of the URL
+        # will be used.
+        tls_domain_name = ""
+
+        # Interval in milliseconds to send keepalive messages on the BAM
+        # scheduler connection.
+        keepalive_interval_millis = 5000
+
+        # Whether to verify TLS certificates presented by the BAM
+        # scheduler endpoint.
+        tls_cert_verify = true
+
     # The pack tile takes incoming transactions that have been verified
     # by the verify tile and then deduplicated, and attempts to order
     # them in an optimal way to generate the most fees per compute

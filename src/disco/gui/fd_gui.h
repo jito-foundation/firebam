@@ -15,6 +15,7 @@
 #include "../../util/fd_util_base.h"
 #include "../../util/hist/fd_histf.h"
 #include "../../waltz/http/fd_http_server.h"
+#include "../../waltz/http/fd_url.h"
 
 /* frankendancer only */
 #define FD_GUI_MAX_PEER_CNT ( 40200UL)
@@ -417,6 +418,7 @@ struct fd_gui_txn_waterfall {
     ulong quic;
     ulong udp;
     ulong gossip;
+    ulong bam;
     ulong block_engine;
     ulong pack_cranked;
   } in;
@@ -661,10 +663,35 @@ struct fd_gui {
   struct {
     int has_block_engine;
     char name[ 16 ];
-    char url[ 256 ];
+    char url[ FD_URL_MAX ];
     char ip_cstr[ 40 ]; /* IPv4 or IPv6 cstr */
     int status;
   } block_engine;
+  struct {
+    uchar   has_bam;
+    uchar   status;
+    uchar   enabled;
+    char  name[ 16 ];
+    char  url[ FD_URL_MAX ];
+    char  sni[ FD_SNI_BUF_MAX ];
+    char  ip_cstr[ 40 ];
+    char  tpu_cstr[ 22 ];
+    char  tpu_fwd_cstr[ 22 ];
+    float rtt_sample;
+    float rtt_smoothed;
+    float rtt_var;
+    ushort bam_pending_results;
+    ulong heartbeat_sent;
+    ulong heartbeat_recv;
+    ulong txn_received;
+    ulong bundle_received;
+    ulong packet_drop;
+    ulong err_protobuf;
+    ulong err_transport;
+    ulong err_timeout;
+    ulong err_no_fee_info;
+    ulong err_ssl_alloc;
+  } bam;
 
   struct {
     int has_epoch[ 2 ];
