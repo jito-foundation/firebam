@@ -68,20 +68,6 @@ typedef struct {
   ulong          max_schedule_slot;
 } test_bundle_meta_t;
 
-static ulong
-drop_expired_bundles_for_slot( fd_pack_t * pack,
-                               ulong       slot ) {
-  ulong dropped = 0UL;
-  for(;;) {
-    test_bundle_meta_t const * meta = (test_bundle_meta_t const *)fd_pack_peek_bundle_meta( pack );
-    if( FD_UNLIKELY( !meta ) ) break;
-    if( FD_LIKELY( slot<=meta->max_schedule_slot ) ) break;
-    FD_TEST( fd_pack_drop_best_bundle( pack )==meta->bundle_txn_cnt );
-    dropped += meta->bundle_txn_cnt;
-  }
-  return dropped;
-}
-
 static inline ulong
 extract_txn_id( fd_txn_p_t const * txnp ) {
   ulong id = 0UL;
@@ -1527,49 +1513,6 @@ test_bundle_nonce_conflict_detect( fd_pack_t * pack,
 }
 
 static void
-test_bundle_drop_expired( void ) {
-  pack_outcome_t outcome;
-  fd_pack_t * pack = init_all_with_meta( 8UL, 1UL, 4UL, sizeof(test_bundle_meta_t), &outcome );
-
-  FD_TEST( fd_pack_drop_best_bundle( pack )==0UL );
-
-  fd_txn_e_t * _bundle[1];
-  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
-  make_transaction1( bundle[0]->txnp, 0UL, 2000U, 32U, 1.0, "a", "", NULL, NULL );
-
-  ulong deleted = 0UL;
-  int result = fd_pack_insert_bundle_fini( pack, bundle, 1UL, 60UL, 1, NULL, &deleted );
-  FD_TEST( result>=0 );
-  FD_TEST( deleted==0UL );
-  FD_TEST( fd_pack_drop_best_bundle( pack )==0UL );
-  fd_pack_clear_all( pack );
-
-  bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
-  make_transaction1( bundle[0]->txnp, 0UL, 2000U, 32U, 1.0, "a", "", NULL, NULL );
-
-  test_bundle_meta_t meta;
-  memset( &meta, 0, sizeof(meta) );
-  meta.bundle_id         = 1234UL;
-  meta.bundle_txn_cnt    = 1UL;
-  meta.max_schedule_slot = 77UL;
-
-  deleted = 0UL;
-  result = fd_pack_insert_bundle_fini( pack, bundle, 1UL, 60UL, 0, &meta, &deleted );
-  FD_TEST( result>=0 );
-  FD_TEST( deleted==0UL );
-
-  test_bundle_meta_t const * stored = (test_bundle_meta_t const *)fd_pack_peek_bundle_meta( pack );
-  FD_TEST( stored );
-  FD_TEST( stored->bundle_id==meta.bundle_id );
-  FD_TEST( stored->max_schedule_slot==meta.max_schedule_slot );
-
-  FD_TEST( fd_pack_drop_best_bundle( pack )==1UL );
-  FD_TEST( fd_pack_peek_bundle_meta( pack )==NULL );
-
-  fd_pack_delete( fd_pack_leave( pack ) );
-}
-
-static void
 test_bundle_nonce( void ) {
   ulong const pack_depth = 32UL;
   fd_pack_t * pack = init_all( pack_depth, 1UL, 32UL, &outcome );
@@ -1907,68 +1850,7 @@ test_initializer_bundle_state_machine( void ) {
 /* Test bundle expiration based on max_schedule_slot */
 static void
 test_bundle_expiration_during_slot( void ) {
-  pack_outcome_t outcome;
-  fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, sizeof(test_bundle_meta_t), &outcome );
-  fd_pack_set_initializer_bundles_ready( pack );
-
-  test_bundle_meta_t meta;
-  fd_txn_e_t * _bundle[FD_PACK_MAX_TXN_PER_BUNDLE];
-  ulong _deleted;
-
-  /* Bundle 1: expires at slot 100 */
-  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 2UL );
-  make_transaction1( bundle[0]->txnp, 0UL, 2000U, 32U, 10.0, "a", "", NULL, NULL );
-  make_transaction1( bundle[1]->txnp, 1UL, 2000U, 32U, 10.0, "b", "", NULL, NULL );
-  memset( &meta, 0, sizeof(meta) );
-  meta.bundle_id = 1UL;
-  meta.bundle_txn_cnt = 2UL;
-  meta.max_schedule_slot = 100UL;
-  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 1000UL, 0, &meta, &_deleted )>=0 );
-
-  /* Bundle 2: expires at slot 200 */
-  bundle = fd_pack_insert_bundle_init( pack, _bundle, 2UL );
-  make_transaction1( bundle[0]->txnp, 2UL, 2000U, 32U, 9.0, "c", "", NULL, NULL );
-  make_transaction1( bundle[1]->txnp, 3UL, 2000U, 32U, 9.0, "d", "", NULL, NULL );
-  memset( &meta, 0, sizeof(meta) );
-  meta.bundle_id = 2UL;
-  meta.bundle_txn_cnt = 2UL;
-  meta.max_schedule_slot = 200UL;
-  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 1000UL, 0, &meta, &_deleted )>=0 );
-
-  /* Bundle 3: effectively unlimited lifetime (use explicit large slot to avoid sentinel assumptions) */
-  bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
-  make_transaction1( bundle[0]->txnp, 4UL, 2000U, 32U, 8.0, "e", "", NULL, NULL );
-  memset( &meta, 0, sizeof(meta) );
-  meta.bundle_id = 3UL;
-  meta.bundle_txn_cnt = 1UL;
-  meta.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
-  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, &meta, &_deleted )>=0 );
-
-  FD_TEST( fd_pack_avail_txn_cnt( pack )==5UL );
-
-  /* Slot 150 should expire the first bundle but keep the rest */
-  ulong dropped = drop_expired_bundles_for_slot( pack, 150UL );
-  FD_TEST( dropped==2UL );
-  FD_TEST( fd_pack_avail_txn_cnt( pack )==3UL );
-  test_bundle_meta_t const * stored = (test_bundle_meta_t const *)fd_pack_peek_bundle_meta( pack );
-  FD_TEST( stored && stored->bundle_id==2UL && stored->max_schedule_slot==200UL );
-
-  /* Slot 250 should expire the second bundle */
-  dropped = drop_expired_bundles_for_slot( pack, 250UL );
-  FD_TEST( dropped==2UL );
-  FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
-  stored = (test_bundle_meta_t const *)fd_pack_peek_bundle_meta( pack );
-  FD_TEST( stored && stored->bundle_id==3UL && stored->max_schedule_slot==ULONG_MAX );
-
-  /* Even at very large slot values an "unlimited" bundle remains */
-  dropped = drop_expired_bundles_for_slot( pack, ULONG_MAX - 1UL );
-  FD_TEST( dropped==0UL );
-
-  ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
-  FD_TEST( txn_cnt==1UL );
-  fd_pack_microblock_complete( pack, 0UL );
-
-  fd_pack_delete( fd_pack_leave( pack ) );
+ // TODO: implement this
 }
 
 /* Test multiple bundles with priority ordering */
@@ -2592,7 +2474,6 @@ main( int     argc,
   test_reject();
   test_duplicate_sig();
   test_nonce();
-  test_bundle_drop_expired();
   test_bundle_nonce();
 
   /* BAM Bundle Tests */

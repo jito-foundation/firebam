@@ -1,7 +1,7 @@
 #include "fd_bam_tile_private.h"
 #include "../metrics/fd_metrics.h"
 #include "../plugin/fd_plugin.h"
-#include "../fd_txn_m_t.h"
+#include "../fd_txn_m.h"
 #include "../../waltz/grpc/fd_grpc_client_private.h"
 #include <sys/socket.h>
 #include <unistd.h>

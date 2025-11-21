@@ -327,7 +327,7 @@ unprivileged_init_sensitive( fd_topo_t *      topo,
       FD_TEST( in_link->mtu==9UL );
       FD_TEST( out_link->mtu==64UL );
     } else if( !strcmp(in_link->name, "bam_sign" ) ) {
-      ctx->in_role[ i ] = FD_KEYGUARD_ROLE_BUNDLE;
+      ctx->in[ i ].role = FD_KEYGUARD_ROLE_BUNDLE;
       FD_TEST( !strcmp( out_link->name, "sign_bam" ) );
       FD_TEST( in_link->mtu==9UL );
       FD_TEST( out_link->mtu==64UL );

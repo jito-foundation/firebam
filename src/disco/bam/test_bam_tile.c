@@ -1407,7 +1407,7 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
 
   FD_TEST( fd_keyguard_client_new( state->keyguard_client,
                                    request_mcache, request_data,
-                                   response_mcache, response_data ) );
+                                   response_mcache, response_data, sizeof(request_data) ) ); // FIXME: check if request_mtu value is correct!
 
   uchar signature[ 64 ];
   for( ulong i=0UL; i<64UL; i++ ) signature[ i ] = (uchar)( i + 1UL );

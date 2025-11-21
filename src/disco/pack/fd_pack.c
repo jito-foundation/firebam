@@ -1693,20 +1693,6 @@ fd_pack_peek_bundle_meta( fd_pack_t const * pack ) {
   return (void const *)((uchar const *)pack->bundle_meta + (ulong)_cur * pack->bundle_meta_sz);
 }
 
-ulong
-fd_pack_drop_best_bundle( fd_pack_t * pack ) {
-  int ib_state = pack->initializer_bundle_state;
-  if( FD_UNLIKELY( (ib_state==FD_PACK_IB_STATE_PENDING) | (ib_state==FD_PACK_IB_STATE_FAILED) ) ) return 0UL;
-
-  treap_rev_iter_t _cur = treap_rev_iter_init( pack->pending_bundles, pack->pool );
-  if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return 0UL;
-
-  fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pack->pool );
-  if( FD_UNLIKELY( cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE ) ) return 0UL;
-
-  return delete_transaction( pack, cur, 1, 0 );
-}
-
 void
 fd_pack_set_initializer_bundles_ready( fd_pack_t * pack ) {
   pack->initializer_bundle_state = FD_PACK_IB_STATE_READY;
@@ -1974,10 +1960,6 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, scheduler_arrival_time_nanos )+sizeof(((fd_txn_p_t*)NULL)->scheduler_arrival_time_nanos )<=1280UL, nt_memcpy );
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, source_tpu     )+sizeof(((fd_txn_p_t*)NULL)->source_tpu    )<=1280UL, nt_memcpy );
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, source_ipv4    )+sizeof(((fd_txn_p_t*)NULL)->source_ipv4   )<=1280UL, nt_memcpy );
-      FD_STATIC_ASSERT( offsetof(fd_txn_p_t, bam_seq_id     )+sizeof(((fd_txn_p_t*)NULL)->bam_seq_id    )<=1280UL, nt_memcpy );
-      FD_STATIC_ASSERT( offsetof(fd_txn_p_t, bam_batch_cnt  )+sizeof(((fd_txn_p_t*)NULL)->bam_batch_cnt )<=1280UL, nt_memcpy );
-      FD_STATIC_ASSERT( offsetof(fd_txn_p_t, bam_batch_idx  )+sizeof(((fd_txn_p_t*)NULL)->bam_batch_idx )<=1280UL, nt_memcpy );
-      FD_STATIC_ASSERT( offsetof(fd_txn_p_t, bam_revert_on_error )+sizeof(((fd_txn_p_t*)NULL)->bam_revert_on_error)<=1280UL, nt_memcpy );
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, flags          )+sizeof(((fd_txn_p_t*)NULL)->flags         )<=1280UL, nt_memcpy );
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, _              )                                            <=1280UL, nt_memcpy );
       const ulong offset_into_txn = 1280UL - offsetof(fd_txn_p_t, _ );
@@ -1993,10 +1975,6 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
       out->scheduler_arrival_time_nanos    = cur->txn->scheduler_arrival_time_nanos;
       out->source_tpu                      = cur->txn->source_tpu;
       out->source_ipv4                     = cur->txn->source_ipv4;
-      out->bam_seq_id                      = cur->txn->bam_seq_id;
-      out->bam_batch_cnt                   = cur->txn->bam_batch_cnt;
-      out->bam_batch_idx                   = cur->txn->bam_batch_idx;
-      out->bam_revert_on_error             = cur->txn->bam_revert_on_error;
       out->flags                           = cur->txn->flags;
     }
     out++;
