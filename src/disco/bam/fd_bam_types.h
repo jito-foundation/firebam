@@ -1,12 +1,8 @@
 #ifndef HEADER_fd_src_disco_bam_fd_bam_types_h
 #define HEADER_fd_src_disco_bam_fd_bam_types_h
 
-#include <limits.h>
-
-#include "../pack/fd_microblock.h"
 #include "../pack/fd_pack.h" /* FD_PACK_MAX_TXN_PER_BUNDLE */
 #include "proto/bam_types.pb.h"
-#include "../../flamenco/types/fd_types.h"
 #include "../../util/net/fd_net_headers.h"
 
 /* FD_BAM_MAX_PENDING_RESULTS is the bundle result queue depth, so long disconnects

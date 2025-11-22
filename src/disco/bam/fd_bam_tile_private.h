@@ -4,16 +4,12 @@
 #include "../bundle/fd_keepalive.h"
 #include "../stem/fd_stem.h"
 #include "../keyguard/fd_keyswitch.h"
-#include "../keyguard/fd_keyguard_client.h"
 #include "../bam/fd_bam_types.h"
 #include "fd_bam_ctrl.h"
 #include "../metrics/fd_metrics.h"
 #include "../../waltz/grpc/fd_grpc_client.h"
 #include "../../waltz/resolv/fd_netdb.h"
 #include "../../waltz/fd_rtt_est.h"
-#include "../../util/alloc/fd_alloc.h"
-#include "../../util/hist/fd_histf.h"
-#include "../../ballet/base58/fd_base58.h"
 
 #define FD_BAM_HEARTBEAT_TIMEOUT_NS ((long)6e9) /* 6 seconds */
 
