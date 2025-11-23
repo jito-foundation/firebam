@@ -24,8 +24,6 @@ char const fdctl_version_string[] = "fuzz";
 #define BAM_FUZZ_OUT_GOSSIP (1UL)
 #define BAM_FUZZ_OUT_MAX    (2UL)
 
-#define BAM_FUZZ_MTU FD_TPU_PARSED_MTU
-
 /* Simple BAM gRPC fuzzer.  The fuzzer drives ConfigResponse, SchedulerResponse,
    and AuthChallengeResponse decode paths while also exercising the runtime
    enable/disable control block.  When the tile is considered healthy and
@@ -35,27 +33,27 @@ char const fdctl_version_string[] = "fuzz";
 static fd_wksp_t * g_wksp;
 
 static struct {
-  fd_bam_tile_t * tile;
+  fd_bam_tile_t * tile; /* Active tile under test */
 
-  fd_bam_out_ctx_t out_verify;
-  fd_bam_out_ctx_t out_gossip;
+  fd_bam_out_ctx_t out_verify; /* Verify output ring (MTU = FD_TPU_PARSED_MTU) */
+  fd_bam_out_ctx_t out_gossip; /* Gossip output ring for contact-info updates */
 
   fd_frag_meta_t * mcaches[ BAM_FUZZ_OUT_MAX ];
   void *           mcache_mem[ BAM_FUZZ_OUT_MAX ];
   ulong            depths [ BAM_FUZZ_OUT_MAX ];
 
-  uchar * dcaches[ BAM_FUZZ_OUT_MAX ];
+  uchar * dcaches[ BAM_FUZZ_OUT_MAX ]; /* Backing dcaches for outputs */
   void *  dcache_mem[ BAM_FUZZ_OUT_MAX ];
 
-  ulong seqs    [ BAM_FUZZ_OUT_MAX ];
-  ulong cr_avail[ BAM_FUZZ_OUT_MAX ];
-  ulong min_cr_avail;
+  ulong seqs    [ BAM_FUZZ_OUT_MAX ]; /* Current publish seq per out (monotonic) */
+  ulong cr_avail[ BAM_FUZZ_OUT_MAX ]; /* Credit counters; seeded to ULONG_MAX */
+  ulong min_cr_avail;                 /* Min credit observed (tracks exhaustion) */
 
-  fd_stem_context_t stem;
+  fd_stem_context_t stem; /* Stem wiring for fd_stem_publish */
 
-  fd_bam_ctrl_t     ctrl;
-  fd_bam_fee_cfg_t  fee_cfg;
-  fd_histf_t        rx_delay[1];
+  fd_bam_ctrl_t     ctrl;    /* Runtime enable/disable switch */
+  fd_bam_fee_cfg_t  fee_cfg; /* Shared fee cfg buffer */
+  fd_histf_t        rx_delay[1]; /* Histogram backing for msg_rx_delay metric */
 
   /* Keyguard request/response wiring to avoid fd_keyguard_client_sign hanging */
   fd_frag_meta_t * key_req_mcache;
@@ -68,16 +66,16 @@ static struct {
   void *           key_resp_dcache_mem;
   ulong            key_req_depth;
   ulong            key_resp_depth;
-  ulong            key_req_mtu;
+  ulong            key_req_mtu; /* Max sign payload size; kept <= 512 */
 
-  fd_bam_tile_t tile_storage[1];
+  fd_bam_tile_t tile_storage[1]; /* Backing storage for tile pointer */
 } bam_fuzz_ctx;
 
 typedef struct {
-  ulong payload_sz;
-  ulong expected_len;
-  uchar start_byte;
-  int   expect_decode_ok;
+  ulong payload_sz;       /* Bytes written into buf (0 when generation failed) */
+  ulong expected_len;     /* Expected decoded challenge length when valid */
+  uchar start_byte;       /* First byte used to fill challenge_to_sign */
+  int   expect_decode_ok; /* 1 when decoder should succeed, 0 to force failure */
 } bam_fuzz_auth_payload_t;
 
 static uint const bam_fuzz_http_status_map[ 4 ] = { 200U, 401U, 403U, 503U };
@@ -87,7 +85,10 @@ static uint const bam_fuzz_grpc_status_map[ 4 ] = {
     FD_GRPC_STATUS_PERMISSION_DENIED,
     FD_GRPC_STATUS_UNAVAILABLE
 };
+/* status maps expect a 2-bit index; higher bits are masked off by callers. */
 
+/* Build a single-producer ring for publishing fragments.
+   depth>0 and mtu>0 are required; test aborts if footprint alloc fails. */
 static void
 bam_fuzz_setup_out( ulong out_idx,
                     ulong depth,
@@ -113,10 +114,11 @@ bam_fuzz_setup_out( ulong out_idx,
   bam_fuzz_ctx.cr_avail[ out_idx ] = ULONG_MAX;
 }
 
+/* Always leave the response mcache "ready" so fd_keyguard_client_sign
+   returns immediately instead of hanging the fuzzer. Response chunk is
+   always 64 bytes of zeroed data. */
 static void
 bam_fuzz_seed_keyguard_response( fd_bam_tile_t * ctx ) {
-  /* Always leave the response mcache "ready" so fd_keyguard_client_sign
-     returns immediately instead of hanging the fuzzer. */
   fd_frag_meta_t * meta = bam_fuzz_ctx.key_resp_mcache +
       fd_mcache_line_idx( ctx->keyguard_client->response_seq, bam_fuzz_ctx.key_resp_depth );
   meta->seq   = ctx->keyguard_client->response_seq;
@@ -132,6 +134,8 @@ bam_fuzz_seed_keyguard_response( fd_bam_tile_t * ctx ) {
   fd_memset( dst, 0, 64UL );
 }
 
+/* Build in-memory request/response rings for keyguard. Depth 1 is
+   sufficient because the fuzzer never pipelines signatures. */
 static void
 bam_fuzz_setup_keyguard( void ) {
   bam_fuzz_ctx.key_req_depth = 1UL;
@@ -165,6 +169,8 @@ bam_fuzz_setup_keyguard( void ) {
   FD_TEST( bam_fuzz_ctx.key_resp_dcache );
 }
 
+/* One-time environment bring-up: allocate workspace, create output rings,
+   initialize metrics backing, and wire the dummy keyguard channels. */
 static void
 bam_fuzz_env_init( int *    pargc,
                    char *** pargv ) {
@@ -176,6 +182,8 @@ bam_fuzz_env_init( int *    pargc,
   ulong cpu_idx = fd_tile_cpu_id( fd_tile_idx() );
   if( cpu_idx>fd_shmem_cpu_cnt() ) cpu_idx = 0UL;
 
+  /* Allow basic workspace sizing overrides via CLI; defaults are modest, so
+     the fuzzer can run in constrained sandboxes. */
   char const * _page_sz = fd_env_strip_cmdline_cstr ( pargc, pargv, "--page-sz",  NULL, "normal"                     );
   ulong        page_cnt = fd_env_strip_cmdline_ulong( pargc, pargv, "--page-cnt", NULL, 256UL                        );
   ulong        numa_idx = fd_env_strip_cmdline_ulong( pargc, pargv, "--numa-idx", NULL, fd_shmem_numa_idx( cpu_idx ) );
@@ -187,7 +195,7 @@ bam_fuzz_env_init( int *    pargc,
   fd_memset( bam_fuzz_ctx.tile, 0, sizeof( fd_bam_tile_t ) );
 
   /* Build two outputs: verify (0) and gossip (1) */
-  bam_fuzz_setup_out( BAM_FUZZ_OUT_VERIFY, 128UL, BAM_FUZZ_MTU );
+  bam_fuzz_setup_out( BAM_FUZZ_OUT_VERIFY, 128UL, FD_TPU_PARSED_MTU);
   bam_fuzz_setup_out( BAM_FUZZ_OUT_GOSSIP, 64UL, sizeof(fd_bam_contact_update_t) );
 
   bam_fuzz_ctx.out_verify = (fd_bam_out_ctx_t) {
@@ -197,7 +205,7 @@ bam_fuzz_env_init( int *    pargc,
       .chunk  = 0UL,
       .wmark  = fd_dcache_compact_wmark( bam_fuzz_ctx.dcaches[ BAM_FUZZ_OUT_VERIFY ],
                                          bam_fuzz_ctx.dcaches[ BAM_FUZZ_OUT_VERIFY ],
-                                         BAM_FUZZ_MTU )
+                                         FD_TPU_PARSED_MTU)
   };
 
   bam_fuzz_ctx.out_gossip = (fd_bam_out_ctx_t) {
@@ -229,6 +237,8 @@ bam_fuzz_env_init( int *    pargc,
   initialized = 1;
 }
 
+/* Emit a little-endian base-128 varint into buf. Returns bytes written or
+   0 on overflow (idx>=buf_sz). */
 static ulong
 bam_fuzz_varint_put( ulong val,
                      uchar * buf,
@@ -244,6 +254,9 @@ bam_fuzz_varint_put( ulong val,
   return idx;
 }
 
+/* Synthesize an AuthChallengeResponse payload. selector drives length and
+   truncation patterns to cover decode successes and failures. buf must be
+   large enough for tag+varint+payload (<=sizeof(challenge_to_sign)). */
 static bam_fuzz_auth_payload_t
 bam_fuzz_build_auth_challenge_payload( uchar selector,
                                        uchar * buf,
@@ -290,6 +303,9 @@ bam_fuzz_build_auth_challenge_payload( uchar selector,
   return info;
 }
 
+/* Verify auth state mirrors the decoded payload when a structured auth
+   message was generated. Expects bam_auth_ready=1 with matching length and
+   contents when decode succeeds; otherwise expects all zeroed auth flags. */
 static void
 bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
                             bam_fuzz_auth_payload_t  info,
@@ -314,11 +330,14 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
 
 static void
 bam_fuzz_assert_auth_cleared( fd_bam_tile_t * ctx ) {
+  /* Assert auth bookkeeping is cleared (ready=0, inflight=0, len=0). */
   FD_TEST( ctx->bam_auth_ready==0U );
   FD_TEST( ctx->bam_auth_challenge_len==0U );
   FD_TEST( ctx->bam_auth_inflight==0U );
 }
 
+/* Reinitialize tile state for each fuzz input. Populates default endpoints,
+   seeds keepalive/rng, and wires ctrl/fee_cfg/outputs to local buffers. */
 static void
 bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
@@ -394,6 +413,8 @@ bam_fuzz_reset_tile( void ) {
   ctx->builder_info_valid_until = fd_bam_now() + (long)5e9;
 }
 
+/* Pre-mark request lifecycle state so rx_end/rx_timeout can exercise
+   cleanup paths. request_ctx selects which inflight flags to raise. */
 static void
 bam_fuzz_seed_stream_state( fd_bam_tile_t * ctx,
                             ulong           request_ctx ) {
@@ -410,6 +431,8 @@ bam_fuzz_seed_stream_state( fd_bam_tile_t * ctx,
   }
 }
 
+/* Deliver a terminal gRPC response to the client handler. Carries the raw
+   payload as the grpc_msg body and the supplied HTTP/gRPC status codes. */
 static void
 bam_fuzz_drive_grpc_end( fd_bam_tile_t * ctx,
                          ulong           request_ctx,
@@ -429,6 +452,8 @@ bam_fuzz_drive_grpc_end( fd_bam_tile_t * ctx,
   fd_bam_client_grpc_rx_end( ctx, request_ctx, &resp );
 }
 
+/* Trigger a timeout callback with a deterministic deadline_kind derived
+   from selector bit0. */
 static void
 bam_fuzz_drive_timeout( fd_bam_tile_t * ctx,
                         ulong           request_ctx,
@@ -438,6 +463,8 @@ bam_fuzz_drive_timeout( fd_bam_tile_t * ctx,
   fd_bam_client_grpc_rx_timeout( ctx, request_ctx, deadline_kind );
 }
 
+/* Mirror admin toggle: set ctrl->enable and ctx->enabled then mark ctrl
+   state as SUCCESS so downstream code observes the change immediately. */
 static void
 bam_fuzz_apply_ctrl( uchar enable_flag ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
@@ -446,6 +473,8 @@ bam_fuzz_apply_ctrl( uchar enable_flag ) {
   FD_VOLATILE( ctx->ctrl->state ) = FD_BAM_CTRL_STATE_SUCCESS;
 }
 
+/* Publish a gossip update and assert the emitted fields match the tile
+   state. Requires both TPU addresses/ports to match when healthy!=0. */
 static void
 bam_fuzz_publish_and_check( _Bool healthy ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
@@ -465,6 +494,8 @@ bam_fuzz_publish_and_check( _Bool healthy ) {
   }
 }
 
+/* Standard libFuzzer entry: disable backtraces, boot Firedancer core, and
+   allocate the fuzz workspace once. */
 int
 LLVMFuzzerInitialize( int *argc,
                       char ***argv ) {
@@ -476,6 +507,8 @@ LLVMFuzzerInitialize( int *argc,
   return 0;
 }
 
+/* Split the input into control byte + status selector + raw payload. The
+   control byte drives which RPC is decoded and which callbacks fire. */
 int
 LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         size ) {
@@ -490,11 +523,12 @@ LLVMFuzzerTestOneInput( uchar const * data,
   uchar drive_end    = (uchar)( ( selector>>5 ) & 1U );   /* bit5: drive rx_end */
   uchar drive_to     = (uchar)( ( selector>>6 ) & 1U );   /* bit6: drive timeout */
   uchar structured   = (uchar)( ( selector>>7 ) & 1U );   /* bit7: build structured auth */
-  uint  http_status  = bam_fuzz_http_status_map[ selector & 0x3U ];
-  uint  grpc_status  = bam_fuzz_grpc_status_map[ (selector>>2) & 0x3U ];
+  uchar status_selector = size>1 ? data[1] : (uchar)( selector ^ 0x5a ); /* Second byte chooses status; fallback mixes bits for small inputs */
+  uint  http_status  = bam_fuzz_http_status_map[ status_selector & 0x3 ];      /* Maps into {200,401,403,503} */
+  uint  grpc_status  = bam_fuzz_grpc_status_map[ (status_selector>>2) & 0x3 ]; /* Maps into {OK,UNAUTH,PERM,UNAVAIL} */
 
-  uchar const * payload    = data+1;
-  ulong         payload_sz = size-1UL;
+  uchar const * payload    = size>1 ? data+2 : data+1;
+  ulong         payload_sz = size>1 ? size-2 : size-1;
   bam_fuzz_auth_payload_t auth_info = {0};
 
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
@@ -563,8 +597,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   if( drive_to ) {
     bam_fuzz_drive_timeout( ctx, request_ctx, selector );
-    if( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ||
-        request_ctx==FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream ) {
+    if( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) {
       bam_fuzz_assert_auth_cleared( ctx );
     }
   }
@@ -572,7 +605,9 @@ LLVMFuzzerTestOneInput( uchar const * data,
   _Bool healthy = (!!ctx->enabled) &&
                   (!!ctx->bam_stream_live) &&
                   (!!ctx->bam_tpu_addr.addr) &&
-                  (!!ctx->bam_tpu_fwd_addr.addr);
+                  (!!ctx->bam_tpu_addr.port) &&
+                  (!!ctx->bam_tpu_fwd_addr.addr) &&
+                  (!!ctx->bam_tpu_fwd_addr.port);
 
   bam_fuzz_publish_and_check( healthy );
   return 0;

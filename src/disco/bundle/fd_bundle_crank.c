@@ -200,7 +200,7 @@ fd_bundle_crank_gen_init( void                 * mem,
 
   uint  cerr[1];
   do {
-    char seed[13] = "TIP_ACCOUNT_0"; /* Not NUL terminated */
+    char seed[13] __attribute__ ((nonstring)) = "TIP_ACCOUNT_0"; /* Not NUL terminated */ /* fixed in main branch, don't keep change */
     uchar const * seed_ptr[1] = { (uchar const *)seed };
     ulong seed_len = 13;
     for( ulong i=0UL; i<8UL; i++ ) {
@@ -213,7 +213,7 @@ fd_bundle_crank_gen_init( void                 * mem,
   } while( 0 );
 
   do {
-    char seed[14] = "CONFIG_ACCOUNT"; /* Not NUL terminated */
+    char seed[14] __attribute__ ((nonstring)) = "CONFIG_ACCOUNT"; /* Not NUL terminated */ /* fixed in main branch, don't keep change */
     ulong seed_len = 14;
     uchar out_bump[1];
     uchar const * seed_ptr[1] = { (uchar const *)seed };
@@ -261,7 +261,7 @@ static inline void
 fd_bundle_crank_update_epoch( fd_bundle_crank_gen_t * g,
                               ulong                   epoch ) {
   struct __attribute__((packed)) {
-    char tip_distr_acct[24];
+    char tip_distr_acct[24] __attribute__ ((nonstring));
     uchar vote_pubkey  [32];
     ulong epoch;
   } seeds[1] = {{
