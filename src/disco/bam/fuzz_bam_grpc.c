@@ -7,6 +7,7 @@
 #include "fd_bam_tile_private.h"
 #include "fd_bam_ctrl.h"
 #include "fd_bam_types.h"
+#include "proto/bam_api.pb.h"
 #include "../plugin/fd_plugin.h"
 #include "../metrics/fd_metrics.h"
 #include "../stem/fd_stem.h"
@@ -213,6 +214,50 @@ bam_fuzz_env_init( int *    pargc,
   initialized = 1;
 }
 
+static ulong
+bam_fuzz_varint_put( ulong val,
+                     uchar * buf,
+                     ulong   buf_sz ) {
+  ulong idx = 0UL;
+  do {
+    if( FD_UNLIKELY( idx>=buf_sz ) ) return 0UL;
+    uchar byte = (uchar)( val & 0x7fUL );
+    val >>= 7;
+    if( val ) byte |= 0x80U;
+    buf[ idx++ ] = byte;
+  } while( val );
+  return idx;
+}
+
+static ulong
+bam_fuzz_build_auth_challenge_payload( uchar selector,
+                                       uchar * buf,
+                                       ulong   buf_sz ) {
+  bam_api_AuthChallengeResponse tmp = bam_api_AuthChallengeResponse_init_default;
+  ulong max_len = sizeof( tmp.challenge_to_sign );
+  ulong challenge_len;
+  switch( selector & 0x3U ) {
+  case 0: challenge_len = 0UL; break;                     /* Empty challenge */
+  case 1: challenge_len = fd_ulong_sat_sub( max_len, 1UL ); break; /* Max valid size */
+  case 2: challenge_len = max_len; break;                 /* Forces decode failure */
+  default: challenge_len = fd_ulong_min( max_len/2UL + (ulong)(selector&0x0fU), max_len ); break;
+  }
+
+  ulong idx = 0UL;
+  if( FD_UNLIKELY( !buf_sz ) ) return 0UL;
+  buf[ idx++ ] = 0x0AU; /* tag for field 1, wire type length-delimited */
+
+  uchar varint[ 10 ];
+  ulong varint_len = bam_fuzz_varint_put( challenge_len, varint, sizeof( varint ) );
+  if( FD_UNLIKELY( !varint_len ) ) return 0UL;
+  if( FD_UNLIKELY( idx + varint_len + challenge_len > buf_sz ) ) return 0UL;
+  fd_memcpy( buf + idx, varint, varint_len );
+  idx += varint_len;
+
+  for( ulong i=0UL; i<challenge_len; i++ ) buf[ idx++ ] = (uchar)( selector + i );
+  return idx;
+}
+
 static void
 bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
@@ -289,6 +334,56 @@ bam_fuzz_reset_tile( void ) {
 }
 
 static void
+bam_fuzz_seed_stream_state( fd_bam_tile_t * ctx,
+                            ulong           request_ctx ) {
+  if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream ) ) {
+    ctx->bam_stream            = (fd_grpc_h2_stream_t *)ctx; /* sentinel non-NULL */
+    ctx->bam_stream_live       = 1U;
+    ctx->bam_stream_connecting = 1U;
+    ctx->bam_auth_ready        = 1U;
+    ctx->bam_auth_challenge_len = 8U;
+  } else if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) ) {
+    ctx->bam_auth_inflight      = 1U;
+    ctx->bam_auth_ready         = 1U;
+    ctx->bam_auth_challenge_len = 8U;
+  }
+}
+
+static void
+bam_fuzz_drive_grpc_end( fd_bam_tile_t * ctx,
+                         ulong           request_ctx,
+                         uchar const *   payload,
+                         ulong           payload_sz,
+                         uchar           selector ) {
+  fd_grpc_resp_hdrs_t resp;
+  fd_memset( &resp, 0, sizeof( resp ) );
+
+  static uint const http_status_map[ 4 ] = { 200U, 500U, 403U, 0U };
+  resp.h2_status   = http_status_map[ selector & 0x3U ];
+  static uint const grpc_status_map[ 4 ] = {
+      FD_GRPC_STATUS_OK,
+      FD_GRPC_STATUS_UNAUTHENTICATED,
+      FD_GRPC_STATUS_PERMISSION_DENIED,
+      FD_GRPC_STATUS_UNAVAILABLE
+  };
+  resp.grpc_status = grpc_status_map[ (selector>>2) & 0x3U ];
+  resp.grpc_msg_len = (uint)fd_ulong_min( payload_sz, sizeof( resp.grpc_msg ) );
+  fd_memcpy( resp.grpc_msg, payload, resp.grpc_msg_len );
+
+  bam_fuzz_seed_stream_state( ctx, request_ctx );
+  fd_bam_client_grpc_rx_end( ctx, request_ctx, &resp );
+}
+
+static void
+bam_fuzz_drive_timeout( fd_bam_tile_t * ctx,
+                        ulong           request_ctx,
+                        uchar           selector ) {
+  int deadline_kind = (selector & 1U) ? FD_GRPC_DEADLINE_HEADER : FD_GRPC_DEADLINE_RX_END;
+  bam_fuzz_seed_stream_state( ctx, request_ctx );
+  fd_bam_client_grpc_rx_timeout( ctx, request_ctx, deadline_kind );
+}
+
+static void
 bam_fuzz_apply_ctrl( uchar enable_flag ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
   ctx->ctrl->enable  = enable_flag ? 1U : 0U;
@@ -332,39 +427,58 @@ LLVMFuzzerTestOneInput( uchar const * data,
   if( FD_UNLIKELY( size<1UL ) ) return 0;
   bam_fuzz_reset_tile();
 
-  uchar selector   = data[0];
-  uchar msg_kind   = (uchar)( selector & 0x3U );        /* 0=config,1=scheduler,2=auth */
-  uchar apply_ctrl = (uchar)( ( selector>>2 ) & 1U );   /* bit2: drive runtime control */
-  uchar enable_ok  = (uchar)( ( selector>>3 ) & 1U );   /* bit3: desired enable state */
-  uchar stream_ok  = (uchar)( ( selector>>4 ) & 1U );   /* bit4: mark stream live */
+  uchar selector     = data[0];
+  uchar msg_kind     = (uchar)( selector & 0x3U );        /* 0=config,1=scheduler,2=auth */
+  uchar apply_ctrl   = (uchar)( ( selector>>2 ) & 1U );   /* bit2: drive runtime control */
+  uchar enable_ok    = (uchar)( ( selector>>3 ) & 1U );   /* bit3: desired enable state */
+  uchar stream_ok    = (uchar)( ( selector>>4 ) & 1U );   /* bit4: mark stream live */
+  uchar drive_end    = (uchar)( ( selector>>5 ) & 1U );   /* bit5: drive rx_end */
+  uchar drive_to     = (uchar)( ( selector>>6 ) & 1U );   /* bit6: drive timeout */
+  uchar structured   = (uchar)( ( selector>>7 ) & 1U );   /* bit7: build structured auth */
 
   uchar const * payload    = data+1;
   ulong         payload_sz = size-1UL;
 
+  fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
+
   if( stream_ok ) {
-    bam_fuzz_ctx.tile->bam_stream_live = 1U;
-    bam_fuzz_ctx.tile->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED;
+    ctx->bam_stream_live = 1U;
+    ctx->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED;
   }
 
   if( apply_ctrl ) {
     bam_fuzz_apply_ctrl( enable_ok );
   }
 
+  ulong request_ctx = FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig;
+  if( msg_kind==1 ) request_ctx = FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream;
+  else if( msg_kind==2 ) request_ctx = FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge;
+
+  uchar auth_buf[ 512 ];
+  if( structured && msg_kind==2 ) {
+    ulong enc_sz = bam_fuzz_build_auth_challenge_payload( payload_sz ? payload[0] : 0U, auth_buf, sizeof( auth_buf ) );
+    if( enc_sz ) {
+      payload    = auth_buf;
+      payload_sz = enc_sz;
+      ctx->bam_auth_inflight = 1U; /* mirror real request lifecycle */
+    }
+  }
+
   switch( msg_kind ) {
   case 0:
-    fd_bam_client_grpc_rx_msg( bam_fuzz_ctx.tile,
+    fd_bam_client_grpc_rx_msg( ctx,
                                payload,
                                payload_sz,
                                FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
     break;
   case 1:
-    fd_bam_client_grpc_rx_msg( bam_fuzz_ctx.tile,
+    fd_bam_client_grpc_rx_msg( ctx,
                                payload,
                                payload_sz,
                                FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
     break;
   case 2:
-    fd_bam_client_grpc_rx_msg( bam_fuzz_ctx.tile,
+    fd_bam_client_grpc_rx_msg( ctx,
                                payload,
                                payload_sz,
                                FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge );
@@ -373,10 +487,18 @@ LLVMFuzzerTestOneInput( uchar const * data,
     break;
   }
 
-  _Bool healthy = (!!bam_fuzz_ctx.tile->enabled) &&
-                  (!!bam_fuzz_ctx.tile->bam_stream_live) &&
-                  (!!bam_fuzz_ctx.tile->bam_tpu_addr.addr) &&
-                  (!!bam_fuzz_ctx.tile->bam_tpu_fwd_addr.addr);
+  if( drive_end && (msg_kind==1U || msg_kind==2U) ) {
+    bam_fuzz_drive_grpc_end( ctx, request_ctx, payload, payload_sz, selector );
+  }
+
+  if( drive_to && (msg_kind==1U || msg_kind==2U) ) {
+    bam_fuzz_drive_timeout( ctx, request_ctx, selector );
+  }
+
+  _Bool healthy = (!!ctx->enabled) &&
+                  (!!ctx->bam_stream_live) &&
+                  (!!ctx->bam_tpu_addr.addr) &&
+                  (!!ctx->bam_tpu_fwd_addr.addr);
 
   bam_fuzz_publish_and_check( healthy );
   return 0;

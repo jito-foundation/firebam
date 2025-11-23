@@ -38,7 +38,7 @@ typedef struct {
 typedef struct {
   fd_ip4_port_t tpu_addr;      /* TPU socket advertised by BAM */
   fd_ip4_port_t tpu_fwd_addr;  /* TPU fwd socket advertised by BAM. */
-  uint          use_bam;       /* `FD_BAM_CONTACT_USE_*` selector. Non-zero when BAM overrides contact info */
+  uchar         use_bam;       /* `FD_BAM_CONTACT_USE_*` selector. Non-zero when BAM overrides contact info */
 } fd_bam_contact_update_t;
 
 typedef struct {
@@ -51,7 +51,7 @@ typedef struct {
 #define FD_BAM_CONTACT_USE_DEFAULT (0)
 #define FD_BAM_CONTACT_USE_BAM     (1)
 
-#define FD_BAM_STEM_SIG_GOSSIP_UPDATE (5)
+#define FD_BAM_STEM_SIG_GOSSIP_UPDATE (0xAB) // randomly assigned
 
 #define FD_BAM_SCHED_ERR_NONE            USHORT_MAX
 #define FD_BAM_SCHED_ERR_POH_TIMEOUT     bam_types_SchedulingError_POH_TIMEOUT
