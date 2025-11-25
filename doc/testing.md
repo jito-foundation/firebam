@@ -113,6 +113,14 @@ regression test against old inputs like so:
 $ build/native/gcc/fuzz-test/fuzz_bla/fuzz_bla <input1> <input2> ...
 ```
 
+```
+make CC=clang EXTRAS="fuzz asan" fuzz_bam_grpc
+- Exploration to find new inputs: 
+make CC=clang EXTRAS="fuzz asan" fuzz_bam_grpc FUZZFLAGS="-max_total_time=300 -timeout=5"
+
+make CC=clang EXTRAS=afl++ AFL_LIB=/usr/lib/afl fuzz_bam_grpc -j && AFL_SKIP_CPUFREQ=1 afl-fuzz -i corpus/fuzz_bundle_client -o findings -- build/native/clang/fuzz-test/fuzz_bam_grpc
+```
+
 ### Sanitizers
 
 The codebase supports a number of **sanitizers** that bake in various
