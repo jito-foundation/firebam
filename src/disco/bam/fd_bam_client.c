@@ -5,7 +5,7 @@
 #include "proto/bam_api.pb.h"
 #include "proto/bam_types.pb.h"
 #include "fd_bam_tile.h"
-#include "fd_bam_errors.h"
+#include "fd_bam_types.h"
 #include "../keyguard/fd_keyguard.h"
 #include "../fd_txn_m.h"
 #include "../plugin/fd_plugin.h"
@@ -30,12 +30,11 @@ typedef struct {
   uchar               packet_cnt;                              /* number of packets collected; [0,FD_PACK_MAX_TXN_PER_BUNDLE) */
   uchar               revert_on_error;                         /* 0/1 flag mirrored from packet meta; only meaningful when revert_flag_set != 0 */
   uchar               revert_flag_set;                         /* 0 before first flag observed, 1 after; prevents defaulting to revert_on_error=0 */
-  uchar               drop_reason;                             /* FD_BAM_BATCH_DROP_* value describing rejection path */
-  uchar               has_deser_error;                         /* boolean: 1 when deser_reason/index populated */
+  uchar               bundle_err;                              /* FD_BAM_BUNDLE_ERR_* selector describing batch-level not-committed reason */
   uchar               deser_index;                             /* zero-based transaction index tied to deserialization error */
   uchar               deser_reason;                            /* bam_types_DeserializationErrorReason enum value */
-  uchar               has_generic_invalid;                     /* boolean: 1 when generic_invalid_msg contains an explanation */
-  char                generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ]; /* human-readable drop detail; NUL terminated when flag set */
+  uchar               generic_invalid_reason;                  /* FD_BAM_ERR_GENERIC_INVALID_* selector for generic-invalid drops */
+  uchar               generic_invalid_index;                   /* optional index tied to the generic-invalid drop */
 } fd_bam_batch_ctx_t;
 
 typedef struct {
@@ -45,45 +44,6 @@ typedef struct {
 typedef struct {
   bam_types_AtomicTxnBatchResult const * atomic_res;
 } fd_bam_encode_batch_ctx_t;
-
-static fd_bam_bundle_result_t
-fd_bam_client_make_base_result( bam_types_AtomicTxnBatch const * batch,
-                                fd_bam_batch_ctx_t const *       state ) {
-  fd_bam_bundle_result_t res = {0};
-  res.seq_id = batch->seq_id;
-  res.slot      = batch->max_schedule_slot;
-  res.bundle_txn_cnt = state->packet_cnt;
-  res.txn_cnt        = state->packet_cnt;
-  res.execution_success = 0;
-  res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-  return res;
-}
-
-static void
-fd_bam_client_report_deser_error( fd_bam_tile_t *            ctx,
-                                  bam_types_AtomicTxnBatch const * batch,
-                                  fd_bam_batch_ctx_t const * state,
-                                  uchar                      reason,
-                                  uchar                      index ) {
-  fd_bam_bundle_result_t res = fd_bam_client_make_base_result( batch, state );
-  res.has_deser_error = 1;
-  res.deser_reason    = reason;
-  res.deser_index     = index;
-  fd_bam_enqueue_result( ctx, &res );
-}
-
-static void
-fd_bam_client_report_generic_invalid( fd_bam_tile_t *            ctx,
-                                      bam_types_AtomicTxnBatch const * batch,
-                                      fd_bam_batch_ctx_t const * state,
-                                      char const *               msg ) {
-  fd_bam_bundle_result_t res = fd_bam_client_make_base_result( batch, state );
-  res.has_generic_invalid = 1;
-  size_t len = fd_ulong_min( msg ? strlen( msg ) : 0UL, FD_BAM_GENERIC_INVALID_MSG_MAX-1UL );
-  if( len ) fd_memcpy( res.generic_invalid_msg, msg, len );
-  res.generic_invalid_msg[ len ] = '\0';
-  fd_bam_enqueue_result( ctx, &res );
-}
 
 static int
 fd_bam_drive( fd_bam_tile_t * ctx,
@@ -336,7 +296,10 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
                            fd_bam_bundle_result_t const *     res ) {
   *out = (bam_types_NotCommitted)bam_types_NotCommitted_init_default;
 
-  if( FD_UNLIKELY( res->has_deser_error ) ) {
+  switch( res->bundle_err ) {
+  case FD_BAM_BUNDLE_ERR_NONE:
+    break;
+  case FD_BAM_BUNDLE_ERR_DESER:
     if( FD_UNLIKELY( res->deser_reason > _bam_types_DeserializationErrorReason_MAX ) ) {
       out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
       snprintf( out->reason.generic_invalid.message,
@@ -349,15 +312,17 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
     out->reason.deserialization_error.index  = res->deser_index;
     out->reason.deserialization_error.reason = (bam_types_DeserializationErrorReason)res->deser_reason;
     return;
-  }
-
-  if( FD_UNLIKELY( res->has_generic_invalid ) ) {
+  case FD_BAM_BUNDLE_ERR_GENERIC_INVALID:
     out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
-    strncpy( out->reason.generic_invalid.message,
-             res->generic_invalid_msg,
-             sizeof(out->reason.generic_invalid.message)-1UL );
-    out->reason.generic_invalid.message[ sizeof(out->reason.generic_invalid.message)-1UL ] = '\0';
+    if( FD_UNLIKELY( res->generic_invalid_reason >= FD_BAM_ERR_GENERIC_INVALID_CNT ) ) {
+      FD_LOG_ERR(( "Invalid FD_BAM_ERR_GENERIC_INVALID %u, value out of range.", res->generic_invalid_reason ));
+    }
+    strlcpy( out->reason.generic_invalid.message,
+             FD_BAM_ERR_GENERIC_INVALID_STRINGS[ res->generic_invalid_reason ],
+             sizeof(out->reason.generic_invalid.message) );
     return;
+  default:
+    FD_LOG_ERR(( "Invalid error type %u, value out of range.", res->bundle_err));
   }
 
   if( FD_UNLIKELY( res->scheduling_error != FD_BAM_SCHED_ERR_NONE ) ) {
@@ -402,9 +367,9 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
   }
 
   out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
-  strncpy( out->reason.generic_invalid.message,
+  strlcpy( out->reason.generic_invalid.message,
            FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED,
-           sizeof(out->reason.generic_invalid.message)-1UL );
+           sizeof(out->reason.generic_invalid.message) );
   out->reason.generic_invalid.message[ sizeof(out->reason.generic_invalid.message)-1UL ] = '\0';
 }
 
@@ -414,73 +379,52 @@ fd_bam_collect_packet( pb_istream_t *         stream,
                        void **                arg ) {
   (void)field;
   fd_bam_batch_ctx_t * state = *arg;
-  if( FD_UNLIKELY( state->packet_cnt >= FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
+  if( FD_UNLIKELY( state->packet_cnt > FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
     FD_LOG_WARNING(( "Received AtomicTxnBatch exceeding max bundle size" ));
-    state->drop_reason = FD_BAM_BATCH_DROP_OVERSIZE;
-    if( FD_LIKELY( !state->has_deser_error ) ) {
-      state->has_deser_error = 1;
-      state->deser_reason    = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
-      state->deser_index     = (uchar)state->packet_cnt;
-    }
-    if( FD_LIKELY( !state->has_generic_invalid ) ) {
-      state->has_generic_invalid = 1;
-      strncpy( state->generic_invalid_msg, "bundle exceeds max transactions", FD_BAM_GENERIC_INVALID_MSG_MAX-1UL );
-      state->generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX-1UL ] = '\0';
-    }
+    state->bundle_err      = FD_BAM_BUNDLE_ERR_DESER;
+    state->deser_reason    = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+    state->deser_index     = state->packet_cnt;
     return false;
   }
 
   bam_types_Packet packet = bam_types_Packet_init_default;
   if( FD_UNLIKELY( !pb_decode( stream, &bam_types_Packet_msg, &packet ) ) ) {
-    state->drop_reason = FD_BAM_BATCH_DROP_PROTO;
-    if( FD_LIKELY( !state->has_generic_invalid ) ) {
-      state->has_generic_invalid = 1;
-      strncpy( state->generic_invalid_msg, "packet decode failed", FD_BAM_GENERIC_INVALID_MSG_MAX-1UL );
-      state->generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX-1UL ] = '\0';
-    }
+    state->bundle_err      = FD_BAM_BUNDLE_ERR_DESER;
+    state->deser_reason    = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+    state->deser_index     = state->packet_cnt;
     return false;
   }
 
   if( packet.has_meta && packet.meta.has_flags ) {
     if( FD_UNLIKELY( packet.meta.flags.simple_vote_tx ) ) {
-      state->drop_reason = FD_BAM_BATCH_DROP_PROTO;
-      state->has_deser_error = 1;
-      state->deser_reason    = bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE;
-      state->deser_index     = state->packet_cnt;
+      state->bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
+      state->deser_reason = bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE;
+      state->deser_index  = state->packet_cnt;
       return false;
     }
 
-    uchar flag_set = packet.meta.flags.revert_on_error ? 1 : 0; // FIXME: Check if correct
-    if( state->revert_flag_set && state->revert_on_error != flag_set ) {
+    if( state->revert_flag_set && state->revert_on_error != packet.meta.flags.revert_on_error ) {
       FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
-      state->drop_reason     = FD_BAM_BATCH_DROP_MIXED_FLAGS;
-      if( FD_LIKELY( !state->has_deser_error ) ) {
-        state->has_deser_error = 1;
-        state->deser_reason    = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
-        state->deser_index     = state->packet_cnt;
-      }
-      state->revert_on_error = state->revert_on_error | flag_set;
+      state->bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
+      state->deser_reason = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+      state->deser_index  = state->packet_cnt;
+      state->revert_on_error = state->revert_on_error | packet.meta.flags.revert_on_error;
       state->revert_flag_set = 1;
       return false;
     }
-    state->revert_on_error = flag_set;
+    state->revert_on_error = packet.meta.flags.revert_on_error;
     state->revert_flag_set = 1;
   }
 
   ulong declared_sz = fd_ulong_max( packet.data.size, packet.meta.size );
   if( FD_UNLIKELY( declared_sz > FD_TXN_MTU ) ) {
-    if( FD_LIKELY( state->ctx ) ) {
-      state->ctx->metrics.packet_drop_cnt++;
-      FD_MCNT_INC( BAM, PACKETS_DROPPED, 1UL );
-    }
+    state->ctx->metrics.packet_drop_cnt++;
+    FD_MCNT_INC( BAM, PACKETS_DROPPED, 1UL );
     FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding MTU (%lu>%lu); dropping batch",
                      declared_sz, FD_TXN_MTU ));
-    state->drop_reason = FD_BAM_BATCH_DROP_OVERSIZE;
-    if( FD_LIKELY( !state->has_generic_invalid ) ) {
-      state->has_generic_invalid = 1;
-      strncpy( state->generic_invalid_msg, "packet exceeds MTU", FD_BAM_GENERIC_INVALID_MSG_MAX-1UL );
-      state->generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX-1UL ] = '\0';
-    }
+    state->bundle_err = FD_BAM_BUNDLE_ERR_DESER;
+    state->deser_reason = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+    state->deser_index  = state->packet_cnt;
     return false;
   }
 
@@ -493,28 +437,78 @@ static void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch ) {
-  if( FD_UNLIKELY( state->has_deser_error ) ) {
-    fd_bam_client_report_deser_error( ctx, batch, state, state->deser_reason, state->deser_index );
+  switch( state->bundle_err ) {
+  case FD_BAM_BUNDLE_ERR_NONE:
+    break;
+  case FD_BAM_BUNDLE_ERR_DESER: {
+    fd_bam_bundle_result_t res = {
+      .seq_id            = batch->seq_id,
+      .slot              = batch->max_schedule_slot,
+      .bundle_txn_cnt    = state->packet_cnt,
+      .txn_cnt           = state->packet_cnt,
+      .execution_success = 0,
+      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+      .deser_reason      = state->deser_reason,
+      .deser_index       = state->deser_index
+    };
+    fd_bam_enqueue_result( ctx, &res );
     ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
     return;
   }
-
-  if( FD_UNLIKELY( state->has_generic_invalid ) ) {
-    fd_bam_client_report_generic_invalid( ctx, batch, state, state->generic_invalid_msg );
+  case FD_BAM_BUNDLE_ERR_GENERIC_INVALID: {
+    fd_bam_bundle_result_t res = {
+      .seq_id                 = batch->seq_id,
+      .slot                   = batch->max_schedule_slot,
+      .bundle_txn_cnt         = state->packet_cnt,
+      .txn_cnt                = state->packet_cnt,
+      .execution_success      = 0,
+      .scheduling_error       = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err             = FD_BAM_BUNDLE_ERR_GENERIC_INVALID,
+      .generic_invalid_reason = state->generic_invalid_reason,
+      .generic_invalid_index  = state->generic_invalid_index,
+    };
+    fd_bam_enqueue_result( ctx, &res );
     ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    return;
+  }
+  default:
+    FD_LOG_ERR(( "Received invalid bundle error %u", state->bundle_err ));
     return;
   }
 
   if( FD_UNLIKELY( state->packet_cnt == 0U ) ) {
-    fd_bam_client_report_deser_error( ctx, batch, state, bam_types_DeserializationErrorReason_EMPTY, 0 );
+    fd_bam_bundle_result_t res = {
+      .seq_id            = batch->seq_id,
+      .slot              = batch->max_schedule_slot,
+      .bundle_txn_cnt    = state->packet_cnt,
+      .txn_cnt           = state->packet_cnt,
+      .execution_success = 0,
+      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+      .deser_reason      = bam_types_DeserializationErrorReason_EMPTY,
+      .deser_index       = 0
+    };
+    fd_bam_enqueue_result( ctx, &res );
     ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
     return;
   }
 
   if( state->revert_on_error ) {
     if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) {
+      fd_bam_bundle_result_t res = {
+        .seq_id                 = batch->seq_id,
+        .slot                   = batch->max_schedule_slot,
+        .bundle_txn_cnt         = state->packet_cnt,
+        .txn_cnt                = state->packet_cnt,
+        .execution_success      = 0,
+        .scheduling_error       = FD_BAM_SCHED_ERR_NONE,
+        .bundle_err             = FD_BAM_BUNDLE_ERR_GENERIC_INVALID,
+        .generic_invalid_reason = FD_BAM_ERR_GENERIC_INVALID_BUILDER_INFO_UNAVAILABLE,
+        .generic_invalid_index  = 0,
+      };
+      fd_bam_enqueue_result( ctx, &res );
       ctx->metrics.missing_builder_info_fail_cnt++;
-      fd_bam_client_report_generic_invalid( ctx, batch, state, FD_BAM_ERR_MSG_BUILDER_INFO_UNAVAILABLE );
       return;
     }
     ctx->bundle_seq                = batch->seq_id;
@@ -548,13 +542,15 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
 
 static int
 fd_bam_decode_batch( fd_bam_tile_t * ctx,
-                     pb_istream_t *   stream ) {
+                     pb_istream_t *  stream ) {
   fd_bam_batch_ctx_t state = {
     .ctx              = ctx,
     .packet_cnt       = 0,
     .revert_on_error  = 0,
     .revert_flag_set  = 0,
-    .drop_reason      = FD_BAM_BATCH_DROP_NONE
+    .bundle_err       = FD_BAM_BUNDLE_ERR_NONE,
+    .generic_invalid_reason = FD_BAM_ERR_GENERIC_INVALID_NONE,
+    .generic_invalid_index  = 0U,
   };
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
@@ -568,28 +564,41 @@ fd_bam_decode_batch( fd_bam_tile_t * ctx,
     FD_MCNT_INC( BAM, ERRORS_PROTOBUF, 1UL );
     char const * err = PB_GET_ERROR( stream );
     FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)", err ? err : "unknown" ));
-    if( state.has_deser_error ) {
-      fd_bam_client_report_deser_error( ctx, &batch, &state, state.deser_reason, state.deser_index );
-    } else if( state.has_generic_invalid ) {
-      fd_bam_client_report_generic_invalid( ctx, &batch, &state, state.generic_invalid_msg );
-    } else {
-      char msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ];
-      switch( state.drop_reason ) {
-      case FD_BAM_BATCH_DROP_PROTO:
-        strncpy( msg, "batch decode failed", sizeof(msg)-1UL );
-        break;
-      case FD_BAM_BATCH_DROP_OVERSIZE:
-        strncpy( msg, "packet exceeds MTU", sizeof(msg)-1UL );
-        break;
-      case FD_BAM_BATCH_DROP_MIXED_FLAGS:
-        strncpy( msg, "mixed revert flags", sizeof(msg)-1UL );
-        break;
-      default:
-        strncpy( msg, err ? err : "protobuf decode failed", sizeof(msg)-1UL );
-        break;
-      }
-      msg[ sizeof(msg)-1UL ] = '\0';
-      fd_bam_client_report_generic_invalid( ctx, &batch, &state, msg );
+    switch( state.bundle_err ) {
+    case FD_BAM_BUNDLE_ERR_NONE:
+      break;
+    case FD_BAM_BUNDLE_ERR_DESER: {
+      fd_bam_bundle_result_t res = {
+        .seq_id            = batch.seq_id,
+        .slot              = batch.max_schedule_slot,
+        .bundle_txn_cnt    = state.packet_cnt,
+        .txn_cnt           = state.packet_cnt,
+        .execution_success = 0,
+        .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+        .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+        .deser_reason      = state.deser_reason,
+        .deser_index       = state.deser_index
+      };
+      fd_bam_enqueue_result( ctx, &res );
+      break;
+    }
+    case FD_BAM_BUNDLE_ERR_GENERIC_INVALID: {
+      fd_bam_bundle_result_t res = {
+        .seq_id                 = batch.seq_id,
+        .slot                   = batch.max_schedule_slot,
+        .bundle_txn_cnt         = state.packet_cnt,
+        .txn_cnt                = state.packet_cnt,
+        .execution_success      = 0,
+        .scheduling_error       = FD_BAM_SCHED_ERR_NONE,
+        .bundle_err             = FD_BAM_BUNDLE_ERR_GENERIC_INVALID,
+        .generic_invalid_reason = state.generic_invalid_reason,
+        .generic_invalid_index  = state.generic_invalid_index,
+      };
+      fd_bam_enqueue_result( ctx, &res );
+      break;
+    }
+    default:
+      FD_LOG_ERR(( "Received invalid bundle error %u", state.bundle_err ));
     }
     return 1;
   }
@@ -625,19 +634,19 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !eof ) ) return 0;
   if( FD_UNLIKELY( !seen_batch ) ) {
     FD_LOG_WARNING(( "MultipleAtomicTxnBatch contained no AtomicTxnBatch entries" ));
-    fd_bam_batch_ctx_t state = {
-      .ctx             = ctx,
-      .packet_cnt      = 0,
-      .revert_on_error = 0,
-      .revert_flag_set = 0,
-      .drop_reason     = FD_BAM_BATCH_DROP_NONE
-    };
-
     bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
-    batch.seq_id            = 0U;
-    batch.max_schedule_slot = 0UL;
-
-    fd_bam_client_report_deser_error( ctx, &batch, &state, bam_types_DeserializationErrorReason_EMPTY, 0 );
+    fd_bam_bundle_result_t res = {
+      .seq_id            = batch.seq_id,
+      .slot              = batch.max_schedule_slot,
+      .bundle_txn_cnt    = 0,
+      .txn_cnt           = 0,
+      .execution_success = 0,
+      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+      .deser_reason      = bam_types_DeserializationErrorReason_EMPTY,
+      .deser_index       = 0
+    };
+    fd_bam_enqueue_result( ctx, &res );
   }
   return 1;
 }
@@ -749,7 +758,7 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   fd_memset( ctx->bam_auth_challenge, 0, sizeof(ctx->bam_auth_challenge) );
   fd_memcpy( ctx->bam_auth_challenge, resp.challenge_to_sign, challenge_len );
 
-  size_t label_len      = sizeof( fd_bam_auth_label ) - 1UL;
+  size_t label_len      = sizeof( fd_bam_auth_label ) - 1UL; //FIXME: check if we're handling the null terminator correctly
   ulong  sign_payload_sz = label_len + challenge_len;
   uchar  sign_payload[ sizeof(fd_bam_auth_label) + 256UL ];
   fd_memcpy( sign_payload, fd_bam_auth_label, label_len );

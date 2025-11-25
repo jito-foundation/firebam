@@ -9,8 +9,6 @@
 #include <limits.h>
 #include <string.h>
 
-#include "../bam/fd_bam_types.h"
-#include "fd_pack_bam_result.h"
 
 #if FD_USING_GCC && __GNUC__ >= 15
 #pragma GCC diagnostic ignored "-Wunterminated-string-initialization"
@@ -1641,43 +1639,6 @@ test_bundle_nonce( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
-/* ============ Comprehensive BAM Bundle Tests ============ */
-
-static void
-test_pack_bam_failure_reason_mapping( void ) {
-  fd_bam_bundle_result_t res;
-
-  fd_memset( &res, 0, sizeof( res ) );
-  res.seq_id = 123UL;
-  fd_pack_assign_bam_failure_reason( &res, 0, FD_PACK_INSERT_REJECT_NONCE_PRIORITY );
-  FD_TEST( res.has_deser_error==1 );
-  FD_TEST( res.deser_reason==bam_types_DeserializationErrorReason_PRIORITIZATION_FAILURE );
-  FD_TEST( res.deser_index==0U );
-  FD_TEST( res.txn_cnt==1U );
-  FD_TEST( res.bundle_txn_cnt==1U );
-
-  fd_memset( &res, 0, sizeof( res ) );
-  res.seq_id = 456UL;
-  fd_pack_assign_bam_failure_reason( &res, 0, FD_PACK_INSERT_REJECT_DUPLICATE );
-  FD_TEST( res.has_deser_error==1 );
-  FD_TEST( res.deser_reason==bam_types_DeserializationErrorReason_FILTER_FAILURE );
-  FD_TEST( res.deser_index==0U );
-
-  fd_memset( &res, 0, sizeof( res ) );
-  res.seq_id = 789UL;
-  fd_pack_assign_bam_failure_reason( &res, 0, FD_PACK_INSERT_REJECT_UNAFFORDABLE );
-  FD_TEST( res.has_deser_error==0 );
-  FD_TEST( res.transaction_err[0]==bam_types_TransactionErrorReason_INSUFFICIENT_FUNDS_FOR_FEE );
-
-  fd_memset( &res, 0, sizeof( res ) );
-  res.seq_id = 999UL;
-  fd_pack_assign_bam_failure_reason( &res, 2, 12345 );
-  FD_TEST( res.has_generic_invalid==1 );
-  FD_TEST( strstr( res.generic_invalid_msg, "pack rejected seq" )!=NULL );
-  FD_TEST( res.txn_cnt>=1 );
-  FD_TEST( res.bundle_txn_cnt>=1 );
-}
-
 /* Test bundle scheduling with different strategies and mixing with normal transactions */
 static void
 test_bundle_strategies( void ) {
@@ -2477,7 +2438,6 @@ main( int     argc,
   test_bundle_nonce();
 
   /* BAM Bundle Tests */
-  test_pack_bam_failure_reason_mapping();
   test_bundle_strategies();
   test_bundle_account_conflicts();
   test_initializer_bundle_state_machine();

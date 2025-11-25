@@ -5,10 +5,34 @@
 #include "proto/bam_types.pb.h"
 #include "../../util/net/fd_net_headers.h"
 
+/* Central definitions for user-visible BAM error strings.
+   Keep format strings and prefixes in one place so tests can
+   assert on them without duplicating literals. */
+
+#define FD_BAM_ERR_MSG_BUILDER_INFO_UNAVAILABLE "builder info unavailable"
+#define FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED  "bundle execution failed"
+
+#define FD_BAM_ERR_FMT_TRANSACTION_ERROR        "transaction error %i"
+#define FD_BAM_ERR_PREFIX_TRANSACTION_ERROR     "transaction error "
+
+#define FD_BAM_ERR_FMT_INVALID_SCHEDULING_ERROR "invalid scheduling error %u"
+#define FD_BAM_ERR_PREFIX_INVALID_SCHEDULING    "invalid scheduling error "
+
 /* FD_BAM_MAX_PENDING_RESULTS is the bundle result queue depth, so long disconnects
  * don't drop SchedulerMessage payloads. */
 #define FD_BAM_MAX_PENDING_RESULTS 2048U
-#define FD_BAM_GENERIC_INVALID_MSG_MAX 96U
+#define FD_BAM_BUNDLE_ERR_NONE            (0U)
+#define FD_BAM_BUNDLE_ERR_DESER           (1U)
+#define FD_BAM_BUNDLE_ERR_GENERIC_INVALID (2U)
+
+#define FD_BAM_ERR_GENERIC_INVALID_NONE                     (0U)
+#define FD_BAM_ERR_GENERIC_INVALID_BUILDER_INFO_UNAVAILABLE (1U)
+
+#define FD_BAM_ERR_GENERIC_INVALID_CNT (sizeof(FD_BAM_ERR_GENERIC_INVALID_STRINGS)/sizeof(FD_BAM_ERR_GENERIC_INVALID_STRINGS[0]))
+static char const * const FD_BAM_ERR_GENERIC_INVALID_STRINGS[] = {
+  [ FD_BAM_ERR_GENERIC_INVALID_NONE                     ] = NULL,
+  [ FD_BAM_ERR_GENERIC_INVALID_BUILDER_INFO_UNAVAILABLE ] = FD_BAM_ERR_MSG_BUILDER_INFO_UNAVAILABLE,
+};
 
 #define FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ULONG_MAX
 
@@ -22,11 +46,11 @@ typedef struct {
   int transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Per-transaction bam_types_TransactionErrorReason for indices <txn_cnt. 0 denotes success. */
   uint   consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Actual compute units consumed per transaction (exec+account data), even when the bundle later reverts. 0 when the txn never executed. */
   uchar sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];  /* Boolean sanitize outcome per transaction (1=passed bank sanitize, 0=failed). When 0, transaction_err typically reports SANITIZE_FAILURE. */
-  uchar has_deser_error;   /* Batch-level flag indicating deserialization or flag validation failed before execution; when set, per-transaction arrays are undefined and deser_* identify the offender. */
-  uchar deser_index;       /* Zero-based transaction index tied to the deserialization error; only valid when has_deser_error==1. */
-  uchar deser_reason;      /* bam_types_DeserializationErrorReason enumerator for the failure reported by deser_index; only meaningful when has_deser_error==1. */
-  uchar has_generic_invalid; /* Batch-level rejection flag for generic invalid conditions (mixed modes, oversize, etc.). When 1, generic_invalid_msg contains a human-readable explanation. */
-  char  generic_invalid_msg[ FD_BAM_GENERIC_INVALID_MSG_MAX ]; /* NUL-terminated ASCII detail describing a generic invalid rejection. Truncated to FD_BAM_GENERIC_INVALID_MSG_MAX-1 bytes when present. */
+  uchar bundle_err;        /* FD_BAM_BUNDLE_ERR_* selector for bundle-level rejection prior to execution. */
+  uchar deser_index;       /* Zero-based transaction index tied to the deserialization error; only valid when bundle_err==FD_BAM_BUNDLE_ERR_DESER. */
+  uchar deser_reason;      /* bam_types_DeserializationErrorReason enumerator for the failure reported by deser_index; only meaningful when bundle_err==FD_BAM_BUNDLE_ERR_DESER. */
+  uchar generic_invalid_reason; /* FD_BAM_ERR_GENERIC_INVALID_* describing a generic invalid rejection; only meaningful when bundle_err==FD_BAM_BUNDLE_ERR_GENERIC_INVALID. */
+  uchar generic_invalid_index;  /* Optional index tied to the generic invalid rejection (e.g. pack idx when pack rejects a bundle). */
 } fd_bam_bundle_result_t;
 
 typedef struct {

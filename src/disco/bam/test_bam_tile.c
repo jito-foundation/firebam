@@ -3,7 +3,7 @@
 #include "test_bam_common.c"
 #include "proto/bam_api.pb.h"
 #include "proto/bam_types.pb.h"
-#include "fd_bam_errors.h"
+#include "fd_bam_types.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../ballet/nanopb/pb_decode.h"
