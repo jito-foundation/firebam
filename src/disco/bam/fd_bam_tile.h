@@ -9,7 +9,7 @@ typedef struct fd_bam_tile fd_bam_tile_t;
 #define FD_BAM_CLIENT_REQUEST_TIMEOUT ((long)8e9) /* 8 seconds */
 
 #define FD_BAM_AUTH_LABEL "X_OFF_CHAIN_JITO_BAM_V1\0"
-static char const fd_bam_auth_label[] = FD_BAM_AUTH_LABEL;
+#define FD_BAM_AUTH_LABEL_LEN 24
 
 FD_PROTOTYPES_BEGIN
 

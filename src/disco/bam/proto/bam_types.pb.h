@@ -75,7 +75,7 @@ typedef enum _bam_types_TransactionErrorReason {
 /* The message the Validator sends to the builder to prove its identity
  based on a challenge sent by the builder */
 typedef struct _bam_types_AuthProof {
-    char challenge_to_sign[256];
+    char challenge_to_sign[128];
     char validator_pubkey[64];
     char signature[128];
 } bam_types_AuthProof;
@@ -536,7 +536,7 @@ extern const pb_msgdesc_t bam_types_BamConfig_msg;
 /* bam_types_MultipleAtomicTxnBatchResult_size depends on runtime parameters */
 /* bam_types_Committed_size depends on runtime parameters */
 #define BAM_TYPES_BAM_TYPES_PB_H_MAX_SIZE        bam_types_Packet_size
-#define bam_types_AuthProof_size                 453
+#define bam_types_AuthProof_size                 325
 #define bam_types_BamConfig_size                 217
 #define bam_types_BlockEngineBuilderConfig_size  71
 #define bam_types_BuilderHeartBeat_size          11

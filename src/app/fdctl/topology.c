@@ -336,7 +336,7 @@ fd_topo_initialize( config_t * config ) {
     fd_topob_wksp( topo, "bam_fee_cfg" );
 
     /**/                 fd_topob_link( topo, "bam_verif",  "bam_verif",  config->tiles.verify.receive_buffer_size, FD_TPU_PARSED_MTU,          1UL );
-    /**/                 fd_topob_link( topo, "bam_sign",   "bam_sign",   65536UL,                                  9UL,                         1UL );
+    /**/                 fd_topob_link( topo, "bam_sign",   "bam_sign",   65536UL,                                  256UL,                       1UL );
     /**/                 fd_topob_link( topo, "sign_bam",   "sign_bam",   128UL,                                    64UL,                        1UL );
     /**/                 fd_topob_link( topo, "pack_bam",   "pack_bam",   2048UL,                                   sizeof(fd_bam_leader_state_t), 1UL );
     /**/                 fd_topob_link( topo, "bank_bam",   "bank_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );

@@ -19,7 +19,7 @@ typedef struct _bam_api_AuthChallengeRequest {
 
 /* Response containing the challenge to sign */
 typedef struct _bam_api_AuthChallengeResponse {
-    char challenge_to_sign[256];
+    char challenge_to_sign[128];
 } bam_api_AuthChallengeResponse;
 
 /* Request to get the block-engine + BAM node configuration */
@@ -194,7 +194,7 @@ union bam_api_SchedulerResponseV0_resp_size_union {char f2[(6 + bam_types_Multip
 #endif
 #define BAM_API_BAM_API_PB_H_MAX_SIZE            bam_api_AuthChallengeResponse_size
 #define bam_api_AuthChallengeRequest_size        0
-#define bam_api_AuthChallengeResponse_size       258
+#define bam_api_AuthChallengeResponse_size       130
 #define bam_api_ConfigRequest_size               0
 #if defined(bam_types_BlockEngineBuilderConfig_size) && defined(bam_types_BamConfig_size)
 #define bam_api_ConfigResponse_size              (12 + bam_types_BlockEngineBuilderConfig_size + bam_types_BamConfig_size)

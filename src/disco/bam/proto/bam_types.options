@@ -1,5 +1,5 @@
 # 46 bytes, made with format!("challenge-{}", uuid::Uuid::new_v4())
-bam_types.AuthProof.challenge_to_sign max_size:256
+bam_types.AuthProof.challenge_to_sign max_size:128
 
 # Base58 pubkeys are 44 chars
 bam_types.AuthProof.validator_pubkey max_size:64

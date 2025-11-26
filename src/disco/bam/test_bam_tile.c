@@ -1435,7 +1435,8 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
 
   bam_api_AuthChallengeResponse resp = bam_api_AuthChallengeResponse_init_default;
   char const challenge[] = "unit-test-challenge";
-  FD_TEST( strlen( challenge ) < sizeof( resp.challenge_to_sign ) );
+  const size_t challenge_len = strlen(challenge);
+  FD_TEST( challenge_len < sizeof( resp.challenge_to_sign ) );
   strlcpy( resp.challenge_to_sign, challenge, sizeof( challenge ) );
 
   uchar pb_buf[ 128 ];
@@ -1453,25 +1454,23 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
 
   FD_TEST( state->bam_auth_inflight == 0U );
   FD_TEST( state->bam_auth_ready == 1U );
-  FD_TEST( state->bam_auth_challenge_len == strlen( challenge ) );
-  FD_TEST( 0 == memcmp( state->bam_auth_challenge, challenge, strlen( challenge ) ) );
+  FD_TEST( state->bam_auth_challenge_len == challenge_len );
+  FD_TEST( 0 == memcmp( state->bam_auth_challenge, challenge, challenge_len ) );
 
   char expected_sig[ FD_BASE58_ENCODED_64_SZ ];
   FD_TEST( fd_base58_encode_64( signature, NULL, expected_sig ) );
   FD_TEST( 0 == strcmp( state->bam_auth_signature, expected_sig ) );
   FD_TEST( state->keyguard_client->request_seq == 1UL );
 
-  size_t const label_len = sizeof( FD_BAM_AUTH_LABEL ) - 1UL;
-  size_t const challenge_len = strlen( challenge );
-  uchar expected_payload[ 256 ];
-  FD_TEST( label_len + challenge_len <= sizeof( expected_payload ) );
-  fd_memcpy( expected_payload, FD_BAM_AUTH_LABEL, label_len );
-  fd_memcpy( expected_payload + label_len, challenge, challenge_len );
-  FD_TEST( 0 == memcmp( request_data, expected_payload, label_len + challenge_len ) );
+  uchar  expected_payload[ FD_BAM_AUTH_LABEL_LEN + sizeof(bam_api_AuthChallengeResponse) ];
+  FD_TEST( FD_BAM_AUTH_LABEL_LEN + challenge_len <= sizeof( expected_payload ) );
+  fd_memcpy( expected_payload, FD_BAM_AUTH_LABEL, FD_BAM_AUTH_LABEL_LEN );
+  fd_memcpy( expected_payload + FD_BAM_AUTH_LABEL_LEN, challenge, challenge_len );
+  FD_TEST( 0 == memcmp( request_data, expected_payload, FD_BAM_AUTH_LABEL_LEN + challenge_len ) );
 
   fd_frag_meta_t const * req_meta =
       request_mcache + fd_mcache_line_idx( 0UL, depth );
-  FD_TEST( req_meta->sz == (ushort)( label_len + challenge_len ) );
+  FD_TEST( req_meta->sz == (ushort)( FD_BAM_AUTH_LABEL_LEN + challenge_len ) );
 
   fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( request_data ) ) );
   fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( response_data ) ) );

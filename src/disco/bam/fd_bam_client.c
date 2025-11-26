@@ -713,14 +713,12 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   ctx->bam_auth_challenge_len = (uchar)challenge_len;
   strlcpy( ctx->bam_auth_challenge, resp.challenge_to_sign, sizeof(ctx->bam_auth_challenge) );
 
-  size_t label_len      = sizeof( fd_bam_auth_label ) - 1UL; //FIXME: check if we're handling the null terminator correctly
-  ulong  sign_payload_sz = label_len + challenge_len;
-  uchar  sign_payload[ sizeof(fd_bam_auth_label) + 256UL ];
-  fd_memcpy( sign_payload, fd_bam_auth_label, label_len );
-  fd_memcpy( sign_payload + label_len, ctx->bam_auth_challenge, challenge_len );
+  uchar  sign_payload[ FD_BAM_AUTH_LABEL_LEN + sizeof(bam_api_AuthChallengeResponse) ]; // the null is to be included
+  fd_memcpy( sign_payload, FD_BAM_AUTH_LABEL, FD_BAM_AUTH_LABEL_LEN );
+  fd_memcpy( sign_payload + FD_BAM_AUTH_LABEL_LEN, ctx->bam_auth_challenge, challenge_len );
 
   uchar signature[ 64 ];
-  fd_keyguard_client_sign( ctx->keyguard_client, signature, sign_payload, sign_payload_sz, FD_KEYGUARD_SIGN_TYPE_ED25519 );
+  fd_keyguard_client_sign( ctx->keyguard_client, signature, sign_payload, FD_BAM_AUTH_LABEL_LEN + challenge_len, FD_KEYGUARD_SIGN_TYPE_ED25519 );
 
   fd_base58_encode_64( signature, NULL, ctx->bam_auth_signature );
   ctx->bam_auth_ready = 1;

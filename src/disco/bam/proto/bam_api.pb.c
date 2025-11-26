@@ -9,7 +9,7 @@
 PB_BIND(bam_api_AuthChallengeRequest, bam_api_AuthChallengeRequest, AUTO)
 
 
-PB_BIND(bam_api_AuthChallengeResponse, bam_api_AuthChallengeResponse, 2)
+PB_BIND(bam_api_AuthChallengeResponse, bam_api_AuthChallengeResponse, AUTO)
 
 
 PB_BIND(bam_api_ConfigRequest, bam_api_ConfigRequest, AUTO)
