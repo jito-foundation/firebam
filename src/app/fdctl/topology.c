@@ -331,7 +331,6 @@ fd_topo_initialize( config_t * config ) {
     fd_topob_wksp( topo, "sign_bam"    );
     fd_topob_wksp( topo, "pack_bam"    );
     fd_topob_wksp( topo, "bank_bam"    );
-    fd_topob_wksp( topo, "bam_gossip"  );
     fd_topob_wksp( topo, "bam_status"  );
     fd_topob_wksp( topo, "bam_ctrl"    );
     fd_topob_wksp( topo, "bam_fee_cfg" );
@@ -341,7 +340,6 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_link( topo, "sign_bam",   "sign_bam",   128UL,                                    64UL,                        1UL );
     /**/                 fd_topob_link( topo, "pack_bam",   "pack_bam",   2048UL,                                   sizeof(fd_bam_leader_state_t), 1UL );
     /**/                 fd_topob_link( topo, "bank_bam",   "bank_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
-    /**/                 fd_topob_link( topo, "bam_gossip", "bam_gossip", 128UL,                                    sizeof(fd_bam_contact_update_t), 1UL );
 
     /**/                 fd_topob_tile( topo, "bam",     "bam",     "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1 );
 
@@ -357,7 +355,6 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
     /**/                 fd_topob_tile_out( topo, "bank",   0UL,                        "bank_bam",     0UL                                                );
     /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
-    /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_gossip",   0UL                                                );
 
     if( plugins_enabled ) {
       fd_topob_wksp( topo, "bam_plugi" );
