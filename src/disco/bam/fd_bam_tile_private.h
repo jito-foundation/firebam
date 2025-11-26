@@ -157,7 +157,7 @@ struct fd_bam_tile {
   uchar                 bam_url_pubkey[ 32 ];   /* 32-byte Ed25519 validator key read from the identity file */
   char                  bam_validator_pubkey[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  bam_auth_challenge[ 256 ];        /* Latest auth challenge from BAM (bytes up to bam_auth_challenge_len valid) */
-  ushort                bam_auth_challenge_len;           /* Length of current auth challenge (0 <= len < sizeof(bam_auth_challenge)) */
+  uchar                 bam_auth_challenge_len;           /* Length of current auth challenge (0 <= len < sizeof(bam_auth_challenge)) */
   char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Base58-encoded Ed25519 signature most recently sent to BAM */
   uint                  bam_builder_info_inflight  : 1;  /* Reserved for builder-info RPC tracking (currently unused) */
   uint                  bam_stream_live        : 1;  /* set once bam_stream is established and delivering messages */

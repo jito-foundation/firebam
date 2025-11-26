@@ -1352,7 +1352,7 @@ test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
   state->bam_last_config_poll_ns = g_clock;
 
   char const challenge[] = "challenge-123";
-  state->bam_auth_challenge_len = (ushort)strlcpy( state->bam_auth_challenge, challenge, sizeof(challenge) );
+  state->bam_auth_challenge_len = (uchar)strlcpy( state->bam_auth_challenge, challenge, sizeof(challenge) );
 
   char const signature[] = "sig-abcdef";
   strlcpy( state->bam_auth_signature, signature, sizeof(signature) );
