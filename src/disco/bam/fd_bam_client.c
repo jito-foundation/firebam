@@ -90,11 +90,9 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
      transition so gossip never advertises a half-cleared override. */
   ctx->defer_reset = 0;
 
-  long const builder_info_valid_until = ctx->builder_info_valid_until;
-  if( FD_UNLIKELY( builder_info_valid_until && now >= builder_info_valid_until ) ) {
+  if( FD_UNLIKELY( ctx->builder_info_valid_until && now >= ctx->builder_info_valid_until ) ) {
     ctx->builder_info_valid_until = 0L;
   }
-  ctx->bam_builder_info_inflight        = 0;
   ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
 
   memset( ctx->rtt, 0, sizeof(fd_rtt_estimate_t) );

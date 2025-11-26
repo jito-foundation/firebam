@@ -159,12 +159,11 @@ struct fd_bam_tile {
   char                  bam_auth_challenge[ 256 ];        /* Latest auth challenge from BAM (bytes up to bam_auth_challenge_len valid) */
   uchar                 bam_auth_challenge_len;           /* Length of current auth challenge (0 <= len < sizeof(bam_auth_challenge)) */
   char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Base58-encoded Ed25519 signature most recently sent to BAM */
-  uint                  bam_builder_info_inflight  : 1;  /* Reserved for builder-info RPC tracking (currently unused) */
   uint                  bam_stream_live        : 1;  /* set once bam_stream is established and delivering messages */
   uint                  bam_stream_connecting  : 1;  /* set during gRPC stream handshake before bam_stream_live */
   uint                  bam_auth_ready         : 1;  /* set when bam_auth_challenge/_len contain a fresh challenge to sign */
-  uint                  bam_auth_inflight      : 1;  /* set while the auth RPC is pending */
-  uint                  bam_config_inflight    : 1;  /* set while a config RPC is pending */
+  uint                  bam_auth_inflight      : 1;  /* true while GetAuthChallenge GRPC call is pending */
+  uint                  bam_config_inflight    : 1;  /* true while GetBuilderConfig GRPC call is pending */
   uint                  bam_leader_pending     : 1;  /* set when awaiting a scheduler leader-state response */
 
   /* Error backoff */
