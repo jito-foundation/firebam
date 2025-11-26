@@ -44,7 +44,6 @@ fd_topo_initialize( config_t * config ) {
   ulong resolv_tile_cnt = config->layout.resolv_tile_count;
   ulong bank_tile_cnt   = config->layout.bank_tile_count;
   ulong shred_tile_cnt  = config->layout.shred_tile_count;
-  int   bam_enabled     = config->tiles.bam.enabled;
 
   fd_topo_t * topo = { fd_topob_new( &config->topo, config->name ) };
   topo->max_page_size = fd_cstr_to_shmem_page_sz( config->hugetlbfs.max_page_size );
@@ -71,24 +70,6 @@ fd_topo_initialize( config_t * config ) {
 
   fd_topob_wksp( topo, "shred_sign"   );
   fd_topob_wksp( topo, "sign_shred"   );
-
-  int pack_sign_enabled = config->tiles.bundle.enabled || bam_enabled;
-  if( FD_UNLIKELY( bam_enabled ) ) {
-    fd_topob_wksp( topo, "bam"         );
-    fd_topob_wksp( topo, "bam_verif"   );
-    fd_topob_wksp( topo, "bam_sign"    );
-    fd_topob_wksp( topo, "sign_bam"    );
-    fd_topob_wksp( topo, "pack_bam"    );
-    fd_topob_wksp( topo, "bank_bam"    );
-    fd_topob_wksp( topo, "bam_gossip"  );
-    fd_topob_wksp( topo, "bam_status"  );
-    fd_topob_wksp( topo, "bam_ctrl"    );
-    fd_topob_wksp( topo, "bam_fee_cfg" );
-  }
-  if( FD_UNLIKELY( pack_sign_enabled ) ) {
-    fd_topob_wksp( topo, "pack_sign"   );
-    fd_topob_wksp( topo, "sign_pack"   );
-  }
 
   fd_topob_wksp( topo, "quic"         );
   fd_topob_wksp( topo, "verify"       );
@@ -133,23 +114,6 @@ fd_topo_initialize( config_t * config ) {
   FOR(shred_tile_cnt)  fd_topob_link( topo, "shred_sign",   "shred_sign",   128UL,                                    32UL,                   1UL );
   FOR(shred_tile_cnt)  fd_topob_link( topo, "sign_shred",   "sign_shred",   128UL,                                    64UL,                   1UL );
 
-  if( FD_UNLIKELY( bam_enabled ) ) {
-    /**/                 fd_topob_link( topo, "bam_verif",  "bam_verif",  config->tiles.verify.receive_buffer_size, FD_TPU_PARSED_MTU,          1UL );
-    /**/                 fd_topob_link( topo, "bam_sign",   "bam_sign",   65536UL,                                  9UL,                         1UL );
-    /**/                 fd_topob_link( topo, "sign_bam",   "sign_bam",   128UL,                                    64UL,                        1UL );
-    /**/                 fd_topob_link( topo, "pack_bam",   "pack_bam",   2048UL,                                   sizeof(fd_bam_leader_state_t), 1UL );
-    /**/                 fd_topob_link( topo, "bank_bam",   "bank_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
-    /**/                 fd_topob_link( topo, "bam_gossip", "bam_gossip", 128UL,                                    sizeof(fd_bam_contact_update_t), 1UL );
-    /* Frankendancer omits the gossip tile; keep the link optional to avoid validation errors. */
-    ulong bam_gossip_id = fd_topo_find_link( topo, "bam_gossip", 0UL );
-    if( FD_LIKELY( bam_gossip_id!=ULONG_MAX && fd_topo_find_tile( topo, "gossip", 0UL )==ULONG_MAX ) )
-      topo->links[ bam_gossip_id ].permit_no_consumers = 1;
-  }
-  if( FD_UNLIKELY( pack_sign_enabled ) ) {
-    /**/                 fd_topob_link( topo, "pack_sign",    "pack_sign",    65536UL,                                  1232UL,                    1UL );
-    /**/                 fd_topob_link( topo, "sign_pack",    "sign_pack",    128UL,                                    64UL,                      1UL );
-  }
-
   ushort parsed_tile_to_cpu[ FD_TILE_MAX ];
   /* Unassigned tiles will be floating, unless auto topology is enabled. */
   for( ulong i=0UL; i<FD_TILE_MAX; i++ ) parsed_tile_to_cpu[ i ] = USHORT_MAX;
@@ -187,9 +151,7 @@ fd_topo_initialize( config_t * config ) {
   FOR(verify_tile_cnt) fd_topob_tile( topo, "verify",  "verify",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0 );
   /**/                 fd_topob_tile( topo, "dedup",   "dedup",   "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0 );
   FOR(resolv_tile_cnt) fd_topob_tile( topo, "resolv",  "resolv",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 1,        0 );
-  /**/                 fd_topob_tile( topo, "pack",    "pack",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        pack_sign_enabled );
-  if( FD_UNLIKELY( bam_enabled ) )
-    fd_topob_tile( topo, "bam",     "bam",     "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1 );
+  /**/                 fd_topob_tile( topo, "pack",    "pack",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        config->tiles.bundle.enabled );
   FOR(bank_tile_cnt)   fd_topob_tile( topo, "bank",    "bank",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 1,        0 );
   /**/                 fd_topob_tile( topo, "poh",     "poh",     "metric_in",  tile_to_cpu[ topo->tile_cnt ], 1,        1 );
   FOR(shred_tile_cnt)  fd_topob_tile( topo, "shred",   "shred",   "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1 );
@@ -275,35 +237,12 @@ fd_topo_initialize( config_t * config ) {
   /**/                 fd_topob_tile_out( topo, "poh",    0UL,                        "replay_resol", 0UL                                                  );
   /**/                 fd_topob_tile_out( topo, "poh",    0UL,                        "executed_txn", 0UL                                                  );
 
-  if( FD_UNLIKELY( bam_enabled ) ) {
-    /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_verif",    0UL                                                );
-    FOR(verify_tile_cnt) fd_topob_tile_in(  topo, "verify", i,             "metric_in", "bam_verif",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
-    /**/                 fd_topob_tile_in(  topo, "sign",   0UL,           "metric_in", "bam_sign",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
-    /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_sign",     0UL                                                );
-    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "sign_bam",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
-    /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_bam",     0UL                                                );
-    /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_bam",     0UL                                                );
-    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
-    /**/                 fd_topob_tile_out( topo, "bank",   0UL,                        "bank_bam",     0UL                                                );
-    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
-    /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_gossip",   0UL                                                );
-  }
-
-  if( FD_UNLIKELY( pack_sign_enabled ) ) {
-    /**/                 fd_topob_tile_in(  topo, "sign",   0UL,           "metric_in", "pack_sign",      0UL,        FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
-    /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_sign",      0UL                                                );
-    /**/                 fd_topob_tile_in(  topo, "pack",   0UL,           "metric_in", "sign_pack",      0UL,        FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
-    /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_pack",      0UL                                                );
-  }
-
   /* For now the only plugin consumer is the GUI */
   int plugins_enabled = config->tiles.gui.enabled;
   if( FD_LIKELY( plugins_enabled ) ) {
     fd_topob_wksp( topo, "plugin_in"    );
     fd_topob_wksp( topo, "plugin_out"   );
     fd_topob_wksp( topo, "plugin"       );
-    if( FD_UNLIKELY( bam_enabled ) )
-      fd_topob_wksp( topo, "bam_plugi"  );
 
     /**/                 fd_topob_link( topo, "plugin_out",   "plugin_out",   128UL,                                    8UL+40200UL*(58UL+12UL*34UL), 1UL );
     /**/                 fd_topob_link( topo, "replay_plugi", "plugin_in",    128UL,                                    4098*8UL,                     1UL );
@@ -312,8 +251,6 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_link( topo, "startp_plugi", "plugin_in",    128UL,                                    56UL,                         1UL );
     /**/                 fd_topob_link( topo, "votel_plugin", "plugin_in",    128UL,                                    8UL,                          1UL );
     /**/                 fd_topob_link( topo, "valcfg_plugi", "plugin_in",    128UL,                                    608UL,                        1UL );
-    if( FD_UNLIKELY( bam_enabled ) )
-      fd_topob_link( topo, "bam_plugi",  "bam_plugi",  65536UL,                                  sizeof(fd_plugin_msg_bam_update_t), 1UL );
 
     /**/                 fd_topob_tile( topo, "plugin",  "plugin",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0, 0 );
 
@@ -324,8 +261,6 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_out( topo, "poh",    0UL,                        "votel_plugin", 0UL                                                );
     /**/                 fd_topob_tile_out( topo, "plugin", 0UL,                        "plugin_out",   0UL                                                );
     /**/                 fd_topob_tile_out( topo, "poh",    0UL,                        "valcfg_plugi", 0UL                                                );
-    if( FD_UNLIKELY( bam_enabled ) )
-      /**/               fd_topob_tile_out( topo, "bam",    0UL,                        "bam_plugi",    0UL                                                );
 
     /**/                 fd_topob_tile_in(  topo, "plugin", 0UL,           "metric_in", "replay_plugi", 0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
     /**/                 fd_topob_tile_in(  topo, "plugin", 0UL,           "metric_in", "gossip_plugi", 0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
@@ -334,8 +269,6 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_in(  topo, "plugin", 0UL,           "metric_in", "startp_plugi", 0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
     /**/                 fd_topob_tile_in(  topo, "plugin", 0UL,           "metric_in", "votel_plugin", 0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
     /**/                 fd_topob_tile_in(  topo, "plugin", 0UL,           "metric_in", "valcfg_plugi", 0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
-    if( FD_UNLIKELY( bam_enabled ) )
-      /**/               fd_topob_tile_in(  topo, "plugin", 0UL,           "metric_in", "bam_plugi",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
   }
 
   if( FD_LIKELY( config->tiles.gui.enabled ) ) {
@@ -346,6 +279,19 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_in(  topo, "gui",    0UL,           "metric_in", "pack_bank",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
     /**/                 fd_topob_tile_in(  topo, "gui",    0UL,           "metric_in", "pack_poh",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
     FOR(bank_tile_cnt)   fd_topob_tile_in(  topo, "gui",    0UL,           "metric_in", "bank_poh",     i,            FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
+  }
+
+  if( FD_UNLIKELY( config->tiles.bundle.enabled || config->tiles.bam.enabled ) )
+  {
+    fd_topob_wksp( topo, "pack_sign"    );
+    fd_topob_wksp( topo, "sign_pack"    );
+    /**/                 fd_topob_link( topo, "pack_sign",    "pack_sign",    65536UL,                                  1232UL,                    1UL );
+    /**/                 fd_topob_link( topo, "sign_pack",    "sign_pack",    128UL,                                    64UL,                      1UL );
+
+    /**/                 fd_topob_tile_in(  topo, "sign",   0UL,           "metric_in", "pack_sign",      0UL,        FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
+    /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_sign",      0UL                                                );
+    /**/                 fd_topob_tile_in(  topo, "pack",   0UL,           "metric_in", "sign_pack",      0UL,        FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
+    /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_pack",      0UL                                                );
   }
 
   if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
@@ -377,6 +323,52 @@ fd_topo_initialize( config_t * config ) {
       fd_topob_tile_out( topo, "bundle", 0UL, "bundle_plugi", 0UL );
     }
   }
+
+  if( FD_UNLIKELY( config->tiles.bam.enabled ) ) {
+    fd_topob_wksp( topo, "bam"         );
+    fd_topob_wksp( topo, "bam_verif"   );
+    fd_topob_wksp( topo, "bam_sign"    );
+    fd_topob_wksp( topo, "sign_bam"    );
+    fd_topob_wksp( topo, "pack_bam"    );
+    fd_topob_wksp( topo, "bank_bam"    );
+    fd_topob_wksp( topo, "bam_gossip"  );
+    fd_topob_wksp( topo, "bam_status"  );
+    fd_topob_wksp( topo, "bam_ctrl"    );
+    fd_topob_wksp( topo, "bam_fee_cfg" );
+
+    /**/                 fd_topob_link( topo, "bam_verif",  "bam_verif",  config->tiles.verify.receive_buffer_size, FD_TPU_PARSED_MTU,          1UL );
+    /**/                 fd_topob_link( topo, "bam_sign",   "bam_sign",   65536UL,                                  9UL,                         1UL );
+    /**/                 fd_topob_link( topo, "sign_bam",   "sign_bam",   128UL,                                    64UL,                        1UL );
+    /**/                 fd_topob_link( topo, "pack_bam",   "pack_bam",   2048UL,                                   sizeof(fd_bam_leader_state_t), 1UL );
+    /**/                 fd_topob_link( topo, "bank_bam",   "bank_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
+    /**/                 fd_topob_link( topo, "bam_gossip", "bam_gossip", 128UL,                                    sizeof(fd_bam_contact_update_t), 1UL );
+
+    /**/                 fd_topob_tile( topo, "bam",     "bam",     "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1 );
+
+    /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_verif",    0UL                                                );
+    FOR(verify_tile_cnt) fd_topob_tile_in(  topo, "verify", i,             "metric_in", "bam_verif",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+
+    /**/                 fd_topob_tile_in(  topo, "sign",   0UL,           "metric_in", "bam_sign",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
+    /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_sign",     0UL                                                );
+    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "sign_bam",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
+    /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_bam",     0UL                                                );
+
+    /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_bam",     0UL                                                );
+    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+    /**/                 fd_topob_tile_out( topo, "bank",   0UL,                        "bank_bam",     0UL                                                );
+    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+    /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_gossip",   0UL                                                );
+
+    if( plugins_enabled ) {
+      fd_topob_wksp( topo, "bam_plugi" );
+      /* bam_plugi must be kind of deep, to prevent exhausting shared
+         flow control credits when publishing many packets at once. */
+      fd_topob_link( topo, "bam_plugi", "bam_plugi", 65536UL, sizeof(fd_plugin_msg_bam_update_t), 1UL );
+      fd_topob_tile_in(  topo, "plugin", 0UL, "metric_in", "bam_plugi", 0UL, FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
+      fd_topob_tile_out( topo, "bam", 0UL, "bam_plugi", 0UL );
+    }
+  }
+
 
   if( FD_LIKELY( !is_auto_affinity ) ) {
     if( FD_UNLIKELY( affinity_tile_cnt<topo->tile_cnt ) )
@@ -416,7 +408,7 @@ fd_topo_initialize( config_t * config ) {
     }
   }
 
-  if( FD_UNLIKELY( bam_enabled ) ) {
+  if( FD_UNLIKELY( config->tiles.bam.enabled)) {
     fd_topo_obj_t * bam_status_obj = fd_topob_obj( topo, "fseq", "bam_status" );
     fd_topo_tile_t * bam_tile      = &topo->tiles[ fd_topo_find_tile( topo, "bam", 0UL ) ];
     fd_topob_tile_uses( topo, bam_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
@@ -518,18 +510,21 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->bundle.ssl_heap_sz = config->development.bundle.ssl_heap_size_mib<<20;
     tile->bundle.keepalive_interval_nanos = config->tiles.bundle.keepalive_interval_millis * (ulong)1e6;
     tile->bundle.tls_cert_verify = !!config->tiles.bundle.tls_cert_verify;
+
   } else if( FD_UNLIKELY( !strcmp( tile->name, "bam" ) ) ) {
       strncpy( tile->bam.url, config->tiles.bam.url, sizeof(tile->bam.url) );
       tile->bam.url_len = strnlen( tile->bam.url, 255 );
       strncpy( tile->bam.sni, config->tiles.bam.tls_domain_name, sizeof(tile->bam.sni) );
       tile->bam.sni_len = strnlen( tile->bam.sni, 255 );
       strncpy( tile->bam.identity_key_path, config->paths.identity_key, sizeof(tile->bam.identity_key_path) );
-      strncpy( tile->bam.key_log_path, config->development.bundle.ssl_key_log_file, sizeof(tile->bam.key_log_path) );
-      tile->bam.buf_sz = config->development.bundle.buffer_size_kib<<10;
-      tile->bam.ssl_heap_sz = config->development.bundle.ssl_heap_size_mib<<20;
+      strncpy( tile->bam.key_log_path, config->development.bundle.ssl_key_log_file, sizeof(tile->bam.key_log_path) ); //fixme bundle -> bam
+      tile->bam.buf_sz = config->development.bundle.buffer_size_kib<<10; //fixme bundle -> bam
+      tile->bam.ssl_heap_sz = config->development.bundle.ssl_heap_size_mib<<20;//fixme bundle -> bam
       tile->bam.keepalive_interval_nanos = config->tiles.bam.keepalive_interval_millis * (ulong)1e6;
       tile->bam.tls_cert_verify = !!config->tiles.bam.tls_cert_verify;
-    } else if( FD_UNLIKELY( !strcmp( tile->name, "verify" ) ) ) {
+      tile->bam.enabled = !!config->tiles.bam.enabled;
+
+  } else if( FD_UNLIKELY( !strcmp( tile->name, "verify" ) ) ) {
     tile->verify.tcache_depth = config->tiles.verify.signature_cache_size;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "dedup" ) ) ) {
