@@ -128,6 +128,13 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_leader_pending         = 0U;
 }
 
+static double
+fd_bam_client_retry_ms( fd_bam_tile_t * ctx ) {
+  long wait_ns = ctx->backoff_until - fd_bam_now();
+  if( wait_ns < 0L ) wait_ns = 0L;
+  return (double)wait_ns / 1e6;
+}
+
 static int
 fd_bam_client_do_connect( fd_bam_tile_t const * ctx,
                              uint                     ip4_addr ) {
@@ -164,9 +171,10 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
   void * pscratch = scratch;
   int err = fd_getaddrinfo( ctx->server_fqdn, &hints, &res, &pscratch, sizeof(scratch) );
   if( FD_UNLIKELY( err ) ) {
-    FD_LOG_WARNING(( "fd_getaddrinfo `%s` failed (%d-%s)", ctx->server_fqdn, err, fd_gai_strerror( err ) ));
     fd_bam_client_reset( ctx );
     ctx->metrics.transport_fail_cnt++;
+    FD_LOG_WARNING(( "fd_getaddrinfo `%s` failed (%d-%s); backing off for %.3f ms",
+                     ctx->server_fqdn, err, fd_gai_strerror( err ), fd_bam_client_retry_ms( ctx ) ));
     return;
   }
   uint const ip4_addr = ((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr;
@@ -204,11 +212,13 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
   int connect_err = fd_bam_client_do_connect( ctx, ip4_addr );
   if( FD_UNLIKELY( connect_err ) ) {
     if( FD_UNLIKELY( connect_err != EINPROGRESS ) ) {
-      FD_LOG_WARNING(( "connect(tcp_sock," FD_IP4_ADDR_FMT ":%u) failed (%i-%s)",
-                      FD_IP4_ADDR_FMT_ARGS( ip4_addr ), ctx->server_tcp_port,
-                      connect_err, fd_io_strerror( connect_err ) ));
       fd_bam_client_reset( ctx );
       ctx->metrics.transport_fail_cnt++;
+      FD_LOG_WARNING(( "connect(tcp_sock," FD_IP4_ADDR_FMT ":%u) failed (%i-%s) (fqdn=%s sni=%.*s); retrying in %.3f ms",
+                       FD_IP4_ADDR_FMT_ARGS( ip4_addr ), ctx->server_tcp_port,
+                       connect_err, fd_io_strerror( connect_err ),
+                       ctx->server_fqdn, (int)ctx->server_sni_len, ctx->server_sni,
+                       fd_bam_client_retry_ms( ctx ) ));
       return;
     }
   }
@@ -1181,6 +1191,11 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( ctx->defer_reset ) ) {
     fd_bam_client_reset( ctx );
     *charge_busy = 1;
+    FD_LOG_WARNING(( "BAM client reset requested; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
+                     ctx->server_fqdn,
+                     FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                     ctx->server_tcp_port,
+                     fd_bam_client_retry_ms( ctx ) ));
     return;
   }
 
@@ -1199,13 +1214,31 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
 
     if( pfds[0].revents & (POLLERR|POLLHUP) ) {
       int connect_err = fd_bam_client_do_connect( ctx, 0U );
-      FD_LOG_INFO(( "BAM gRPC connect attempt failed (%i-%s)", connect_err, fd_io_strerror( connect_err ) ));
       fd_bam_client_reset( ctx );
       ctx->metrics.transport_fail_cnt++;
+      FD_LOG_WARNING(( "BAM gRPC connect attempt failed (%i-%s) while dialing %s/" FD_IP4_ADDR_FMT ":%hu; retrying in %.3f ms",
+                       connect_err, fd_io_strerror( connect_err ),
+                       ctx->server_fqdn,
+                       FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                       ctx->server_tcp_port,
+                       fd_bam_client_retry_ms( ctx ) ));
       *charge_busy = 1;
       return;
     }
     if( pfds[0].revents & POLLOUT ) {
+      int connect_err = fd_bam_client_do_connect( ctx, 0U );
+      if( FD_UNLIKELY( connect_err ) ) {
+        fd_bam_client_reset( ctx );
+        ctx->metrics.transport_fail_cnt++;
+        FD_LOG_WARNING(( "BAM TCP socket reported writable but connect failed (%i-%s) to %s/" FD_IP4_ADDR_FMT ":%hu; retrying in %.3f ms",
+                         connect_err, fd_io_strerror( connect_err ),
+                         ctx->server_fqdn,
+                         FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                         ctx->server_tcp_port,
+                         fd_bam_client_retry_ms( ctx ) ));
+        *charge_busy = 1;
+        return;
+      }
       FD_LOG_DEBUG(( "BAM TCP socket connected" ));
       ctx->tcp_sock_connected = 1;
       *charge_busy = 1;
@@ -1228,11 +1261,16 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   /* Did a HTTP/2 PING time out */
   long check_ts = ctx->cached_ts = fd_bam_now();
   if( FD_UNLIKELY( fd_keepalive_is_timeout( ctx->keepalive, check_ts ) ) ) {
-    FD_LOG_WARNING(( "BAM gRPC timed out (HTTP/2 PING went unanswered for %.2f seconds)",
-                     (double)( check_ts - ctx->keepalive->ts_last_tx )/1e9 ));
+    double const timeout_sec = (double)( check_ts - ctx->keepalive->ts_last_tx )/1e9;
     ctx->keepalive->inflight = 0;
     fd_bam_client_reset( ctx );
     ctx->metrics.transport_fail_cnt++;
+    FD_LOG_WARNING(( "BAM gRPC timed out (HTTP/2 PING went unanswered for %.2f seconds); retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
+                     timeout_sec,
+                     ctx->server_fqdn,
+                     FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                     ctx->server_tcp_port,
+                     fd_bam_client_retry_ms( ctx ) ));
     *charge_busy = 1;
     return;
   }
@@ -1241,21 +1279,42 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( ctx->bam_stream_live &&
                    ctx->bam_last_builder_heartbeat_ns != 0L &&
                    check_ts - ctx->bam_last_builder_heartbeat_ns >= FD_BAM_HEARTBEAT_TIMEOUT_NS ) ) {
-    FD_LOG_WARNING(( "BAM heartbeat timed out (no heartbeat for %.2f seconds)",
-                     (double)( check_ts - ctx->bam_last_builder_heartbeat_ns )/1e9 ));
+    double const missing_sec = (double)( check_ts - ctx->bam_last_builder_heartbeat_ns )/1e9;
     ctx->keepalive->inflight = 0;
     fd_bam_client_reset( ctx );
     ctx->metrics.transport_fail_cnt++;
+    FD_LOG_WARNING(( "BAM heartbeat timed out (no heartbeat for %.2f seconds); retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
+                     missing_sec,
+                     ctx->server_fqdn,
+                     FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                     ctx->server_tcp_port,
+                     fd_bam_client_retry_ms( ctx ) ));
     *charge_busy = 1;
     return;
   }
 
   /* Drive I/O, SSL handshake, and any inflight requests */
-  if( FD_UNLIKELY( !fd_bam_client_drive_io( ctx, charge_busy ) ||
-                   ctx->defer_reset /* new error? */ ) ) {
+  if( FD_UNLIKELY( !fd_bam_client_drive_io( ctx, charge_busy ) ) ) {
     fd_bam_client_reset( ctx );
     ctx->metrics.transport_fail_cnt++;
     *charge_busy = 1;
+    FD_LOG_WARNING(( "BAM gRPC transport I/O failed; reconnecting to %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms (see preceding socket/TLS log for root cause)",
+                     ctx->server_fqdn,
+                     FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                     ctx->server_tcp_port,
+                     fd_bam_client_retry_ms( ctx ) ));
+    return;
+  }
+
+  if( FD_UNLIKELY( ctx->defer_reset /* new error? */ ) ) {
+    fd_bam_client_reset( ctx );
+    ctx->metrics.transport_fail_cnt++;
+    *charge_busy = 1;
+    FD_LOG_WARNING(( "BAM client requested reset; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
+                     ctx->server_fqdn,
+                     FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                     ctx->server_tcp_port,
+                     fd_bam_client_retry_ms( ctx ) ));
     return;
   }
 
@@ -1279,7 +1338,15 @@ fd_bam_client_log_status( fd_bam_tile_t * ctx ) {
     long ts = fd_log_wallclock();
     if( FD_LIKELY( ts-(ctx->last_bundle_status_log_nanos) >= (long)1e6 ) ) {
       if( connected_now ) {
-        FD_LOG_NOTICE(( "Connected to BAM node" ));
+        char const * scheme = "http";
+# if FD_HAS_OPENSSL
+        if( ctx->is_ssl ) scheme = "https";
+# endif
+        FD_LOG_NOTICE(( "Connected to BAM node at %s://%s/ (" FD_IP4_ADDR_FMT ":%hu)",
+                        scheme,
+                        ctx->server_fqdn,
+                        FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                        ctx->server_tcp_port ));
         ctx->metrics.connection_cnt++;
         FD_MCNT_INC( BAM, CONNECTIONS, 1UL );
       } else {
@@ -1329,9 +1396,12 @@ fd_bam_client_grpc_conn_dead( void * app_ctx,
                                  uint   h2_err,
                                  int    closed_by ) {
   fd_bam_tile_t * ctx = app_ctx;
-  FD_LOG_INFO(( "BAM gRPC connection closed %s (%u-%s)",
+  FD_LOG_INFO(( "BAM gRPC connection closed %s (%u-%s) while connected to %s/" FD_IP4_ADDR_FMT ":%hu",
                 closed_by ? "by peer" : "due to error",
-                h2_err, fd_h2_strerror( h2_err ) ));
+                h2_err, fd_h2_strerror( h2_err ),
+                ctx->server_fqdn,
+                FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                ctx->server_tcp_port ));
   ctx->defer_reset = 1;
 }
 
@@ -1540,9 +1610,10 @@ fd_bam_client_grpc_rx_end(
   }
 
   if( FD_UNLIKELY( resp->grpc_status != FD_GRPC_STATUS_OK ) ) {
-    FD_LOG_INFO(( "gRPC request failed (gRPC status %u-%s): %.*s",
-                  resp->grpc_status, fd_grpc_status_cstr( resp->grpc_status ),
-                  (int)resp->grpc_msg_len, resp->grpc_msg ));
+    FD_LOG_WARNING(( "gRPC request %s failed (gRPC status %u-%s): %.*s",
+                     fd_bam_request_ctx_cstr( request_ctx ),
+                     resp->grpc_status, fd_grpc_status_cstr( resp->grpc_status ),
+                     (int)resp->grpc_msg_len, resp->grpc_msg ));
     fd_bam_client_request_failed( ctx, request_ctx );
     if( resp->grpc_status == FD_GRPC_STATUS_UNAUTHENTICATED ||
         resp->grpc_status == FD_GRPC_STATUS_PERMISSION_DENIED ) {
