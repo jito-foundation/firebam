@@ -10,6 +10,7 @@
 #include "../../waltz/grpc/fd_grpc_client.h"
 #include "../../waltz/resolv/fd_netdb.h"
 #include "../../waltz/fd_rtt_est.h"
+#include "proto/bam_api.pb.h"
 
 #define FD_BAM_HEARTBEAT_TIMEOUT_NS ((long)6e9) /* 6 seconds */
 
@@ -70,10 +71,7 @@ typedef struct fd_bam_metrics fd_bam_metrics_t;
    and topology bindings. */
 
 struct fd_bam_tile {
-  /* Key switch */
-  fd_keyswitch_t * keyswitch;                     /* Joined keyswitch exposing signer material */
-
-  /* Key guard */
+  fd_keyswitch_t * keyswitch;                     /* Manages the identity keypair */
   fd_keyguard_client_t keyguard_client[1];        /* Keyguard client used to request signatures */
 
   ulong            bank_bam_in_idx;               /* Topology link index for bank->bam input */
@@ -154,11 +152,11 @@ struct fd_bam_tile {
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Ring buffer of bundle outcomes awaiting publication */
   fd_bam_leader_state_t  bam_leader_state;        /* Cached leader-schedule budget received from the BAM node */
-  uchar                 bam_url_pubkey[ 32 ];   /* 32-byte Ed25519 validator key read from the identity file */
-  char                  bam_validator_pubkey[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
-  char                  bam_auth_challenge[ 256 ];        /* Latest auth challenge from BAM (bytes up to bam_auth_challenge_len valid) */
+  uchar                 bam_identity_pubkey[ 32 ];   /* validator pubkey from the identity keypair */
+  char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
+  char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
   uchar                 bam_auth_challenge_len;           /* Length of current auth challenge (0 <= len < sizeof(bam_auth_challenge)) */
-  char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Base58-encoded Ed25519 signature most recently sent to BAM */
+  char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Base58-encoded Ed25519 signature for BAM auth */
   uint                  bam_stream_live        : 1;  /* set once bam_stream is established and delivering messages */
   uint                  bam_stream_connecting  : 1;  /* set during gRPC stream handshake before bam_stream_live */
   uint                  bam_auth_ready         : 1;  /* set when bam_auth_challenge/_len contain a fresh challenge to sign */

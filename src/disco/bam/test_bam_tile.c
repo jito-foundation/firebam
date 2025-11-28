@@ -1352,13 +1352,13 @@ test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
   state->bam_last_config_poll_ns = g_clock;
 
   char const challenge[] = "challenge-123";
-  state->bam_auth_challenge_len = (uchar)strlcpy( state->bam_auth_challenge, challenge, sizeof(challenge) );
+  state->bam_auth_challenge_len = (uchar)strlcpy( state->challenge_to_sign, challenge, sizeof(challenge) );
 
   char const signature[] = "sig-abcdef";
   strlcpy( state->bam_auth_signature, signature, sizeof(signature) );
 
   char const validator_key[] = "validator-key-test";
-  strlcpy( state->bam_validator_pubkey, validator_key, sizeof(validator_key) );
+  strlcpy( state->bam_identity_pubkey_b58, validator_key, sizeof(validator_key) );
 
   fd_bam_test_drive( state, g_clock );
 
@@ -1445,7 +1445,7 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
 
   state->bam_auth_inflight = 1U;
   char const validator_key[] = "validator-pubkey-test";
-  strlcpy( state->bam_validator_pubkey, validator_key, sizeof( validator_key ) );
+  strlcpy( state->bam_identity_pubkey_b58, validator_key, sizeof( validator_key ) );
 
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
@@ -1455,7 +1455,7 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_auth_inflight == 0U );
   FD_TEST( state->bam_auth_ready == 1U );
   FD_TEST( state->bam_auth_challenge_len == challenge_len );
-  FD_TEST( 0 == memcmp( state->bam_auth_challenge, challenge, challenge_len ) );
+  FD_TEST( 0 == memcmp( state->challenge_to_sign, challenge, challenge_len ) );
 
   char expected_sig[ FD_BASE58_ENCODED_64_SZ ];
   FD_TEST( fd_base58_encode_64( signature, NULL, expected_sig ) );

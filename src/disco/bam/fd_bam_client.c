@@ -721,11 +721,11 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
 
   ctx->bam_auth_inflight      = 0;
   ctx->bam_auth_challenge_len = (uchar)challenge_len;
-  strlcpy( ctx->bam_auth_challenge, resp.challenge_to_sign, sizeof(ctx->bam_auth_challenge) );
+  fd_memcpy( ctx->challenge_to_sign, resp.challenge_to_sign, sizeof(ctx->challenge_to_sign) );
 
   uchar  sign_payload[ FD_BAM_AUTH_LABEL_LEN + sizeof(bam_api_AuthChallengeResponse) ]; // the null is to be included
   fd_memcpy( sign_payload, FD_BAM_AUTH_LABEL, FD_BAM_AUTH_LABEL_LEN );
-  fd_memcpy( sign_payload + FD_BAM_AUTH_LABEL_LEN, ctx->bam_auth_challenge, challenge_len );
+  fd_memcpy( sign_payload + FD_BAM_AUTH_LABEL_LEN, ctx->challenge_to_sign, challenge_len );
 
   uchar signature[ 64 ];
   fd_keyguard_client_sign( ctx->keyguard_client, signature, sign_payload, FD_BAM_AUTH_LABEL_LEN + challenge_len, FD_KEYGUARD_SIGN_TYPE_ED25519 );
@@ -892,23 +892,15 @@ static void
 fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->bam_auth_ready ) ) return;
   if( FD_UNLIKELY( ctx->bam_stream || ctx->bam_stream_connecting ) ) return;
-  if( FD_UNLIKELY( !ctx->grpc_client ) ) return;
   if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) return;
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
 
   bam_types_AuthProof proof = bam_types_AuthProof_init_default;
-  fd_memset( proof.challenge_to_sign, 0, sizeof(proof.challenge_to_sign) );
-  fd_memcpy( proof.challenge_to_sign,
-             ctx->bam_auth_challenge,
-             fd_ulong_min( (ulong)ctx->bam_auth_challenge_len, sizeof(proof.challenge_to_sign)-1UL ) );
-  fd_memset( proof.validator_pubkey, 0, sizeof(proof.validator_pubkey) );
-  fd_memcpy( proof.validator_pubkey,
-             ctx->bam_validator_pubkey,
-             fd_ulong_min( (ulong)strlen( ctx->bam_validator_pubkey ), sizeof(proof.validator_pubkey)-1UL ) );
-  fd_memset( proof.signature, 0, sizeof(proof.signature) );
+  fd_memcpy( proof.challenge_to_sign, ctx->challenge_to_sign, sizeof(proof.challenge_to_sign) );
+  fd_memcpy( proof.validator_pubkey, ctx->bam_identity_pubkey_b58, sizeof(proof.validator_pubkey) );
   fd_memcpy( proof.signature,
              ctx->bam_auth_signature,
-             fd_ulong_min( (ulong)strlen( ctx->bam_auth_signature ), sizeof(proof.signature)-1UL ) );
+             fd_ulong_min( sizeof(ctx->bam_auth_signature), sizeof(proof.signature) ) );
 
   bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
   msg.which_versioned_msg               = bam_api_SchedulerMessage_v0_tag;

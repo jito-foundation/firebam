@@ -57,8 +57,8 @@ test_bam_env_create( test_bam_env_t * env,
 
   fd_bam_tile_t * state = env->state;
   fd_memset( state, 0, sizeof(fd_bam_tile_t) );
-  for( ulong i=0UL; i<sizeof(state->bam_url_pubkey); i++ ) state->bam_url_pubkey[ i ] = (uchar)( i + 1U );
-  fd_base58_encode_32( state->bam_url_pubkey, NULL, state->bam_validator_pubkey );
+  for( ulong i=0UL; i<sizeof(state->bam_identity_pubkey); i++ ) state->bam_identity_pubkey[ i ] = (uchar)( i + 1U );
+  fd_base58_encode_32( state->bam_identity_pubkey, NULL, state->bam_identity_pubkey_b58 );
   state->stem = env->stem;
   state->enabled = 1;
   state->verify_out = (fd_bam_out_ctx_t) {

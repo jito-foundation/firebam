@@ -146,8 +146,8 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   }
 
   if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch ) == FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
-    fd_memcpy( ctx->bam_url_pubkey, ctx->keyswitch->bytes, 32UL );
-    fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_validator_pubkey );
+    fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
+    fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_identity_pubkey_b58 );
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
     ctx->defer_reset = 1;
   }
@@ -724,8 +724,8 @@ privileged_init( fd_topo_t *      topo,
   ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
 
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
-  fd_memcpy( ctx->bam_url_pubkey, public_key, 32UL );
-  fd_base58_encode_32( public_key, NULL, ctx->bam_validator_pubkey );
+  fd_memcpy( ctx->bam_identity_pubkey, public_key, 32UL );
+  fd_base58_encode_32( public_key, NULL, ctx->bam_identity_pubkey_b58 );
 
   ctx->keylog_fd = -1;
 

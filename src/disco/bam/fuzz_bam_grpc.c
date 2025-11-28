@@ -324,7 +324,7 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
   FD_TEST( ctx->bam_auth_inflight==0U );
   FD_TEST( ctx->bam_auth_challenge_len==info.expected_len );
   for( ulong i=0UL; i<info.expected_len; i++ ) {
-    FD_TEST( ctx->bam_auth_challenge[ i ]==info.start_byte );
+    FD_TEST( ctx->challenge_to_sign[ i ]==info.start_byte );
   }
 }
 
@@ -388,8 +388,8 @@ bam_fuzz_reset_tile( void ) {
   ctx->is_ssl = 1;
 
   /* Identity for auth */
-  for( ulong i=0UL; i<sizeof( ctx->bam_url_pubkey ); i++ ) ctx->bam_url_pubkey[ i ] = (uchar)( i+1U );
-  fd_base58_encode_32( ctx->bam_url_pubkey, NULL, ctx->bam_validator_pubkey );
+  for( ulong i=0UL; i<sizeof( ctx->bam_identity_pubkey ); i++ ) ctx->bam_identity_pubkey[ i ] = (uchar)( i+1U );
+  fd_base58_encode_32( ctx->bam_identity_pubkey, NULL, ctx->bam_identity_pubkey_b58 );
 
   /* Keyguard client stubbed with in-memory request/response rings */
   fd_keyguard_client_new( ctx->keyguard_client,
