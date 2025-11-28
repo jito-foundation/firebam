@@ -1059,7 +1059,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !eof ) ) goto fail;
   if( FD_UNLIKELY( !seen_v0 ) ) {
     if( version_tag && version_tag != bam_api_SchedulerResponse_v0_tag ) {
-      FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", (unsigned)version_tag ));
+      FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", version_tag ));
       ctx->metrics.transport_fail_cnt++;
       ctx->defer_reset = 1;
     } else {
@@ -1071,9 +1071,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
 
 fail:
   ctx->metrics.decode_fail_cnt++;
-  char const * err = PB_GET_ERROR( istream );
-  FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed (%s)",
-                   err ? err : "unknown" ));
+  FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed (%s)", PB_GET_ERROR( istream ) ));
 }
 
 static int

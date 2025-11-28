@@ -481,7 +481,7 @@ fd_grpc_client_request_start_ex(
   uchar * proto_buf = client->nanopb_tx + sizeof(fd_grpc_hdr_t);
   pb_ostream_t ostream = pb_ostream_from_buffer( proto_buf, client->nanopb_tx_max - sizeof(fd_grpc_hdr_t) );
   if( FD_UNLIKELY( !pb_encode( &ostream, fields, message ) ) ) {
-    FD_LOG_WARNING(( "Failed to encode Protobuf message (%.*s). This is a bug (insufficient buffer space?)", (int)path_len, path ));
+    FD_LOG_WARNING(( "Failed to encode Protobuf message (%.*s). Error: %s", (int)path_len, path, PB_GET_ERROR( &ostream ) ));
     return NULL;
   }
   ulong const serialized_sz = ostream.bytes_written;

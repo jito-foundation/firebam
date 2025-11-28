@@ -148,9 +148,7 @@ test_bam_encode_scheduler_multi_batch_response( bam_types_AtomicTxnBatch * batch
 
   pb_ostream_t ostream = pb_ostream_from_buffer( out, out_sz );
   if( FD_UNLIKELY( !pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) ) ) {
-    char const * err = PB_GET_ERROR( &ostream );
-    FD_LOG_ERR(( "SchedulerResponse encode failed (batch_cnt=%lu, out_sz=%lu): %s",
-                 batch_cnt, out_sz, err ? err : "unknown" ));
+    FD_LOG_ERR(( "SchedulerResponse encode failed (batch_cnt=%lu, out_sz=%lu): %s", batch_cnt, out_sz, PB_GET_ERROR( &ostream ) ));
   }
   return ostream.bytes_written;
 }
