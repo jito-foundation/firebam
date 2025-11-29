@@ -23,6 +23,7 @@
 #include <poll.h> /* poll */
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <stdio.h> /* snprintf */
 
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
@@ -114,7 +115,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_auth_ready             = 0;
   ctx->bam_auth_inflight          = 0;
   ctx->bam_config_inflight        = 0;
-  ctx->bam_auth_challenge_len     = 0U;
+  ctx->bam_challenge_to_sign_len     = 0U;
   ctx->bam_last_builder_heartbeat_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
   ctx->bam_last_config_poll_ns    = 0L;
@@ -633,7 +634,7 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
       int ok = pb_decode( &hb_stream, &bam_types_BuilderHeartBeat_msg, &hb );
       pb_close_string_substream( stream, &hb_stream );
       if( FD_UNLIKELY( !ok ) ) {
-        FD_LOG_WARNING(( "heartbeat decode failed: %s", PB_GET_ERROR( &hb_stream ) ));
+        FD_LOG_WARNING(( "BuilderHeartBeat decode failed: %s", PB_GET_ERROR( &hb_stream ) ));
         return 0;
       }
       ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
@@ -720,12 +721,12 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   }
 
   ctx->bam_auth_inflight      = 0;
-  ctx->bam_auth_challenge_len = (uchar)challenge_len;
+  ctx->bam_challenge_to_sign_len = (uchar)challenge_len;
   fd_memcpy( ctx->challenge_to_sign, resp.challenge_to_sign, sizeof(ctx->challenge_to_sign) );
 
   uchar  sign_payload[ FD_BAM_AUTH_LABEL_LEN + sizeof(bam_api_AuthChallengeResponse) ]; // the null is to be included
   fd_memcpy( sign_payload, FD_BAM_AUTH_LABEL, FD_BAM_AUTH_LABEL_LEN );
-  fd_memcpy( sign_payload + FD_BAM_AUTH_LABEL_LEN, ctx->challenge_to_sign, challenge_len );
+  fd_memcpy( sign_payload + FD_BAM_AUTH_LABEL_LEN, resp.challenge_to_sign, sizeof(bam_api_AuthChallengeResponse) );
 
   uchar signature[ 64 ];
   fd_keyguard_client_sign( ctx->keyguard_client, signature, sign_payload, FD_BAM_AUTH_LABEL_LEN + challenge_len, FD_KEYGUARD_SIGN_TYPE_ED25519 );
@@ -897,10 +898,8 @@ fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
 
   bam_types_AuthProof proof = bam_types_AuthProof_init_default;
   fd_memcpy( proof.challenge_to_sign, ctx->challenge_to_sign, sizeof(proof.challenge_to_sign) );
-  fd_memcpy( proof.validator_pubkey, ctx->bam_identity_pubkey_b58, sizeof(proof.validator_pubkey) );
-  fd_memcpy( proof.signature,
-             ctx->bam_auth_signature,
-             fd_ulong_min( sizeof(ctx->bam_auth_signature), sizeof(proof.signature) ) );
+  strlcpy( proof.validator_pubkey, ctx->bam_identity_pubkey_b58, sizeof(proof.validator_pubkey) );
+  strlcpy( proof.signature, ctx->bam_auth_signature, sizeof(proof.signature ) );
 
   bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
   msg.which_versioned_msg               = bam_api_SchedulerMessage_v0_tag;
@@ -916,8 +915,17 @@ fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
       NULL, 0,
       0
   );
-  if( FD_UNLIKELY( !stream ) ) return;
-
+  if( FD_UNLIKELY( !stream ) ) {
+    size_t challenge_len = strnlen( proof.challenge_to_sign, sizeof( proof.challenge_to_sign ) );
+    size_t pubkey_len    = strnlen( proof.validator_pubkey, sizeof( proof.validator_pubkey ) );
+    size_t sig_len       = strnlen( proof.signature, sizeof( proof.signature ) );
+    FD_LOG_WARNING(( "Failed BAM GRPC call `InitSchedulerStream` with auth proof (challenge_len=%lu pubkey_len=%lu sig_len=%lu) challenge=\"%.*s\" validator_pubkey=\"%.*s\" signature=\"%.*s\"",
+                  (ulong)challenge_len, (ulong)pubkey_len, (ulong)sig_len,
+                  (int)challenge_len, proof.challenge_to_sign,
+                  (int)pubkey_len, proof.validator_pubkey,
+                  (int)sig_len, proof.signature ));
+    return;
+  }
   ctx->bam_stream            = stream;
   ctx->bam_stream_connecting = 1;
   ctx->bam_auth_ready        = 0;
@@ -1548,7 +1556,7 @@ fd_bam_client_request_failed( fd_bam_tile_t * ctx,
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     ctx->bam_auth_inflight       = 0;
     ctx->bam_auth_ready          = 0;
-    ctx->bam_auth_challenge_len  = 0;
+    ctx->bam_challenge_to_sign_len  = 0;
     break;
   case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
     ctx->bam_config_inflight = 0;
@@ -1558,7 +1566,7 @@ fd_bam_client_request_failed( fd_bam_tile_t * ctx,
     ctx->bam_stream_live        = 0;
     ctx->bam_stream_connecting  = 0;
     ctx->bam_auth_ready         = 0;
-    ctx->bam_auth_challenge_len = 0;
+    ctx->bam_challenge_to_sign_len = 0;
     break;
   }
 }
@@ -1608,7 +1616,7 @@ fd_bam_client_grpc_rx_end(
     if( resp->grpc_status == FD_GRPC_STATUS_UNAUTHENTICATED ||
         resp->grpc_status == FD_GRPC_STATUS_PERMISSION_DENIED ) {
       ctx->bam_auth_ready         = 0;
-      ctx->bam_auth_challenge_len = 0;
+      ctx->bam_challenge_to_sign_len = 0;
     }
     return;
   }
@@ -1630,7 +1638,7 @@ fd_bam_client_grpc_rx_timeout(
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     ctx->bam_auth_inflight       = 0;
     ctx->bam_auth_ready          = 0;
-    ctx->bam_auth_challenge_len  = 0;
+    ctx->bam_challenge_to_sign_len  = 0;
     break;
   case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
     ctx->bam_config_inflight = 0;

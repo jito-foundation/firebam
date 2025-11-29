@@ -316,13 +316,13 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
   if( FD_UNLIKELY( !info.expect_decode_ok ) ) {
     FD_TEST( ctx->bam_auth_ready==0U );
     FD_TEST( ctx->bam_auth_inflight==0U );
-    FD_TEST( ctx->bam_auth_challenge_len==0U );
+    FD_TEST( ctx->bam_challenge_to_sign_len==0U );
     return;
   }
 
   FD_TEST( ctx->bam_auth_ready==1U );
   FD_TEST( ctx->bam_auth_inflight==0U );
-  FD_TEST( ctx->bam_auth_challenge_len==info.expected_len );
+  FD_TEST( ctx->bam_challenge_to_sign_len==info.expected_len );
   for( ulong i=0UL; i<info.expected_len; i++ ) {
     FD_TEST( ctx->challenge_to_sign[ i ]==info.start_byte );
   }
@@ -332,7 +332,7 @@ static void
 bam_fuzz_assert_auth_cleared( fd_bam_tile_t * ctx ) {
   /* Assert auth bookkeeping is cleared (ready=0, inflight=0, len=0). */
   FD_TEST( ctx->bam_auth_ready==0U );
-  FD_TEST( ctx->bam_auth_challenge_len==0U );
+  FD_TEST( ctx->bam_challenge_to_sign_len==0U );
   FD_TEST( ctx->bam_auth_inflight==0U );
 }
 
@@ -425,7 +425,7 @@ bam_fuzz_seed_stream_state( fd_bam_tile_t * ctx,
   } else if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) ) {
     ctx->bam_auth_inflight      = 1U;
     ctx->bam_auth_ready         = 0U;
-    ctx->bam_auth_challenge_len = 0U;
+    ctx->bam_challenge_to_sign_len = 0U;
   } else if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig ) ) {
     ctx->bam_config_inflight = 1U;
   }

@@ -1049,11 +1049,11 @@ test_bam_grpc_timeout( fd_wksp_t * wksp ) {
 
   state->bam_auth_inflight      = 1U;
   state->bam_auth_ready         = 1U;
-  state->bam_auth_challenge_len = 16U;
+  state->bam_challenge_to_sign_len = 16U;
   fd_bam_client_grpc_rx_timeout( state, FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge, FD_GRPC_DEADLINE_HEADER );
   FD_TEST( state->bam_auth_inflight == 0U );
   FD_TEST( state->bam_auth_ready == 0U );
-  FD_TEST( state->bam_auth_challenge_len == 0U );
+  FD_TEST( state->bam_challenge_to_sign_len == 0U );
   FD_TEST( state->defer_reset == 1U );
 
   state->defer_reset = 0U;
@@ -1350,7 +1350,7 @@ test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
   state->bam_last_config_poll_ns = g_clock;
 
   char const challenge[] = "challenge-123";
-  state->bam_auth_challenge_len = (uchar)strlcpy( state->challenge_to_sign, challenge, sizeof(challenge) );
+  state->bam_challenge_to_sign_len = (uchar)strlcpy( state->challenge_to_sign, challenge, sizeof(challenge) );
 
   char const signature[] = "sig-abcdef";
   strlcpy( state->bam_auth_signature, signature, sizeof(signature) );
@@ -1452,7 +1452,7 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
 
   FD_TEST( state->bam_auth_inflight == 0U );
   FD_TEST( state->bam_auth_ready == 1U );
-  FD_TEST( state->bam_auth_challenge_len == challenge_len );
+  FD_TEST( state->bam_challenge_to_sign_len == challenge_len );
   FD_TEST( 0 == memcmp( state->challenge_to_sign, challenge, challenge_len ) );
 
   char expected_sig[ FD_BASE58_ENCODED_64_SZ ];

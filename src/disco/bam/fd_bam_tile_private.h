@@ -155,8 +155,8 @@ struct fd_bam_tile {
   uchar                 bam_identity_pubkey[ 32 ];   /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
-  uchar                 bam_auth_challenge_len;           /* Length of current auth challenge (0 <= len < sizeof(bam_auth_challenge)) */
-  char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Base58-encoded Ed25519 signature for BAM auth */
+  uchar                 bam_challenge_to_sign_len;           /* Length of current auth challenge */
+  char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Base58-encoded Ed25519 signature for BAM auth (NUL-terminated) */
   uint                  bam_stream_live        : 1;  /* set once bam_stream is established and delivering messages */
   uint                  bam_stream_connecting  : 1;  /* set during gRPC stream handshake before bam_stream_live */
   uint                  bam_auth_ready         : 1;  /* set when bam_auth_challenge/_len contain a fresh challenge to sign */

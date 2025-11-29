@@ -150,6 +150,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_identity_pubkey_b58 );
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
     ctx->defer_reset = 1;
+    FD_LOG_INFO(( "BAM identity pubkey updated to %s", ctx->bam_identity_pubkey_b58 ));
   }
 }
 
@@ -726,6 +727,7 @@ privileged_init( fd_topo_t *      topo,
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
   fd_memcpy( ctx->bam_identity_pubkey, public_key, 32UL );
   fd_base58_encode_32( public_key, NULL, ctx->bam_identity_pubkey_b58 );
+  FD_LOG_INFO(( "BAM identity pubkey updated to %s", ctx->bam_identity_pubkey_b58 ));
 
   ctx->keylog_fd = -1;
 
