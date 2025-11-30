@@ -46,12 +46,28 @@ BUILDDIR?=native/$(CC)
 CPPFLAGS+=-march=x86-64 -mtune=native -msse4.2 -mcx16 -mno-avx -mno-avx2 -mno-avx512f -mno-fma
 RUSTFLAGS+=-C target-cpu=x86-64 -C target-feature=+sse4.2,-avx,-avx2,-avx512f,-fma
 
+# Keep AVX/AVX512 empty so AVX-gated sources stay out of the build. SHA-NI
+# assumes AVX in the codebase; leave it disabled alongside AVX to avoid the
+# base58 encoder issue.
+FD_HAS_AVX:=
+FD_HAS_AVX512:=
+FD_HAS_AVX512_MESSAGE:=(Disabled in native.mk)
+
+# util/simd unit tests use AVX/AVX2 intrinsics. Compile that directory
+# with AVX2 enabled while keeping FD_HAS_AVX empty so AVX-gated sources
+# (e.g. base58 AVX path) stay out of the build.
+SIMD_CPPFLAGS:=-mavx2
+$(BASEDIR)/$(BUILDDIR)/obj/util/simd/%.d: CPPFLAGS+=$(SIMD_CPPFLAGS)
+$(BASEDIR)/$(BUILDDIR)/obj/util/simd/%.o: CPPFLAGS+=$(SIMD_CPPFLAGS)
+
 include config/extra/with-brutality.mk
 include config/extra/with-optimization.mk
 include config/extra/with-debug.mk
 include config/extra/with-security.mk
 
+ifneq ($(FD_HAS_AVX),)
 $(call map-define,FD_HAS_SHANI, __SHA__)
+endif
 $(call map-define,FD_HAS_INT128, __SIZEOF_INT128__)
 FD_HAS_DOUBLE:=1
 CPPFLAGS+=-DFD_HAS_DOUBLE=1
@@ -71,11 +87,6 @@ ifdef FD_HAS_SHANI
 CPPFLAGS+=-msha
 RUSTFLAGS+=-C target-feature=+sha
 endif
-
-# Keep AVX/AVX512 empty so AVX-gated sources stay out of the build.
-FD_HAS_AVX:=
-FD_HAS_AVX512:=
-FD_HAS_AVX512_MESSAGE:=(Disabled in native.mk)
 
 ifdef FD_HAS_THREADS
 include config/extra/with-threads.mk
