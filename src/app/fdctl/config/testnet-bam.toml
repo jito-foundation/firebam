@@ -33,7 +33,12 @@ scratch_directory = "/data/fd1"
     # overhead of shred destination calculation, which scales with
     # testnet's expanded validator peer set
     shred_tile_count = 2
-
+[log]
+#level_stderr = "INFO"
+[development]
+sandbox = false
+core_dump = true
+no_clone = false
 [reporting]
     solana_metrics_config = "host=https://metrics.solana.com:8086,db=tds,u=testnet_write,p=c4fa841aa918bf8274e3e2a44d77568d9861b3ea"
 
@@ -45,7 +50,7 @@ scratch_directory = "/data/fd1"
     tip_distribution_authority = "B1mrQSpdeMU9gCvkJ6VsXVVoYjRGkNA7TtjMyqxrhecH"
 
 [tiles.bam]
-    enabled = true
+    enabled = false #true # fixme!
     url = "http://testnet.bam.jito.wtf"
     tls_domain_name = ""
     keepalive_interval_millis = 5000
