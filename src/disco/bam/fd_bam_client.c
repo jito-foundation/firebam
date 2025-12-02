@@ -835,16 +835,24 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( contact_changed ) ) {
     /* A disconnect means Firedancer should resume advertising its local
        TPU ports so TPU clients do not get stuck targeting the BAM host. */
-    _Bool has_contact = !!new_tpu_addr.l && new_tpu_addr.port > 0 && !!new_tpu_fwd_addr.l && new_tpu_fwd_addr.port > 0;
-    if ( FD_UNLIKELY( !has_contact ) ) {
-      FD_LOG_WARNING(( "Reverting BAM TPU config, due to BAM reset" ));
+    _Bool has_valid_contact = !!new_tpu_addr.l && new_tpu_addr.port > 0 && !!new_tpu_fwd_addr.l && new_tpu_fwd_addr.port > 0;
+    if ( FD_UNLIKELY( !has_valid_contact ) ) {
+      ctx->bam_tpu_addr = (fd_ip4_port_t){0};
+      ctx->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
+      FD_LOG_WARNING(( "Reverting BAM TPU config to defaults" )); // todo: print out default ip+port
+    } else {
+      // TODO: verify if we successfully connected to BAM at this point before gossiping out to the solana cluster
+      ctx->bam_tpu_addr     = new_tpu_addr;
+      ctx->bam_tpu_fwd_addr = new_tpu_fwd_addr;
+      FD_LOG_NOTICE(( "Updating TPU to: " FD_IP4_ADDR_FMT ":%u (fwd: " FD_IP4_ADDR_FMT ":%u)",
+                      FD_IP4_ADDR_FMT_ARGS( new_tpu_addr.addr ),
+                      (uint)fd_ushort_bswap( new_tpu_addr.port ),
+                      FD_IP4_ADDR_FMT_ARGS( new_tpu_fwd_addr.addr ),
+                      (uint)fd_ushort_bswap( new_tpu_fwd_addr.port ) ));
     }
-    // TODO: verify if we successfully connected to BAM at this point before gossiping out to the solana cluster
-    ctx->bam_tpu_addr     = new_tpu_addr;
-    ctx->bam_tpu_fwd_addr = new_tpu_fwd_addr;
 
     ctx->gui_dirty = 1U;
-    fd_bam_publish_gossip_update( ctx, ctx->stem, has_contact );
+    fd_bam_gossip_update( ctx, ctx->stem );
   }
 
   // update fee config

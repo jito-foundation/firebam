@@ -27,6 +27,47 @@
 /* Provided by fdctl/firedancer version.c */
 extern char const fdctl_version_string[];
 
+/* Admin RPC shims (exposed by agave) used to mutate ClusterInfo TPU adverts. */
+extern int fd_ext_admin_rpc_set_public_tpu( uint ip4_addr_host, ushort port_host );
+extern int fd_ext_admin_rpc_set_public_tpu_forwards( uint ip4_addr_host, ushort port_host );
+extern int fd_ext_admin_rpc_get_public_tpu( uint * out_ip4_addr_host, ushort * out_port_host );
+extern int fd_ext_admin_rpc_get_public_tpu_forwards( uint * out_ip4_addr_host, ushort * out_port_host );
+
+/* In pure Firedancer builds we don't link the agave admin RPC shim.
+   Provide weak fallbacks so the binary still links; Frankendancer will
+   override these with the Rust implementations. */
+__attribute__((weak)) int
+fd_ext_admin_rpc_set_public_tpu( uint ip4_addr_host, ushort port_host ) {
+  (void)ip4_addr_host;
+  (void)port_host;
+  FD_LOG_WARNING(( "fd_ext_admin_rpc_set_public_tpu stubbed (admin RPC unavailable); ignoring TPU update" ));
+  return 0;
+}
+
+__attribute__((weak)) int
+fd_ext_admin_rpc_set_public_tpu_forwards( uint ip4_addr_host, ushort port_host ) {
+  (void)ip4_addr_host;
+  (void)port_host;
+  FD_LOG_WARNING(( "fd_ext_admin_rpc_set_public_tpu_forwards stubbed (admin RPC unavailable); ignoring TPU forwards update" ));
+  return 0;
+}
+
+__attribute__((weak)) int
+fd_ext_admin_rpc_get_public_tpu( uint * out_ip4_addr_host, ushort * out_port_host ) {
+  if( out_ip4_addr_host ) *out_ip4_addr_host = 0U;
+  if( out_port_host )     *out_port_host     = 0U;
+  FD_LOG_WARNING(( "fd_ext_admin_rpc_get_public_tpu stubbed (admin RPC unavailable); returning zeros" ));
+  return 0;
+}
+
+__attribute__((weak)) int
+fd_ext_admin_rpc_get_public_tpu_forwards( uint * out_ip4_addr_host, ushort * out_port_host ) {
+  if( out_ip4_addr_host ) *out_ip4_addr_host = 0U;
+  if( out_port_host )     *out_port_host     = 0U;
+  FD_LOG_WARNING(( "fd_ext_admin_rpc_get_public_tpu_forwards stubbed (admin RPC unavailable); returning zeros" ));
+  return 0;
+}
+
 FD_FN_CONST static ulong
 scratch_align( void ) {
   return alignof(fd_bam_tile_t);
@@ -89,25 +130,27 @@ metrics_write( fd_bam_tile_t * ctx ) {
   ctx->bundle_status_recent = (uchar)bundle_status;
 }
 
+// Updates ContactInfo from ctx->bam_tpu*
 void
-fd_bam_publish_gossip_update( fd_bam_tile_t *    ctx,
-                              fd_stem_context_t * stem,
-                              _Bool               use_bam ) {
+fd_bam_gossip_update( fd_bam_tile_t *    ctx,
+                      fd_stem_context_t * stem) {
+  // Frankendancer needs to update agave
+  if( FD_UNLIKELY( fd_ext_admin_rpc_set_public_tpu( ctx->bam_tpu_addr.addr, fd_ushort_bswap( ctx->bam_tpu_addr.port ) ) ) ) {
+    FD_LOG_WARNING(( "failed to update public TPU address via admin RPC" ));
+  }
+
+  if( FD_UNLIKELY( fd_ext_admin_rpc_set_public_tpu_forwards( ctx->bam_tpu_fwd_addr.addr, fd_ushort_bswap( ctx->bam_tpu_fwd_addr.port ) ) ) ) {
+    FD_LOG_WARNING(( "failed to update public TPU forwards address via admin RPC" ));
+  }
+
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
 
-  /* Gossip tile reads these messages and mutates its local contact-info state. */
-  fd_bam_contact_update_t * msg =
-      fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
-  fd_memset( msg, 0, sizeof(fd_bam_contact_update_t) );
-
-  uint publish_bam = (uint)( use_bam &&
-                             ctx->bam_tpu_addr.addr && ctx->bam_tpu_addr.port &&
-                             ctx->bam_tpu_fwd_addr.addr && ctx->bam_tpu_fwd_addr.port );
-  if( FD_LIKELY( publish_bam ) ) {
-    msg->use_bam      = FD_BAM_CONTACT_USE_BAM;
-    msg->tpu_addr     = ctx->bam_tpu_addr;
-    msg->tpu_fwd_addr = ctx->bam_tpu_fwd_addr;
-  }
+  /* Full firedancer uses Gossip tile, it consumes these messages and mutates its local contact-info state. */
+  // TODO: downstream should handle reverting to default when ctx->bam_tpu and fwd is default
+  fd_bam_contact_update_t * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
+  msg->use_bam      = ctx->bam_tpu_addr.addr && ctx->bam_tpu_addr.port && ctx->bam_tpu_fwd_addr.addr && ctx->bam_tpu_fwd_addr.port ? FD_BAM_CONTACT_USE_BAM : FD_BAM_CONTACT_USE_DEFAULT; // FIXME: might be able to remove this
+  msg->tpu_addr     = ctx->bam_tpu_addr;
+  msg->tpu_fwd_addr = ctx->bam_tpu_fwd_addr;
 
   fd_stem_publish( stem,
                    ctx->gossip_out.idx,
@@ -285,9 +328,8 @@ after_credit( fd_bam_tile_t *  ctx,
   fd_bam_client_step( ctx, charge_busy );
 
   int bundle_status = fd_bam_client_status( ctx );
-  _Bool bam_active = ( ctx->enabled && bundle_status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
   if ( FD_UNLIKELY( ctx->bundle_status_recent != bundle_status ) ) {
-    fd_bam_publish_gossip_update( ctx, ctx->stem, bam_active );
+    fd_bam_gossip_update( ctx, ctx->stem );
   }
   ctx->bundle_status_recent = (uchar)bundle_status;
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
@@ -296,6 +338,7 @@ after_credit( fd_bam_tile_t *  ctx,
        duties.  fd_bam_client_status only returns CONNECTED once the
        transport, auth, and scheduler stream are fully live, else
        immediately release the TPU back to default Firedancer behaviour */
+    _Bool bam_active = ( ctx->enabled && bundle_status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
     fd_fseq_update( ctx->bam_status_fseq, (ulong)bam_active );
   }
 

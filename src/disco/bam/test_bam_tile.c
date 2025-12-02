@@ -2078,7 +2078,7 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   ulong update_cnt = 0UL;
 
   ulong publish_chunk = state->gossip_out.chunk;
-  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  fd_bam_gossip_update( state, state->stem );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( updates[0].use_bam == FD_BAM_CONTACT_USE_BAM );
   FD_TEST( updates[0].tpu_addr.l == bam_tpu.l );
@@ -2087,7 +2087,7 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   /* Missing TPU endpoint should revert to Firedancer defaults. */
   state->bam_tpu_addr = (fd_ip4_port_t){0};
   publish_chunk = state->gossip_out.chunk;
-  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  fd_bam_gossip_update( state, state->stem );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( updates[1].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
   FD_TEST( updates[1].tpu_addr.l == 0UL );
@@ -2097,7 +2097,7 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   state->bam_tpu_addr     = bam_tpu;
   state->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
   publish_chunk = state->gossip_out.chunk;
-  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  fd_bam_gossip_update( state, state->stem );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( updates[2].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
   FD_TEST( updates[2].tpu_addr.l == 0UL );
@@ -2164,7 +2164,7 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   FD_TEST( updates[0].tpu_fwd_addr.l == expected_tpu_fwd.l );
 
   publish_chunk = state->gossip_out.chunk;
-  fd_bam_publish_gossip_update( state, state->stem, 0 );
+  fd_bam_gossip_update( state, state->stem );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 2UL );
   FD_TEST( updates[1].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
@@ -2191,7 +2191,7 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
 
   /* If BAM contact is absent, should publish empty ip:port for tpu+tpu_fwd to revert */
   publish_chunk = state->gossip_out.chunk;
-  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  fd_bam_gossip_update( state, state->stem );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 4UL );
   FD_TEST( updates[3].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
@@ -2257,7 +2257,7 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   /* Disabling runtime should immediately revert gossip to the Firedancer defaults. */
   publish_chunk = state->gossip_out.chunk;
   state->enabled = 0;
-  fd_bam_publish_gossip_update( state, state->stem, 0);
+  fd_bam_gossip_update( state, state->stem);
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 2UL );
   FD_TEST( updates[1].use_bam == FD_BAM_CONTACT_USE_DEFAULT );
@@ -2265,7 +2265,7 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   /* Re-enabling runtime while still connected should republish the BamConfig address. */
   publish_chunk = state->gossip_out.chunk;
   state->enabled = 1;
-  fd_bam_publish_gossip_update( state, state->stem, 1);
+  fd_bam_gossip_update( state, state->stem);
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 3UL );
   FD_TEST( updates[2].use_bam == FD_BAM_CONTACT_USE_BAM );
@@ -2299,7 +2299,7 @@ test_bam_gossip_update_requires_full_contact( fd_wksp_t * wksp ) {
   state->bam_tpu_addr     = bam_tpu;
   state->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
   ulong publish_chunk = state->gossip_out.chunk;
-  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  fd_bam_gossip_update( state, state->stem );
   fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update.use_bam == FD_BAM_CONTACT_USE_DEFAULT );
 
@@ -2307,7 +2307,7 @@ test_bam_gossip_update_requires_full_contact( fd_wksp_t * wksp ) {
   state->bam_tpu_addr     = (fd_ip4_port_t){0};
   state->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
   publish_chunk = state->gossip_out.chunk;
-  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  fd_bam_gossip_update( state, state->stem );
   update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update.use_bam == FD_BAM_CONTACT_USE_DEFAULT );
 
@@ -2318,7 +2318,7 @@ test_bam_gossip_update_requires_full_contact( fd_wksp_t * wksp ) {
   state->bam_tpu_addr     = bam_tpu;
   state->bam_tpu_fwd_addr = bam_tpu_fwd;
   publish_chunk = state->gossip_out.chunk;
-  fd_bam_publish_gossip_update( state, state->stem, 1 );
+  fd_bam_gossip_update( state, state->stem );
   update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update.use_bam == FD_BAM_CONTACT_USE_BAM );
   FD_TEST( update.tpu_addr.l == bam_tpu.l );

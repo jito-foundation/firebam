@@ -474,24 +474,19 @@ bam_fuzz_apply_ctrl( uchar enable_flag ) {
 }
 
 /* Publish a gossip update and assert the emitted fields match the tile
-   state. Requires both TPU addresses/ports to match when healthy!=0. */
+   state. Requires both TPU addresses/ports to match */
 static void
-bam_fuzz_publish_and_check( _Bool healthy ) {
+bam_fuzz_publish_and_check(void) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
   ulong chunk_before = ctx->gossip_out.chunk;
-  fd_bam_publish_gossip_update( ctx, ctx->stem, healthy );
-  fd_bam_contact_update_t const * msg =
-      (fd_bam_contact_update_t const *)fd_chunk_to_laddr( ctx->gossip_out.mem, chunk_before );
+  fd_bam_gossip_update( ctx, ctx->stem );
+  fd_bam_contact_update_t const * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, chunk_before );
 
-  if( healthy ) {
-    FD_TEST( msg->use_bam == FD_BAM_CONTACT_USE_BAM );
-    FD_TEST( msg->tpu_addr.addr     == ctx->bam_tpu_addr.addr );
-    FD_TEST( msg->tpu_addr.port     == ctx->bam_tpu_addr.port );
-    FD_TEST( msg->tpu_fwd_addr.addr == ctx->bam_tpu_fwd_addr.addr );
-    FD_TEST( msg->tpu_fwd_addr.port == ctx->bam_tpu_fwd_addr.port );
-  } else {
-    FD_TEST( msg->use_bam != FD_BAM_CONTACT_USE_BAM );
-  }
+  FD_TEST( msg->use_bam == FD_BAM_CONTACT_USE_BAM );
+  FD_TEST( msg->tpu_addr.addr     == ctx->bam_tpu_addr.addr );
+  FD_TEST( msg->tpu_addr.port     == ctx->bam_tpu_addr.port );
+  FD_TEST( msg->tpu_fwd_addr.addr == ctx->bam_tpu_fwd_addr.addr );
+  FD_TEST( msg->tpu_fwd_addr.port == ctx->bam_tpu_fwd_addr.port );
 }
 
 /* Standard libFuzzer entry: disable backtraces, boot Firedancer core, and
@@ -601,14 +596,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
       bam_fuzz_assert_auth_cleared( ctx );
     }
   }
-
-  _Bool healthy = (!!ctx->enabled) &&
-                  (!!ctx->bam_stream_live) &&
-                  (!!ctx->bam_tpu_addr.addr) &&
-                  (!!ctx->bam_tpu_addr.port) &&
-                  (!!ctx->bam_tpu_fwd_addr.addr) &&
-                  (!!ctx->bam_tpu_fwd_addr.port);
-
-  bam_fuzz_publish_and_check( healthy );
+  bam_fuzz_publish_and_check();
   return 0;
 }
