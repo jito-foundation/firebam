@@ -13,6 +13,7 @@ scratch_directory = "/data/fd1"
 [consensus]
     identity_path = "/home/{user}/keys/validator-keypair.json"
     vote_account_path = "/home/{user}/keys/validator-vote.json"
+    authorized_voter_paths = ["/home/{user}/keys/validator-keypair.json"] # remove, this is for testing jito infra
     expected_genesis_hash = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
     known_validators = [
         "5D1fNXzvv5NjV1ysLjirC4WY92RNsVH18vjmcszZd8on",
