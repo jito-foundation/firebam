@@ -1720,7 +1720,7 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
   }
 
   if( FD_UNLIKELY( !ctx->bam_stream_live ) ) {
-    return CONNECTING;
+    return CONNECTING; // TODO: check if correct, differs from bundle client
   }
 
   if( FD_UNLIKELY( fd_keepalive_is_timeout( ctx->keepalive, fd_bam_now() ) ) ) {
