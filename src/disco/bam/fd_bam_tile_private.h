@@ -13,7 +13,6 @@
 #include "proto/bam_api.pb.h"
 
 #define FD_BAM_HEARTBEAT_TIMEOUT_NS ((long)6e9) /* 6 seconds */
-
 #if FD_HAS_OPENSSL
 #include <openssl/ssl.h> /* SSL_CTX */
 #endif
@@ -133,6 +132,7 @@ struct fd_bam_tile {
   uint               fee_cfg_version;  /* Last version published to fee_cfg */
   fd_ip4_port_t bam_tpu_addr;          /* Latest TPU endpoint advertised by BAM */
   fd_ip4_port_t bam_tpu_fwd_addr;      /* Latest TPU Forward endpoint advertised by BAM */
+  _Bool tpu_update_pending;            /* true if TPU update needs to be pushed to Agave */
 
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).

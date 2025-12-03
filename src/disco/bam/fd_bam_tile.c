@@ -32,10 +32,12 @@ extern int fd_ext_admin_rpc_set_public_tpu( uint ip4_addr_host, ushort port_host
 extern int fd_ext_admin_rpc_set_public_tpu_forwards( uint ip4_addr_host, ushort port_host );
 extern int fd_ext_admin_rpc_get_public_tpu( uint * out_ip4_addr_host, ushort * out_port_host );
 extern int fd_ext_admin_rpc_get_public_tpu_forwards( uint * out_ip4_addr_host, ushort * out_port_host );
+extern int fd_ext_start_progress_running( void );
 
 /* In pure Firedancer builds we don't link the agave admin RPC shim.
    Provide weak fallbacks so the binary still links; Frankendancer will
    override these with the Rust implementations. */
+// Returns 0 on success, -1 on error
 __attribute__((weak)) int
 fd_ext_admin_rpc_set_public_tpu( uint ip4_addr_host, ushort port_host ) {
   (void)ip4_addr_host;
@@ -65,6 +67,13 @@ fd_ext_admin_rpc_get_public_tpu_forwards( uint * out_ip4_addr_host, ushort * out
   if( out_ip4_addr_host ) *out_ip4_addr_host = 0U;
   if( out_port_host )     *out_port_host     = 0U;
   FD_LOG_WARNING(( "fd_ext_admin_rpc_get_public_tpu_forwards stubbed (admin RPC unavailable); returning zeros" ));
+  return 0;
+}
+
+/* Weak fallback so non-Frankendancer builds still link; Agave populates
+   this via fd_ext_plugin_publish_start_progress in fd_poh_tile.c. */
+__attribute__((weak)) int
+fd_ext_start_progress_running( void ) {
   return 0;
 }
 
@@ -130,18 +139,29 @@ metrics_write( fd_bam_tile_t * ctx ) {
   ctx->bundle_status_recent = (uchar)bundle_status;
 }
 
+/* Waits until agave started before updating ContactInfo TPU. */
+/* Only try once Agave reports ValidatorStartProgress::Running over
+   the start_progress FFI hook. */
+static void
+fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx) {
+  if( FD_UNLIKELY( !ctx->tpu_update_pending || !fd_ext_start_progress_running() ) ) return;
+  int rc_tpu = fd_ext_admin_rpc_set_public_tpu( ctx->bam_tpu_addr.addr, fd_ushort_bswap( ctx->bam_tpu_addr.port ) );
+  int rc_tpu_fwd = fd_ext_admin_rpc_set_public_tpu_forwards( ctx->bam_tpu_fwd_addr.addr, fd_ushort_bswap( ctx->bam_tpu_fwd_addr.port ) );
+
+  if( FD_LIKELY( !rc_tpu && !rc_tpu_fwd ) ) {
+    ctx->tpu_update_pending = 0;
+    return;
+  }
+
+  FD_LOG_NOTICE(( "TPU update failed (tpu=%d tpu_fwd=%d); Agave may still be starting up", rc_tpu, rc_tpu_fwd ));
+}
+
 // Updates ContactInfo from ctx->bam_tpu*
 void
 fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                       fd_stem_context_t * stem) {
-  // Frankendancer needs to update agave
-  if( FD_UNLIKELY( fd_ext_admin_rpc_set_public_tpu( ctx->bam_tpu_addr.addr, fd_ushort_bswap( ctx->bam_tpu_addr.port ) ) ) ) {
-    FD_LOG_WARNING(( "failed to update public TPU address via admin RPC" ));
-  }
-
-  if( FD_UNLIKELY( fd_ext_admin_rpc_set_public_tpu_forwards( ctx->bam_tpu_fwd_addr.addr, fd_ushort_bswap( ctx->bam_tpu_fwd_addr.port ) ) ) ) {
-    FD_LOG_WARNING(( "failed to update public TPU forwards address via admin RPC" ));
-  }
+  ctx->tpu_update_pending = 1;
+  fd_bam_try_agave_update_tpu( ctx );
 
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
 
@@ -171,6 +191,7 @@ static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
 void
 fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   fd_bam_tile_handle_ctrl( ctx );
+  fd_bam_try_agave_update_tpu( ctx );
 
   long log_interval_ns = (long)30e9;
   int  status          = fd_bam_client_status( ctx );
@@ -934,6 +955,7 @@ unprivileged_init( fd_topo_t *      topo,
 
   ctx->bam_tpu_addr.l       = 0UL;
   ctx->bam_tpu_fwd_addr.l  = 0UL;
+  ctx->tpu_update_pending   = 0;
 
   ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
   if( FD_LIKELY( bam_status_obj_id != ULONG_MAX ) ) {
