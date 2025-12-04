@@ -463,7 +463,6 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
 
   uchar new_enable = ( command & FD_BAM_CTRL_CMD_ENABLE ) ? !!ctx->ctrl->enable : ctx->enabled;
   int need_reset = 0;
-  int clear_backoff_after_reset = 0; /* Track whether we should nuke backoff state after reset so re-enable connects immediately. */
   if( command & FD_BAM_CTRL_CMD_URL ) {
     strlcpy( ctx->server_fqdn, new_host, sizeof(ctx->server_fqdn) );
     ctx->server_fqdn_len = (ushort)fd_ulong_min( new_host_len, (ulong)USHORT_MAX );
@@ -482,18 +481,13 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   if( (command & FD_BAM_CTRL_CMD_ENABLE) && (new_enable != ctx->enabled) ) {
     ctx->enabled = new_enable;
     need_reset = 1;
-    if( new_enable ) clear_backoff_after_reset = 1;
   }
 
   if( need_reset ) {
     fd_bam_client_reset( ctx );
-    if( FD_UNLIKELY( clear_backoff_after_reset ) ) {
-      /* The reset routine re-establishes the randomized pause. Clearing it post-reset lets
-         admin-triggered re-enables take effect immediately instead of waiting out the old backoff. */
-      ctx->backoff_until = 0L;
-      ctx->backoff_reset = 0L;
-      ctx->backoff_iter  = 0U;
-    }
+    ctx->backoff_until = 0; /* Clear any backoff so admin-triggered changes take effect immediately. */
+    ctx->backoff_reset = 0;
+    ctx->backoff_iter  = 0;
     if( FD_UNLIKELY( !ctx->enabled && ctx->bam_status_fseq ) )
       /* Force the shared status latch low immediately when BAM is
          disabled so downstream tiles resume QUIC/bundle input without
