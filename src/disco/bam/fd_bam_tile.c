@@ -335,7 +335,6 @@ fd_bam_tile_publish_gui_update(
       0UL, /* seq */
       tspub
   );
-  ctx->last_gui_publish_nanos = fd_log_wallclock();
   ctx->plugin_out.chunk = fd_dcache_compact_next( ctx->plugin_out.chunk, sizeof(fd_plugin_msg_bam_update_t), ctx->plugin_out.chunk0, ctx->plugin_out.wmark );
 }
 
@@ -925,6 +924,7 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->plugin_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
   }
 
+  // for full firedancer, not frankendancer
   ulong gossip_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_gossip", tile->kind_id );
   if( gossip_out_idx != ULONG_MAX ) {
     ctx->gossip_out = bam_out_link( topo, &topo->links[ tile->out_link_id[ gossip_out_idx ] ], gossip_out_idx );
@@ -944,7 +944,6 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bundle_status_plugin = 127;
   ctx->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->last_bundle_status_log_nanos = fd_log_wallclock();
-  ctx->last_gui_publish_nanos = fd_log_wallclock();
   ctx->gui_dirty = 1U;
 
   ctx->bam_tpu_addr.l       = 0UL;

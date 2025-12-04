@@ -174,19 +174,19 @@ struct fd_bam_tile {
   fd_stem_context_t * stem;                          /* Cached stem context handed to callbacks */
   fd_bam_out_ctx_t    verify_out;                    /* Output ring for transaction verification */
   fd_bam_out_ctx_t    plugin_out;                    /* Output ring for plugin status updates */
-  fd_bam_out_ctx_t    gossip_out;       /* Stem output buffer used for BAM gossip updates */
-  ulong *             bam_status_fseq; /* Shared latch written with BAM status (0=inactive,1=active) */
-  uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
+  fd_bam_out_ctx_t    gossip_out;       /* Stem output buffer used for BAM gossip updates (Full firedancer, not Frankendncer) */
+  ulong *             bam_status_fseq; /* Shared latch written with BAM status (0=inactive,1=active) TODO: track connection health state? */
 
   /* App metrics */
   fd_bam_metrics_t metrics;                         /* Tile-local counters flushed to metrics */
 
   /* Check engine light */
-  uchar bundle_status_recent;  /* most recently observed 'check engine light' */
+  uchar bundle_status_recent;  /* most recently observed 'check engine light' */ //TODO: update this for bam, add healthy check
   uchar bundle_status_plugin;  /* last 'plugin' update written */
   uchar bundle_status_logged;
   long  last_bundle_status_log_nanos;
   long  last_gui_publish_nanos;
+  uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
 };
 
 typedef struct fd_bam_tile fd_bam_tile_t;
