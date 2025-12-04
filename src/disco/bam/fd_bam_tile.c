@@ -204,7 +204,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
       ctx->gui_dirty = 1U;
   }
 
-  if( FD_UNLIKELY( status != FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED && now_ns > log_next_ns ) ) {
+  if( FD_UNLIKELY( ctx->enabled && status != FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED && now_ns > log_next_ns ) ) {
     FD_LOG_WARNING(( "No BAM node connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
     ctx->last_bundle_status_log_nanos = now_ns;
   }

@@ -143,26 +143,26 @@ struct fd_bam_tile {
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
 
   /* BAM specific */
-  fd_grpc_h2_stream_t * bam_stream;               /* Current scheduler stream; NULL while unsubscribed or reconnecting */
-  long                  bam_last_builder_heartbeat_ns;  /* fd_bam_now() timestamp of last builder heartbeat (0 if none received) */
-  long                  bam_last_validator_heartbeat_ns;/* fd_bam_now() timestamp of last validator heartbeat (0 if none received) */
+  fd_grpc_h2_stream_t * bam_stream;                      /* Current scheduler stream; NULL while unsubscribed or reconnecting */
+  long                  bam_last_builder_heartbeat_ns;   /* fd_bam_now() timestamp of last builder heartbeat (0 if none received) */
+  long                  bam_last_validator_heartbeat_ns; /* fd_bam_now() timestamp of last validator heartbeat (0 if none received) */
   long                  bam_last_config_poll_ns;         /* fd_bam_now() timestamp of last config poll attempt (0 if never polled) */
   ushort                bam_pending_results;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_head;                /* Index of next result to flush (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Ring buffer of bundle outcomes awaiting publication */
-  fd_bam_leader_state_t  bam_leader_state;        /* Cached leader-schedule budget received from the BAM node */
-  uchar                 bam_identity_pubkey[ 32 ];   /* validator pubkey from the identity keypair */
+  fd_bam_leader_state_t  bam_leader_state;               /* Cached leader-schedule budget received from the BAM node */
+  uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
-  uchar                 bam_challenge_to_sign_len;           /* Length of current auth challenge */
+  uchar                 bam_challenge_to_sign_len;       /* Length of current auth challenge */
   char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Base58-encoded Ed25519 signature for BAM auth (NUL-terminated) */
-  uint                  bam_stream_live        : 1;  /* set once bam_stream is established and delivering messages */
-  uint                  bam_stream_connecting  : 1;  /* set during gRPC stream handshake before bam_stream_live */
-  uint                  bam_auth_ready         : 1;  /* set when bam_auth_challenge/_len contain a fresh challenge to sign */
-  uint                  bam_auth_inflight      : 1;  /* true while GetAuthChallenge GRPC call is pending */
-  uint                  bam_config_inflight    : 1;  /* true while GetBuilderConfig GRPC call is pending */
-  uint                  bam_leader_pending     : 1;  /* set when awaiting a scheduler leader-state response */
+  uint                  bam_stream_live        : 1;      /* set once bam_stream is established and delivering messages */
+  uint                  bam_stream_connecting  : 1;      /* set during gRPC stream handshake before bam_stream_live */
+  uint                  bam_auth_ready         : 1;      /* set when bam_auth_challenge/_len contain a fresh challenge to sign */
+  uint                  bam_auth_inflight      : 1;      /* true while GetAuthChallenge GRPC call is pending */
+  uint                  bam_config_inflight    : 1;      /* true while GetBuilderConfig GRPC call is pending */
+  uint                  bam_leader_pending     : 1;      /* set when awaiting a scheduler leader-state response */
 
   /* Error backoff */
   fd_rng_t rng[1];                                /* RNG used to randomize reconnects */
