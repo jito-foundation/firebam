@@ -62,7 +62,7 @@ typedef struct {
 typedef struct {
   fd_ip4_port_t tpu_addr;      /* TPU socket advertised by BAM */
   fd_ip4_port_t tpu_fwd_addr;  /* TPU fwd socket advertised by BAM. */
-  uchar         use_bam;       /* `FD_BAM_CONTACT_USE_*` selector. Non-zero when BAM overrides contact info */
+  _Bool         use_bam;       /* Set to `false` to use default TPU values */
 } fd_bam_contact_update_t;
 
 typedef struct {
@@ -71,9 +71,6 @@ typedef struct {
   uint  has_prio_fee_recipient;   /* Non-zero when prio_fee_recipient contains a valid pubkey */
   uint  version;                  /* Monotonically increasing update counter */
 } fd_bam_fee_cfg_t;
-
-#define FD_BAM_CONTACT_USE_DEFAULT (0)
-#define FD_BAM_CONTACT_USE_BAM     (1)
 
 #define FD_BAM_STEM_SIG_GOSSIP_UPDATE (0xAB) // randomly assigned
 

@@ -131,7 +131,7 @@ test_bam_contact_updates_contact_info( void ) {
   fd_bam_contact_update_t use_bam = {
       .tpu_addr     = bam_tpu,
       .tpu_fwd_addr = bam_tpu_fwd,
-      .use_bam      = FD_BAM_CONTACT_USE_BAM
+      .use_bam      = true
   };
   fd_gossip_tile_apply_bam_contact( &ctx, &use_bam, ctx.last_wallclock + 1L );
 
@@ -142,7 +142,7 @@ test_bam_contact_updates_contact_info( void ) {
   FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE ].l          == bam_tpu.l );
   FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].l     == bam_tpu.l );
 
-  fd_bam_contact_update_t revert = { .use_bam = FD_BAM_CONTACT_USE_DEFAULT };
+  fd_bam_contact_update_t revert = { .use_bam = false };
   fd_gossip_tile_apply_bam_contact( &ctx, &revert, ctx.last_wallclock + 2L );
 
   FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU ].l               == default_tpu.l );

@@ -132,7 +132,7 @@ struct fd_bam_tile {
   uint               fee_cfg_version;  /* Last version published to fee_cfg */
   fd_ip4_port_t bam_tpu_addr;          /* Latest TPU endpoint advertised by BAM */
   fd_ip4_port_t bam_tpu_fwd_addr;      /* Latest TPU Forward endpoint advertised by BAM */
-  _Bool tpu_update_pending;            /* true if TPU update needs to be pushed to Agave */
+  _Bool tpu_update_pending;            /* true if TPU update needs to be pushed to Agave. this allows retries if agave is still starting up */
 
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).
@@ -263,7 +263,8 @@ fd_bam_tile_backoff( fd_bam_tile_t * ctx,
 
 void
 fd_bam_gossip_update( fd_bam_tile_t *    ctx,
-                              fd_stem_context_t * stem);
+                              fd_stem_context_t * stem,
+                              _Bool use_bam);
 
 /* fd_bam_tile_should_stall returns 1 if forward progress should be
    temporarily prevented due to an error. */

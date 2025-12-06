@@ -239,9 +239,7 @@ fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
   fd_ip4_port_t tpu_quic     = ctx->default_tpu_quic;
   fd_ip4_port_t tpu_fwd_quic = ctx->default_tpu_fwd_quic;
 
-  if( FD_LIKELY( update->use_bam==FD_BAM_CONTACT_USE_BAM &&
-                 update->tpu_addr.addr && update->tpu_addr.port &&
-                 update->tpu_fwd_addr.addr && update->tpu_fwd_addr.port ) ) {
+  if( FD_LIKELY( update->use_bam ) ) {
     tpu          = update->tpu_addr;
     tpu_fwd      = update->tpu_fwd_addr;
     tpu_quic     = update->tpu_addr;

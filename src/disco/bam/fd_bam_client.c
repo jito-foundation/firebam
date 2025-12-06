@@ -852,7 +852,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     }
 
     ctx->gui_dirty = 1U;
-    fd_bam_gossip_update( ctx, ctx->stem );
+    fd_bam_gossip_update( ctx, ctx->stem, has_valid_contact );
   }
 
   // update fee config
@@ -1684,15 +1684,12 @@ fd_grpc_client_callbacks_t fd_bam_client_grpc_callbacks = {
   .ping_ack         = fd_bam_client_grpc_ping_ack,
 };
 
-/* Decrease verbosity */
-#define DISCONNECTED FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED
-#define CONNECTING   FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING
-#define CONNECTED_UNHEALTHY FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY
-#define CONNECTED_HEALTHY  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY
-
 // todo: add healthy state check based on heartbeats
 int
 fd_bam_client_status( fd_bam_tile_t const * ctx ) {
+  if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) )
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
+
   /* Treat the connection as "owned" only when every layer (TCP socket,
      HTTP/2 session, bundle auth, scheduler stream, and keepalive) is
      healthy.  Downstream tiles key off this switch to stop ingesting
@@ -1700,17 +1697,17 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
      data gap. */
   if( FD_UNLIKELY( ( !ctx->tcp_sock_connected ) |
                    ( !ctx->grpc_client        ) ) ) {
-    return DISCONNECTED;
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   }
 
   fd_h2_conn_t * conn = fd_grpc_client_h2_conn( ctx->grpc_client );
   if( FD_UNLIKELY( !conn ) ) {
-    return DISCONNECTED; /* no conn */
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED; /* no conn */
   }
   if( FD_UNLIKELY( conn->flags &
       ( FD_H2_CONN_FLAGS_DEAD |
         FD_H2_CONN_FLAGS_SEND_GOAWAY ) ) ) {
-    return DISCONNECTED;
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   }
 
   if( FD_UNLIKELY( conn->flags &
@@ -1718,28 +1715,24 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
         FD_H2_CONN_FLAGS_WAIT_SETTINGS_ACK_0 |
         FD_H2_CONN_FLAGS_WAIT_SETTINGS_0     |
         FD_H2_CONN_FLAGS_SERVER_INITIAL ) ) ) {
-    return CONNECTING; /* connection is not ready */
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING; /* connection is not ready */
   }
 
   if( FD_UNLIKELY( !ctx->bam_stream_live ) ) {
-    return CONNECTING; // TODO: check if correct, differs from bundle client
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING; // TODO: check if correct, differs from bundle client
   }
 
   if( FD_UNLIKELY( fd_keepalive_is_timeout( ctx->keepalive, fd_bam_now() ) ) ) {
-    return DISCONNECTED; /* possible timeout */
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED; /* possible timeout */
   }
 
   if( FD_UNLIKELY( !fd_grpc_client_is_connected( ctx->grpc_client ) ) ) {
-    return CONNECTING;
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING;
   }
 
-  return CONNECTED_UNHEALTHY;
+  // TODO: check when last heartbeat received to determine if healthy or not
+  return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
 }
-
-#undef DISCONNECTED
-#undef CONNECTING
-#undef CONNECTED_UNHEALTHY
-#undef CONNECTED_HEALTHY
 
 FD_FN_CONST char const *
 fd_bam_request_ctx_cstr( ulong request_ctx ) {

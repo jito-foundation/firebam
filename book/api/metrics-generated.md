@@ -1125,6 +1125,8 @@
 
 | Metric | Type | Description |
 |--------|------|-------------|
+| <span class="metrics-name">bam_&#8203;enabled</span> | gauge | Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled |
+| <span class="metrics-name">bam_&#8203;healthy</span> | gauge | Boolean gauge: 1 when the BAM client is connected to the BAM node and connection is healthy, otherwise 0 |
 | <span class="metrics-name">bam_&#8203;transaction_&#8203;received</span> | counter | Cumulative number of transactions accepted from the BAM node, including transactions unpacked from bundles |
 | <span class="metrics-name">bam_&#8203;bundle_&#8203;received</span> | counter | Cumulative number of bundles received from the BAM node |
 | <span class="metrics-name">bam_&#8203;bundle_&#8203;results_&#8203;dropped</span> | counter | Cumulative number of BAM bundle execution results discarded before publication |
@@ -1143,12 +1145,10 @@
 | <span class="metrics-name">bam_&#8203;disconnects</span> | counter | Cumulative number of connection teardowns between the BAM client and BAM node |
 | <span class="metrics-name">bam_&#8203;results_&#8203;sent</span> | counter | Cumulative number of bundle execution result messages forwarded to the BAM node |
 | <span class="metrics-name">bam_&#8203;leader_&#8203;state_&#8203;sent</span> | counter | Cumulative number of leader state update messages sent to the BAM node |
-| <span class="metrics-name">bam_&#8203;connected</span> | gauge | Boolean gauge: 1 when the BAM client is connected to the BAM node, otherwise 0 |
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;sample</span> | gauge | Latest BAM round-trip time sample captured at scrape time (nanoseconds) |
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;smoothed</span> | gauge | Exponentially smoothed BAM round-trip time estimate (nanoseconds) |
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;var</span> | gauge | Smoothed variance of the BAM round-trip time estimator (nanoseconds) |
 | <span class="metrics-name">bam_&#8203;results_&#8203;queue_&#8203;depth</span> | gauge | Current number of bundle execution results buffered for BAM feedback |
-| <span class="metrics-name">bam_&#8203;enabled</span> | gauge | Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled |
 | <span class="metrics-name">bam_&#8203;message_&#8203;rx_&#8203;delay_&#8203;nanos</span> | histogram | Distribution of message receive delays from the BAM node to the BAM client (nanoseconds) |
 
 </div>

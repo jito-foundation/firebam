@@ -135,7 +135,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->used_sz  );
 
   int bundle_status = fd_bam_client_status( ctx );
-  FD_MGAUGE_SET( BAM, CONNECTED, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ); // TODO: rename gauge if conn is healthy
+  FD_MGAUGE_SET( BAM, HEALTHY, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   ctx->bundle_status_recent = (uchar)bundle_status;
 }
 
@@ -143,10 +143,17 @@ metrics_write( fd_bam_tile_t * ctx ) {
 /* Only try once Agave reports ValidatorStartProgress::Running over
    the start_progress FFI hook. */
 static void
-fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx) {
-  if( FD_UNLIKELY( !ctx->tpu_update_pending || !fd_ext_start_progress_running() ) ) return;
-  int rc_tpu = fd_ext_admin_rpc_set_public_tpu( ctx->bam_tpu_addr.addr, fd_ushort_bswap( ctx->bam_tpu_addr.port ) );
-  int rc_tpu_fwd = fd_ext_admin_rpc_set_public_tpu_forwards( ctx->bam_tpu_fwd_addr.addr, fd_ushort_bswap( ctx->bam_tpu_fwd_addr.port ) );
+fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
+  if( FD_UNLIKELY( !fd_ext_start_progress_running() ) ) return;
+  int rc_tpu, rc_tpu_fwd;
+  if ( FD_LIKELY( use_bam ) ) {
+    rc_tpu = fd_ext_admin_rpc_set_public_tpu( ctx->bam_tpu_addr.addr, fd_ushort_bswap( ctx->bam_tpu_addr.port ) );
+    rc_tpu_fwd = fd_ext_admin_rpc_set_public_tpu_forwards( ctx->bam_tpu_fwd_addr.addr, fd_ushort_bswap( ctx->bam_tpu_fwd_addr.port ) );
+  } else {
+    // agave should revert to defaults with 0
+    rc_tpu = fd_ext_admin_rpc_set_public_tpu( 0, 0 );
+    rc_tpu_fwd = fd_ext_admin_rpc_set_public_tpu_forwards( 0, 0);
+  }
 
   if( FD_LIKELY( !rc_tpu && !rc_tpu_fwd ) ) {
     ctx->tpu_update_pending = 0;
@@ -156,19 +163,18 @@ fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx) {
   FD_LOG_NOTICE(( "TPU update failed (tpu=%d tpu_fwd=%d); Agave may still be starting up", rc_tpu, rc_tpu_fwd ));
 }
 
-// Updates ContactInfo from ctx->bam_tpu*
+// Updates ContactInfo from ctx->bam_tpu* if use_bam is true
 void
 fd_bam_gossip_update( fd_bam_tile_t *    ctx,
-                      fd_stem_context_t * stem) {
-  ctx->tpu_update_pending = 1;
-  fd_bam_try_agave_update_tpu( ctx );
+                      fd_stem_context_t * stem,
+                      _Bool use_bam) {
+  ctx->tpu_update_pending = 1; // agave might not be started yet, this allows for retries
+  fd_bam_try_agave_update_tpu( ctx, use_bam );
 
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
-
   /* Full firedancer uses Gossip tile, it consumes these messages and mutates its local contact-info state. */
-  // TODO: downstream should handle reverting to default when ctx->bam_tpu and fwd is default
   fd_bam_contact_update_t * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
-  msg->use_bam      = ctx->bam_tpu_addr.addr && ctx->bam_tpu_addr.port && ctx->bam_tpu_fwd_addr.addr && ctx->bam_tpu_fwd_addr.port ? FD_BAM_CONTACT_USE_BAM : FD_BAM_CONTACT_USE_DEFAULT; // FIXME: might be able to remove this
+  msg->use_bam      = use_bam;
   msg->tpu_addr     = ctx->bam_tpu_addr;
   msg->tpu_fwd_addr = ctx->bam_tpu_fwd_addr;
 
@@ -191,11 +197,6 @@ static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
 void
 fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   fd_bam_tile_handle_ctrl( ctx );
-  fd_bam_try_agave_update_tpu( ctx );
-
-  long log_interval_ns = (long)30e9;
-  int  status          = fd_bam_client_status( ctx );
-  long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
   long now_ns          = fd_log_wallclock();
 
   if( FD_LIKELY( ctx->plugin_out.mem ) ) {
@@ -204,12 +205,29 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
       ctx->gui_dirty = 1U;
   }
 
+  long log_interval_ns = (long)30e9;
+  long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
+  int  status          = fd_bam_client_status( ctx );
   if( FD_UNLIKELY( ctx->enabled && (
     status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED ||
     status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) && now_ns > log_next_ns ) ) {
     FD_LOG_WARNING(( "No BAM node connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
     ctx->last_bundle_status_log_nanos = now_ns;
   }
+
+  _Bool use_bam = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+  if ( FD_UNLIKELY( ctx->bundle_status_recent != status || ctx->tpu_update_pending ) ) {
+    fd_bam_gossip_update( ctx, ctx->stem, use_bam );
+  }
+  if( FD_LIKELY( ctx->bam_status_fseq ) ) {
+    /* Expose BAM connectivity via a shared latch. The verify tile uses
+       this to pause QUIC/bundle traffic when BAM has taken over leader
+       duties.  fd_bam_client_status only returns CONNECTED once the
+       transport, auth, and scheduler stream are fully live, else
+       immediately release the TPU back to default Firedancer behaviour */
+    fd_fseq_update( ctx->bam_status_fseq, (ulong)use_bam );
+  }
+  ctx->bundle_status_recent = (uchar)status;
 
   if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch ) == FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
     fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
@@ -348,21 +366,6 @@ after_credit( fd_bam_tile_t *  ctx,
   (void)opt_poll_in;
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
   fd_bam_client_step( ctx, charge_busy );
-
-  int bundle_status = fd_bam_client_status( ctx );
-  if ( FD_UNLIKELY( ctx->bundle_status_recent != bundle_status ) ) {
-    fd_bam_gossip_update( ctx, ctx->stem );
-  }
-  ctx->bundle_status_recent = (uchar)bundle_status;
-  if( FD_LIKELY( ctx->bam_status_fseq ) ) {
-    /* Expose BAM connectivity via a shared latch. The verify tile uses
-       this to pause QUIC/bundle traffic when BAM has taken over leader
-       duties.  fd_bam_client_status only returns CONNECTED once the
-       transport, auth, and scheduler stream are fully live, else
-       immediately release the TPU back to default Firedancer behaviour */
-    _Bool bam_active = ( ctx->enabled && bundle_status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-    fd_fseq_update( ctx->bam_status_fseq, (ulong)bam_active );
-  }
 
   if( ctx->plugin_out.mem ) {
     if( FD_UNLIKELY( ctx->gui_dirty || ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
@@ -944,7 +947,9 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->keepalive_interval = (long)tile->bam.keepalive_interval_nanos;
 
   ctx->bundle_status_plugin = 127;
-  ctx->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
+  ctx->bundle_status_recent = ctx->enabled
+      ? FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED
+      : FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
   ctx->last_bundle_status_log_nanos = fd_log_wallclock();
   ctx->gui_dirty = 1U;
 

@@ -476,13 +476,13 @@ bam_fuzz_apply_ctrl( uchar enable_flag ) {
 /* Publish a gossip update and assert the emitted fields match the tile
    state. Requires both TPU addresses/ports to match */
 static void
-bam_fuzz_publish_and_check(void) {
+bam_fuzz_publish_and_check(_Bool use_bam) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
   ulong chunk_before = ctx->gossip_out.chunk;
-  fd_bam_gossip_update( ctx, ctx->stem );
+  fd_bam_gossip_update( ctx, ctx->stem, use_bam );
   fd_bam_contact_update_t const * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, chunk_before );
 
-  FD_TEST( msg->use_bam == FD_BAM_CONTACT_USE_BAM );
+  FD_TEST( msg->use_bam == use_bam );
   FD_TEST( msg->tpu_addr.addr     == ctx->bam_tpu_addr.addr );
   FD_TEST( msg->tpu_addr.port     == ctx->bam_tpu_addr.port );
   FD_TEST( msg->tpu_fwd_addr.addr == ctx->bam_tpu_fwd_addr.addr );
@@ -596,6 +596,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
       bam_fuzz_assert_auth_cleared( ctx );
     }
   }
-  bam_fuzz_publish_and_check();
+  bam_fuzz_publish_and_check( ctx->bundle_status_recent == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   return 0;
 }
