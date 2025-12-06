@@ -530,7 +530,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   if( stream_ok ) {
     ctx->bam_stream_live = 1U;
-    ctx->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED;
+    ctx->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY; // fixme should check if healthy or not
   }
 
   if( apply_ctrl ) {

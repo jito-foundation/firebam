@@ -135,7 +135,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->used_sz  );
 
   int bundle_status = fd_bam_client_status( ctx );
-  FD_MGAUGE_SET( BAM, CONNECTED, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+  FD_MGAUGE_SET( BAM, CONNECTED, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ); // TODO: rename gauge if conn is healthy
   ctx->bundle_status_recent = (uchar)bundle_status;
 }
 
@@ -204,7 +204,9 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
       ctx->gui_dirty = 1U;
   }
 
-  if( FD_UNLIKELY( ctx->enabled && status != FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED && now_ns > log_next_ns ) ) {
+  if( FD_UNLIKELY( ctx->enabled && (
+    status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED ||
+    status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) && now_ns > log_next_ns ) ) {
     FD_LOG_WARNING(( "No BAM node connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
     ctx->last_bundle_status_log_nanos = now_ns;
   }
@@ -358,7 +360,7 @@ after_credit( fd_bam_tile_t *  ctx,
        duties.  fd_bam_client_status only returns CONNECTED once the
        transport, auth, and scheduler stream are fully live, else
        immediately release the TPU back to default Firedancer behaviour */
-    _Bool bam_active = ( ctx->enabled && bundle_status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+    _Bool bam_active = ( ctx->enabled && bundle_status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
     fd_fseq_update( ctx->bam_status_fseq, (ulong)bam_active );
   }
 

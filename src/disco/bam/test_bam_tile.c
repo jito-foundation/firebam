@@ -1280,7 +1280,9 @@ test_bam_client_status( fd_wksp_t * wksp ) {
   fd_bam_tile_t state_backup = *state;
   fd_grpc_client_t client_backup = *state->grpc_client;
 
-  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+  // FIXME: update these tests to check for unhealthy -> healthy new state tracking
+
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
 
   state->tcp_sock_connected = 0U;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED );
@@ -1291,7 +1293,7 @@ test_bam_client_status( fd_wksp_t * wksp ) {
     FD_H2_CONN_FLAGS_SEND_GOAWAY
   };
   for( ulong i=0UL; i<sizeof(conn_dead_flags)/sizeof(conn_dead_flags[0]); i++ ) {
-    FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+    FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
     state->grpc_client->conn->flags |= conn_dead_flags[ i ];
     FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED );
     *state->grpc_client = client_backup;
@@ -1304,25 +1306,25 @@ test_bam_client_status( fd_wksp_t * wksp ) {
     FD_H2_CONN_FLAGS_SERVER_INITIAL
   };
   for( ulong i=0UL; i<sizeof(conn_prog_flags)/sizeof(conn_prog_flags[0]); i++ ) {
-    FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+    FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
     state->grpc_client->conn->flags |= conn_prog_flags[ i ];
     FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING );
     *state->grpc_client = client_backup;
   }
 
-  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
   state->bam_stream_live = 0U;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING );
   state->bam_stream_live = 1U;
 
-  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
   state->keepalive->inflight = 1U;
   state->keepalive->ts_deadline = state->keepalive->ts_last_tx;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED );
   *state = state_backup;
   *state->grpc_client = client_backup;
 
-  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
   state->grpc_client->h2_hs_done = 0;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING );
 
@@ -2009,7 +2011,7 @@ test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
       .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
       .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
   };
-  state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED;
+  state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
 
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
@@ -2062,7 +2064,7 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
       .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
       .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
   };
-  state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED;
+  state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   state->enabled = 1;
 
   fd_ip4_port_t bam_tpu = {0};
@@ -2125,7 +2127,7 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
       .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
       .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
   };
-  state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED;
+  state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
 
   fd_bam_contact_update_t updates[4];
   ulong                   update_cnt = 0UL;
@@ -2216,7 +2218,7 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
       .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
       .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
   };
-  state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED;
+  state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
 
   fd_bam_contact_update_t updates[3];
   ulong                   update_cnt = 0UL;

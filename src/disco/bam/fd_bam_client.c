@@ -1337,8 +1337,8 @@ static void
 fd_bam_client_log_status( fd_bam_tile_t * ctx ) {
   int status = fd_bam_client_status( ctx );
 
-  int const connected_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
-  int const connected_before = ( ctx->bundle_status_logged == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED );
+  int const connected_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  int const connected_before = ( ctx->bundle_status_logged == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
   if( FD_UNLIKELY( connected_now != connected_before ) ) {
     long ts = fd_log_wallclock();
@@ -1687,8 +1687,10 @@ fd_grpc_client_callbacks_t fd_bam_client_grpc_callbacks = {
 /* Decrease verbosity */
 #define DISCONNECTED FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED
 #define CONNECTING   FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING
-#define CONNECTED    FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED
+#define CONNECTED_UNHEALTHY FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY
+#define CONNECTED_HEALTHY  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY
 
+// todo: add healthy state check based on heartbeats
 int
 fd_bam_client_status( fd_bam_tile_t const * ctx ) {
   /* Treat the connection as "owned" only when every layer (TCP socket,
@@ -1731,12 +1733,13 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
     return CONNECTING;
   }
 
-  return CONNECTED;
+  return CONNECTED_UNHEALTHY;
 }
 
 #undef DISCONNECTED
 #undef CONNECTING
-#undef CONNECTED
+#undef CONNECTED_UNHEALTHY
+#undef CONNECTED_HEALTHY
 
 FD_FN_CONST char const *
 fd_bam_request_ctx_cstr( ulong request_ctx ) {

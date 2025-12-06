@@ -113,10 +113,11 @@ typedef struct {
 
 #define FD_PLUGIN_MSG_BAM_UPDATE           (15UL)
 
-#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED (0)
-#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING   (1)
-#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED    (2)
-#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_HEALTHY      (3)
+#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED            (0)
+#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED        (1)
+#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING          (2)
+#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY (3) // didn't receive heartbeat yet
+#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY   (4) // exchanged heartbeats within threshold
 
 typedef struct {
   char  name[ 16 ];
@@ -126,7 +127,9 @@ typedef struct {
   char  tpu_cstr[ 22 ];   /* "a.b.c.d:port" */
   char  tpu_fwd_cstr[ 22 ];
   uchar status;           /* FD_PLUGIN_MSG_BAM_UPDATE_STATUS_* */
-  uchar enabled;          /* Non-zero when operator enabled BAM */
+  uchar enabled;          /* Non-zero when operator enabled BAM */ // TODO: merge into `status`, use FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED instead
+
+  // TODO: these fields should be moved to fd_gui.c, like line 303 for example
   float rtt_sample;       /* Latest RTT sample (ns) */
   float rtt_smoothed;     /* Smoothed RTT estimate (ns) */
   float rtt_var;          /* Smoothed RTT variation (ns) */
