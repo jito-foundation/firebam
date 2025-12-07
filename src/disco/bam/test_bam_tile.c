@@ -1279,6 +1279,7 @@ test_bam_client_status( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
   fd_bam_tile_t state_backup = *state;
   fd_grpc_client_t client_backup = *state->grpc_client;
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
   /* Connections should start unhealthy until a heartbeat arrives. */
   state->bam_last_builder_heartbeat_ns = 0L;
