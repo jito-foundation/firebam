@@ -251,6 +251,8 @@ test_bam_decode_scheduler_message_v0( pb_istream_t * stream,
 static void
 test_bam_decode_committed_results( pb_istream_t * stream,
                                    test_bam_committed_results_t * out ) {
+  /* Manual nanopb decode to inspect raw on-wire SchedulerMessage fields without
+     relying on production decode helpers. */
   uint32_t tag;
   pb_wire_type_t wire_type;
   bool eof = false;
@@ -566,6 +568,8 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
 
 static void
 test_bam_bundle_forwarded( fd_wksp_t * wksp ) {
+  /* revert_on_error batches should bump bundle metrics and carry BAM metadata
+     into verify pipeline fragments. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
@@ -673,6 +677,8 @@ test_bam_bundle_requires_builder_info( fd_wksp_t * wksp ) {
 
 static void
 test_bam_bundle_rejects_mixed_revert_flags( fd_wksp_t * wksp ) {
+  /* Mixed revert_on_error flags inside a bundle must be rejected and surfaced
+     as INCONSISTENT_BUNDLE. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -721,6 +727,8 @@ test_bam_bundle_rejects_mixed_revert_flags( fd_wksp_t * wksp ) {
 
 static void
 test_bam_bundle_rejects_vote_transactions( fd_wksp_t * wksp ) {
+  /* Vote transactions inside bundles are disallowed regardless of revert flag
+     mix; they return VOTE_TRANSACTION_FAILURE. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -770,6 +778,8 @@ test_bam_bundle_rejects_vote_transactions( fd_wksp_t * wksp ) {
 
 static void
 test_bam_bundle_rejects_excess_packet_count( fd_wksp_t * wksp ) {
+  /* Enforce FD_PACK_MAX_TXN_PER_BUNDLE limit and report offending index back
+     to scheduler. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -820,6 +830,8 @@ test_bam_bundle_rejects_excess_packet_count( fd_wksp_t * wksp ) {
 
 static void
 test_bam_bundle_rejects_oversized_packet( fd_wksp_t * wksp ) {
+  /* Oversized packet payloads should drop and yield INCONSISTENT_BUNDLE at
+     index 0. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -946,6 +958,8 @@ test_bam_bundle_rejects_empty_batch( fd_wksp_t * wksp ) {
    result back to the scheduler. */
 static void
 test_bam_bundle_rejects_missing_batches( fd_wksp_t * wksp ) {
+  /* SchedulerResponse lacking any batches should translate to EMPTY
+     deserialization error with default seq_id. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -1003,6 +1017,8 @@ test_bam_bundle_rejects_missing_batches( fd_wksp_t * wksp ) {
 
 static void
 test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
+  /* Stream closures (error or OK) should clear bam_stream state without forcing
+     a reset. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -1048,6 +1064,8 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
 
 static void
 test_bam_grpc_timeout( fd_wksp_t * wksp ) {
+  /* Deadline expiry cancels inflight auth/scheduler attempts and marks the
+     client for reset. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -1081,6 +1099,8 @@ test_bam_grpc_timeout( fd_wksp_t * wksp ) {
 static fd_bam_tile_t *
 test_bam_heartbeat_env_start( test_bam_env_t * env,
                               fd_wksp_t *      wksp ) {
+  /* Helper to boot a connected client with deterministic keepalive timestamps
+     for watchdog tests. */
   g_clock = (long)1e9;
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -1295,10 +1315,9 @@ test_bam_client_status( fd_wksp_t * wksp ) {
   state->bam_last_builder_heartbeat_ns = fd_bam_now() - FD_BAM_HEARTBEAT_TIMEOUT_NS;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
 
+  // verify restore gets us back to HEALTHY
   *state = state_backup;
   *state->grpc_client = client_backup;
-
-  // FIXME: double check if we are healthy here
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
   /* Runtime disabled should bypass transport checks and report DISABLED. */
@@ -1806,6 +1825,8 @@ test_bam_scheduler_result_not_committed_generic_failure_reason( fd_wksp_t * wksp
 
 static void
 test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( fd_wksp_t * wksp ) {
+  /* Out-of-range scheduling_error codes fall back to generic_invalid with the
+     invalid scheduling prefix. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -1853,9 +1874,9 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
   ctx->ctrl = ctrl;
   fd_memset( ctrl, 0, sizeof(fd_bam_ctrl_t) );
 
-  /* Mirror the on-startup state: control block idle, HTTPS endpoint configured, BAM enabled. */
+  /* Mirror the on-startup state: control block idle, HTTP endpoint configured, BAM enabled. */
   ctx->enabled = 1;
-  char const * host = "initial.builder.test";
+  const char host[] = "testnet.bam.jito.wtf";
   ulong host_len = strlen( host );
   FD_TEST( host_len < sizeof( ctx->server_fqdn ) );
   strcpy( ctx->server_fqdn, host );
@@ -1864,9 +1885,8 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
   ctx->server_sni_len = (ushort)host_len;
   ctx->server_tcp_port = 443;
   ctx->is_ssl          = 1;
-
   ctrl->enable         = 1U;
-  strlcpy( ctrl->url, "https://initial.builder.test:443", FD_URL_MAX );
+  strlcpy( ctrl->url, "http://testnet.bam.jito.wtf:80", FD_URL_MAX );
   strlcpy( ctrl->sni, host, FD_SNI_BUF_MAX );
   ctrl->state = FD_BAM_CTRL_STATE_IDLE;
 }
@@ -1949,7 +1969,7 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   FD_TEST( ctrl.enable == 0U );
   FD_TEST( ctx->enabled == 0 );
   FD_TEST( fd_fseq_query( fseq ) == 0UL );
-  FD_TEST( !strcmp( ctrl.url, "https://initial.builder.test:443" ) );
+  FD_TEST( !strcmp( ctrl.url, "http://testnet.bam.jito.wtf:80" ) );
 
   FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
   FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
@@ -1987,7 +2007,7 @@ test_bam_ctrl_enable_from_disabled_start( fd_wksp_t * wksp ) {
   FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
   FD_TEST( ctrl.enable == 1U );
   FD_TEST( ctx->enabled == 1 );
-  FD_TEST( !strcmp( ctrl.url, "https://initial.builder.test:443" ) );
+  FD_TEST( !strcmp( ctrl.url, "http://testnet.bam.jito.wtf:80" ) );
   FD_TEST( !strcmp( ctx->ctrl->error, "" ) );
 
   ctx->keyswitch = NULL;
@@ -2020,8 +2040,8 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
 
   FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_ERROR );
   FD_TEST( strstr( ctrl.error, "Invalid BAM URL" ) != NULL );
-  FD_TEST( !strcmp( ctrl.url, "https://initial.builder.test:443" ) );
-  FD_TEST( !strcmp( ctx->server_fqdn, "initial.builder.test" ) );
+  FD_TEST( !strcmp( ctrl.url, "http://testnet.bam.jito.wtf:80" ) );
+  FD_TEST( !strcmp( ctx->server_fqdn, "testnet.bam.jito.wtf" ) );
   FD_TEST( ctx->enabled == 1 );
 
   ctx->keyswitch = NULL;
@@ -2586,6 +2606,8 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
 
 static void
 test_bam_bundle_result_queue_survives_reset( fd_wksp_t * wksp ) {
+  /* Client reset should not wipe queued bundle results; ring head/tail and
+     contents remain intact. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -2615,6 +2637,8 @@ test_bam_bundle_result_queue_survives_reset( fd_wksp_t * wksp ) {
 
 static void
 test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
+  /* After reconnecting scheduler stream, pending bundle results should drain
+     fully and advance ring indices. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
