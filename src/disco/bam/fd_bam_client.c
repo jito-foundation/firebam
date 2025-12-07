@@ -389,8 +389,8 @@ fd_bam_collect_packet( pb_istream_t *         stream,
                        void **                arg ) {
   (void)field;
   fd_bam_batch_ctx_t * state = *arg;
-  if( FD_UNLIKELY( state->packet_cnt > FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
-    FD_LOG_WARNING(( "Received AtomicTxnBatch exceeding max bundle size" ));
+  if( FD_UNLIKELY( state->packet_cnt >= FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
+    FD_LOG_WARNING(( "Received AtomicTxnBatch exceeding max bundle size, already have %u txns", state->packet_cnt ));
     state->has_deser_err   = true;
     state->deser_reason    = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
     state->deser_index     = state->packet_cnt;

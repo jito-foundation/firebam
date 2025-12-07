@@ -43,14 +43,14 @@ no_clone = false
     solana_metrics_config = "host=https://metrics.solana.com:8086,db=tds,u=testnet_write,p=c4fa841aa918bf8274e3e2a44d77568d9861b3ea"
 
 [tiles.bundle]
-    enabled = true
+    enabled = false
     url = "https://testnet.block-engine.jito.wtf"
     tip_distribution_program_addr = "F2Zu7QZiTYUhPd7u9ukRVwxh7B71oA3NMJcHuCHc29P2"
     tip_payment_program_addr = "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
     tip_distribution_authority = "B1mrQSpdeMU9gCvkJ6VsXVVoYjRGkNA7TtjMyqxrhecH"
 
 [tiles.bam]
-    enabled = false #true # fixme!
+    enabled = true
     url = "http://testnet.bam.jito.wtf"
     tls_domain_name = ""
     keepalive_interval_millis = 5000

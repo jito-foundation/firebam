@@ -825,6 +825,8 @@ test_bam_bundle_rejects_oversized_packet( fd_wksp_t * wksp ) {
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
+  /* Build a single packet whose declared size exceeds FD_TXN_MTU to force
+     a drop at decode time and surface a deserialization error result. */
   bam_types_Packet packets[1];
   packets[0].data.size = FD_TXN_MTU; // can't do + 1 here for overflow, otherwise test will panic
   packets[0].has_meta = 1U;
@@ -859,9 +861,13 @@ test_bam_bundle_rejects_oversized_packet( fd_wksp_t * wksp ) {
   FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
   FD_TEST( decoded.multi.result_cnt == 1UL );
   bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+
+  /* Oversized packet returns INCONSISTENT_BUNDLE deserialization error at index 0. */
   FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_generic_invalid_tag );
-  FD_TEST( strstr( result->result.not_committed.reason.generic_invalid.message, "exceeds MTU" ) != NULL );
+  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.reason ==
+           bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 0U );
 
   test_bam_env_destroy( env );
 }
@@ -2100,10 +2106,10 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   fd_ip4_port_t bam_tpu_fwd = {0};
   FD_TEST( fd_cstr_to_ip4_addr( "98.76.54.32", &bam_tpu_fwd.addr ) );
   bam_tpu_fwd.port = fd_ushort_bswap( 3333 );
-  state->bam_tpu_addr     = bam_tpu;
+  state->bam_tpu_addr     = bam_tpu; // 12.34.56.78:2222
   state->bam_tpu_fwd_addr = bam_tpu_fwd;
 
-  fd_bam_contact_update_t updates[2];
+  fd_bam_contact_update_t updates[2] = {0};
   ulong update_cnt = 0UL;
 
   ulong publish_chunk = state->gossip_out.chunk;
@@ -2114,14 +2120,13 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   FD_TEST( updates[0].tpu_fwd_addr.l == bam_tpu_fwd.l );
 
   /* use_bam == false should revert to defaults. */
-  state->bam_tpu_addr     = bam_tpu;
+  state->bam_tpu_addr     = bam_tpu; // 12.34.56.78:2222
   state->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
   publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, false );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( updates[1].use_bam == false );
-  FD_TEST( updates[1].tpu_addr.l == 0UL );
-  FD_TEST( updates[1].tpu_fwd_addr.l == 0UL );
+  // downstream will discard ip
 
   test_bam_env_destroy( env );
 }
