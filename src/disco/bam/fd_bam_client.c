@@ -1335,7 +1335,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
 
 static void
 fd_bam_client_log_status( fd_bam_tile_t * ctx ) {
-  int status = fd_bam_client_status( ctx );
+  fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
 
   int const connected_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   int const connected_before = ( ctx->bundle_status_logged == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
@@ -1361,7 +1361,7 @@ fd_bam_client_log_status( fd_bam_tile_t * ctx ) {
         FD_MCNT_INC( BAM, DISCONNECTS, 1UL );
       }
       ctx->last_bundle_status_log_nanos = ts;
-      ctx->bundle_status_logged = (uchar)status;
+      ctx->bundle_status_logged = status;
     }
   }
 }
@@ -1684,8 +1684,7 @@ fd_grpc_client_callbacks_t fd_bam_client_grpc_callbacks = {
   .ping_ack         = fd_bam_client_grpc_ping_ack,
 };
 
-// todo: add healthy state check based on heartbeats
-int
+fd_plugin_bam_update_status_t
 fd_bam_client_status( fd_bam_tile_t const * ctx ) {
   if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) )
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
@@ -1722,7 +1721,9 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING; // TODO: check if correct, differs from bundle client
   }
 
-  if( FD_UNLIKELY( fd_keepalive_is_timeout( ctx->keepalive, fd_bam_now() ) ) ) {
+  long now = fd_bam_now();
+
+  if( FD_UNLIKELY( fd_keepalive_is_timeout( ctx->keepalive, now ) ) ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED; /* possible timeout */
   }
 
@@ -1730,8 +1731,13 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING;
   }
 
-  // TODO: check when last heartbeat received to determine if healthy or not
-  return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
+  if( FD_UNLIKELY(
+    ( ctx->bam_last_builder_heartbeat_ns<=0L ) ||
+    ( now - ctx->bam_last_builder_heartbeat_ns >= FD_BAM_HEARTBEAT_TIMEOUT_NS ) ) ) {
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
+  }
+
+  return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
 }
 
 FD_FN_CONST char const *

@@ -155,6 +155,9 @@ test_bam_env_mock_conn( test_bam_env_t * env ) {
   fd_bam_tile_t * state = env->state;
   test_bam_env_mock_builder_info( state );
   test_bam_env_mock_h2_hs( state );
+  long now = fd_bam_now();
+  state->bam_last_builder_heartbeat_ns   = now;
+  state->bam_last_validator_heartbeat_ns = now;
   state->bam_stream_live = 1;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 }

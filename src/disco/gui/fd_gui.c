@@ -2204,7 +2204,7 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   fd_plugin_msg_bam_update_t const * update = (fd_plugin_msg_bam_update_t const *)msg;
 
   gui->bam.has_bam = 1;
-  gui->bam.status  = update->status;
+  gui->bam.status  = update->status_code;
   gui->bam.enabled = update->enabled;
 
   memcpy( gui->bam.name, update->name, sizeof( gui->bam.name )-1 );

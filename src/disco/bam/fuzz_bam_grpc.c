@@ -336,6 +336,24 @@ bam_fuzz_assert_auth_cleared( fd_bam_tile_t * ctx ) {
   FD_TEST( ctx->bam_auth_inflight==0U );
 }
 
+/* Minimal status evaluation for the fuzzer: mirrors the healthy/unhealthy
+   heartbeat gate without requiring full transport state.
+   Full version in fd_bam_client_status() of fd_bam_client.c
+*/
+
+static fd_plugin_bam_update_status_t
+bam_fuzz_status( fd_bam_tile_t const * ctx ) {
+  if( FD_UNLIKELY( !ctx->enabled ) ) return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
+  if( FD_UNLIKELY( !ctx->bam_stream_live ) ) return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
+  long now = fd_log_wallclock();
+  if( FD_UNLIKELY(
+    ( ctx->bam_last_builder_heartbeat_ns<=0L ) ||
+    ( now - ctx->bam_last_builder_heartbeat_ns >= FD_BAM_HEARTBEAT_TIMEOUT_NS ) ) ) {
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
+  }
+  return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+}
+
 /* Reinitialize tile state for each fuzz input. Populates default endpoints,
    seeds keepalive/rng, and wires ctrl/fee_cfg/outputs to local buffers. */
 static void
@@ -403,8 +421,8 @@ bam_fuzz_reset_tile( void ) {
   ctx->keylog_fd             = -1;
   ctx->grpc_buf_max          = 4096UL;
   ctx->tcp_sock              = -1;
-  ctx->bundle_status_logged  = (uchar)FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
-  ctx->bundle_status_recent  = (uchar)FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
+  ctx->bundle_status_logged  = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
+  ctx->bundle_status_recent  = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->enabled               = 1U;
   ctx->bam_pending_results   = 0U;
   ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
@@ -530,7 +548,10 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   if( stream_ok ) {
     ctx->bam_stream_live = 1U;
-    ctx->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY; // fixme should check if healthy or not
+    long hb_now = fd_log_wallclock();
+    ctx->bam_last_builder_heartbeat_ns   = hb_now;
+    ctx->bam_last_validator_heartbeat_ns = hb_now;
+    ctx->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   }
 
   if( apply_ctrl ) {
@@ -596,6 +617,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
       bam_fuzz_assert_auth_cleared( ctx );
     }
   }
+  ctx->bundle_status_recent = bam_fuzz_status( ctx );
   bam_fuzz_publish_and_check( ctx->bundle_status_recent == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   return 0;
 }

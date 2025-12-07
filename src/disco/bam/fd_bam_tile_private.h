@@ -7,6 +7,7 @@
 #include "../bam/fd_bam_types.h"
 #include "fd_bam_ctrl.h"
 #include "../metrics/fd_metrics.h"
+#include "../plugin/fd_plugin.h"
 #include "../../waltz/grpc/fd_grpc_client.h"
 #include "../../waltz/resolv/fd_netdb.h"
 #include "../../waltz/fd_rtt_est.h"
@@ -145,7 +146,7 @@ struct fd_bam_tile {
   /* BAM specific */
   fd_grpc_h2_stream_t * bam_stream;                      /* Current scheduler stream; NULL while unsubscribed or reconnecting */
   long                  bam_last_builder_heartbeat_ns;   /* fd_bam_now() timestamp of last builder heartbeat (0 if none received) */
-  long                  bam_last_validator_heartbeat_ns; /* fd_bam_now() timestamp of last validator heartbeat (0 if none received) */
+  long                  bam_last_validator_heartbeat_ns; /* fd_bam_now() timestamp of last validator heartbeat (0 if never sent) */
   long                  bam_last_config_poll_ns;         /* fd_bam_now() timestamp of last config poll attempt (0 if never polled) */
   ushort                bam_pending_results;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_head;                /* Index of next result to flush (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
@@ -181,9 +182,9 @@ struct fd_bam_tile {
   fd_bam_metrics_t metrics;                         /* Tile-local counters flushed to metrics */
 
   /* Check engine light */
-  uchar bundle_status_recent;  /* most recently observed 'check engine light' */ //TODO: update this for bam, add healthy check
-  uchar bundle_status_plugin;  /* last 'plugin' update written */
-  uchar bundle_status_logged;
+  fd_plugin_bam_update_status_t bundle_status_recent;  /* most recently observed 'check engine light' */ //TODO: update this for bam
+  fd_plugin_bam_update_status_t bundle_status_plugin;  /* last 'plugin' update written */
+  fd_plugin_bam_update_status_t bundle_status_logged;  /* last logged bundle status */
   long  last_bundle_status_log_nanos;
   long  last_gui_publish_nanos;
   uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
@@ -321,21 +322,9 @@ fd_bam_client_grpc_rx_timeout(
 
 /* fd_bam_client_status provides a "check engine light".
 
-   Returns 0 if the client has recently failed and is currently backing
-   off from a reconnect attempt.
-
-   Returns 1 if the client is currently reconnecting.
-
-   Returns 2 if all of the following conditions are met:
-   - TCP socket is alive
-   - SSL session is not in an error state
-   - HTTP/2 connection is established (SETTINGS exchange done)
-   - gRPC bundle and packet subscriptions are live
-   - HTTP/2 PING exchange was done recently
-
    Return codes are FD_PLUGIN_MSG_BAM_UPDATE_STATUS_{...}. */
 
-int
+fd_plugin_bam_update_status_t
 fd_bam_client_status( fd_bam_tile_t const * ctx );
 
 /* fd_bam_request_ctx_cstr returns the gRPC method name for a

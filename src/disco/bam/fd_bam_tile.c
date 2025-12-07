@@ -134,9 +134,9 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, HEAP_SIZE,       usage->total_sz );
   FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->used_sz  );
 
-  int bundle_status = fd_bam_client_status( ctx );
+  fd_plugin_bam_update_status_t bundle_status = fd_bam_client_status( ctx );
   FD_MGAUGE_SET( BAM, HEALTHY, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-  ctx->bundle_status_recent = (uchar)bundle_status;
+  ctx->bundle_status_recent = bundle_status;
 }
 
 /* Waits until agave started before updating ContactInfo TPU. */
@@ -207,8 +207,8 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
 
   long log_interval_ns = (long)30e9;
   long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
-  int  status          = fd_bam_client_status( ctx );
-  if( FD_UNLIKELY( ctx->enabled && (
+  fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
+  if( FD_UNLIKELY( (
     status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED ||
     status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) && now_ns > log_next_ns ) ) {
     FD_LOG_WARNING(( "No BAM node connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
@@ -219,6 +219,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   if ( FD_UNLIKELY( ctx->bundle_status_recent != status || ctx->tpu_update_pending ) ) {
     fd_bam_gossip_update( ctx, ctx->stem, use_bam );
   }
+  ctx->bundle_status_recent = status;
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
     /* Expose BAM connectivity via a shared latch. The verify tile uses
        this to pause QUIC/bundle traffic when BAM has taken over leader
@@ -227,7 +228,6 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
        immediately release the TPU back to default Firedancer behaviour */
     fd_fseq_update( ctx->bam_status_fseq, (ulong)use_bam );
   }
-  ctx->bundle_status_recent = (uchar)status;
 
   if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch ) == FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
     fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
@@ -326,7 +326,7 @@ fd_bam_tile_publish_gui_update(
               (uint)fd_ushort_bswap( ctx->bam_tpu_fwd_addr.port ) );
   }
 
-  update->status  = ctx->bundle_status_recent; // FIXME: this is probably wrong
+  update->status_code  = ctx->bundle_status_recent;
   update->enabled = ctx->enabled;
 
   /* Propagate metrics to the GUI so operators can see health without scraping a Prom endpoint. */
@@ -946,10 +946,11 @@ unprivileged_init( fd_topo_t *      topo,
   /* Set idle ping timer */
   ctx->keepalive_interval = (long)tile->bam.keepalive_interval_nanos;
 
-  ctx->bundle_status_plugin = 127;
   ctx->bundle_status_recent = ctx->enabled
       ? FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED
       : FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
+  ctx->bundle_status_plugin = ctx->bundle_status_recent;
+  ctx->bundle_status_logged = ctx->bundle_status_recent;
   ctx->last_bundle_status_log_nanos = fd_log_wallclock();
   ctx->gui_dirty = 1U;
 

@@ -8,6 +8,7 @@
 #include "../../ballet/txn/fd_txn.h"
 #include "../../disco/tiles.h"
 #include "../../disco/fd_txn_p.h"
+#include "../plugin/fd_plugin.h"
 #include "../../discof/restore/fd_snapct_tile.h"
 #include "../../discof/tower/fd_tower_tile.h"
 #include "../../flamenco/leaders/fd_leaders.h"
@@ -669,7 +670,7 @@ struct fd_gui {
   } block_engine;
   struct {
     uchar   has_bam;
-    uchar   status;
+    fd_plugin_bam_update_status_t   status;
     uchar   enabled;
     char  name[ 16 ];
     char  url[ FD_URL_MAX ];

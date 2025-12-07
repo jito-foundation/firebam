@@ -113,11 +113,18 @@ typedef struct {
 
 #define FD_PLUGIN_MSG_BAM_UPDATE           (15UL)
 
-#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED            (0)
-#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED        (1)
-#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING          (2)
-#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY (3) // didn't receive heartbeat yet
-#define FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY   (4) // exchanged heartbeats within threshold
+typedef enum {
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED            = 0,
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED        = 1, // the client has recently failed and is currently backing off from a reconnect attempt
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING          = 2, // the client is currently reconnecting.
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY = 3, /* all of below conditions met, but didn't receive heartbeat yet
+  - TCP socket is alive
+  - SSL session is not in an error state
+  - HTTP/2 connection is established (SETTINGS exchange done)
+  - gRPC bundle and packet subscriptions are live
+  - HTTP/2 PING exchange was done recently */
+    FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY   = 4  /* recently exchanged heartbeats within timeout */
+} fd_plugin_bam_update_status_t;
 
 typedef struct {
   char  name[ 16 ];
@@ -126,8 +133,8 @@ typedef struct {
   char  ip_cstr[ 40 ];    /* IPv4 or IPv6 cstr */
   char  tpu_cstr[ 22 ];   /* "a.b.c.d:port" */
   char  tpu_fwd_cstr[ 22 ];
-  uchar status;           /* FD_PLUGIN_MSG_BAM_UPDATE_STATUS_* */
-  uchar enabled;          /* Non-zero when operator enabled BAM */ // TODO: merge into `status`, use FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED instead
+  fd_plugin_bam_update_status_t status_code;           /* FD_PLUGIN_MSG_BAM_UPDATE_STATUS_* */
+  uchar enabled;          /* Non-zero when operator enabled BAM */
 
   // TODO: these fields should be moved to fd_gui.c, like line 303 for example
   float rtt_sample;       /* Latest RTT sample (ns) */
