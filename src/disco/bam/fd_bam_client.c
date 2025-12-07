@@ -44,36 +44,33 @@ typedef struct {
   bam_types_AtomicTxnBatchResult const * atomic_res;
 } fd_bam_encode_batch_ctx_t;
 
-static int
-fd_bam_drive( fd_bam_tile_t * ctx,
-              long             now );
-
-static void
-fd_bam_tile_publish_bundle_txn( fd_bam_tile_t * ctx,
-                                void const *    txn,
-                                ushort          txn_sz,
-                                uchar           bundle_txn_cnt,
-                                uchar           batch_idx,
-                                uint            source_ipv4 );
-
-static void
-fd_bam_tile_publish_txn( fd_bam_tile_t * ctx,
-                         void const *    txn,
-                         ulong           txn_sz,
-                         ulong           max_schedule_slot,
-                         uint            scheduler_seq_id,
-                         uchar           batch_idx,
-                         uchar           batch_cnt,
-                         uchar           revert_on_error,
-                         uint            source_ipv4 );
-
-static void
-fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
-                                      uint64_t        time_sent_microseconds );
-
 __attribute__((weak)) long
 fd_bam_now( void ) {
   return fd_log_wallclock();
+}
+
+void
+fd_bam_tile_backoff( fd_bam_tile_t * ctx,
+                        long               now ) {
+  uint iter = ctx->backoff_iter;
+  if( now < ctx->backoff_reset ) iter = 0U;
+  iter++;
+
+  /* FIXME proper backoff */
+  long wait_ns = (long)2e9;
+  wait_ns = (long)( fd_rng_ulong( ctx->rng ) & ( (1UL<<fd_ulong_find_msb_w_default( (ulong)wait_ns, 0 ))-1UL ) );
+
+  ctx->backoff_until = now +   wait_ns;
+  ctx->backoff_reset = now + 2*wait_ns;
+
+  ctx->backoff_iter = iter;
+}
+
+static double
+fd_bam_client_retry_ms( fd_bam_tile_t * ctx ) {
+  long wait_ns = ctx->backoff_until - fd_bam_now();
+  if( wait_ns < 0L ) wait_ns = 0L;
+  return (double)wait_ns / 1e6;
 }
 
 void
@@ -127,13 +124,6 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   /* ctx->bam_results_head           = 0UL; */
   /* ctx->bam_results_tail           = 0UL; */
   ctx->bam_leader_pending         = 0U;
-}
-
-static double
-fd_bam_client_retry_ms( fd_bam_tile_t * ctx ) {
-  long wait_ns = ctx->backoff_until - fd_bam_now();
-  if( wait_ns < 0L ) wait_ns = 0L;
-  return (double)wait_ns / 1e6;
 }
 
 static int
@@ -267,6 +257,94 @@ fd_bam_client_drive_io( fd_bam_tile_t * ctx,
 # endif /* FD_HAS_OPENSSL */
 
   return fd_grpc_client_rxtx_socket( ctx->grpc_client, ctx->tcp_sock, charge_busy );
+}
+
+/* Forwards a bundle transaction to the tango message bus. */
+
+static void
+fd_bam_tile_publish_bundle_txn(
+    fd_bam_tile_t * ctx,
+    void const *       txn,
+    ushort             txn_sz,  /* <= FD_TXN_MTU */
+    uchar              bundle_txn_cnt,
+    uchar              batch_idx,
+    uint               source_ipv4
+) {
+  if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) {
+    ctx->metrics.missing_builder_info_fail_cnt++; /* unreachable */
+    return;
+  }
+
+  fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
+  *txnm = (fd_txn_m_t) {
+    .reference_slot = 0UL,
+    .payload_sz     = txn_sz,
+    .txn_t_sz       = 0U,
+    .source_ipv4    = source_ipv4,
+    .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
+    .block_engine   = {0},
+    .bam = {
+      .max_schedule_slot = ctx->bundle_max_schedule_slot,
+      .seq_id            = ctx->bundle_seq,
+      .batch_cnt         = bundle_txn_cnt,
+      .batch_idx         = batch_idx,
+      .revert_on_error   = 1, // FIXME: check if this is correct
+    },
+  };
+  fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
+
+  ulong sz  = fd_txn_m_realized_footprint( txnm, 0, 0 );
+
+  if( FD_UNLIKELY( !ctx->stem ) ) {
+    FD_LOG_CRIT(( "ctx->stem not set. This is a bug." ));
+  }
+
+  fd_stem_publish( ctx->stem, ctx->verify_out.idx, 1, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
+  ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
+  ctx->metrics.txn_received_cnt++;
+}
+
+/* Forwards a regular transaction to the tango message bus. */
+
+static void
+fd_bam_tile_publish_txn(
+    fd_bam_tile_t * ctx,
+    void const *       txn,
+    ulong              txn_sz,  /* <= FD_TXN_MTU */
+    ulong              max_schedule_slot,
+    uint               seq_id,
+    uchar              batch_idx,
+    uchar              batch_cnt,
+    uchar              revert_on_error,
+    uint               source_ipv4
+) {
+  fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
+  *txnm = (fd_txn_m_t) {
+    .reference_slot = 0UL,
+    .payload_sz     = (ushort)txn_sz,
+    .txn_t_sz       = 0U,
+    .source_ipv4    = source_ipv4,
+    .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
+    .block_engine   = {0},
+    .bam = {
+      .max_schedule_slot = max_schedule_slot,
+      .seq_id            = seq_id,
+      .batch_cnt         = batch_cnt,
+      .batch_idx         = batch_idx,
+      .revert_on_error   = !!revert_on_error,
+    },
+  };
+  fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
+
+  ulong sz  = fd_txn_m_realized_footprint( txnm, 0, 0 );
+
+  if( FD_UNLIKELY( !ctx->stem ) ) {
+    FD_LOG_CRIT(( "ctx->stem not set. This is a bug." ));
+  }
+
+  fd_stem_publish( ctx->stem, ctx->verify_out.idx, 0, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
+  ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
+  ctx->metrics.txn_received_cnt++;
 }
 
 static bool
@@ -612,6 +690,16 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
   return 1;
 }
 
+static void
+fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
+                                      uint64_t        time_sent_microseconds ) {
+  if( FD_UNLIKELY( !time_sent_microseconds ) ) return;
+  ulong tsorig_ns = time_sent_microseconds * 1000UL;
+  long  now_ns    = fd_bam_now();
+  ulong now_u     = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
+  fd_histf_sample( ctx->metrics.msg_rx_delay, fd_ulong_sat_sub( now_u, tsorig_ns ) );
+}
+
 /* Decodes the v0 scheduler response payload (heartbeats and nested batches).
    Returns 1 once the message was consumed; returns 0 on protobuf failures so
    the caller can reset/tear down the stream. */
@@ -664,14 +752,52 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
   return 1;
 }
 
+/* Decodes bam_api.SchedulerResponse (versioned envelope). On decode failure or
+   unsupported version it bumps metrics and may request a reset; otherwise it
+   dispatches nested payloads to versioned handlers. */
 static void
-fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
-                                      uint64_t        time_sent_microseconds ) {
-  if( FD_UNLIKELY( !time_sent_microseconds ) ) return;
-  ulong tsorig_ns = time_sent_microseconds * 1000UL;
-  long  now_ns    = fd_bam_now();
-  ulong now_u     = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
-  fd_histf_sample( ctx->metrics.msg_rx_delay, fd_ulong_sat_sub( now_u, tsorig_ns ) );
+fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
+                                   pb_istream_t *   istream ) {
+  uint32_t      tag;
+  pb_wire_type_t wire_type;
+  bool          eof         = false;
+  uint32_t      version_tag = 0U;
+  int           seen_v0     = 0;
+
+  while( pb_decode_tag( istream, &wire_type, &tag, &eof ) ) {
+    version_tag = tag;
+    if( tag == bam_api_SchedulerResponse_v0_tag ) {
+      if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
+        if( FD_UNLIKELY( !pb_skip_field( istream, wire_type ) ) ) goto fail;
+        continue;
+      }
+      pb_istream_t substream;
+      if( FD_UNLIKELY( !pb_make_string_substream( istream, &substream ) ) ) goto fail;
+      int ok = fd_bam_decode_scheduler_response_v0( ctx, &substream );
+      pb_close_string_substream( istream, &substream );
+      if( FD_UNLIKELY( !ok ) ) goto fail;
+      seen_v0 = 1;
+    } else {
+      if( FD_UNLIKELY( !pb_skip_field( istream, wire_type ) ) ) goto fail;
+    }
+  }
+
+  if( FD_UNLIKELY( !eof ) ) goto fail;
+  if( FD_UNLIKELY( !seen_v0 ) ) {
+    if( version_tag && version_tag != bam_api_SchedulerResponse_v0_tag ) {
+      FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", version_tag ));
+      ctx->metrics.transport_fail_cnt++;
+      ctx->defer_reset = 1;
+    } else {
+      ctx->metrics.decode_fail_cnt++;
+      FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) missing version" ));
+    }
+  }
+  return;
+
+fail:
+  ctx->metrics.decode_fail_cnt++;
+  FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed (%s)", PB_GET_ERROR( istream ) ));
 }
 
 static void
@@ -1036,58 +1162,19 @@ fd_bam_test_flush_results( fd_bam_tile_t * ctx ) {
   return fd_bam_flush_results( ctx );
 }
 
-int
-fd_bam_test_drive( fd_bam_tile_t * ctx,
-                   long             now ) {
-  return fd_bam_drive( ctx, now );
-}
+void
+fd_bam_client_send_ping( fd_bam_tile_t * ctx ) {
+  if( FD_UNLIKELY( !ctx->grpc_client ) ) return; /* no client */
+  fd_h2_conn_t * conn = fd_grpc_client_h2_conn( ctx->grpc_client );
+  if( FD_UNLIKELY( !conn ) ) return; /* no conn */
+  if( FD_UNLIKELY( conn->flags ) ) return; /* conn busy */
+  fd_h2_rbuf_t * rbuf_tx = fd_grpc_client_rbuf_tx( ctx->grpc_client );
 
-/* Decodes bam_api.SchedulerResponse (versioned envelope). On decode failure or
-   unsupported version it bumps metrics and may request a reset; otherwise it
-   dispatches nested payloads to versioned handlers. */
-static void
-fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
-                                   pb_istream_t *   istream ) {
-  uint32_t      tag;
-  pb_wire_type_t wire_type;
-  bool          eof         = false;
-  uint32_t      version_tag = 0U;
-  int           seen_v0     = 0;
-
-  while( pb_decode_tag( istream, &wire_type, &tag, &eof ) ) {
-    version_tag = tag;
-    if( tag == bam_api_SchedulerResponse_v0_tag ) {
-      if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
-        if( FD_UNLIKELY( !pb_skip_field( istream, wire_type ) ) ) goto fail;
-        continue;
-      }
-      pb_istream_t substream;
-      if( FD_UNLIKELY( !pb_make_string_substream( istream, &substream ) ) ) goto fail;
-      int ok = fd_bam_decode_scheduler_response_v0( ctx, &substream );
-      pb_close_string_substream( istream, &substream );
-      if( FD_UNLIKELY( !ok ) ) goto fail;
-      seen_v0 = 1;
-    } else {
-      if( FD_UNLIKELY( !pb_skip_field( istream, wire_type ) ) ) goto fail;
-    }
+  if( FD_LIKELY( fd_h2_tx_ping( conn, rbuf_tx ) ) ) {
+    long now = fd_bam_now();
+    fd_keepalive_tx( ctx->keepalive, ctx->rng, now );
+    FD_LOG_DEBUG(( "Keepalive TX (deadline=+%gs)", (double)( ctx->keepalive->ts_deadline-now )/1e9 ));
   }
-
-  if( FD_UNLIKELY( !eof ) ) goto fail;
-  if( FD_UNLIKELY( !seen_v0 ) ) {
-    if( version_tag && version_tag != bam_api_SchedulerResponse_v0_tag ) {
-      FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", version_tag ));
-      ctx->metrics.transport_fail_cnt++;
-      ctx->defer_reset = 1;
-    } else {
-      ctx->metrics.decode_fail_cnt++;
-      FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) missing version" ));
-    }
-  }
-  return;
-
-fail:
-  ctx->metrics.decode_fail_cnt++;
-  FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed (%s)", PB_GET_ERROR( istream ) ));
 }
 
 static int
@@ -1158,19 +1245,10 @@ fd_bam_drive( fd_bam_tile_t * ctx,
   return busy;
 }
 
-void
-fd_bam_client_send_ping( fd_bam_tile_t * ctx ) {
-  if( FD_UNLIKELY( !ctx->grpc_client ) ) return; /* no client */
-  fd_h2_conn_t * conn = fd_grpc_client_h2_conn( ctx->grpc_client );
-  if( FD_UNLIKELY( !conn ) ) return; /* no conn */
-  if( FD_UNLIKELY( conn->flags ) ) return; /* conn busy */
-  fd_h2_rbuf_t * rbuf_tx = fd_grpc_client_rbuf_tx( ctx->grpc_client );
-
-  if( FD_LIKELY( fd_h2_tx_ping( conn, rbuf_tx ) ) ) {
-    long now = fd_bam_now();
-    fd_keepalive_tx( ctx->keepalive, ctx->rng, now );
-    FD_LOG_DEBUG(( "Keepalive TX (deadline=+%gs)", (double)( ctx->keepalive->ts_deadline-now )/1e9 ));
-  }
+int
+fd_bam_test_drive( fd_bam_tile_t * ctx,
+                   long             now ) {
+  return fd_bam_drive( ctx, now );
 }
 
 int
@@ -1337,6 +1415,7 @@ static void
 fd_bam_client_log_status( fd_bam_tile_t * ctx ) {
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
 
+  // TODO: connected/disconnected state should handle healthy and unhealthy versions
   int const connected_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   int const connected_before = ( ctx->bundle_status_logged == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
@@ -1374,23 +1453,6 @@ fd_bam_client_step( fd_bam_tile_t * ctx,
   fd_bam_client_log_status( ctx );
 }
 
-void
-fd_bam_tile_backoff( fd_bam_tile_t * ctx,
-                        long               now ) {
-  uint iter = ctx->backoff_iter;
-  if( now < ctx->backoff_reset ) iter = 0U;
-  iter++;
-
-  /* FIXME proper backoff */
-  long wait_ns = (long)2e9;
-  wait_ns = (long)( fd_rng_ulong( ctx->rng ) & ( (1UL<<fd_ulong_find_msb_w_default( (ulong)wait_ns, 0 ))-1UL ) );
-
-  ctx->backoff_until = now +   wait_ns;
-  ctx->backoff_reset = now + 2*wait_ns;
-
-  ctx->backoff_iter = iter;
-}
-
 static void
 fd_bam_client_grpc_conn_established( void * app_ctx ) {
   (void)app_ctx;
@@ -1410,97 +1472,6 @@ fd_bam_client_grpc_conn_dead( void * app_ctx,
                 ctx->server_tcp_port ));
   ctx->defer_reset = 1;
 }
-
-/* Forwards a bundle transaction to the tango message bus. */
-
-static void
-fd_bam_tile_publish_bundle_txn(
-    fd_bam_tile_t * ctx,
-    void const *       txn,
-    ushort             txn_sz,  /* <= FD_TXN_MTU */
-    uchar              bundle_txn_cnt,
-    uchar              batch_idx,
-    uint               source_ipv4
-) {
-  if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) {
-    ctx->metrics.missing_builder_info_fail_cnt++; /* unreachable */
-    return;
-  }
-
-  fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
-  *txnm = (fd_txn_m_t) {
-    .reference_slot = 0UL,
-    .payload_sz     = txn_sz,
-    .txn_t_sz       = 0U,
-    .source_ipv4    = source_ipv4,
-    .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
-    .block_engine   = {0},
-    .bam = {
-      .max_schedule_slot = ctx->bundle_max_schedule_slot,
-      .seq_id            = ctx->bundle_seq,
-      .batch_cnt         = bundle_txn_cnt,
-      .batch_idx         = batch_idx,
-      .revert_on_error   = 1, // FIXME: check if this is correct
-    },
-  };
-  fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
-
-  ulong sz  = fd_txn_m_realized_footprint( txnm, 0, 0 );
-
-  if( FD_UNLIKELY( !ctx->stem ) ) {
-    FD_LOG_CRIT(( "ctx->stem not set. This is a bug." ));
-  }
-
-  fd_stem_publish( ctx->stem, ctx->verify_out.idx, 1, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
-  ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
-  ctx->metrics.txn_received_cnt++;
-}
-
-/* Forwards a regular transaction to the tango message bus. */
-
-static void
-fd_bam_tile_publish_txn(
-    fd_bam_tile_t * ctx,
-    void const *       txn,
-    ulong              txn_sz,  /* <= FD_TXN_MTU */
-    ulong              max_schedule_slot,
-    uint               seq_id,
-    uchar              batch_idx,
-    uchar              batch_cnt,
-    uchar              revert_on_error,
-    uint               source_ipv4
-) {
-  fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
-  *txnm = (fd_txn_m_t) {
-    .reference_slot = 0UL,
-    .payload_sz     = (ushort)txn_sz,
-    .txn_t_sz       = 0U,
-    .source_ipv4    = source_ipv4,
-    .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
-    .block_engine   = {0},
-    .bam = {
-      .max_schedule_slot = max_schedule_slot,
-      .seq_id            = seq_id,
-      .batch_cnt         = batch_cnt,
-      .batch_idx         = batch_idx,
-      .revert_on_error   = !!revert_on_error,
-    },
-  };
-  fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
-
-  ulong sz  = fd_txn_m_realized_footprint( txnm, 0, 0 );
-
-  if( FD_UNLIKELY( !ctx->stem ) ) {
-    FD_LOG_CRIT(( "ctx->stem not set. This is a bug." ));
-  }
-
-  fd_stem_publish( ctx->stem, ctx->verify_out.idx, 0, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
-  ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
-  ctx->metrics.txn_received_cnt++;
-}
-
-/* Called for each transaction in a bundle.  Simply counts up
-   bundle_txn_cnt, but does not publish anything. */
 
 static void
 fd_bam_client_grpc_tx_complete(
