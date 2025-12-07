@@ -1295,14 +1295,30 @@ test_bam_client_status( fd_wksp_t * wksp ) {
   // FIXME: double check if we are healthy here
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
+  /* Runtime disabled should bypass transport checks and report DISABLED. */
+  state->enabled = 0;
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED );
+  *state = state_backup;
+  *state->grpc_client = client_backup;
+
+  /* Keepalive inflight with a future deadline should still be HEALTHY. */
+  state->keepalive->inflight   = 1U;
+  state->keepalive->ts_deadline = fd_bam_now() + state->keepalive->timeout + (long)1e6;
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  *state = state_backup;
+  *state->grpc_client = client_backup;
+
+  /* Negative/garbled heartbeat timestamp is treated as UNHEALTHY. */
+  state->bam_last_builder_heartbeat_ns = -1L;
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
+  *state = state_backup;
+  *state->grpc_client = client_backup;
+
   state->tcp_sock_connected = 0U;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED );
   *state = state_backup;
 
-  ushort const conn_dead_flags[] = {
-    FD_H2_CONN_FLAGS_DEAD,
-    FD_H2_CONN_FLAGS_SEND_GOAWAY
-  };
+  ushort const conn_dead_flags[] = { FD_H2_CONN_FLAGS_DEAD, FD_H2_CONN_FLAGS_SEND_GOAWAY };
   for( ulong i=0UL; i<sizeof(conn_dead_flags)/sizeof(conn_dead_flags[0]); i++ ) {
     FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
     state->grpc_client->conn->flags |= conn_dead_flags[ i ];
