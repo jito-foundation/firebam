@@ -72,10 +72,10 @@ static struct {
 } bam_fuzz_ctx;
 
 typedef struct {
-  ulong payload_sz;       /* Bytes written into buf (0 when generation failed) */
-  ulong expected_len;     /* Expected decoded challenge length when valid */
-  uchar start_byte;       /* First byte used to fill challenge_to_sign */
-  int   expect_decode_ok; /* 1 when decoder should succeed, 0 to force failure */
+  ushort payload_sz;      /* Bytes written into buf (0 when generation failed) */
+  uchar  expected_len;    /* Expected decoded challenge length when valid (<256) */
+  uchar  start_byte;      /* First byte used to fill challenge_to_sign */
+  uchar  expect_decode_ok;/* 1 when decoder should succeed, 0 to force failure */
 } bam_fuzz_auth_payload_t;
 
 static uint const bam_fuzz_http_status_map[ 4 ] = { 200U, 401U, 403U, 503U };
@@ -218,6 +218,13 @@ bam_fuzz_env_init( int *    pargc,
                                          sizeof(fd_bam_contact_update_t) )
   };
 
+  /* Metrics macros expect fd_metrics_tl to point at a formatted buffer.
+     Create a minimal metrics region so timeout/error paths can update counters. */
+  void * metrics_mem = fd_wksp_alloc_laddr( g_wksp, FD_METRICS_ALIGN, FD_METRICS_FOOTPRINT( 0UL, 0UL ), 1UL );
+  FD_TEST( metrics_mem );
+  fd_metrics_new( metrics_mem, 0UL, 0UL );
+  fd_metrics_register( metrics_mem );
+
   bam_fuzz_ctx.min_cr_avail = ULONG_MAX;
   bam_fuzz_ctx.stem = (fd_stem_context_t) {
       .mcaches             = bam_fuzz_ctx.mcaches,
@@ -263,29 +270,27 @@ bam_fuzz_build_auth_challenge_payload( uchar selector,
                                        ulong   buf_sz ) {
   bam_fuzz_auth_payload_t info = {0};
   bam_api_AuthChallengeResponse tmp = bam_api_AuthChallengeResponse_init_default;
-  ulong max_len = sizeof( tmp.challenge_to_sign );
-  ulong challenge_len;
   uchar case_id = selector & 0x7U;
-
   if( case_id==3U ) { /* Truncated varint to force decode failure */
     if( FD_UNLIKELY( buf_sz<2UL ) ) return info;
     buf[0] = 0x0AU; /* tag */
     buf[1] = 0x80U; /* unterminated length varint */
-    info.payload_sz       = 2UL;
-    info.expect_decode_ok = 0;
+    info.payload_sz       = 2U;
+    info.expect_decode_ok = 0U;
     info.start_byte       = selector;
     return info;
   }
 
+  uchar challenge_len;
   switch( case_id & 0x3U ) {
   case 0: challenge_len = 0UL; info.expect_decode_ok = 1; break;                     /* Empty challenge */
-  case 1: challenge_len = fd_ulong_sat_sub( max_len, 1UL ); info.expect_decode_ok = 1; break; /* Max valid size */
-  case 2: challenge_len = max_len; info.expect_decode_ok = 0; break;                 /* Forces decode failure / NUL check */
-  default: challenge_len = fd_ulong_min( max_len/2UL + (ulong)(selector&0x0fU), max_len-1UL ); info.expect_decode_ok = 1; break;
+  case 1: challenge_len = (uchar)fd_ulong_sat_sub( sizeof( tmp.challenge_to_sign ), 1UL ); info.expect_decode_ok = 1; break; /* Max valid size */
+  case 2: challenge_len = sizeof( tmp.challenge_to_sign ); info.expect_decode_ok = 0; break;                 /* Forces decode failure / NUL check */
+  default: challenge_len = fd_uchar_min( sizeof( tmp.challenge_to_sign )/2 + (selector&0x0fU), sizeof( tmp.challenge_to_sign )-1UL ); info.expect_decode_ok = 1; break;
   }
 
   uchar fill = (uchar)( selector | 0x1U );
-  ulong idx = 0UL;
+  ushort idx = 0UL;
   if( FD_UNLIKELY( !buf_sz ) ) return info;
   buf[ idx++ ] = 0x0AU; /* tag for field 1, wire type length-delimited */
 
@@ -298,7 +303,7 @@ bam_fuzz_build_auth_challenge_payload( uchar selector,
 
   for( ulong i=0UL; i<challenge_len; i++ ) buf[ idx++ ] = fill;
   info.payload_sz    = idx;
-  info.expected_len  = info.expect_decode_ok ? challenge_len : 0UL;
+  info.expected_len  = info.expect_decode_ok ? challenge_len : 0U;
   info.start_byte    = fill;
   return info;
 }
@@ -323,8 +328,9 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
   FD_TEST( ctx->bam_auth_ready==1U );
   FD_TEST( ctx->bam_auth_inflight==0U );
   FD_TEST( ctx->bam_challenge_to_sign_len==info.expected_len );
+  /* Generator fills challenge_to_sign with a single repeated byte; ensure decode preserved it. */
   for( ulong i=0UL; i<info.expected_len; i++ ) {
-    FD_TEST( ctx->challenge_to_sign[ i ]==info.start_byte );
+    FD_TEST( ((uchar)ctx->challenge_to_sign[ i ])==info.start_byte );
   }
 }
 
