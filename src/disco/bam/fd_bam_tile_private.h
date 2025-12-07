@@ -12,6 +12,10 @@
 #include "../../waltz/resolv/fd_netdb.h"
 #include "../../waltz/fd_rtt_est.h"
 #include "proto/bam_api.pb.h"
+#include "proto/bam_types.pb.h"
+
+struct fd_bam_tile;
+typedef struct fd_bam_tile fd_bam_tile_t;
 
 #define FD_BAM_HEARTBEAT_TIMEOUT_NS ((long)6e9) /* 6 seconds */
 #if FD_HAS_OPENSSL
@@ -62,6 +66,17 @@ struct fd_bam_metrics {
 };
 
 typedef struct fd_bam_metrics fd_bam_metrics_t;
+
+typedef struct {
+  fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
+  bam_types_Packet    packets[ FD_PACK_MAX_TXN_PER_BUNDLE ];   /* decoded packet cache; indices [0,packet_cnt) valid */
+  uchar               packet_cnt;                              /* number of packets collected; [0,FD_PACK_MAX_TXN_PER_BUNDLE) */
+  uchar               revert_on_error;                         /* 0/1 flag mirrored from packet meta; only meaningful when revert_flag_set != 0 */
+  uchar               revert_flag_set;                         /* 0 before first flag observed, 1 after; prevents defaulting to revert_on_error=0 */
+  uchar               has_deser_err;                           /* 0/1 value if we have batch-level not-committed reason */
+  uchar               deser_index;                             /* zero-based transaction index tied to deserialization error */
+  uchar               deser_reason;                            /* bam_types_DeserializationErrorReason enum value */
+} fd_bam_batch_ctx_t;
 
 /* fd_bam_tile_t is the context object provided to callbacks from
    stem, and contains all state needed to progress the tile. */
@@ -319,6 +334,41 @@ fd_bam_client_grpc_rx_timeout(
     ulong  request_ctx, /* FD_BAM_CLIENT_REQ_{...} */
     int    deadline_kind /* FD_GRPC_DEADLINE_{HEADER|RX_END} */
 );
+
+void
+fd_bam_tile_publish_bundle_txn(
+    fd_bam_tile_t * ctx,
+    void const *       txn,
+    ushort             txn_sz,
+    uchar              bundle_txn_cnt,
+    uchar              batch_idx,
+    uint               source_ipv4 );
+
+void
+fd_bam_tile_publish_txn(
+    fd_bam_tile_t * ctx,
+    void const *       txn,
+    ulong              txn_sz,
+    ulong              max_schedule_slot,
+    uint               seq_id,
+    uchar              batch_idx,
+    uchar              batch_cnt,
+    uchar              revert_on_error,
+    uint               source_ipv4 );
+
+void
+fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
+                                      uint64_t        time_sent_microseconds );
+
+void
+fd_bam_publish_batch( fd_bam_tile_t *            ctx,
+                      fd_bam_batch_ctx_t *       state,
+                      bam_types_AtomicTxnBatch const * batch );
+
+void
+fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
+                                  void const *      data,
+                                  ulong             data_sz );
 
 /* fd_bam_client_status provides a "check engine light".
 
