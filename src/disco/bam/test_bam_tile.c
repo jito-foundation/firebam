@@ -431,6 +431,8 @@ test_bam_decode_last_message( fd_bam_tile_t *              state,
   *client->request_tx_op = (fd_h2_tx_op_t){0};
 }
 
+/* --- Scheduler ingestion and validation ----------------------------------------------- */
+
 /* Verify that scheduler batches without revert_on_error are fanned out
  * as individual bundle-sourced transactions with fragment metadata.
  */
@@ -465,6 +467,39 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( first->source_tpu    == FD_TXN_M_TPU_SOURCE_BAM );
   FD_TEST( first->bam.seq_id    == 0U );
   FD_TEST( first->bam.batch_cnt == 1UL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_bundle_forwarded( fd_wksp_t * wksp ) {
+  /* revert_on_error batches should bump bundle metrics and carry BAM metadata
+     into verify pipeline fragments. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+  test_bam_env_mock_builder_info( state );
+
+  FD_TEST( state->metrics.bundle_received_cnt == 0UL );
+
+  uchar protobuf[512];
+  size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 1U, 2, 1);
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.bundle_received_cnt == 1UL );
+  FD_TEST( state->bundle_seq == 1U );
+  FD_TEST( state->metrics.txn_received_cnt > 0UL );
+
+  fd_txn_m_t * first = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
+  FD_TEST( first->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( first->bam.seq_id == 1U );
+  FD_TEST( first->bam.revert_on_error == 1U );
+  FD_TEST( first->bam.batch_cnt >= 1U );
+  FD_TEST( first->bam.batch_idx == 0U );
 
   test_bam_env_destroy( env );
 }
@@ -562,39 +597,6 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( payload0[0] == 'm' );
   FD_TEST( payload1[0] == 'n' );
   FD_TEST( payload2[0] == 'o' );
-
-  test_bam_env_destroy( env );
-}
-
-static void
-test_bam_bundle_forwarded( fd_wksp_t * wksp ) {
-  /* revert_on_error batches should bump bundle metrics and carry BAM metadata
-     into verify pipeline fragments. */
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  fd_bam_tile_t * state = env->state;
-  test_bam_env_mock_builder_info( state );
-
-  FD_TEST( state->metrics.bundle_received_cnt == 0UL );
-
-  uchar protobuf[512];
-  size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 1U, 2, 1);
-
-  fd_bam_client_grpc_rx_msg( state,
-                             protobuf,
-                             protobuf_sz,
-                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-
-  FD_TEST( state->metrics.bundle_received_cnt == 1UL );
-  FD_TEST( state->bundle_seq == 1U );
-  FD_TEST( state->metrics.txn_received_cnt > 0UL );
-
-  fd_txn_m_t * first = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
-  FD_TEST( first->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
-  FD_TEST( first->bam.seq_id == 1U );
-  FD_TEST( first->bam.revert_on_error == 1U );
-  FD_TEST( first->bam.batch_cnt >= 1U );
-  FD_TEST( first->bam.batch_idx == 0U );
 
   test_bam_env_destroy( env );
 }
@@ -1015,6 +1017,8 @@ test_bam_bundle_rejects_missing_batches( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* --- Connection lifecycle and watchdog ----------------------------------------------- */
+
 static void
 test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   /* Stream closures (error or OK) should clear bam_stream state without forcing
@@ -1383,52 +1387,7 @@ test_bam_client_status( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
-static void
-test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
-  fd_bam_tile_t * state = env->state;
-
-  state->bam_stream            = NULL;
-  state->bam_stream_live       = 0U;
-  state->bam_stream_connecting = 0U;
-  state->bam_config_inflight   = 1U;
-  state->bam_auth_ready        = 1U;
-  state->bam_auth_inflight     = 0U;
-  state->grpc_client->request_stream = NULL;
-  *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
-
-  g_clock = (long)5e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
-
-  char const challenge[] = "challenge-123";
-  state->bam_challenge_to_sign_len = (uchar)strlcpy( state->challenge_to_sign, challenge, sizeof(challenge) );
-
-  char const signature[] = "sig-abcdef";
-  strlcpy( state->bam_auth_signature, signature, sizeof(signature) );
-
-  char const validator_key[] = "validator-key-test";
-  strlcpy( state->bam_identity_pubkey_b58, validator_key, sizeof(validator_key) );
-
-  fd_bam_test_drive( state, g_clock );
-
-  FD_TEST( state->bam_stream != NULL );
-  FD_TEST( state->bam_stream_connecting == 1U );
-  FD_TEST( state->bam_auth_ready == 0U );
-  FD_TEST( state->bam_stream_live == 0U );
-
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.which_versioned_msg == bam_api_SchedulerMessage_v0_tag );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_auth_proof_tag );
-  FD_TEST( 0 == strcmp( decoded.msg.versioned_msg.v0.msg.auth_proof.challenge_to_sign, challenge ) );
-  FD_TEST( 0 == strcmp( decoded.msg.versioned_msg.v0.msg.auth_proof.signature, signature ) );
-  FD_TEST( 0 == strcmp( decoded.msg.versioned_msg.v0.msg.auth_proof.validator_pubkey, validator_key ) );
-
-  test_bam_env_destroy( env );
-}
+/* --- Scheduler/auth messaging -------------------------------------------------------- */
 
 static void
 test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
@@ -1528,6 +1487,53 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
   fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( response_data ) ) );
   fd_wksp_free_laddr( fd_mcache_delete( fd_mcache_leave( request_mcache ) ) );
   fd_wksp_free_laddr( fd_mcache_delete( fd_mcache_leave( response_mcache ) ) );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  state->bam_stream            = NULL;
+  state->bam_stream_live       = 0U;
+  state->bam_stream_connecting = 0U;
+  state->bam_config_inflight   = 1U;
+  state->bam_auth_ready        = 1U;
+  state->bam_auth_inflight     = 0U;
+  state->grpc_client->request_stream = NULL;
+  *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
+
+  g_clock = (long)5e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  char const challenge[] = "challenge-123";
+  state->bam_challenge_to_sign_len = (uchar)strlcpy( state->challenge_to_sign, challenge, sizeof(challenge) );
+
+  char const signature[] = "sig-abcdef";
+  strlcpy( state->bam_auth_signature, signature, sizeof(signature) );
+
+  char const validator_key[] = "validator-key-test";
+  strlcpy( state->bam_identity_pubkey_b58, validator_key, sizeof(validator_key) );
+
+  fd_bam_test_drive( state, g_clock );
+
+  FD_TEST( state->bam_stream != NULL );
+  FD_TEST( state->bam_stream_connecting == 1U );
+  FD_TEST( state->bam_auth_ready == 0U );
+  FD_TEST( state->bam_stream_live == 0U );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.which_versioned_msg == bam_api_SchedulerMessage_v0_tag );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_auth_proof_tag );
+  FD_TEST( 0 == strcmp( decoded.msg.versioned_msg.v0.msg.auth_proof.challenge_to_sign, challenge ) );
+  FD_TEST( 0 == strcmp( decoded.msg.versioned_msg.v0.msg.auth_proof.signature, signature ) );
+  FD_TEST( 0 == strcmp( decoded.msg.versioned_msg.v0.msg.auth_proof.validator_pubkey, validator_key ) );
 
   test_bam_env_destroy( env );
 }
@@ -1860,6 +1866,8 @@ test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( fd_wksp
   test_bam_env_destroy( env );
 }
 
+/* --- Control surface and request labeling ------------------------------------------- */
+
 static void
 test_bam_request_ctx_labels( void ) {
   FD_TEST( 0 == strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ), "BamGetAuthChallenge" ) );
@@ -2047,6 +2055,8 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
   ctx->keyswitch = NULL;
   test_bam_env_destroy( env );
 }
+
+/* --- Gossip advertisement ------------------------------------------------------------ */
 
 static void
 test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
@@ -2365,6 +2375,8 @@ test_bam_gossip_update_requires_full_contact( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* --- Config and fee propagation ----------------------------------------------------- */
+
 static void
 test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -2600,6 +2612,8 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* --- Bundle result durability ------------------------------------------------------- */
+
 /* Verifies that bundle results buffered in the queue survive
  * fd_bam_client_reset and remain available for flushing after reconnect.
  * Ensure that bundle results aren't lost during temporary disconnections. */
@@ -2693,6 +2707,7 @@ main( int     argc,
   fd_wksp_t * wksp = fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ), page_cnt, fd_shmem_cpu_idx( numa_idx ), "bam-test", 16UL );
   FD_TEST( wksp );
 
+  /* Scheduler ingestion/validation */
   test_bam_packets_forwarded( wksp );
   test_bam_bundle_forwarded( wksp );
   test_bam_multiple_batches_forwarded( wksp );
@@ -2704,8 +2719,16 @@ main( int     argc,
   test_bam_bundle_rejects_oversized_packet( wksp );
   test_bam_bundle_rejects_empty_batch( wksp );
   test_bam_bundle_rejects_missing_batches( wksp );
+
+  /* Connection lifecycle and watchdog */
   test_bam_grpc_end_handling( wksp );
   test_bam_grpc_timeout( wksp );
+  test_bam_heartbeat_timeout_forces_disconnect( wksp );
+  test_bam_heartbeat_reset_extends_timeout( wksp );
+  test_bam_client_status( wksp );
+
+  /* Scheduler/auth messaging */
+  test_bam_auth_challenge_response_sets_signature( wksp );
   test_bam_scheduler_auth_proof_publishes_message( wksp );
   test_bam_scheduler_heartbeat_publishes_message( wksp );
   test_bam_scheduler_leader_state_publishes_message( wksp );
@@ -2716,23 +2739,27 @@ main( int     argc,
   test_bam_scheduler_result_not_committed_transaction_error_high_index( wksp );
   test_bam_scheduler_result_not_committed_generic_failure_reason( wksp );
   test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( wksp );
-  test_bam_heartbeat_timeout_forces_disconnect( wksp );
-  test_bam_heartbeat_reset_extends_timeout( wksp );
-  test_bam_client_status( wksp );
-  test_bam_auth_challenge_response_sets_signature( wksp );
+
+  /* Control surface */
   test_bam_request_ctx_labels();
   test_bam_ctrl_updates_url_and_sni( wksp );
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_enable_from_disabled_start( wksp );
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
+
+  /* Gossip advertisement */
   test_bam_gossip_publishes_bam_config_contact( wksp );
   test_bam_gossip_resets_when_contact_missing( wksp );
   test_bam_gossip_reconnect_without_contact( wksp );
   test_bam_runtime_toggle_updates_gossip( wksp );
   test_bam_gossip_update_requires_full_contact( wksp );
+
+  /* Config and fees */
   test_bam_config_updates_contact_info( wksp );
   test_bam_fee_cfg_propagates_to_pack( wksp );
   test_bam_builder_fee_info( wksp );
+
+  /* Bundle result durability */
   test_bam_bundle_result_queue_survives_reset( wksp );
   test_bam_bundle_result_queue_flushes_after_reconnect( wksp );
 
