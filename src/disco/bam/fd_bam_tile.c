@@ -160,7 +160,7 @@ fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
     return;
   }
 
-  FD_LOG_NOTICE(( "TPU update failed (tpu=%d tpu_fwd=%d); Agave may still be starting up", rc_tpu, rc_tpu_fwd ));
+  FD_LOG_NOTICE(( "TPU update failed (tpu=%d tpu_fwd=%d)", rc_tpu, rc_tpu_fwd ));
 }
 
 // Updates ContactInfo from ctx->bam_tpu* if use_bam is true

@@ -413,6 +413,14 @@ fd_topo_initialize( config_t * config ) {
       fd_topo_tile_t * verify_tile = &topo->tiles[ fd_topo_find_tile( topo, "verify", i ) ];
       fd_topob_tile_uses( topo, verify_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
     }
+    for( ulong i=0UL; i<quic_tile_cnt; i++ ) {
+      fd_topo_tile_t * quic_tile = &topo->tiles[ fd_topo_find_tile( topo, "quic", i ) ];
+      fd_topob_tile_uses( topo, quic_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
+    }
+    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+      fd_topo_tile_t * bundle_tile = &topo->tiles[ fd_topo_find_tile( topo, "bundle", 0UL ) ];
+      fd_topob_tile_uses( topo, bundle_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
+    }
     FD_TEST( fd_pod_insertf_ulong( topo->props, bam_status_obj->id, "bam_status" ) );
 
     fd_topo_obj_t * bam_ctrl_obj = fd_topob_obj( topo, "opaque", "bam_ctrl" );

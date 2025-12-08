@@ -4,6 +4,8 @@
 #include "../topo/fd_topo.h"
 #include "../keyguard/fd_keyload.h"
 #include "../plugin/fd_plugin.h"
+#include "../../util/pod/fd_pod.h"
+#include "../../tango/fseq/fd_fseq.h"
 #include "../../waltz/http/fd_url.h"
 
 #include <errno.h>
@@ -77,13 +79,33 @@ metrics_write( fd_bundle_tile_t * ctx ) {
 
 void
 fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
-  long log_interval_ns = (long)30e9;
-  int  status          = fd_bundle_client_status( ctx );
-  long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
-  long now_ns          = fd_log_wallclock();
-  if( FD_UNLIKELY( status!=FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED && now_ns>log_next_ns ) ) {
-    FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
-    ctx->last_bundle_status_log_nanos = now_ns;
+  _Bool bam_override = ctx->bam_status_fseq && fd_fseq_query( ctx->bam_status_fseq );
+  if( FD_UNLIKELY( bam_override!=ctx->bam_override_active ) ) {
+    ctx->bam_override_active = bam_override;
+    if( bam_override ) {
+      // disconnect
+      fd_bundle_client_reset( ctx );
+      ctx->bundle_status_plugin = 127;
+      ctx->bundle_status_recent = FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_DISCONNECTED;
+      ctx->bundle_status_logged = ctx->bundle_status_recent;
+      ctx->last_bundle_status_log_nanos = fd_log_wallclock();
+      FD_LOG_NOTICE(( "BAM healthy; pausing bundle gRPC connection" ));
+    } else {
+      ctx->backoff_until = 0;
+      ctx->defer_reset   = 0;
+      FD_LOG_NOTICE(( "BAM not healthy; resuming bundle gRPC connection" ));
+    }
+  }
+
+  if( FD_LIKELY( !ctx->bam_override_active ) ) {
+    long log_interval_ns = (long)30e9;
+    int status = fd_bundle_client_status( ctx );
+    long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
+    long now_ns          = fd_log_wallclock();
+    if( FD_UNLIKELY( status!=FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED && now_ns>log_next_ns ) ) {
+      FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
+      ctx->last_bundle_status_log_nanos = now_ns;
+    }
   }
 
   if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
@@ -139,7 +161,8 @@ after_credit( fd_bundle_tile_t *  ctx,
               int *               charge_busy ) {
   (void)opt_poll_in;
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
-  fd_bundle_client_step( ctx, charge_busy );
+  if( FD_LIKELY( !ctx->bam_override_active ) )
+    fd_bundle_client_step( ctx, charge_busy );
 
   if( ctx->plugin_out.mem ) {
     if( FD_UNLIKELY( ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
@@ -487,6 +510,15 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->plugin_out = bundle_out_link( topo, &topo->links[ tile->out_link_id[ plugin_out_idx ] ], plugin_out_idx );
   } else {
     ctx->plugin_out = (fd_bundle_out_ctx_t){ .idx=ULONG_MAX };
+  }
+
+  ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
+  if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
+    ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
+    if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "bundle tile missing bam_status fseq" ));
+    ctx->bam_override_active = fd_fseq_query( ctx->bam_status_fseq )!=0UL;
+  } else {
+    ctx->bam_status_fseq = NULL;
   }
 
   /* Set socket receive buffer size */
