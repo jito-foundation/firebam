@@ -6,7 +6,6 @@
 #include "../metrics/fd_metrics.h"
 
 #include <linux/unistd.h>
-#include <limits.h>
 
 /* fd_dedup provides services to deduplicate multiple streams of input
    fragments and present them to a mix of reliable and unreliable
@@ -159,15 +158,13 @@ after_frag( fd_dedup_ctx_t *    ctx,
   FD_TEST( txnm->payload_sz<=FD_TPU_MTU );
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
 
-  int is_bundle_member = !!txnm->bam.revert_on_error; //FIXME: this is probably incorrect
-
-  if( FD_UNLIKELY( is_bundle_member && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
     ctx->bundle_id     = txnm->block_engine.bundle_id;
     ctx->bundle_idx    = 0UL;
   }
 
-  if( FD_UNLIKELY( is_bundle_member && ctx->bundle_failed ) ) {
+  if( FD_UNLIKELY( txnm->block_engine.bundle_id && ctx->bundle_failed ) ) {
     ctx->metrics.bundle_peer_failure_cnt++;
     return;
   }
@@ -185,7 +182,7 @@ after_frag( fd_dedup_ctx_t *    ctx,
   }
 
   int is_dup = 0;
-  if( FD_LIKELY( !is_bundle_member ) ) {
+  if( FD_LIKELY( !txnm->block_engine.bundle_id ) ) {
     /* Compute fd_hash(signature) for dedup. */
     ulong ha_dedup_tag = fd_hash( ctx->hashmap_seed, fd_txn_m_payload( txnm )+txn->signature_off, 64UL );
 
@@ -208,7 +205,7 @@ after_frag( fd_dedup_ctx_t *    ctx,
   }
 
   if( FD_LIKELY( is_dup ) ) {
-    if( FD_UNLIKELY( is_bundle_member ) ) ctx->bundle_failed = 1;
+    if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
 
     ctx->metrics.dedup_fail_cnt++;
   } else {

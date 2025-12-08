@@ -188,12 +188,6 @@ struct fd_microblock_bank_trailer {
      transactions. */
   ulong pack_txn_idx;
 
-  uint seq_id;
-
-  /* Total transaction count of the bundle associated with this
-     microblock.  Zero if the microblock is not part of a bundle. */
-  uchar bundle_txn_cnt;
-
   /* If the microblock is a bundle, with a set of potentially
      conflicting transactions that should be executed in order, and
      all either commit or fail atomically. */

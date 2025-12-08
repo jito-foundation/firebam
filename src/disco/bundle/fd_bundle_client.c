@@ -934,7 +934,7 @@ fd_grpc_client_callbacks_t fd_bundle_client_grpc_callbacks = {
 /* Decrease verbosity */
 #define DISCONNECTED FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_DISCONNECTED
 #define CONNECTING   FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING
-#define CONNECTED_UNHEALTHY    FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED
+#define CONNECTED FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED
 
 int
 fd_bundle_client_status( fd_bundle_tile_t const * ctx ) {
@@ -980,12 +980,12 @@ fd_bundle_client_status( fd_bundle_tile_t const * ctx ) {
   }
 
   /* As far as we know, the bundle connection is alive and well. */
-  return CONNECTED_UNHEALTHY;
+  return CONNECTED;
 }
 
 #undef DISCONNECTED
 #undef CONNECTING
-#undef CONNECTED_UNHEALTHY
+#undef CONNECTED
 
 FD_FN_CONST char const *
 fd_bundle_request_ctx_cstr( ulong request_ctx ) {

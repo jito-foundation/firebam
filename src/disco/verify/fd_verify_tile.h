@@ -48,8 +48,6 @@ typedef struct {
 
   ulong       hashmap_seed;
 
-  ulong *     bam_status_fseq; /* Shared latch read to skip QUIC/bundle inputs when BAM active */
-
   struct {
     ulong parse_fail_cnt;
     ulong verify_fail_cnt;
