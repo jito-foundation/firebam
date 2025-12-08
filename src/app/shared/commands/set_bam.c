@@ -1,15 +1,9 @@
 #define _GNU_SOURCE
 #include "../fd_config.h"
-
 #include "../fd_action.h"
-#include "../../../disco/bam/fd_bam_ctrl.h"
 #include "../../../util/pod/fd_pod.h"
-#include "../../../util/fd_util.h"
-#include "../../../util/net/fd_net_headers.h"
-
-#include <limits.h>
-#include <string.h>
-#include <unistd.h>
+#include <stdio.h> // snprintf
+#include <unistd.h> // usleep
 
 void
 set_bam_cmd_args( int *    pargc,
@@ -77,6 +71,8 @@ static void
 set_bam_apply_request( args_t *   args,
                        config_t * config,
                        fd_bam_ctrl_t * ctrl ) {
+  (void)config;
+
   uchar state = FD_VOLATILE_CONST( ctrl->state );
   if( FD_UNLIKELY( state == FD_BAM_CTRL_STATE_REQUEST ||
                    state == FD_BAM_CTRL_STATE_APPLYING ) )
@@ -128,23 +124,18 @@ set_bam_apply_request( args_t *   args,
   }
 
   uchar enabled = FD_VOLATILE_CONST( ctrl->enable );
-  char url_buf[ FD_URL_MAX ];
-  strlcpy( url_buf, ctrl->url, sizeof(url_buf) );
-  char sni_buf[ FD_SNI_BUF_MAX ];
-  strlcpy( sni_buf, ctrl->sni, sizeof(sni_buf) );
+  char out_buf[ FD_URL_MAX + FD_SNI_BUF_MAX + 96 ];
+  int  out_sz = snprintf( out_buf, sizeof( out_buf ),
+                     "BAM runtime configuration updated (enabled=%s, url=%s, sni=%s)",
+                     enabled ? "true" : "false",
+                     ctrl->url[ 0 ] ? ctrl->url : "(unset)",
+                     ctrl->sni[ 0 ] ? ctrl->sni : "(default)" );
   FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
 
-  if( sni_buf[0] )
-    FD_LOG_NOTICE(( "BAM runtime configuration updated (enabled=%s, url=%s, sni=%s)",
-                    enabled ? "true" : "false",
-                    url_buf,
-                    sni_buf ));
-  else
-    FD_LOG_NOTICE(( "BAM runtime configuration updated (enabled=%s, url=%s)",
-                    enabled ? "true" : "false",
-                    url_buf ));
+  if( FD_UNLIKELY( out_sz<0 || (ulong)out_sz>=sizeof( out_buf ) ) )
+    FD_LOG_ERR(( "Failed to format BAM runtime configuration output" ));
 
-  (void)config;
+  FD_LOG_NOTICE(( "%s", out_buf ));
 }
 
 void

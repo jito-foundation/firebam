@@ -1,13 +1,11 @@
 #define _GNU_SOURCE
 
+#include <stdio.h> // snprintf
+#include <unistd.h> // usleep
+
 #include "../fd_config.h"
 #include "../fd_action.h"
-#include "../../../disco/bam/fd_bam_ctrl.h"
 #include "../../../util/pod/fd_pod.h"
-#include "../../../util/fd_util.h"
-
-#include <string.h>
-#include <unistd.h>
 
 void
 get_bam_cmd_fn( args_t *   args FD_PARAM_UNUSED,
@@ -42,19 +40,17 @@ get_bam_cmd_fn( args_t *   args FD_PARAM_UNUSED,
   }
 
   uchar enabled = FD_VOLATILE_CONST( ctrl->enable );
-  char url_buf[ FD_URL_MAX ];
-  strlcpy( url_buf, ctrl->url, sizeof(url_buf) );
-  char sni_buf[ FD_SNI_BUF_MAX ];
-  strlcpy( sni_buf, ctrl->sni, sizeof(sni_buf) );
+  char out_buf[ FD_URL_MAX + FD_SNI_BUF_MAX + 64 ];
+  int  out_sz = snprintf( out_buf, sizeof( out_buf ),
+                          "enabled=%s\n" "url=%s\n" "sni=%s\n",
+                          enabled ? "true" : "false",
+                          ctrl->url[ 0 ] ? ctrl->url : "(unset)",
+                          ctrl->sni[ 0 ] ? ctrl->sni : "(default)" );
+  if( FD_UNLIKELY( out_sz<0 || (ulong)out_sz>=sizeof( out_buf ) ) )
+    FD_LOG_ERR(( "Failed to format BAM runtime configuration output" ));
 
   fd_topo_leave_workspaces( topo );
-
-  FD_LOG_STDOUT(( "enabled=%s\n", enabled ? "true" : "false" ));
-  FD_LOG_STDOUT(( "url=%s\n", url_buf[0] ? url_buf : "(unset)" ));
-  if( sni_buf[0] )
-    FD_LOG_STDOUT(( "sni=%s\n", sni_buf ));
-  else
-    FD_LOG_STDOUT(( "sni=(default)\n" ));
+  FD_LOG_STDOUT(( "%s", out_buf ));
 }
 
 action_t fd_action_get_bam = {
