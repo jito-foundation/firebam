@@ -1,3 +1,5 @@
+# FIXME: revert all changes to this file when gcc15 with avx512 is fixed
+
 define _map-define
   ifeq ($(shell echo | $(CC) -march=native -E -dM - | grep -c $(2)),1)
     CPPFLAGS+=-D$(1)=1
