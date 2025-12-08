@@ -2096,7 +2096,6 @@ test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
   fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  FD_TEST( update.use_bam );
 
   fd_ip4_port_t expected_tpu = {0};
   FD_TEST( fd_cstr_to_ip4_addr( "10.20.30.40", &expected_tpu.addr ) );
@@ -2145,7 +2144,6 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   ulong publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, true );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  FD_TEST( updates[0].use_bam );
   FD_TEST( updates[0].tpu_addr.l == bam_tpu.l );
   FD_TEST( updates[0].tpu_fwd_addr.l == bam_tpu_fwd.l );
 
@@ -2155,7 +2153,6 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, false );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  FD_TEST( updates[1].use_bam == false );
   // downstream will discard unused ip
 
   test_bam_env_destroy( env );
@@ -2206,7 +2203,6 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   /* Disconnected path: publish default contact so gossip falls back to Firedancer TPU. */
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 1UL );
-  FD_TEST( updates[0].use_bam );
 
   fd_ip4_port_t expected_tpu = {0};
   FD_TEST( fd_cstr_to_ip4_addr( "9.8.7.6", &expected_tpu.addr ) );
@@ -2222,7 +2218,6 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   fd_bam_gossip_update( state, state->stem, false );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 2UL );
-  FD_TEST( updates[1].use_bam == false );
 
   state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING;
 
@@ -2242,14 +2237,12 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_tpu_fwd_addr.l == 0UL );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 3UL );
-  FD_TEST( updates[2].use_bam == false );
 
   /* If BAM contact is absent, should publish empty ip:port for tpu+tpu_fwd to revert */
   publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, false );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 4UL );
-  FD_TEST( updates[3].use_bam == false );
   FD_TEST( updates[3].tpu_addr.l == 0UL );
   FD_TEST( updates[3].tpu_fwd_addr.l == 0UL );
 
@@ -2297,7 +2290,6 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
 
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 1UL );
-  FD_TEST( updates[0].use_bam );
 
   fd_ip4_port_t expected_tpu = {0};
   FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &expected_tpu.addr ) );
@@ -2315,7 +2307,6 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   fd_bam_gossip_update( state, state->stem, false );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 2UL );
-  FD_TEST( updates[1].use_bam == false );
 
   /* Re-enabling runtime while still connected should republish the BamConfig address. */
   publish_chunk = state->gossip_out.chunk;
@@ -2323,7 +2314,6 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   fd_bam_gossip_update( state, state->stem, true );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 3UL );
-  FD_TEST( updates[2].use_bam );
   FD_TEST( updates[2].tpu_addr.l == expected_tpu.l );
   FD_TEST( updates[2].tpu_fwd_addr.l == expected_tpu_fwd.l );
 
@@ -2350,14 +2340,8 @@ test_bam_gossip_update_requires_full_contact( fd_wksp_t * wksp ) {
   FD_TEST( fd_cstr_to_ip4_addr( "7.7.7.7", &bam_tpu.addr ) );
   bam_tpu.port = fd_ushort_bswap( 8899 );
 
-  /* Missing forward address should not advertise BAM contact info. */
   state->bam_tpu_addr     = bam_tpu;
   state->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
-  ulong publish_chunk = state->gossip_out.chunk;
-  fd_bam_gossip_update( state, state->stem, true );
-  fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  FD_TEST( update.use_bam );
-
   /* Full contact info should publish BAM overrides. */
   fd_ip4_port_t bam_tpu_fwd = {0};
   FD_TEST( fd_cstr_to_ip4_addr( "5.5.5.5", &bam_tpu.addr ) );
@@ -2365,10 +2349,9 @@ test_bam_gossip_update_requires_full_contact( fd_wksp_t * wksp ) {
   bam_tpu_fwd.port = fd_ushort_bswap( 9999 );
   state->bam_tpu_addr     = bam_tpu;
   state->bam_tpu_fwd_addr = bam_tpu_fwd;
-  publish_chunk = state->gossip_out.chunk;
+  ulong publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, true );
-  update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  FD_TEST( update.use_bam );
+  fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update.tpu_addr.l == bam_tpu.l );
   FD_TEST( update.tpu_fwd_addr.l == bam_tpu_fwd.l );
 

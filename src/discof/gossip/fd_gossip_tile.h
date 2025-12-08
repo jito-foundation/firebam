@@ -19,10 +19,6 @@ struct fd_gossip_tile_ctx {
   fd_gossip_t * gossip;
 
   fd_contact_info_t my_contact_info[1];
-  fd_ip4_port_t default_tpu;
-  fd_ip4_port_t default_tpu_fwd;
-  fd_ip4_port_t default_tpu_quic;
-  fd_ip4_port_t default_tpu_fwd_quic;
 
   fd_stem_context_t * stem;
 

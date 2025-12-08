@@ -459,7 +459,6 @@ bam_fuzz_publish_and_check(_Bool use_bam) {
   fd_bam_gossip_update( ctx, ctx->stem, use_bam );
   fd_bam_contact_update_t const * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, chunk_before );
 
-  FD_TEST( msg->use_bam == use_bam );
   FD_TEST( msg->tpu_addr.addr     == ctx->bam_tpu_addr.addr );
   FD_TEST( msg->tpu_addr.port     == ctx->bam_tpu_addr.port );
   FD_TEST( msg->tpu_fwd_addr.addr == ctx->bam_tpu_fwd_addr.addr );

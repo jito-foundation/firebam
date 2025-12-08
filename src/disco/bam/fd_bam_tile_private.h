@@ -148,6 +148,9 @@ struct fd_bam_tile {
   uint               fee_cfg_version;  /* Last version published to fee_cfg */
   fd_ip4_port_t bam_tpu_addr;          /* Latest TPU endpoint advertised by BAM */
   fd_ip4_port_t bam_tpu_fwd_addr;      /* Latest TPU Forward endpoint advertised by BAM */
+  fd_ip4_port_t default_tpu_addr;      /* TPU endpoint Agave booted with (non-BAM) */
+  fd_ip4_port_t default_tpu_fwd_addr;  /* TPU Forward endpoint Agave booted with */
+  _Bool default_tpu_cached;            /* true once defaults have been captured via admin RPC */
   _Bool tpu_update_pending;            /* true if TPU update needs to be pushed to Agave. this allows retries if agave is still starting up */
 
   /* Bundle state */

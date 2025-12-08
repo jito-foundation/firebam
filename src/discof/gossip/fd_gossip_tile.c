@@ -234,28 +234,11 @@ void
 fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
                                   fd_bam_contact_update_t const * update,
                                   long                            now ) {
-  fd_ip4_port_t tpu          = ctx->default_tpu;
-  fd_ip4_port_t tpu_fwd      = ctx->default_tpu_fwd;
-  fd_ip4_port_t tpu_quic     = ctx->default_tpu_quic;
-  fd_ip4_port_t tpu_fwd_quic = ctx->default_tpu_fwd_quic;
 
-  if( FD_LIKELY( update->use_bam ) ) {
-    tpu          = update->tpu_addr;
-    tpu_fwd      = update->tpu_fwd_addr;
-    tpu_quic     = update->tpu_addr;
-    tpu_fwd_quic = update->tpu_fwd_addr;
-  }
-
-  fd_contact_info_t * my_ci = ctx->my_contact_info;
-  my_ci->sockets[ FD_CONTACT_INFO_SOCKET_TPU ]               = tpu;
-  my_ci->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS ]      = tpu_fwd;
-  my_ci->sockets[ FD_CONTACT_INFO_SOCKET_TPU_QUIC ]          = tpu_quic;
-  my_ci->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ] = tpu_fwd_quic;
-  my_ci->sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE ]          = tpu;
-  my_ci->sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ]     = tpu_quic;
-  my_ci->wallclock_nanos = now;
-
-  fd_gossip_set_my_contact_info( ctx->gossip, my_ci, now );
+  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU ]          = update->tpu_addr;
+  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS ] = update->tpu_fwd_addr;
+  ctx->my_contact_info->wallclock_nanos = now;
+  fd_gossip_set_my_contact_info( ctx->gossip, ctx->my_contact_info, now );
 }
 
 static inline int
@@ -439,11 +422,6 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_SERVE_REPAIR_QUIC ] = (fd_ip4_port_t){ .addr = 0, .port = 0 };
   ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_RPC ]               = (fd_ip4_port_t){ .addr = 0, .port = 0 };
   ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_RPC_PUBSUB ]        = (fd_ip4_port_t){ .addr = 0, .port = 0 };
-
-  ctx->default_tpu          = ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU ];
-  ctx->default_tpu_fwd      = ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS ];
-  ctx->default_tpu_quic     = ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_QUIC ];
-  ctx->default_tpu_fwd_quic = ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ];
 
   ctx->gossip = fd_gossip_join( fd_gossip_new( _gossip,
                                                ctx->rng,

@@ -113,10 +113,6 @@ test_bam_contact_updates_contact_info( void ) {
   base_ci.sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE ]          = default_tpu;
   base_ci.sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ]     = default_tpu_quic;
 
-  ctx.default_tpu          = default_tpu;
-  ctx.default_tpu_fwd      = default_tpu;
-  ctx.default_tpu_quic     = default_tpu_quic;
-  ctx.default_tpu_fwd_quic = default_tpu_quic;
   *ctx.my_contact_info     = base_ci;
 
   void * gossip_mem = setup_gossip( &ctx, ctx.my_contact_info );
@@ -131,7 +127,6 @@ test_bam_contact_updates_contact_info( void ) {
   fd_bam_contact_update_t use_bam = {
       .tpu_addr     = bam_tpu,
       .tpu_fwd_addr = bam_tpu_fwd,
-      .use_bam      = true
   };
   fd_gossip_tile_apply_bam_contact( &ctx, &use_bam, ctx.last_wallclock + 1L );
 
@@ -141,17 +136,6 @@ test_bam_contact_updates_contact_info( void ) {
   FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].l == bam_tpu_fwd.l );
   FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE ].l          == bam_tpu.l );
   FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].l     == bam_tpu.l );
-
-  fd_bam_contact_update_t revert = { .use_bam = false };
-  fd_gossip_tile_apply_bam_contact( &ctx, &revert, ctx.last_wallclock + 2L );
-
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU ].l               == default_tpu.l );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS ].l      == default_tpu.l );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_QUIC ].l          == default_tpu_quic.l );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].l == default_tpu_quic.l );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE ].l          == default_tpu.l );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].l     == default_tpu_quic.l );
-
   free( gossip_mem );
 }
 

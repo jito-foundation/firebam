@@ -145,14 +145,40 @@ metrics_write( fd_bam_tile_t * ctx ) {
 static void
 fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
   if( FD_UNLIKELY( !fd_ext_start_progress_running() ) ) return;
-  int rc_tpu, rc_tpu_fwd;
+
+  /* Cache the non-BAM TPU so we can restore it when BAM disconnects. */
+  if( FD_UNLIKELY( !ctx->default_tpu_cached ) ) {
+    uint   tpu_addr_host      = 0U;
+    ushort tpu_port_host      = 0U;
+    uint   tpu_fwd_addr_host  = 0U;
+    ushort tpu_fwd_port_host  = 0U;
+    int rc_tpu     = fd_ext_admin_rpc_get_public_tpu( &tpu_addr_host, &tpu_port_host );
+    int rc_tpu_fwd = fd_ext_admin_rpc_get_public_tpu_forwards( &tpu_fwd_addr_host, &tpu_fwd_port_host );
+    if( FD_UNLIKELY( rc_tpu || rc_tpu_fwd ) ) {
+      FD_LOG_WARNING(( "Failed to cache default TPU addresses (tpu=%d tpu_fwd=%d)", rc_tpu, rc_tpu_fwd ));
+    }
+    if( FD_UNLIKELY( !tpu_port_host || !tpu_fwd_port_host ) ) {
+      FD_LOG_WARNING(( "Failed to cache default TPU addresses (invalid ports tpu=%hu tpu_fwd=%hu)", tpu_port_host, tpu_fwd_port_host ));
+    }
+
+    ctx->default_tpu_addr.addr     = fd_uint_bswap( tpu_addr_host );
+    ctx->default_tpu_addr.port     = fd_ushort_bswap( tpu_port_host );
+    ctx->default_tpu_fwd_addr.addr = fd_uint_bswap( tpu_fwd_addr_host );
+    ctx->default_tpu_fwd_addr.port = fd_ushort_bswap( tpu_fwd_port_host );
+    ctx->default_tpu_cached        = 1;
+  }
+
+  int rc_tpu = -1, rc_tpu_fwd = -1;
   if ( FD_LIKELY( use_bam ) ) {
     rc_tpu = fd_ext_admin_rpc_set_public_tpu( ctx->bam_tpu_addr.addr, fd_ushort_bswap( ctx->bam_tpu_addr.port ) );
     rc_tpu_fwd = fd_ext_admin_rpc_set_public_tpu_forwards( ctx->bam_tpu_fwd_addr.addr, fd_ushort_bswap( ctx->bam_tpu_fwd_addr.port ) );
   } else {
-    // agave should revert to defaults with 0
-    rc_tpu = fd_ext_admin_rpc_set_public_tpu( 0, 0 );
-    rc_tpu_fwd = fd_ext_admin_rpc_set_public_tpu_forwards( 0, 0);
+    if( FD_UNLIKELY( !ctx->default_tpu_cached ) ) {
+      FD_LOG_WARNING(( "TPU revert deferred; default TPU unknown (admin RPC not ready)" ));
+      return;
+    }
+    rc_tpu = fd_ext_admin_rpc_set_public_tpu( ctx->default_tpu_addr.addr, fd_ushort_bswap( ctx->default_tpu_addr.port ) );
+    rc_tpu_fwd = fd_ext_admin_rpc_set_public_tpu_forwards( ctx->default_tpu_fwd_addr.addr, fd_ushort_bswap( ctx->default_tpu_fwd_addr.port ) );
   }
 
   if( FD_LIKELY( !rc_tpu && !rc_tpu_fwd ) ) {
@@ -174,7 +200,6 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
   /* Full firedancer uses Gossip tile, it consumes these messages and mutates its local contact-info state. */
   fd_bam_contact_update_t * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
-  msg->use_bam      = use_bam;
   msg->tpu_addr     = ctx->bam_tpu_addr;
   msg->tpu_fwd_addr = ctx->bam_tpu_fwd_addr;
 
@@ -956,6 +981,9 @@ unprivileged_init( fd_topo_t *      topo,
 
   ctx->bam_tpu_addr.l       = 0UL;
   ctx->bam_tpu_fwd_addr.l  = 0UL;
+  ctx->default_tpu_addr.l   = 0UL;
+  ctx->default_tpu_fwd_addr.l = 0UL;
+  ctx->default_tpu_cached   = 0;
   ctx->tpu_update_pending   = 0;
 
   ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );

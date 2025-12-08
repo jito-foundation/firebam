@@ -62,7 +62,6 @@ typedef struct {
 typedef struct {
   fd_ip4_port_t tpu_addr;      /* TPU socket advertised by BAM */
   fd_ip4_port_t tpu_fwd_addr;  /* TPU fwd socket advertised by BAM. */
-  _Bool         use_bam;       /* Set to `false` to use default TPU values */
 } fd_bam_contact_update_t;
 
 typedef struct {
