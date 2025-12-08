@@ -6,17 +6,8 @@
 
 #include "fd_bam_tile_private.h"
 #include "fd_bam_ctrl.h"
-#include "fd_bam_types.h"
-#include "proto/bam_api.pb.h"
-#include "../plugin/fd_plugin.h"
-#include "../metrics/fd_metrics.h"
-#include "../stem/fd_stem.h"
-#include "../fd_txn_m.h"
-#include "../../util/fd_util.h"
-#include "../../util/net/fd_net_headers.h"
-
-#include <stdlib.h>
-#include <string.h>
+#include "../fd_txn_m.h" // FD_TPU_PARSED_MTU
+#include "../../ballet/nanopb/pb_encode.h"
 
 char const fdctl_version_string[] = "fuzz";
 
@@ -244,23 +235,6 @@ bam_fuzz_env_init( int *    pargc,
   initialized = 1;
 }
 
-/* Emit a little-endian base-128 varint into buf. Returns bytes written or
-   0 on overflow (idx>=buf_sz). */
-static ulong
-bam_fuzz_varint_put( ulong val,
-                     uchar * buf,
-                     ulong   buf_sz ) {
-  ulong idx = 0UL;
-  do {
-    if( FD_UNLIKELY( idx>=buf_sz ) ) return 0UL;
-    uchar byte = (uchar)( val & 0x7fUL );
-    val >>= 7;
-    if( val ) byte |= 0x80U;
-    buf[ idx++ ] = byte;
-  } while( val );
-  return idx;
-}
-
 /* Synthesize an AuthChallengeResponse payload. selector drives length and
    truncation patterns to cover decode successes and failures. buf must be
    large enough for tag+varint+payload (<=sizeof(challenge_to_sign)). */
@@ -294,12 +268,12 @@ bam_fuzz_build_auth_challenge_payload( uchar selector,
   if( FD_UNLIKELY( !buf_sz ) ) return info;
   buf[ idx++ ] = 0x0AU; /* tag for field 1, wire type length-delimited */
 
-  uchar varint[ 10 ];
-  ulong varint_len = bam_fuzz_varint_put( challenge_len, varint, sizeof( varint ) );
-  if( FD_UNLIKELY( !varint_len ) ) return info;
-  if( FD_UNLIKELY( idx + varint_len + challenge_len > buf_sz ) ) return info;
-  fd_memcpy( buf + idx, varint, varint_len );
-  idx += varint_len;
+  pb_byte_t varint[ 10 ];
+  pb_ostream_t varint_stream = pb_ostream_from_buffer( varint, sizeof( varint ) );
+  if( FD_UNLIKELY( !pb_encode_varint( &varint_stream, challenge_len ) ) ) return info;
+  if( FD_UNLIKELY( idx + varint_stream.bytes_written + challenge_len > buf_sz ) ) return info;
+  fd_memcpy( buf + idx, varint, varint_stream.bytes_written );
+  idx += (uchar)varint_stream.bytes_written;
 
   for( ulong i=0UL; i<challenge_len; i++ ) buf[ idx++ ] = fill;
   info.payload_sz    = idx;
@@ -476,27 +450,6 @@ bam_fuzz_drive_grpc_end( fd_bam_tile_t * ctx,
   fd_bam_client_grpc_rx_end( ctx, request_ctx, &resp );
 }
 
-/* Trigger a timeout callback with a deterministic deadline_kind derived
-   from selector bit0. */
-static void
-bam_fuzz_drive_timeout( fd_bam_tile_t * ctx,
-                        ulong           request_ctx,
-                        uchar           selector ) {
-  int deadline_kind = (selector & 1U) ? FD_GRPC_DEADLINE_HEADER : FD_GRPC_DEADLINE_RX_END;
-  bam_fuzz_seed_stream_state( ctx, request_ctx );
-  fd_bam_client_grpc_rx_timeout( ctx, request_ctx, deadline_kind );
-}
-
-/* Mirror admin toggle: set ctrl->enable and ctx->enabled then mark ctrl
-   state as SUCCESS so downstream code observes the change immediately. */
-static void
-bam_fuzz_apply_ctrl( uchar enable_flag ) {
-  fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
-  ctx->ctrl->enable  = enable_flag ? 1U : 0U;
-  ctx->enabled       = ctx->ctrl->enable;
-  FD_VOLATILE( ctx->ctrl->state ) = FD_BAM_CTRL_STATE_SUCCESS;
-}
-
 /* Publish a gossip update and assert the emitted fields match the tile
    state. Requires both TPU addresses/ports to match */
 static void
@@ -561,7 +514,9 @@ LLVMFuzzerTestOneInput( uchar const * data,
   }
 
   if( apply_ctrl ) {
-    bam_fuzz_apply_ctrl( enable_ok );
+    ctx->ctrl->enable  = enable_ok;
+    ctx->enabled       = ctx->ctrl->enable;
+    FD_VOLATILE( ctx->ctrl->state ) = FD_BAM_CTRL_STATE_SUCCESS;
   }
 
   ulong request_ctx = FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig;
@@ -618,7 +573,9 @@ LLVMFuzzerTestOneInput( uchar const * data,
   }
 
   if( drive_to ) {
-    bam_fuzz_drive_timeout( ctx, request_ctx, selector );
+    int deadline_kind = (selector & 1) ? FD_GRPC_DEADLINE_HEADER : FD_GRPC_DEADLINE_RX_END;
+    bam_fuzz_seed_stream_state( ctx, request_ctx );
+    fd_bam_client_grpc_rx_timeout( ctx, request_ctx, deadline_kind );
     if( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) {
       bam_fuzz_assert_auth_cleared( ctx );
     }
