@@ -1228,24 +1228,29 @@ dynamic_port_range = "8900-9000"
 
 [tiles.bam]
         # True if a BAM tile should be enabled. The BAM tile connects
-        # to a BAM scheduler endpoint and streams bundle scheduling
-        # results in parallel to the traditional bundle tile.
+        # and streams bundle scheduling results for verifiable block
+        # building
         enabled = false
 
-        # The URL of the BAM scheduler endpoint to connect to.
-        url = "http://mainnet.bam.jito.wtf"
+        # The URL of the BAM node to connect to.
+        url = ""
 
         # Optional override for the TLS domain name presented by the
-        # BAM scheduler endpoint. If empty, the host portion of the URL
-        # will be used.
+        # BAM node. If empty, the host portion of the URL will be used.
         tls_domain_name = ""
 
-        # Interval in milliseconds to send keepalive messages on the BAM
-        # scheduler connection.
+        # The validator keeps the gRPC connection to the BAM node
+        # alive indefinitely, even outside of leader slots.  This is
+        # done using HTTP/2 PING frames.  This option roughly configures
+        # the time between keepalives.  The actual timing is randomized
+        # to reduce burst loads on the network.  Must be within range
+        # [3e3,3600e3]
         keepalive_interval_millis = 5000
 
-        # Whether to verify TLS certificates presented by the BAM
-        # scheduler endpoint.
+        # By default, the TLS certificate of the bundle server is
+        # verified against the CA certs in /etc/ssl/certs, if the URL
+        # specifies https.  To disable certificate verification, set
+        # this option to 'false'.
         tls_cert_verify = false
 
     # The pack tile takes incoming transactions that have been verified
