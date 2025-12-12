@@ -8,6 +8,6 @@ $(call make-unit-test,test_bam_tile,test_bam_tile,fd_disco fd_waltz fd_flamenco 
 $(call run-unit-test,test_bam_tile)
 endif
 ifdef FD_HAS_HOSTED
-$(call make-fuzz-test,fuzz_bam_grpc,fuzz_bam_grpc,fd_disco fd_waltz fd_flamenco fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))
+$(call make-fuzz-test,fuzz_bam_client,fuzz_bam_client,fd_disco fd_waltz fd_flamenco fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))
 endif
 endif
