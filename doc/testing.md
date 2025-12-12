@@ -114,14 +114,10 @@ $ build/native/gcc/fuzz-test/fuzz_bla/fuzz_bla <input1> <input2> ...
 ```
 
 ```
-make CC=clang EXTRAS="fuzz asan" fuzz_bam_client
-- Exploration to find new inputs: 
-make CC=clang EXTRAS="fuzz asan" fuzz_bam_client FUZZFLAGS="-max_total_time=300 -timeout=5"
+llvm:
+make CC=clang EXTRAS="fuzz asan" -j fuzz_bam_client FUZZFLAGS="-max_total_time=300 -timeout=5" && build/native/clang/fuzz-test/fuzz_bam_client
 
-Run:
-build/native/clang/fuzz-test/fuzz_bam_client
-
-
+afl:
 make CC=clang EXTRAS=afl++ AFL_LIB=/usr/lib/afl fuzz_bam_client -j && AFL_SKIP_CPUFREQ=1 afl-fuzz -i corpus/fuzz_bundle_client -o findings -- build/native/clang/fuzz-test/fuzz_bam_client
 ```
 
