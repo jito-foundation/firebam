@@ -235,8 +235,13 @@ fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
                                   fd_bam_contact_update_t const * update,
                                   long                            now ) {
 
-  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU ]          = update->tpu_addr;
-  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS ] = update->tpu_fwd_addr;
+  fd_ip4_port_t tpu     = update->tpu;
+  fd_ip4_port_t tpu_fwd = update->tpu_fwd;
+
+  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU ]               = tpu;
+  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS ]      = tpu_fwd;
+  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_QUIC ]          = tpu;
+  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ] = tpu_fwd;
   ctx->my_contact_info->wallclock_nanos = now;
   fd_gossip_set_my_contact_info( ctx->gossip, ctx->my_contact_info, now );
 }

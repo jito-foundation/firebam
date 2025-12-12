@@ -459,10 +459,11 @@ bam_fuzz_publish_and_check(_Bool use_bam) {
   fd_bam_gossip_update( ctx, ctx->stem, use_bam );
   fd_bam_contact_update_t const * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, chunk_before );
 
-  FD_TEST( msg->tpu_addr.addr     == ctx->bam_tpu_addr.addr );
-  FD_TEST( msg->tpu_addr.port     == ctx->bam_tpu_addr.port );
-  FD_TEST( msg->tpu_fwd_addr.addr == ctx->bam_tpu_fwd_addr.addr );
-  FD_TEST( msg->tpu_fwd_addr.port == ctx->bam_tpu_fwd_addr.port );
+  fd_ip4_port_t expected_tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
+  fd_ip4_port_t expected_tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
+
+  FD_TEST( msg->tpu.l     == expected_tpu.l );
+  FD_TEST( msg->tpu_fwd.l == expected_tpu_fwd.l );
 }
 
 /* Standard libFuzzer entry: disable backtraces, boot Firedancer core, and

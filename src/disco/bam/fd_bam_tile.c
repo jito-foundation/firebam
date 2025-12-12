@@ -28,29 +28,23 @@
 extern char const fdctl_version_string[];
 
 /* Admin RPC shims (exposed by agave) used to mutate ClusterInfo TPU adverts. */
-extern int fd_ext_admin_rpc_set_public_tpu( uint ip4_addr_host, ushort port_host );
-extern int fd_ext_admin_rpc_set_public_tpu_forwards( uint ip4_addr_host, ushort port_host );
+// Returns 0 when the TPU address is applied; -1 when failed.
+extern int fd_ext_admin_rpc_set_public_tpu( uint tpu_addr, ushort tpu_port, uint tpu_fwd_addr, ushort tpu_fwd_port );
 extern int fd_ext_admin_rpc_get_public_tpu( uint * out_ip4_addr_host, ushort * out_port_host );
 extern int fd_ext_admin_rpc_get_public_tpu_forwards( uint * out_ip4_addr_host, ushort * out_port_host );
-extern int fd_ext_start_progress_running( void );
+extern _Bool fd_ext_is_agave_running( void );
 
 /* In pure Firedancer builds we don't link the agave admin RPC shim.
    Provide weak fallbacks so the binary still links; Frankendancer will
    override these with the Rust implementations. */
 // Returns 0 on success, -1 on error
 __attribute__((weak)) int
-fd_ext_admin_rpc_set_public_tpu( uint ip4_addr_host, ushort port_host ) {
-  (void)ip4_addr_host;
-  (void)port_host;
+fd_ext_admin_rpc_set_public_tpu( uint tpu_addr, ushort tpu_port, uint tpu_fwd_addr, ushort tpu_fwd_port ) {
+  (void)tpu_addr;
+  (void)tpu_fwd_addr;
+  (void)tpu_port;
+  (void)tpu_fwd_port;
   FD_LOG_WARNING(( "fd_ext_admin_rpc_set_public_tpu stubbed (admin RPC unavailable); ignoring TPU update" ));
-  return 0;
-}
-
-__attribute__((weak)) int
-fd_ext_admin_rpc_set_public_tpu_forwards( uint ip4_addr_host, ushort port_host ) {
-  (void)ip4_addr_host;
-  (void)port_host;
-  FD_LOG_WARNING(( "fd_ext_admin_rpc_set_public_tpu_forwards stubbed (admin RPC unavailable); ignoring TPU forwards update" ));
   return 0;
 }
 
@@ -72,9 +66,9 @@ fd_ext_admin_rpc_get_public_tpu_forwards( uint * out_ip4_addr_host, ushort * out
 
 /* Weak fallback so non-Frankendancer builds still link; Agave populates
    this via fd_ext_plugin_publish_start_progress in fd_poh_tile.c. */
-__attribute__((weak)) int
-fd_ext_start_progress_running( void ) {
-  return 0;
+__attribute__((weak)) _Bool
+fd_ext_is_agave_running( void ) {
+  return false;
 }
 
 FD_FN_CONST static ulong
@@ -136,7 +130,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
 
   fd_plugin_bam_update_status_t bundle_status = fd_bam_client_status( ctx );
   FD_MGAUGE_SET( BAM, HEALTHY, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-  ctx->bundle_status_recent = bundle_status;
 }
 
 /* Waits until agave started before updating ContactInfo TPU. */
@@ -144,64 +137,82 @@ metrics_write( fd_bam_tile_t * ctx ) {
    the start_progress FFI hook. */
 static void
 fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
-  if( FD_UNLIKELY( !fd_ext_start_progress_running() ) ) return;
+  if( FD_UNLIKELY( !fd_ext_is_agave_running() ) ) return;
 
-  /* Cache the non-BAM TPU so we can restore it when BAM disconnects. */
+  /* Cache the non-BAM TPU to restore it if BAM is disabled/disconnects.
+   * This can't be done in init() since agave takes a long time to start */
   if( FD_UNLIKELY( !ctx->default_tpu_cached ) ) {
-    uint   tpu_addr_host      = 0U;
-    ushort tpu_port_host      = 0U;
-    uint   tpu_fwd_addr_host  = 0U;
-    ushort tpu_fwd_port_host  = 0U;
-    int rc_tpu     = fd_ext_admin_rpc_get_public_tpu( &tpu_addr_host, &tpu_port_host );
-    int rc_tpu_fwd = fd_ext_admin_rpc_get_public_tpu_forwards( &tpu_fwd_addr_host, &tpu_fwd_port_host );
+    fd_ip4_port_t tpu     = (fd_ip4_port_t){0};
+    fd_ip4_port_t tpu_fwd = (fd_ip4_port_t){0};
+
+    int rc_tpu     = fd_ext_admin_rpc_get_public_tpu( &tpu.addr, &tpu.port );
+    int rc_tpu_fwd = fd_ext_admin_rpc_get_public_tpu_forwards( &tpu_fwd.addr, &tpu_fwd.port );
     if( FD_UNLIKELY( rc_tpu || rc_tpu_fwd ) ) {
-      FD_LOG_WARNING(( "Failed to cache default TPU addresses (tpu=%d tpu_fwd=%d)", rc_tpu, rc_tpu_fwd ));
+      FD_LOG_WARNING(( "Failed to cache default TPU, error encountered. tpu=" FD_IP4_ADDR_FMT ":%hu, tpu_fwd=" FD_IP4_ADDR_FMT ":%hu)",
+                       FD_IP4_ADDR_FMT_ARGS( tpu.addr ), fd_ushort_bswap( tpu.port ),
+                       FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ), fd_ushort_bswap( tpu_fwd.port ) ) );
     }
-    if( FD_UNLIKELY( !tpu_port_host || !tpu_fwd_port_host ) ) {
-      FD_LOG_WARNING(( "Failed to cache default TPU addresses (invalid ports tpu=%hu tpu_fwd=%hu)", tpu_port_host, tpu_fwd_port_host ));
+    if( FD_UNLIKELY( !tpu.addr || !tpu_fwd.addr || !tpu.port || !tpu_fwd.port ) ) {
+      FD_LOG_WARNING(( "Failed to cache default TPU, invalid ip/port. tpu=" FD_IP4_ADDR_FMT ":%hu, tpu_fwd=" FD_IP4_ADDR_FMT ":%hu)",
+                       FD_IP4_ADDR_FMT_ARGS( tpu.addr ), fd_ushort_bswap( tpu.port ),
+                       FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ), fd_ushort_bswap( tpu_fwd.port ) ) );
     }
 
-    ctx->default_tpu_addr.addr     = fd_uint_bswap( tpu_addr_host );
-    ctx->default_tpu_addr.port     = fd_ushort_bswap( tpu_port_host );
-    ctx->default_tpu_fwd_addr.addr = fd_uint_bswap( tpu_fwd_addr_host );
-    ctx->default_tpu_fwd_addr.port = fd_ushort_bswap( tpu_fwd_port_host );
-    ctx->default_tpu_cached        = 1;
+    ctx->default_tpu     = tpu;
+    ctx->default_tpu_fwd = tpu_fwd;
+    ctx->default_tpu_cached = true;
+    FD_LOG_NOTICE(( "Agave default TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
+                    FD_IP4_ADDR_FMT_ARGS( tpu.addr ), fd_ushort_bswap( tpu.port ),
+                    FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ), fd_ushort_bswap( tpu_fwd.port ) ));
   }
 
-  int rc_tpu = -1, rc_tpu_fwd = -1;
-  if ( FD_LIKELY( use_bam ) ) {
-    rc_tpu = fd_ext_admin_rpc_set_public_tpu( ctx->bam_tpu_addr.addr, fd_ushort_bswap( ctx->bam_tpu_addr.port ) );
-    rc_tpu_fwd = fd_ext_admin_rpc_set_public_tpu_forwards( ctx->bam_tpu_fwd_addr.addr, fd_ushort_bswap( ctx->bam_tpu_fwd_addr.port ) );
-  } else {
-    if( FD_UNLIKELY( !ctx->default_tpu_cached ) ) {
-      FD_LOG_WARNING(( "TPU revert deferred; default TPU unknown (admin RPC not ready)" ));
-      return;
-    }
-    rc_tpu = fd_ext_admin_rpc_set_public_tpu( ctx->default_tpu_addr.addr, fd_ushort_bswap( ctx->default_tpu_addr.port ) );
-    rc_tpu_fwd = fd_ext_admin_rpc_set_public_tpu_forwards( ctx->default_tpu_fwd_addr.addr, fd_ushort_bswap( ctx->default_tpu_fwd_addr.port ) );
-  }
+  fd_ip4_port_t tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
+  fd_ip4_port_t tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
 
-  if( FD_LIKELY( !rc_tpu && !rc_tpu_fwd ) ) {
-    ctx->tpu_update_pending = 0;
+  if( FD_UNLIKELY( !use_bam && !ctx->default_tpu_cached ) ) {
+    FD_LOG_WARNING(( "Attempted to revert TPU before agave finished initializing" ));
     return;
   }
 
-  FD_LOG_NOTICE(( "TPU update failed (tpu=%d tpu_fwd=%d)", rc_tpu, rc_tpu_fwd ));
+  FD_LOG_NOTICE(( "Prepare to set TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, use_bam: %d", // FIXME: change to INFO level
+                  FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                  fd_ushort_bswap( tpu.port ),
+                  FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                  fd_ushort_bswap( tpu_fwd.port ),
+                  use_bam ));
+  int set_rc = fd_ext_admin_rpc_set_public_tpu( tpu.addr, fd_ushort_bswap( tpu.port ), tpu_fwd.addr, fd_ushort_bswap( tpu_fwd.port ) );
+  if( FD_LIKELY( !set_rc ) ) {
+    // successfully set TPU
+    ctx->tpu_update_pending = false;
+    FD_LOG_NOTICE(( "Updated TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu", // FIXME: change to INFO level
+                    FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                    fd_ushort_bswap( tpu.port ),
+                    FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                    fd_ushort_bswap( tpu_fwd.port ) ));
+  } else {
+    FD_LOG_WARNING(( "Failed to update TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                      FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                      fd_ushort_bswap( tpu.port ),
+                      FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                      fd_ushort_bswap( tpu_fwd.port ) ));
+  }
 }
 
-// Updates ContactInfo from ctx->bam_tpu* if use_bam is true
+// Updates ContactInfo to BAM or default TPU based on use_bam
 void
 fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                       fd_stem_context_t * stem,
                       _Bool use_bam) {
-  ctx->tpu_update_pending = 1; // agave might not be started yet, this allows for retries
+  ctx->tpu_update_pending = true; // agave might not be started yet, this allows for retries
   fd_bam_try_agave_update_tpu( ctx, use_bam );
 
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
+  fd_ip4_port_t tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
+  fd_ip4_port_t tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
   /* Full firedancer uses Gossip tile, it consumes these messages and mutates its local contact-info state. */
   fd_bam_contact_update_t * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
-  msg->tpu_addr     = ctx->bam_tpu_addr;
-  msg->tpu_fwd_addr = ctx->bam_tpu_fwd_addr;
+  msg->tpu     = tpu;
+  msg->tpu_fwd = tpu_fwd;
 
   fd_stem_publish( stem,
                    ctx->gossip_out.idx,
@@ -337,18 +348,18 @@ fd_bam_tile_publish_gui_update(
             FD_IP4_ADDR_FMT,
             FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ) );
 
-  if( FD_LIKELY( ctx->bam_tpu_addr.l ) ) {
+  if( FD_LIKELY( ctx->bam_tpu.addr && ctx->bam_tpu.port ) ) {
     snprintf( update->tpu_cstr, sizeof( update->tpu_cstr ),
-              FD_IP4_ADDR_FMT ":%u",
-              FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu_addr.addr ),
-              (uint)fd_ushort_bswap( ctx->bam_tpu_addr.port ) );
+              FD_IP4_ADDR_FMT ":%hu",
+              FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu.addr ),
+              fd_ushort_bswap( ctx->bam_tpu.port ) );
   }
 
-  if( FD_LIKELY( ctx->bam_tpu_fwd_addr.l ) ) {
+  if( FD_LIKELY( ctx->bam_tpu_fwd.addr && ctx->bam_tpu_fwd.port ) ) {
     snprintf( update->tpu_fwd_cstr, sizeof( update->tpu_fwd_cstr ),
-              FD_IP4_ADDR_FMT ":%u",
-              FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu_fwd_addr.addr ),
-              (uint)fd_ushort_bswap( ctx->bam_tpu_fwd_addr.port ) );
+              FD_IP4_ADDR_FMT ":%hu",
+              FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu_fwd.addr ),
+              fd_ushort_bswap( ctx->bam_tpu_fwd.port ) );
   }
 
   update->status_code  = ctx->bundle_status_recent;
@@ -979,10 +990,10 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->last_bundle_status_log_nanos = fd_log_wallclock();
   ctx->gui_dirty = 1U;
 
-  ctx->bam_tpu_addr.l       = 0UL;
-  ctx->bam_tpu_fwd_addr.l  = 0UL;
-  ctx->default_tpu_addr.l   = 0UL;
-  ctx->default_tpu_fwd_addr.l = 0UL;
+  ctx->bam_tpu         = (fd_ip4_port_t){0};
+  ctx->bam_tpu_fwd     = (fd_ip4_port_t){0};
+  ctx->default_tpu     = (fd_ip4_port_t){0};
+  ctx->default_tpu_fwd = (fd_ip4_port_t){0};
   ctx->default_tpu_cached   = 0;
   ctx->tpu_update_pending   = 0;
 

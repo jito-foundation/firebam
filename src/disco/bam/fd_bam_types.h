@@ -60,8 +60,8 @@ typedef struct {
 } fd_bam_leader_state_t;
 
 typedef struct {
-  fd_ip4_port_t tpu_addr;      /* TPU socket advertised by BAM */
-  fd_ip4_port_t tpu_fwd_addr;  /* TPU fwd socket advertised by BAM. */
+  fd_ip4_port_t tpu;     /* TPU socket advertised by BAM (net order) */
+  fd_ip4_port_t tpu_fwd; /* TPU fwd socket advertised by BAM (net order). */
 } fd_bam_contact_update_t;
 
 typedef struct {

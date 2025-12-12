@@ -1891,8 +1891,8 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
   ctx->server_fqdn_len = (ushort)host_len;
   strcpy( ctx->server_sni, host );
   ctx->server_sni_len = (ushort)host_len;
-  ctx->server_tcp_port = 443;
-  ctx->is_ssl          = 1;
+  ctx->server_tcp_port = 80;
+  ctx->is_ssl          = 0;
   ctrl->enable         = 1U;
   strlcpy( ctrl->url, "http://testnet.bam.jito.wtf:80", FD_URL_MAX );
   strlcpy( ctrl->sni, host, FD_SNI_BUF_MAX );
@@ -2097,15 +2097,15 @@ test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
 
   fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
 
-  fd_ip4_port_t expected_tpu = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "10.20.30.40", &expected_tpu.addr ) );
-  expected_tpu.port = fd_ushort_bswap( 1122 );
-  FD_TEST( update.tpu_addr.l == expected_tpu.l );
+  uint expected_tpu_addr = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "10.20.30.40", &expected_tpu_addr ) );
+  FD_TEST( update.tpu.addr == expected_tpu_addr );
+  FD_TEST( fd_ushort_bswap( update.tpu.port ) == 1122U );
 
-  fd_ip4_port_t expected_tpu_fwd = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "11.12.13.14", &expected_tpu_fwd.addr ) );
-  expected_tpu_fwd.port = fd_ushort_bswap( 3344 );
-  FD_TEST( update.tpu_fwd_addr.l == expected_tpu_fwd.l );
+  uint expected_tpu_fwd_addr = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "11.12.13.14", &expected_tpu_fwd_addr ) );
+  FD_TEST( update.tpu_fwd.addr == expected_tpu_fwd_addr );
+  FD_TEST( fd_ushort_bswap( update.tpu_fwd.port ) == 3344U );
 
   test_bam_env_destroy( env );
 }
@@ -2129,14 +2129,14 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   state->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   state->enabled = 1;
 
-  fd_ip4_port_t bam_tpu = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "12.34.56.78", &bam_tpu.addr ) );
-  bam_tpu.port = fd_ushort_bswap( 2222 );
-  fd_ip4_port_t bam_tpu_fwd = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "98.76.54.32", &bam_tpu_fwd.addr ) );
-  bam_tpu_fwd.port = fd_ushort_bswap( 3333 );
-  state->bam_tpu_addr     = bam_tpu; // 12.34.56.78:2222
-  state->bam_tpu_fwd_addr = bam_tpu_fwd;
+  uint   bam_tpu_addr     = 0U;
+  uint   bam_tpu_fwd_addr = 0U;
+  ushort bam_tpu_port     = 2222;
+  ushort bam_tpu_fwd_port = 3333;
+  FD_TEST( fd_cstr_to_ip4_addr( "12.34.56.78", &bam_tpu_addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "98.76.54.32", &bam_tpu_fwd_addr ) );
+  state->bam_tpu     = (fd_ip4_port_t){ .addr = bam_tpu_addr,     .port = fd_ushort_bswap( bam_tpu_port ) }; // 12.34.56.78:2222
+  state->bam_tpu_fwd = (fd_ip4_port_t){ .addr = bam_tpu_fwd_addr, .port = fd_ushort_bswap( bam_tpu_fwd_port ) };
 
   fd_bam_contact_update_t updates[2] = {0};
   ulong update_cnt = 0UL;
@@ -2144,16 +2144,25 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   ulong publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, true );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  FD_TEST( updates[0].tpu_addr.l == bam_tpu.l );
-  FD_TEST( updates[0].tpu_fwd_addr.l == bam_tpu_fwd.l );
+  FD_TEST( updates[0].tpu.addr     == bam_tpu_addr );
+  FD_TEST( fd_ushort_bswap( updates[0].tpu.port ) == bam_tpu_port );
+  FD_TEST( updates[0].tpu_fwd.addr == bam_tpu_fwd_addr );
+  FD_TEST( fd_ushort_bswap( updates[0].tpu_fwd.port ) == bam_tpu_fwd_port );
 
   /* use_bam == false should revert to defaults. */
-  state->bam_tpu_addr     = bam_tpu; // 12.34.56.78:2222
-  state->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
+  state->bam_tpu     = (fd_ip4_port_t){ .addr = bam_tpu_addr, .port = fd_ushort_bswap( bam_tpu_port ) }; // 12.34.56.78:2222
+  state->bam_tpu_fwd = (fd_ip4_port_t){0};
+  FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->default_tpu.addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &state->default_tpu_fwd.addr ) );
+  state->default_tpu.port     = fd_ushort_bswap( 4242 );
+  state->default_tpu_fwd.port = fd_ushort_bswap( 4343 );
   publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, false );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  // downstream will discard unused ip
+  FD_TEST( updates[1].tpu.addr     == state->default_tpu.addr );
+  FD_TEST( updates[1].tpu.port     == state->default_tpu.port );
+  FD_TEST( updates[1].tpu_fwd.addr == state->default_tpu_fwd.addr );
+  FD_TEST( updates[1].tpu_fwd.port == state->default_tpu_fwd.port );
 
   test_bam_env_destroy( env );
 }
@@ -2204,15 +2213,15 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 1UL );
 
-  fd_ip4_port_t expected_tpu = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "9.8.7.6", &expected_tpu.addr ) );
-  expected_tpu.port = fd_ushort_bswap( 5000 );
-  FD_TEST( updates[0].tpu_addr.l == expected_tpu.l );
+  uint expected_tpu_addr = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "9.8.7.6", &expected_tpu_addr ) );
+  FD_TEST( updates[0].tpu.addr == expected_tpu_addr );
+  FD_TEST( fd_ushort_bswap( updates[0].tpu.port ) == 5000U );
 
-  fd_ip4_port_t expected_tpu_fwd = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "4.3.2.1", &expected_tpu_fwd.addr ) );
-  expected_tpu_fwd.port = fd_ushort_bswap( 6000 );
-  FD_TEST( updates[0].tpu_fwd_addr.l == expected_tpu_fwd.l );
+  uint expected_tpu_fwd_addr = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "4.3.2.1", &expected_tpu_fwd_addr ) );
+  FD_TEST( updates[0].tpu_fwd.addr == expected_tpu_fwd_addr );
+  FD_TEST( fd_ushort_bswap( updates[0].tpu_fwd.port ) == 6000U );
 
   publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, false );
@@ -2233,8 +2242,10 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
-  FD_TEST( state->bam_tpu_addr.l == 0UL );
-  FD_TEST( state->bam_tpu_fwd_addr.l == 0UL );
+  FD_TEST( state->bam_tpu.addr == 0U );
+  FD_TEST( state->bam_tpu.port == 0U );
+  FD_TEST( state->bam_tpu_fwd.addr == 0U );
+  FD_TEST( state->bam_tpu_fwd.port == 0U );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 3UL );
 
@@ -2243,8 +2254,10 @@ test_bam_gossip_reconnect_without_contact( fd_wksp_t * wksp ) {
   fd_bam_gossip_update( state, state->stem, false );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 4UL );
-  FD_TEST( updates[3].tpu_addr.l == 0UL );
-  FD_TEST( updates[3].tpu_fwd_addr.l == 0UL );
+  FD_TEST( updates[3].tpu.addr == 0U );
+  FD_TEST( updates[3].tpu.port == 0U );
+  FD_TEST( updates[3].tpu_fwd.addr == 0U );
+  FD_TEST( updates[3].tpu_fwd.port == 0U );
 
   test_bam_env_destroy( env );
 }
@@ -2291,15 +2304,15 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 1UL );
 
-  fd_ip4_port_t expected_tpu = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &expected_tpu.addr ) );
-  expected_tpu.port = fd_ushort_bswap( 7000 );
-  FD_TEST( updates[0].tpu_addr.l == expected_tpu.l );
+  uint expected_tpu_addr = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &expected_tpu_addr ) );
+  FD_TEST( updates[0].tpu.addr == expected_tpu_addr );
+  FD_TEST( fd_ushort_bswap( updates[0].tpu.port ) == 7000U );
 
-  fd_ip4_port_t expected_tpu_fwd = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &expected_tpu_fwd.addr ) );
-  expected_tpu_fwd.port = fd_ushort_bswap( 7001 );
-  FD_TEST( updates[0].tpu_fwd_addr.l == expected_tpu_fwd.l );
+  uint expected_tpu_fwd_addr = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &expected_tpu_fwd_addr ) );
+  FD_TEST( updates[0].tpu_fwd.addr == expected_tpu_fwd_addr );
+  FD_TEST( fd_ushort_bswap( updates[0].tpu_fwd.port ) == 7001U );
 
   /* Disabling runtime should immediately revert gossip to the Firedancer defaults. */
   publish_chunk = state->gossip_out.chunk;
@@ -2314,8 +2327,10 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   fd_bam_gossip_update( state, state->stem, true );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 3UL );
-  FD_TEST( updates[2].tpu_addr.l == expected_tpu.l );
-  FD_TEST( updates[2].tpu_fwd_addr.l == expected_tpu_fwd.l );
+  FD_TEST( updates[2].tpu.addr == expected_tpu_addr );
+  FD_TEST( fd_ushort_bswap( updates[2].tpu.port ) == 7000U );
+  FD_TEST( updates[2].tpu_fwd.addr == expected_tpu_fwd_addr );
+  FD_TEST( fd_ushort_bswap( updates[2].tpu_fwd.port ) == 7001U );
 
   test_bam_env_destroy( env );
 }
@@ -2336,24 +2351,26 @@ test_bam_gossip_update_requires_full_contact( fd_wksp_t * wksp ) {
       .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
   };
 
-  fd_ip4_port_t bam_tpu = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "7.7.7.7", &bam_tpu.addr ) );
-  bam_tpu.port = fd_ushort_bswap( 8899 );
+  uint   bam_tpu_addr = 0U;
+  ushort bam_tpu_port = 8899;
+  FD_TEST( fd_cstr_to_ip4_addr( "7.7.7.7", &bam_tpu_addr ) );
 
-  state->bam_tpu_addr     = bam_tpu;
-  state->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
+  state->bam_tpu     = (fd_ip4_port_t){ .addr = bam_tpu_addr, .port = fd_ushort_bswap( bam_tpu_port ) };
+  state->bam_tpu_fwd = (fd_ip4_port_t){0};
   /* Full contact info should publish BAM overrides. */
-  fd_ip4_port_t bam_tpu_fwd = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "5.5.5.5", &bam_tpu.addr ) );
-  FD_TEST( fd_cstr_to_ip4_addr( "6.6.6.6", &bam_tpu_fwd.addr ) );
-  bam_tpu_fwd.port = fd_ushort_bswap( 9999 );
-  state->bam_tpu_addr     = bam_tpu;
-  state->bam_tpu_fwd_addr = bam_tpu_fwd;
+  uint   bam_tpu_fwd_addr = 0U;
+  ushort bam_tpu_fwd_port = 9999;
+  FD_TEST( fd_cstr_to_ip4_addr( "5.5.5.5", &bam_tpu_addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "6.6.6.6", &bam_tpu_fwd_addr ) );
+  state->bam_tpu     = (fd_ip4_port_t){ .addr = bam_tpu_addr,     .port = fd_ushort_bswap( bam_tpu_port ) };
+  state->bam_tpu_fwd = (fd_ip4_port_t){ .addr = bam_tpu_fwd_addr, .port = fd_ushort_bswap( bam_tpu_fwd_port ) };
   ulong publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, true );
   fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  FD_TEST( update.tpu_addr.l == bam_tpu.l );
-  FD_TEST( update.tpu_fwd_addr.l == bam_tpu_fwd.l );
+  FD_TEST( update.tpu.addr == bam_tpu_addr );
+  FD_TEST( fd_ushort_bswap( update.tpu.port ) == bam_tpu_port );
+  FD_TEST( update.tpu_fwd.addr == bam_tpu_fwd_addr );
+  FD_TEST( fd_ushort_bswap( update.tpu_fwd.port ) == bam_tpu_fwd_port );
 
   test_bam_env_destroy( env );
 }
@@ -2366,8 +2383,10 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  FD_TEST( state->bam_tpu_addr.l == 0UL );
-  FD_TEST( state->bam_tpu_fwd_addr.l == 0UL );
+  FD_TEST( state->bam_tpu.addr == 0U );
+  FD_TEST( state->bam_tpu.port == 0U );
+  FD_TEST( state->bam_tpu_fwd.addr == 0U );
+  FD_TEST( state->bam_tpu_fwd.port == 0U );
 
   /* Initial config populates TPU endpoints and fee recipient. */
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
@@ -2392,17 +2411,17 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
-  FD_TEST( state->bam_tpu_addr.l != 0UL );
+  FD_TEST( state->bam_tpu.addr != 0U );
 
-  fd_ip4_port_t expected_tpu = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "1.2.3.4", &expected_tpu.addr ) );
-  expected_tpu.port = fd_ushort_bswap( 9000 );
-  FD_TEST( state->bam_tpu_addr.l == expected_tpu.l );
+  uint expected_tpu_addr = 0U;
+  uint expected_tpu_fwd_addr = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "1.2.3.4", &expected_tpu_addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "5.6.7.8", &expected_tpu_fwd_addr ) );
+  FD_TEST( state->bam_tpu.addr == expected_tpu_addr );
+  FD_TEST( fd_ushort_bswap( state->bam_tpu.port ) == 9000U );
 
-  fd_ip4_port_t expected_tpu_fwd = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "5.6.7.8", &expected_tpu_fwd.addr ) );
-  expected_tpu_fwd.port = fd_ushort_bswap( 10001 );
-  FD_TEST( state->bam_tpu_fwd_addr.l == expected_tpu_fwd.l );
+  FD_TEST( state->bam_tpu_fwd.addr == expected_tpu_fwd_addr );
+  FD_TEST( fd_ushort_bswap( state->bam_tpu_fwd.port ) == 10001U );
   FD_TEST( state->prio_fee_recipient_set == 1U );
   FD_TEST( state->commission_bps == 2750 );
   FD_TEST( 0 == memcmp( state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
@@ -2418,8 +2437,10 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
                              pb_buf,
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
-  FD_TEST( state->bam_tpu_addr.l == expected_tpu.l );
-  FD_TEST( state->bam_tpu_fwd_addr.l == expected_tpu_fwd.l );
+  FD_TEST( state->bam_tpu.addr == expected_tpu_addr );
+  FD_TEST( fd_ushort_bswap( state->bam_tpu.port ) == 9000U );
+  FD_TEST( state->bam_tpu_fwd.addr == expected_tpu_fwd_addr );
+  FD_TEST( fd_ushort_bswap( state->bam_tpu_fwd.port ) == 10001U );
   FD_TEST( state->fee_cfg->version == 1UL );
 
   /* Invalid forward socket should reset TPU, but keep fee config intact. */
@@ -2432,8 +2453,10 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
                              pb_buf,
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
-  FD_TEST( state->bam_tpu_addr.l == 0UL );
-  FD_TEST( state->bam_tpu_fwd_addr.l == 0UL );
+  FD_TEST( state->bam_tpu.addr == 0U );
+  FD_TEST( state->bam_tpu.port == 0U );
+  FD_TEST( state->bam_tpu_fwd.addr == 0U );
+  FD_TEST( state->bam_tpu_fwd.port == 0U );
   FD_TEST( state->fee_cfg->version == 1UL );
 
   /* Clearing both sockets resets contact info but leaves fee config versioned. */
@@ -2446,8 +2469,10 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
                              pb_buf,
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
-  FD_TEST( state->bam_tpu_addr.l == 0UL );
-  FD_TEST( state->bam_tpu_fwd_addr.l == 0UL );
+  FD_TEST( state->bam_tpu.addr == 0U );
+  FD_TEST( state->bam_tpu.port == 0U );
+  FD_TEST( state->bam_tpu_fwd.addr == 0U );
+  FD_TEST( state->bam_tpu_fwd.port == 0U );
   FD_TEST( state->fee_cfg->version == 1UL );
 
   test_bam_env_destroy( env );

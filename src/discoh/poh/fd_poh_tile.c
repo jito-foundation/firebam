@@ -2185,8 +2185,8 @@ fd_ext_plugin_publish_genesis_hash( ulong   sig,
   poh_link_publish( &replay_plugin, sig, data, data_len );
 }
 
-int
-fd_ext_start_progress_running( void ) {
+_Bool
+fd_ext_is_agave_running( void ) {
   return FD_VOLATILE_CONST( fd_start_progress_state )==FD_START_PROGRESS_STATE_RUNNING;
 }
 

@@ -93,49 +93,80 @@ test_bam_contact_updates_contact_info( void ) {
   base_ci.version.minor                        = 0U;
   base_ci.version.patch                        = 0U;
 
-  fd_ip4_port_t default_gossip = {0};
+  /* bam
+  {
+  "featureSet": 3604001754,
+  "gossip": "64.130.57.189:8000",
+  "pubkey": "23U4mgK9DMCxsv2StC4y2qAptP25Xv5b2cybKCeJ1to3",
+  "pubsub": null,
+  "rpc": null,
+  "serveRepair": "64.130.57.189:8012",
+  "shredVersion": 50093,
+  "tpu": "64.130.57.242:5004",
+  "tpuForwards": "64.130.57.242:5005",
+  "tpuForwardsQuic": "64.130.57.242:5011",
+  "tpuQuic": "64.130.57.242:5010",
+  "tpuVote": "64.130.57.189:8005",
+  "tvu": "64.130.57.189:8001",
+  "version": "3.0.10"
+  }
+
+  // non bam
+  {
+      "featureSet": 3604001754,
+      "gossip": "88.211.250.236:8000",
+      "pubkey": "F6SC6vku9XZniYns4mv7Q7eAEETseaL8DpiGW5vrZC14",
+      "pubsub": null,
+      "rpc": null,
+      "serveRepair": "88.211.250.236:8012",
+      "shredVersion": 50093,
+      "tpu": "88.211.250.236:8003",
+      "tpuForwards": "88.211.250.236:8004",
+      "tpuForwardsQuic": "88.211.250.236:8010",
+      "tpuQuic": "88.211.250.236:8009",
+      "tpuVote": "88.211.250.236:8005",
+      "tvu": "88.211.250.236:8001",
+      "version": "3.0.10"
+    },
+  */
+
+  fd_ip4_port_t default_gossip = { .addr = 0, .port = fd_ushort_bswap( 8000 ) };
   FD_TEST( fd_cstr_to_ip4_addr( "127.0.0.1", &default_gossip.addr ) );
-  default_gossip.port = fd_ushort_bswap( (ushort)8001 );
 
-  fd_ip4_port_t default_tpu = {0};
+  fd_ip4_port_t default_tpu = { .addr = 0, .port = fd_ushort_bswap( 8003 ) };
   FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &default_tpu.addr ) );
-  default_tpu.port = fd_ushort_bswap( (ushort)9000 );
 
-  fd_ip4_port_t default_tpu_quic = {0};
+  fd_ip4_port_t default_tpu_quic = { .addr = 0, .port = fd_ushort_bswap( 8009 ) };
   FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &default_tpu_quic.addr ) );
-  default_tpu_quic.port = fd_ushort_bswap( (ushort)9007 );
 
   base_ci.sockets[ FD_CONTACT_INFO_SOCKET_GOSSIP ]            = default_gossip;
   base_ci.sockets[ FD_CONTACT_INFO_SOCKET_TPU ]               = default_tpu;
   base_ci.sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS ]      = default_tpu;
   base_ci.sockets[ FD_CONTACT_INFO_SOCKET_TPU_QUIC ]          = default_tpu_quic;
   base_ci.sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ] = default_tpu_quic;
-  base_ci.sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE ]          = default_tpu;
-  base_ci.sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ]     = default_tpu_quic;
 
   *ctx.my_contact_info     = base_ci;
 
   void * gossip_mem = setup_gossip( &ctx, ctx.my_contact_info );
 
-  fd_ip4_port_t bam_tpu = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "9.8.7.6", &bam_tpu.addr ) );
-  bam_tpu.port = fd_ushort_bswap( (ushort)5000 );
-  fd_ip4_port_t bam_tpu_fwd = {0};
-  FD_TEST( fd_cstr_to_ip4_addr( "4.3.2.1", &bam_tpu_fwd.addr ) );
-  bam_tpu_fwd.port = fd_ushort_bswap( (ushort)6000 );
+  uint bam_tpu = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "9.8.7.6", &bam_tpu ) );
+  uint bam_tpu_fwd = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "4.3.2.1", &bam_tpu_fwd ) );
 
-  fd_bam_contact_update_t use_bam = {
-      .tpu_addr     = bam_tpu,
-      .tpu_fwd_addr = bam_tpu_fwd,
+  fd_bam_contact_update_t contact_update = {
+      .tpu     = (fd_ip4_port_t){ .addr = bam_tpu,     .port = fd_ushort_bswap( 5000 ) },
+      .tpu_fwd = (fd_ip4_port_t){ .addr = bam_tpu_fwd, .port = fd_ushort_bswap( 6000 ) },
   };
-  fd_gossip_tile_apply_bam_contact( &ctx, &use_bam, ctx.last_wallclock + 1L );
+  fd_gossip_tile_apply_bam_contact( &ctx, &contact_update, ctx.last_wallclock + 1L );
 
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU ].l               == bam_tpu.l );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS ].l      == bam_tpu_fwd.l );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_QUIC ].l          == bam_tpu.l );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].l == bam_tpu_fwd.l );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE ].l          == bam_tpu.l );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].l     == bam_tpu.l );
+  fd_ip4_port_t expected_tpu = { .addr = bam_tpu, .port = fd_ushort_bswap( 5000 ) };
+  fd_ip4_port_t expected_tpu_fwd = { .addr = bam_tpu_fwd, .port = fd_ushort_bswap( 6000 ) };
+
+  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU ].l               == expected_tpu.l );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS ].l      == expected_tpu_fwd.l );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_QUIC ].l          == expected_tpu.l );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].l == expected_tpu_fwd.l );
   free( gossip_mem );
 }
 

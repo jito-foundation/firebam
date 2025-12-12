@@ -10,6 +10,7 @@
 #include "../fd_txn_m.h"
 #include "../plugin/fd_plugin.h"
 #include "../metrics/fd_metrics.h"
+#include "../../tango/fseq/fd_fseq.h"
 #include "../../waltz/h2/fd_h2_conn.h"
 #include "../../waltz/http/fd_url.h" /* fd_url_unescape */
 #include "../../ballet/base58/fd_base58.h"
@@ -65,6 +66,11 @@ fd_bam_client_retry_ms( fd_bam_tile_t * ctx ) {
 void
 fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   long now = fd_bam_now();
+
+  /* Drop the shared BAM-status latch immediately so downstream tiles
+     can resume QUIC/bundle ingestion without waiting for housekeeping. */
+  if( FD_LIKELY( ctx->bam_status_fseq ) ) fd_fseq_update( ctx->bam_status_fseq, 0UL );
+
   if( FD_UNLIKELY( ctx->tcp_sock >= 0 ) ) {
     if( FD_UNLIKELY( 0 != close( ctx->tcp_sock ) ) ) {
       FD_LOG_ERR(( "close(tcp_sock=%i) failed (%i-%s)", ctx->tcp_sock, errno, fd_io_strerror( errno ) ));
@@ -581,19 +587,19 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   }
 
   bam_types_BamConfig const * cfg = &resp.bam_config;
-  fd_ip4_port_t new_tpu_addr = {0};
-  fd_ip4_port_t new_tpu_fwd_addr = {0};
+  fd_ip4_port_t new_tpu     = {0};
+  fd_ip4_port_t new_tpu_fwd = {0};
 
   if( cfg->has_tpu_sock ) {
     uint ip4;
     if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_sock.ip, &ip4 ) ) &&
         FD_LIKELY( cfg->tpu_sock.port > 0 && cfg->tpu_sock.port <= USHORT_MAX ) ) {
-      new_tpu_addr.addr = ip4;
-      new_tpu_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_sock.port );
+      new_tpu = (fd_ip4_port_t){ .addr = ip4, .port = fd_ushort_bswap( (ushort)cfg->tpu_sock.port ) };
     } else {
-      FD_LOG_WARNING(( "Invalid BAM TPU socket in ConfigResponse (ip=%s port=%u)",
-                       cfg->tpu_sock.ip,
-                       cfg->tpu_sock.port ));
+      FD_LOG_WARNING(( "Invalid BAM TPU socket in ConfigResponse: " FD_IP4_ADDR_FMT ":%hu",
+                    FD_IP4_ADDR_FMT_ARGS( new_tpu.addr ),
+                    fd_ushort_bswap( new_tpu.port )
+                    ));
     }
   }
 
@@ -601,42 +607,36 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     uint ip4;
     if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_fwd_sock.ip, &ip4 ) ) &&
         FD_LIKELY( cfg->tpu_fwd_sock.port > 0 && cfg->tpu_fwd_sock.port <= USHORT_MAX ) ) {
-      new_tpu_fwd_addr.addr = ip4;
-      new_tpu_fwd_addr.port = fd_ushort_bswap( (ushort)cfg->tpu_fwd_sock.port );
+      new_tpu_fwd = (fd_ip4_port_t){ .addr = ip4, .port = fd_ushort_bswap( (ushort)cfg->tpu_fwd_sock.port ) };
     } else {
-      FD_LOG_WARNING(( "Invalid BAM TPU forward socket in ConfigResponse (ip=%s port=%u)",
-                       cfg->tpu_fwd_sock.ip,
-                       cfg->tpu_fwd_sock.port ));
+      FD_LOG_WARNING(( "Invalid BAM TPU forward socket in ConfigResponse: " FD_IP4_ADDR_FMT ":%hu",
+                    FD_IP4_ADDR_FMT_ARGS( new_tpu_fwd.addr ),
+                    fd_ushort_bswap( new_tpu_fwd.port )
+                    ));
     }
   }
 
-  _Bool contact_changed = ( new_tpu_addr.l != ctx->bam_tpu_addr.l ) ||
-      ( new_tpu_addr.port != ctx->bam_tpu_addr.port ) ||
-      ( new_tpu_fwd_addr.l != ctx->bam_tpu_fwd_addr.l ) ||
-      ( new_tpu_fwd_addr.port != ctx->bam_tpu_fwd_addr.port );
 
-  if( FD_UNLIKELY( contact_changed ) ) {
-    /* A disconnect means Firedancer should resume advertising its local
-       TPU ports so TPU clients do not get stuck targeting the BAM host. */
-    _Bool has_valid_contact = !!new_tpu_addr.l && new_tpu_addr.port > 0 && !!new_tpu_fwd_addr.l && new_tpu_fwd_addr.port > 0;
-    if ( FD_UNLIKELY( !has_valid_contact ) ) {
-      ctx->bam_tpu_addr = (fd_ip4_port_t){0};
-      ctx->bam_tpu_fwd_addr = (fd_ip4_port_t){0};
-      FD_LOG_WARNING(( "Reverting BAM TPU config to defaults" )); // todo: print out default ip+port
-    } else {
-      // TODO: verify if we successfully connected to BAM at this point before gossiping out to the solana cluster
-      ctx->bam_tpu_addr     = new_tpu_addr;
-      ctx->bam_tpu_fwd_addr = new_tpu_fwd_addr;
-      FD_LOG_NOTICE(( "Updating TPU to: " FD_IP4_ADDR_FMT ":%u (fwd: " FD_IP4_ADDR_FMT ":%u)",
-                      FD_IP4_ADDR_FMT_ARGS( new_tpu_addr.addr ),
-                      (uint)fd_ushort_bswap( new_tpu_addr.port ),
-                      FD_IP4_ADDR_FMT_ARGS( new_tpu_fwd_addr.addr ),
-                      (uint)fd_ushort_bswap( new_tpu_fwd_addr.port ) ));
-    }
-
-    ctx->gui_dirty = 1U;
-    fd_bam_gossip_update( ctx, ctx->stem, has_valid_contact );
+  /* A disconnect means Firedancer should resume advertising its local
+     TPU ports so TPU clients do not get stuck targeting the BAM host. */
+  _Bool has_valid_contact = !!new_tpu.addr && !!new_tpu.port && !!new_tpu_fwd.addr && !!new_tpu_fwd.port;
+  if ( FD_UNLIKELY( !has_valid_contact ) ) {
+    ctx->bam_tpu     = (fd_ip4_port_t){0};
+    ctx->bam_tpu_fwd = (fd_ip4_port_t){0};
+    FD_LOG_WARNING(( "Received invalid TPU config, reverting BAM TPU config to defaults" )); // todo: print out default ip+port
+  } else {
+    ctx->bam_tpu     = new_tpu;
+    ctx->bam_tpu_fwd = new_tpu_fwd;
+    FD_LOG_NOTICE(( "Updating TPU to: " FD_IP4_ADDR_FMT ":%hu (fwd: " FD_IP4_ADDR_FMT ":%hu). %u",
+                    FD_IP4_ADDR_FMT_ARGS( new_tpu.addr ),
+                    fd_ushort_bswap( new_tpu.port ),
+                    FD_IP4_ADDR_FMT_ARGS( new_tpu_fwd.addr ),
+                    fd_ushort_bswap( new_tpu_fwd.port ),
+                    new_tpu.addr ));
   }
+
+  ctx->gui_dirty = 1U;
+  fd_bam_gossip_update( ctx, ctx->stem, has_valid_contact );
 
   // update fee config
   _Bool bam_config_fee_updated = false;
