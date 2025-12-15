@@ -79,6 +79,29 @@ typedef struct {
   uchar               deser_reason;                            /* bam_types_DeserializationErrorReason enum value */
 } fd_bam_batch_ctx_t;
 
+/* fd_bam_tpu_update_state_t tracks what Frankendancer Agave's TPU value, and if update attempt is required.
+   Issue:
+   - Two independent code paths can call fd_bam_gossip_update() around the same
+     time (e.g. ConfigResponse arrival + BAM status edge). Without
+     dedupe, both paths can immediately invoke admin RPC updates back-to-back.
+
+   How it is used:
+   - fd_bam_try_agave_update_tpu() compares the desired "applied" state
+     (BAM vs default TPU) to ctx->tpu_update_state.  If it already matches,
+     it skips the admin RPC update, preventing duplicate updates.
+   - On failure (Agave not running yet, or admin RPC failure), it records a
+     PENDING_* state so fd_bam_tile_housekeeping() will retry later.
+   - When BAM TPU sockets change (new ConfigResponse), we set UNKNOWN so the
+     next call will re-apply even if we're already in BAM mode. */
+
+typedef enum {
+  FD_BAM_TPU_UPDATE_STATE_UNKNOWN         = 0, /* No known applied state; next update should attempt to apply desired. */
+  FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT = 1, /* Last successful update applied default TPU. */
+  FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM     = 2, /* Last successful update applied BAM-provided TPU. */
+  FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT = 3, /* Needs an update attempt to apply default TPU; housekeeping retries. */
+  FD_BAM_TPU_UPDATE_STATE_PENDING_BAM     = 4, /* Needs an update attempt to apply BAM TPU; housekeeping retries. */
+} fd_bam_tpu_update_state_t;
+
 /* fd_bam_tile_t is the context object provided to callbacks from
    stem, and contains all state needed to progress the tile. */
 
@@ -152,7 +175,7 @@ struct fd_bam_tile {
   fd_ip4_port_t default_tpu;           /* TPU socket Agave booted with (non-BAM) */
   fd_ip4_port_t default_tpu_fwd;       /* TPU Forward socket Agave booted with */
   _Bool default_tpu_cached;            /* true once defaults have been captured via admin RPC */
-  _Bool tpu_update_pending;            /* true if TPU update needs to be pushed to Agave. this allows retries if agave is still starting up */
+  fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for admin-RPC TPU advert updates (Frankendancer) */
 
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).

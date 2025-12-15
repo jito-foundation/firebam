@@ -12,7 +12,6 @@
 #include <errno.h>
 #include <dirent.h> /* opendir */
 #include <stdio.h> /* snprintf */
-#include <string.h>
 #include <fcntl.h> /* F_SETFL */
 #include <unistd.h> /* close */
 #include <sys/mman.h> /* PROT_READ (seccomp) */
@@ -132,12 +131,26 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, HEALTHY, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 }
 
-/* Waits until agave started before updating ContactInfo TPU. */
-/* Only try once Agave reports ValidatorStartProgress::Running over
-   the start_progress FFI hook. */
-static void
+/* Waits until agave started before updating ContactInfo TPU.
+   Only try once Agave reports ValidatorStartProgress::Running over
+   the start_progress FFI hook.
+Return:
+- 0 on success (including when no update is required because the
+  desired TPU mode is already applied).
+- Non-zero on failure (Agave not running yet, or admin RPC error).
+  On failure, ctx->tpu_update_state is set to a PENDING_* value so
+  housekeeping will retry later. */
+static int
 fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
-  if( FD_UNLIKELY( !fd_ext_is_agave_running() ) ) return;
+  fd_bam_tpu_update_state_t desired_applied = use_bam
+    ? FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM
+    : FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT;
+  if( FD_LIKELY( ctx->tpu_update_state == desired_applied ) ) return 0;
+
+  if( FD_UNLIKELY( !fd_ext_is_agave_running() ) ) {
+    ctx->tpu_update_state = use_bam ? FD_BAM_TPU_UPDATE_STATE_PENDING_BAM : FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT;
+    return -1;
+  }
 
   /* Cache the non-BAM TPU to restore it if BAM is disabled/disconnects.
    * This can't be done in init() since agave takes a long time to start */
@@ -171,7 +184,7 @@ fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
 
   if( FD_UNLIKELY( !use_bam && !ctx->default_tpu_cached ) ) {
     FD_LOG_WARNING(( "Attempted to revert TPU before agave finished initializing" ));
-    return;
+    return -1;
   }
 
   FD_LOG_NOTICE(( "Prepare to set TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, use_bam: %d", // FIXME: change to INFO level
@@ -183,18 +196,21 @@ fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
   int set_rc = fd_ext_admin_rpc_set_public_tpu( tpu.addr, fd_ushort_bswap( tpu.port ), tpu_fwd.addr, fd_ushort_bswap( tpu_fwd.port ) );
   if( FD_LIKELY( !set_rc ) ) {
     // successfully set TPU
-    ctx->tpu_update_pending = false;
     FD_LOG_NOTICE(( "Updated TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu", // FIXME: change to INFO level
                     FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
                     fd_ushort_bswap( tpu.port ),
                     FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
                     fd_ushort_bswap( tpu_fwd.port ) ));
+    ctx->tpu_update_state = desired_applied;
+    return 0;
   } else {
     FD_LOG_WARNING(( "Failed to update TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
                       FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
                       fd_ushort_bswap( tpu.port ),
                       FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
                       fd_ushort_bswap( tpu_fwd.port ) ));
+    ctx->tpu_update_state = desired_pending;
+    return set_rc;
   }
 }
 
@@ -203,8 +219,7 @@ void
 fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                       fd_stem_context_t * stem,
                       _Bool use_bam) {
-  ctx->tpu_update_pending = true; // agave might not be started yet, this allows for retries
-  fd_bam_try_agave_update_tpu( ctx, use_bam );
+  (void)fd_bam_try_agave_update_tpu( ctx, use_bam );
 
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
   fd_ip4_port_t tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
@@ -252,7 +267,9 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   }
 
   _Bool use_bam = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
-  if ( FD_UNLIKELY( ctx->bundle_status_recent != status || ctx->tpu_update_pending ) ) {
+  _Bool tpu_update_pending = ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ) |
+                            ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
+  if( FD_UNLIKELY( ctx->bundle_status_recent != status || tpu_update_pending ) ) {
     fd_bam_gossip_update( ctx, ctx->stem, use_bam );
   }
   ctx->bundle_status_recent = status;
@@ -995,7 +1012,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->default_tpu     = (fd_ip4_port_t){0};
   ctx->default_tpu_fwd = (fd_ip4_port_t){0};
   ctx->default_tpu_cached   = 0;
-  ctx->tpu_update_pending   = 0;
+  ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
 
   ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
   if( FD_LIKELY( bam_status_obj_id != ULONG_MAX ) ) {

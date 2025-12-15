@@ -1,23 +1,10 @@
 #define _GNU_SOURCE
 
+#include "fd_bam_tile.h"
 #include "test_bam_common.c"
-#include "proto/bam_api.pb.h"
-#include "proto/bam_types.pb.h"
-#include "fd_bam_types.h"
-#include "../../ballet/base58/fd_base58.h"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../ballet/nanopb/pb_decode.h"
-#include "../../waltz/grpc/fd_grpc_codec.h"
 #include "../pack/fd_pack_tile_bam_fee.h"
-#include "../bundle/fd_bundle_crank.h"
-#include "../../util/fd_util.h"
-#include <stdbool.h>
-#include <stdint.h>
-#include "../../tango/fseq/fd_fseq.h"
-#include <limits.h>
-#include <string.h>
-
-#include "fd_bam_tile.h"
 
 static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL, 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
 
