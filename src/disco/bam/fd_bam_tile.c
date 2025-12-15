@@ -145,10 +145,13 @@ fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
   fd_bam_tpu_update_state_t desired_applied = use_bam
     ? FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM
     : FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT;
+  fd_bam_tpu_update_state_t desired_pending = use_bam
+    ? FD_BAM_TPU_UPDATE_STATE_PENDING_BAM
+    : FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT;
   if( FD_LIKELY( ctx->tpu_update_state == desired_applied ) ) return 0;
 
   if( FD_UNLIKELY( !fd_ext_is_agave_running() ) ) {
-    ctx->tpu_update_state = use_bam ? FD_BAM_TPU_UPDATE_STATE_PENDING_BAM : FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT;
+    ctx->tpu_update_state = desired_pending;
     return -1;
   }
 
