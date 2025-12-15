@@ -118,7 +118,7 @@ llvm:
 make CC=clang EXTRAS="fuzz asan" -j fuzz_bam_client && mkdir -p corpus/fuzz_bam_client/explore && build/native/clang/fuzz-test/fuzz_bam_client -artifact_prefix=corpus/fuzz_bam_client/ -max_total_time=300 -timeout=5 corpus/fuzz_bam_client/explore corpus/fuzz_bam_client
 
 afl:
-make CC=clang EXTRAS=afl++ AFL_LIB=/usr/lib/afl fuzz_bam_client -j && AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_SKIP_CPUFREQ=1 afl-fuzz -i corpus/fuzz_bam_client -o findings -- build/native/clang/fuzz-test/fuzz_bam_client
+make CC=clang EXTRAS=afl++ AFL_LIB=/usr/lib/afl -j fuzz_bam_client && AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_SKIP_CPUFREQ=1 afl-fuzz -i corpus/fuzz_bam_client -o findings -- build/native/clang/fuzz-test/fuzz_bam_client
 ```
 
 ### Sanitizers
