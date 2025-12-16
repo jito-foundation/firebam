@@ -8,6 +8,7 @@
 #include "fd_bam_ctrl.h"
 #include "../fd_txn_m.h" // FD_TPU_PARSED_MTU
 #include "../../ballet/nanopb/pb_encode.h"
+#include "../../waltz/grpc/fd_grpc_client_private.h"
 
 char const fdctl_version_string[] = "fuzz";
 
@@ -45,6 +46,10 @@ static struct {
   fd_bam_ctrl_t     ctrl;    /* Runtime enable/disable switch */
   fd_bam_fee_cfg_t  fee_cfg; /* Shared fee cfg buffer */
   fd_histf_t        rx_delay[1]; /* Histogram backing for msg_rx_delay metric */
+
+  /* Backing storage for fd_grpc_client */
+  void * grpc_client_mem;
+  ulong  grpc_buf_max;
 
   /* Keyguard request/response wiring to avoid fd_keyguard_client_sign hanging */
   fd_frag_meta_t * key_req_mcache;
@@ -232,7 +237,132 @@ bam_fuzz_env_init( int *    pargc,
 
   bam_fuzz_setup_keyguard();
 
+  bam_fuzz_ctx.grpc_buf_max = 4096UL;
+  ulong grpc_foot = fd_grpc_client_footprint( bam_fuzz_ctx.grpc_buf_max );
+  bam_fuzz_ctx.grpc_client_mem = fd_wksp_alloc_laddr( g_wksp, fd_grpc_client_align(), grpc_foot, 1UL );
+  FD_TEST( bam_fuzz_ctx.grpc_client_mem );
+
   initialized = 1;
+}
+
+static void
+bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
+                          uchar const *   data,
+                          ulong           size ) {
+  /* Enqueue up to two small results to exercise both committed and not-committed
+     SchedulerMessage encoders without exceeding gRPC buffer limits. */
+
+  uchar seed0 = (uchar)( size ? data[0] : 0U );
+  uchar seed1 = (uchar)( size>1 ? data[1] : (uchar)(seed0^0x5aU) );
+
+  /* 1) Committed bundle */
+  {
+    fd_bam_bundle_result_t res = {0};
+    res.seq_id            = (uint)seed0;
+    res.slot              = (ulong)seed0;
+    res.bundle_txn_cnt    = 1U + (seed0 & 0x7U);
+    res.txn_cnt           = res.bundle_txn_cnt;
+    res.execution_success = 1U;
+    res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+    res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+    for( uchar i=0U; i<res.txn_cnt; i++ ) {
+      res.sanitize_success[ i ] = 1U;
+      res.transaction_err [ i ] = 0;
+      res.consumed_cus    [ i ] = (seed0 + i) & 0xffU;
+    }
+    fd_bam_enqueue_result( ctx, &res );
+  }
+
+  /* 2) Not-committed bundle (vary reason) */
+  {
+    fd_bam_bundle_result_t res = {0};
+    res.seq_id            = seed0 | ((uint)seed1<<8);
+    res.slot              = (ulong)( seed1 );
+    res.bundle_txn_cnt    = 1U + (seed1 & 0x7U);
+    res.txn_cnt           = res.bundle_txn_cnt;
+    res.execution_success = 0U;
+    res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+    res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+
+    uchar reason_sel = (uchar)( (seed1>>3) & 0x3U );
+    if( reason_sel==0U ) {
+      res.scheduling_error = FD_BAM_SCHED_ERR_POH_TIMEOUT;
+    } else if( reason_sel==1U ) {
+      res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
+      res.deser_index  = (uchar)(seed1 & 0x7U);
+      res.deser_reason = (uchar)bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+    } else if( reason_sel==2U ) {
+      res.sanitize_success[ 0 ] = 0U;
+    } else {
+      res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_ACCOUNT_NOT_FOUND;
+      res.sanitize_success[ 0 ] = 1U;
+    }
+
+    for( uchar i=0U; i<res.txn_cnt; i++ ) {
+      res.consumed_cus[ i ] = (seed1 + i) & 0xffU;
+      if( i ) {
+        res.sanitize_success[ i ] = 1U;
+        res.transaction_err [ i ] = 0;
+      }
+    }
+    fd_bam_enqueue_result( ctx, &res );
+  }
+}
+
+static void
+bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
+                            uchar const *   data,
+                            ulong           size ) {
+  if( FD_UNLIKELY( !ctx->grpc_client ) ) return;
+
+  /* Pretend the HTTP/2 handshake completed so request_start_ex / stream_send run. */
+  ctx->grpc_client->h2_hs_done  = 1U;
+  ctx->grpc_client->ssl_hs_done = 1U;
+  fd_h2_conn_t * conn = fd_grpc_client_h2_conn( ctx->grpc_client );
+  if( conn ) conn->flags = 0U;
+
+  /* Ensure we have a scheduler stream by sending an AuthProof. */
+  if( FD_UNLIKELY( !ctx->bam_stream ) ) {
+    if( FD_UNLIKELY( !ctx->bam_auth_ready ) ) {
+      uchar seed = size ? data[0] : 0;
+      ulong len = fd_ulong_min( (ulong)( seed & 0x3fU ), sizeof( ctx->challenge_to_sign )-1UL );
+      for( ulong i=0UL; i<len; i++ ) ctx->challenge_to_sign[ i ] = (char)('A' + (seed % 26U));
+      ctx->challenge_to_sign[ len ] = '\0';
+
+      // todo: use dynamic signature
+      strlcpy( ctx->bam_auth_signature, "1111111111111111111111111111111111", sizeof( ctx->bam_auth_signature ) );
+      ctx->bam_challenge_to_sign_len = (uchar)len;
+      ctx->bam_auth_ready            = 1U;
+      ctx->bam_auth_inflight         = 0U;
+    }
+    fd_h2_rbuf_t * rbuf_tx = fd_grpc_client_rbuf_tx( ctx->grpc_client );
+    fd_h2_rbuf_init( rbuf_tx, rbuf_tx->buf0, rbuf_tx->bufsz );
+    (void)fd_bam_test_drive( ctx, fd_bam_now() );
+  }
+
+  if( FD_UNLIKELY( ctx->bam_stream && !ctx->bam_stream_live ) ) {
+    fd_bam_client_grpc_rx_start( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  }
+
+  if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) return;
+
+  /* Discard any queued frames so stream sends don't get stuck behind a full TX ring. */
+  fd_h2_rbuf_t * rbuf_tx = fd_grpc_client_rbuf_tx( ctx->grpc_client );
+  fd_h2_rbuf_init( rbuf_tx, rbuf_tx->buf0, rbuf_tx->bufsz );
+
+  /* Force a heartbeat, a leader-state update, and a couple bundle results. */
+  long now = fd_bam_now();
+  ctx->bam_last_validator_heartbeat_ns = now - (long)10e9;
+
+  ctx->bam_leader_state = (fd_bam_leader_state_t){
+    .slot                    = (ulong)( size>2 ? data[2] : 0U ),
+    .tick                    = (uint)( size>3 ? data[3] : 0U ),
+    .slot_cu_budget_remaining = (uint)( size>4 ? data[4] : 0U ),
+  };
+  ctx->bam_leader_pending = 1U;
+
+  bam_fuzz_enqueue_results( ctx, data, size );
+  (void)fd_bam_test_drive( ctx, now );
 }
 
 /* Synthesize an AuthChallengeResponse payload. selector drives length and
@@ -384,6 +514,28 @@ bam_fuzz_reset_tile( void ) {
   ctx->server_sni_len = ctx->server_fqdn_len;
   ctx->server_tcp_port = 443U;
   ctx->is_ssl = 1;
+
+  /* gRPC client in "connected" state to exercise outbound encode paths */
+  ctx->grpc_buf_max      = bam_fuzz_ctx.grpc_buf_max;
+  ctx->grpc_client_mem   = bam_fuzz_ctx.grpc_client_mem;
+  ctx->map_seed          = 1UL;
+  ctx->grpc_client = fd_grpc_client_new( ctx->grpc_client_mem,
+                                         &fd_bam_client_grpc_callbacks,
+                                         ctx->grpc_metrics,
+                                         ctx,
+                                         ctx->grpc_buf_max,
+                                         ctx->map_seed );
+  FD_TEST( ctx->grpc_client );
+  fd_grpc_client_set_version( ctx->grpc_client, fdctl_version_string, strlen( fdctl_version_string ) );
+  fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
+  ctx->grpc_client->h2_hs_done  = 1U;
+  ctx->grpc_client->ssl_hs_done = 1U;
+  fd_h2_conn_t * conn = fd_grpc_client_h2_conn( ctx->grpc_client );
+  if( conn ) {
+    conn->flags = 0U;
+    conn->peer_settings.max_concurrent_streams = FD_GRPC_CLIENT_MAX_STREAMS;
+  }
+  ctx->tcp_sock_connected = 1;
 
   /* Identity for auth */
   for( ulong i=0UL; i<sizeof( ctx->bam_identity_pubkey ); i++ ) ctx->bam_identity_pubkey[ i ] = (uchar)( i+1U );
@@ -580,6 +732,8 @@ LLVMFuzzerTestOneInput( uchar const * data,
       bam_fuzz_assert_auth_cleared( ctx );
     }
   }
+
+  bam_fuzz_exercise_outbound( ctx, data, size );
   ctx->bundle_status_recent = bam_fuzz_status( ctx );
   bam_fuzz_publish_and_check( ctx->bundle_status_recent == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   return 0;
