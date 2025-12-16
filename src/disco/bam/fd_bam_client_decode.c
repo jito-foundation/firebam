@@ -2,7 +2,138 @@
 
 #include "fd_bam_tile_private.h"
 #include "proto/bam_types.pb.h"
+#include "../../ballet/base58/fd_base58.h"
+#include "../../ballet/txn/fd_txn.h"
 #include "../../ballet/nanopb/pb_decode.h"
+
+#if FD_HAS_HOSTED
+#include <stdlib.h> /* getenv */
+#endif
+
+static int
+fd_bam_dump_inbound_txns_enabled( void ) {
+#if defined(FD_BAM_DUMP_INBOUND_TXNS) && FD_BAM_DUMP_INBOUND_TXNS
+  return 1;
+#elif FD_HAS_HOSTED
+  static int enabled = -1;
+  if( FD_UNLIKELY( enabled<0 ) ) {
+    char const * env = getenv( "FD_BAM_DUMP_INBOUND_TXNS" );
+    enabled = ( env && env[0] && env[0]!='0' );
+  }
+  return enabled;
+#else
+  return 0;
+#endif
+}
+
+static void
+fd_bam_dump_inbound_txn( uint                 seq_id,
+                         ulong                max_schedule_slot,
+                         uchar                batch_idx,
+                         uchar                batch_cnt,
+                         uchar                revert_on_error,
+                         bam_types_Packet const * packet ) {
+  uchar const * payload    = packet->data.bytes;
+  ulong         payload_sz = (ulong)packet->data.size;
+
+  uchar txn_buf[ FD_TXN_MAX_SZ ] __attribute__((aligned(alignof(fd_txn_t))));
+  ulong txn_sz = fd_txn_parse( payload, payload_sz, txn_buf, NULL );
+  if( FD_UNLIKELY( !txn_sz ) ) {
+    FD_LOG_NOTICE(( "BAM rx txn: seq_id=%u max_schedule_slot=%lu batch_idx=%u batch_cnt=%u revert_on_error=%u payload_sz=%lu txn_parse=FAILED",
+                    seq_id, max_schedule_slot, (uint)batch_idx, (uint)batch_cnt, (uint)revert_on_error, payload_sz ));
+    FD_LOG_HEXDUMP_NOTICE(( "BAM rx txn bytes (prefix)", payload, fd_ulong_min( payload_sz, 64UL ) ));
+    return;
+  }
+
+  fd_txn_t const * txn  = (fd_txn_t const *)txn_buf;
+  fd_ed25519_sig_t const * sigs = fd_txn_get_signatures( txn, payload );
+  fd_acct_addr_t const *  keys = fd_txn_get_acct_addrs( txn, payload );
+
+  FD_LOG_NOTICE(( "BAM rx txn: seq_id=%u max_schedule_slot=%lu batch_idx=%u batch_cnt=%u revert_on_error=%u payload_sz=%lu version=%u sig_cnt=%u acct_cnt=%u instr_cnt=%u addr_lut_cnt=%u addr_lut_acct_cnt=%u",
+                  seq_id,
+                  max_schedule_slot,
+                  (uint)batch_idx,
+                  (uint)batch_cnt,
+                  (uint)revert_on_error,
+                  payload_sz,
+                  (uint)txn->transaction_version,
+                  (uint)txn->signature_cnt,
+                  (uint)txn->acct_addr_cnt,
+                  (uint)txn->instr_cnt,
+                  (uint)txn->addr_table_lookup_cnt,
+                  (uint)txn->addr_table_adtl_cnt ));
+
+  if( FD_LIKELY( txn->acct_addr_cnt ) ) {
+    char fee_payer[ FD_BASE58_ENCODED_32_SZ ];
+    fd_base58_encode_32( keys[0].b, NULL, fee_payer );
+
+    char recent_blockhash[ FD_BASE58_ENCODED_32_SZ ];
+    fd_base58_encode_32( fd_txn_get_recent_blockhash( txn, payload ), NULL, recent_blockhash );
+
+    FD_LOG_NOTICE(( "BAM rx txn meta: fee_payer=%s recent_blockhash=%s", fee_payer, recent_blockhash ));
+  }
+
+  for( ulong i=0UL; i<(ulong)txn->signature_cnt; i++ ) {
+    char sig_b58[ FD_BASE58_ENCODED_64_SZ ];
+    fd_base58_encode_64( sigs[i], NULL, sig_b58 );
+    FD_LOG_NOTICE(( "BAM rx sig: sig_index=%lu sig=%s", i, sig_b58 ));
+  }
+
+  if( txn->transaction_version==FD_TXN_V0 && txn->addr_table_lookup_cnt ) {
+    fd_txn_acct_addr_lut_t const * luts = fd_txn_get_address_tables_const( txn );
+    for( ulong i=0UL; i<(ulong)txn->addr_table_lookup_cnt; i++ ) {
+      fd_acct_addr_t const * addr = (fd_acct_addr_t const *)( (ulong)payload + (ulong)luts[i].addr_off );
+      char addr_b58[ FD_BASE58_ENCODED_32_SZ ];
+      fd_base58_encode_32( addr->b, NULL, addr_b58 );
+      FD_LOG_NOTICE(( "BAM rx lut: lut_index=%lu addr=%s writable_cnt=%u readonly_cnt=%u",
+                      i, addr_b58, (uint)luts[i].writable_cnt, (uint)luts[i].readonly_cnt ));
+
+      uchar const * w_idx = (uchar const *)( (ulong)payload + (ulong)luts[i].writable_off );
+      for( ulong j=0UL; j<(ulong)luts[i].writable_cnt; j++ ) {
+        FD_LOG_NOTICE(( "BAM rx lut writable: lut_index=%lu j=%lu idx=%u", i, j, (uint)w_idx[j] ));
+      }
+
+      uchar const * r_idx = (uchar const *)( (ulong)payload + (ulong)luts[i].readonly_off );
+      for( ulong j=0UL; j<(ulong)luts[i].readonly_cnt; j++ ) {
+        FD_LOG_NOTICE(( "BAM rx lut readonly: lut_index=%lu j=%lu idx=%u", i, j, (uint)r_idx[j] ));
+      }
+    }
+  }
+
+  for( ulong ix_idx=0UL; ix_idx<(ulong)txn->instr_cnt; ix_idx++ ) {
+    fd_txn_instr_t const * instr = &txn->instr[ ix_idx ];
+
+    char prog_b58[ FD_BASE58_ENCODED_32_SZ ];
+    char const * prog_str = "<lookup>";
+    if( FD_LIKELY( instr->program_id < txn->acct_addr_cnt ) ) {
+      fd_base58_encode_32( keys[ instr->program_id ].b, NULL, prog_b58 );
+      prog_str = prog_b58;
+    }
+
+    FD_LOG_NOTICE(( "BAM rx ix: ix_index=%lu program_id_index=%u program=%s acct_cnt=%u data_sz=%u",
+                    ix_idx,
+                    (uint)instr->program_id,
+                    prog_str,
+                    (uint)instr->acct_cnt,
+                    (uint)instr->data_sz ));
+
+    uchar const * acct_idx = fd_txn_get_instr_accts( instr, payload );
+    for( ulong j=0UL; j<(ulong)instr->acct_cnt; j++ ) {
+      uchar acct = acct_idx[ j ];
+      char  acct_b58[ FD_BASE58_ENCODED_32_SZ ];
+      char const * acct_str = "<lookup>";
+      if( FD_LIKELY( acct < txn->acct_addr_cnt ) ) {
+        fd_base58_encode_32( keys[ acct ].b, NULL, acct_b58 );
+        acct_str = acct_b58;
+      }
+      FD_LOG_NOTICE(( "BAM rx ix acct: ix_index=%lu j=%lu acct_index=%u acct=%s",
+                      ix_idx, j, (uint)acct, acct_str ));
+    }
+
+    uchar const * data = fd_txn_get_instr_data( instr, payload );
+    FD_LOG_HEXDUMP_NOTICE(( "BAM rx ix data (prefix)", data, fd_ulong_min( (ulong)instr->data_sz, 64UL ) ));
+  }
+}
 
 /* Collects a single Packet from the protobuf stream. Returns true while the
    packet parsed and passed basic validation; returns false to abort the
@@ -71,6 +202,26 @@ void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch ) {
+  if( FD_UNLIKELY( fd_bam_dump_inbound_txns_enabled() ) ) {
+    FD_LOG_NOTICE(( "BAM rx batch: seq_id=%u max_schedule_slot=%lu packet_cnt=%u revert_on_error=%u revert_flag_set=%u has_deser_err=%u deser_reason=%u deser_index=%u",
+                    batch->seq_id,
+                    (ulong)batch->max_schedule_slot,
+                    (uint)state->packet_cnt,
+                    (uint)state->revert_on_error,
+                    (uint)state->revert_flag_set,
+                    (uint)state->has_deser_err,
+                    (uint)state->deser_reason,
+                    (uint)state->deser_index ));
+    for( uchar i=0U; i<state->packet_cnt; i++ ) {
+      fd_bam_dump_inbound_txn( batch->seq_id,
+                               (ulong)batch->max_schedule_slot,
+                               i,
+                               state->packet_cnt,
+                               state->revert_on_error,
+                               &state->packets[ i ] );
+    }
+  }
+
   if( FD_UNLIKELY( state->has_deser_err ) ) {
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
