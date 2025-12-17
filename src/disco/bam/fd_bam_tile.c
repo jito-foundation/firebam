@@ -155,6 +155,12 @@ fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
     return -1;
   }
 
+  FD_LOG_NOTICE(( "Updating TPU to: " FD_IP4_ADDR_FMT ":%hu (fwd: " FD_IP4_ADDR_FMT ":%hu).",
+    FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu.addr ),
+    fd_ushort_bswap( ctx->bam_tpu.port ),
+    FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu_fwd.addr ),
+    fd_ushort_bswap( ctx->bam_tpu_fwd.port ) ));
+  
   /* Cache the non-BAM TPU to restore it if BAM is disabled/disconnects.
    * This can't be done in init() since agave takes a long time to start */
   if( FD_UNLIKELY( !ctx->default_tpu_cached ) ) {
@@ -174,12 +180,15 @@ fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
                        FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ), fd_ushort_bswap( tpu_fwd.port ) ) );
     }
 
-    ctx->default_tpu     = tpu;
-    ctx->default_tpu_fwd = tpu_fwd;
-    ctx->default_tpu_cached = true;
-    FD_LOG_NOTICE(( "Agave default TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
-                    FD_IP4_ADDR_FMT_ARGS( tpu.addr ), fd_ushort_bswap( tpu.port ),
-                    FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ), fd_ushort_bswap( tpu_fwd.port ) ));
+    /* only mark that we have default values if non-zero */
+    if( FD_LIKELY( !rc_tpu && !rc_tpu_fwd && tpu.addr && tpu.port && tpu_fwd.addr && tpu_fwd.port ) ) {
+      ctx->default_tpu     = tpu;
+      ctx->default_tpu_fwd = tpu_fwd;
+      ctx->default_tpu_cached = true;
+      FD_LOG_NOTICE(( "Agave default TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
+                      FD_IP4_ADDR_FMT_ARGS( tpu.addr ), fd_ushort_bswap( tpu.port ),
+                      FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ), fd_ushort_bswap( tpu_fwd.port ) ));
+    }
   }
 
   fd_ip4_port_t tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
@@ -187,6 +196,7 @@ fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
 
   if( FD_UNLIKELY( !use_bam && !ctx->default_tpu_cached ) ) {
     FD_LOG_WARNING(( "Attempted to revert TPU before agave finished initializing" ));
+    ctx->tpu_update_state = desired_pending;
     return -1;
   }
 

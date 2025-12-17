@@ -618,28 +618,26 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     }
   }
 
-
+  fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   /* A disconnect means Firedancer should resume advertising its local
      TPU ports so TPU clients do not get stuck targeting the BAM host. */
   _Bool has_valid_contact = !!new_tpu.addr && !!new_tpu.port && !!new_tpu_fwd.addr && !!new_tpu_fwd.port;
-  if ( FD_UNLIKELY( !has_valid_contact ) ) {
-    ctx->bam_tpu     = (fd_ip4_port_t){0};
-    ctx->bam_tpu_fwd = (fd_ip4_port_t){0};
-    FD_LOG_WARNING(( "Received invalid TPU config, reverting BAM TPU config to defaults" )); // todo: print out default ip+port
-  } else {
+  if ( FD_LIKELY( has_valid_contact ) ) {
     ctx->bam_tpu     = new_tpu;
     ctx->bam_tpu_fwd = new_tpu_fwd;
     _Bool tpu_changed = ( prev_tpu.l != ctx->bam_tpu.l || prev_tpu_fwd.l != ctx->bam_tpu_fwd.l );
     if( FD_UNLIKELY( tpu_changed ) ) ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
-    FD_LOG_NOTICE(( "Updating TPU to: " FD_IP4_ADDR_FMT ":%hu (fwd: " FD_IP4_ADDR_FMT ":%hu).",
-                    FD_IP4_ADDR_FMT_ARGS( new_tpu.addr ),
-                    fd_ushort_bswap( new_tpu.port ),
-                    FD_IP4_ADDR_FMT_ARGS( new_tpu_fwd.addr ),
-                    fd_ushort_bswap( new_tpu_fwd.port ) ));
+  } else {
+    ctx->bam_tpu     = (fd_ip4_port_t){0};
+    ctx->bam_tpu_fwd = (fd_ip4_port_t){0};
+    FD_LOG_WARNING(( "Received invalid TPU config, reverting BAM TPU config to defaults" )); // todo: print out default ip+port
   }
 
   ctx->gui_dirty = 1U;
-  fd_bam_gossip_update( ctx, ctx->stem, has_valid_contact );
+  /* Only switch TPU adverts to BAM when the client is actually healthy.
+     Config responses can arrive while connecting or after an admin disable,
+     and should not force a BAM TPU override. */
+  fd_bam_gossip_update( ctx, ctx->stem, ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) && has_valid_contact );
 
   // update fee config
   _Bool bam_config_fee_updated = false;
