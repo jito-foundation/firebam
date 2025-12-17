@@ -631,12 +631,11 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     ctx->bam_tpu_fwd = new_tpu_fwd;
     _Bool tpu_changed = ( prev_tpu.l != ctx->bam_tpu.l || prev_tpu_fwd.l != ctx->bam_tpu_fwd.l );
     if( FD_UNLIKELY( tpu_changed ) ) ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
-    FD_LOG_NOTICE(( "Updating TPU to: " FD_IP4_ADDR_FMT ":%hu (fwd: " FD_IP4_ADDR_FMT ":%hu). %u",
+    FD_LOG_NOTICE(( "Updating TPU to: " FD_IP4_ADDR_FMT ":%hu (fwd: " FD_IP4_ADDR_FMT ":%hu).",
                     FD_IP4_ADDR_FMT_ARGS( new_tpu.addr ),
                     fd_ushort_bswap( new_tpu.port ),
                     FD_IP4_ADDR_FMT_ARGS( new_tpu_fwd.addr ),
-                    fd_ushort_bswap( new_tpu_fwd.port ),
-                    new_tpu.addr ));
+                    fd_ushort_bswap( new_tpu_fwd.port ) ));
   }
 
   ctx->gui_dirty = 1U;
