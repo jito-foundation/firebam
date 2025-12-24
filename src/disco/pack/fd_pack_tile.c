@@ -374,8 +374,10 @@ typedef struct {
     uchar received[ FD_PACK_MAX_TXN_PER_BUNDLE ];
 
     /* Backing storage for fd_pack_insert_bundle_init(). Indices correspond
-       to batch_idx (not arrival order). Elements are allocated from pack's
-       transaction pool while the batch is active. */
+       to batch_idx (not arrival order). The array itself is inline and
+       never NULL; it is zeroed at init, then _init populates [0,txn_cnt)
+       while bundle!=NULL. After _fini/_cancel entries are stale and must
+       not be used (they are not cleared). */
     fd_txn_e_t * _txn[ FD_PACK_MAX_TXN_PER_BUNDLE ];
 
     /* Pointer returned by fd_pack_insert_bundle_init(). When non-NULL,
