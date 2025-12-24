@@ -59,15 +59,17 @@ zero_meta_ts( fd_frag_meta_t * meta,
 }
 
 static fd_bam_bundle_result_t
-test_make_bundle_result( ulong bundle_id ) {
+test_make_bundle_result( uint  seq_id,
+                         ulong slot,
+                         uchar  bundle_txn_cnt ) {
   fd_bam_bundle_result_t res = {0};
-  res.seq_id        = (uint) bundle_id; /* FIXME: broken! */
-  res.slot             = bundle_id + 1000UL;
-  res.bundle_txn_cnt   = 2;
+  res.seq_id             = seq_id;
+  res.slot               = slot;
+  res.bundle_txn_cnt     = bundle_txn_cnt;
   res.execution_success = 1;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   res.transaction_err_count = 0U;
-  for( uint i=0U; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {
+  for( uint i=0U; i<bundle_txn_cnt; i++ ) {
     res.consumed_cus[ i ]      = i + 1;
     res.sanitize_success[ i ]  = 1;
   }
@@ -1601,7 +1603,7 @@ test_bam_scheduler_result_publishes_message( fd_wksp_t * wksp ) {
   g_clock = (long)9e9;
   test_bam_keepalive_sync( state, g_clock );
 
-  fd_bam_bundle_result_t res = test_make_bundle_result( 900UL );
+  fd_bam_bundle_result_t res = test_make_bundle_result( 900, 1900, 2 );
   test_enqueue_bundle_result( state, &res );
 
   int flushed = fd_bam_test_flush_results( state );
@@ -1616,7 +1618,7 @@ test_bam_scheduler_result_publishes_message( fd_wksp_t * wksp ) {
   FD_TEST( decoded.multi.results[0].seq_id == 900U );
   FD_TEST( decoded.multi.results[0].which_result == bam_types_AtomicTxnBatchResult_committed_tag );
   FD_TEST( decoded.multi.committed[0].txn_cnt == res.bundle_txn_cnt );
-  FD_TEST( decoded.multi.committed[0].txns[0].cus_consumed == (uint32_t)res.consumed_cus[0] );
+  FD_TEST( decoded.multi.committed[0].txns[0].cus_consumed == res.consumed_cus[0] );
 
   test_bam_env_destroy( env );
 }
@@ -1634,7 +1636,7 @@ test_bam_scheduler_result_not_committed_publishes_message( fd_wksp_t * wksp ) {
   test_bam_keepalive_sync( state, g_clock );
   state->bam_last_config_poll_ns = g_clock;
 
-  fd_bam_bundle_result_t res = test_make_bundle_result( 901UL );
+  fd_bam_bundle_result_t res = test_make_bundle_result( 901, 1900, 2 );
   res.execution_success = 0;
   res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
   test_enqueue_bundle_result( state, &res );
@@ -1668,7 +1670,7 @@ test_bam_scheduler_result_not_committed_sanitize_error_reason( fd_wksp_t * wksp 
   g_clock = (long)11e9;
   test_bam_keepalive_sync( state, g_clock );
 
-  fd_bam_bundle_result_t res = test_make_bundle_result( 902UL );
+  fd_bam_bundle_result_t res = test_make_bundle_result( 902, 1902, 2 );
   res.execution_success   = 0;
   res.sanitize_success[1] = 0;
   test_enqueue_bundle_result( state, &res );
@@ -1702,9 +1704,9 @@ test_bam_scheduler_result_not_committed_transaction_error_reason( fd_wksp_t * wk
   g_clock = (long)12e9;
   test_bam_keepalive_sync( state, g_clock );
 
-  fd_bam_bundle_result_t res = test_make_bundle_result( 903UL );
+  fd_bam_bundle_result_t res = test_make_bundle_result( 903, 1903, 2 );
   res.execution_success  = 0;
-  res.transaction_err[1] = bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  res.transaction_err[0] = bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
   res.transaction_err_count = 1U;
   test_enqueue_bundle_result( state, &res );
 
@@ -1719,7 +1721,7 @@ test_bam_scheduler_result_not_committed_transaction_error_reason( fd_wksp_t * wk
   bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
   FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
   FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_transaction_error_tag );
-  FD_TEST( result->result.not_committed.reason.transaction_error.index == 1U );
+  FD_TEST( result->result.not_committed.reason.transaction_error.index == 0U );
   FD_TEST( result->result.not_committed.reason.transaction_error.reason == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
 
   test_bam_env_destroy( env );
@@ -1737,12 +1739,12 @@ test_bam_scheduler_result_not_committed_transaction_error_high_index( fd_wksp_t 
   g_clock = (long)12e9;
   test_bam_keepalive_sync( state, g_clock );
 
-  fd_bam_bundle_result_t res = test_make_bundle_result( 907UL );
-  res.bundle_txn_cnt   = 3;
+  fd_bam_bundle_result_t res = test_make_bundle_result( 907, 1907, 3 );
   res.execution_success = 0;
   for( uint i=0U; i<res.bundle_txn_cnt; i++ ) res.sanitize_success[ i ] = 1;
+  res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_ACCOUNT_NOT_FOUND;
   res.transaction_err[ 2 ] = bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
-  res.transaction_err_count = 1U;
+  res.transaction_err_count = 2U;
   test_enqueue_bundle_result( state, &res );
 
   int flushed = fd_bam_test_flush_results( state );
@@ -1756,8 +1758,8 @@ test_bam_scheduler_result_not_committed_transaction_error_high_index( fd_wksp_t 
   bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
   FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
   FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_transaction_error_tag );
-  FD_TEST( result->result.not_committed.reason.transaction_error.index == 2U );
-  FD_TEST( result->result.not_committed.reason.transaction_error.reason == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+  FD_TEST( result->result.not_committed.reason.transaction_error.index == 0U );
+  FD_TEST( result->result.not_committed.reason.transaction_error.reason == bam_types_TransactionErrorReason_ACCOUNT_NOT_FOUND );
 
   test_bam_env_destroy( env );
 }
@@ -1775,7 +1777,7 @@ test_bam_scheduler_result_not_committed_generic_failure_reason( fd_wksp_t * wksp
   test_bam_keepalive_sync( state, g_clock );
 
   /* Case 1: generic execution failure yields generic_invalid */
-  fd_bam_bundle_result_t generic = test_make_bundle_result( 904UL );
+  fd_bam_bundle_result_t generic = test_make_bundle_result( 904, 1904, 2 );
   generic.execution_success = 0;
   test_enqueue_bundle_result( state, &generic );
 
@@ -1793,7 +1795,7 @@ test_bam_scheduler_result_not_committed_generic_failure_reason( fd_wksp_t * wksp
                       FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED ) );
 
   /* Case 2: out-of-range transaction error falls back to generic_invalid with prefix */
-  fd_bam_bundle_result_t invalid = test_make_bundle_result( 905UL );
+  fd_bam_bundle_result_t invalid = test_make_bundle_result( 905, 1905, 2 );
   invalid.execution_success = 0;
   invalid.transaction_err[0] = _bam_types_TransactionErrorReason_ARRAYSIZE;
   invalid.transaction_err_count = 1U;
@@ -1831,7 +1833,7 @@ test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( fd_wksp
   g_clock = (long)14e9;
   test_bam_keepalive_sync( state, g_clock );
 
-  fd_bam_bundle_result_t res = test_make_bundle_result( 906UL );
+  fd_bam_bundle_result_t res = test_make_bundle_result( 906, 1906, 2 );
   res.execution_success = 0;
   res.scheduling_error  = (ushort)(_bam_types_SchedulingError_MAX + 1);
   test_enqueue_bundle_result( state, &res );
@@ -2623,8 +2625,8 @@ test_bam_bundle_result_queue_survives_reset( fd_wksp_t * wksp ) {
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
-  for( ulong i=0UL; i<3UL; i++ ) {
-    fd_bam_bundle_result_t res = test_make_bundle_result( 100UL + i );
+  for( uint i=0; i<3; i++ ) {
+    fd_bam_bundle_result_t res = test_make_bundle_result( 100 + i, 1100 + i, 2 );
     test_enqueue_bundle_result( state, &res );
   }
 
@@ -2654,8 +2656,8 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
-  for( ulong i=0UL; i<2UL; i++ ) {
-    fd_bam_bundle_result_t res = test_make_bundle_result( 200UL + i );
+  for( uint i=0; i<2; i++ ) {
+    fd_bam_bundle_result_t res = test_make_bundle_result( 200 + i, 1200, 2 );
     test_enqueue_bundle_result( state, &res );
   }
 
