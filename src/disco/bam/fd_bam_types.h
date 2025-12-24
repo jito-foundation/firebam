@@ -37,14 +37,13 @@ static char const * const FD_BAM_ERR_GENERIC_INVALID_STRINGS[] = {
 #define FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ULONG_MAX
 
 typedef struct {
-  uint  seq_id;    /* Uniquely assigned for a single leader rotation. 0 is valid seq_id. UINT_MAX is never produced. */
-  ulong slot;         /* Slot associated with the batch. Executed bundles use the bank/Poh slot, while pre-execution drops mirror AtomicTxnBatch.max_schedule_slot. 0 means the scheduler supplied no slot hint. */
-  uchar bundle_txn_cnt; /* Declared transaction count from the scheduler, capped to FD_PACK_MAX_TXN_PER_BUNDLE. 0 until pack/bank has observed bundle metadata. */
-  uchar txn_cnt;         /* Number of per-transaction result entries populated below. Consumers must only examine indices [0,txn_cnt); value saturates at FD_PACK_MAX_TXN_PER_BUNDLE. */
+  uint  seq_id;            /* Uniquely assigned for a single leader rotation. 0 is valid seq_id. UINT_MAX is never produced. */
+  ulong slot;              /* Slot associated with the batch. Executed bundles use the bank/Poh slot. 0 means the scheduler supplied no slot hint. */
+  uchar bundle_txn_cnt;    /* Declared transaction count from the scheduler, capped to FD_PACK_MAX_TXN_PER_BUNDLE. Also the number of per-transaction result entries populated below; consumers must only examine indices [0,bundle_txn_cnt). */
   uchar execution_success; /* Bundle-level success flag. Set to 1 only when every transaction executed and committed; remains 0 for sanitize failures, revert_on_error cascades, or scheduler drops. */
-  ushort scheduling_error;  /* bam_types_SchedulingError reason code when the batch never scheduled; FD_BAM_SCHED_ERR_NONE (UINT_MAX) when scheduling succeeded or the bundle executed. */
-  int transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Per-transaction bam_types_TransactionErrorReason for indices <txn_cnt. 0 denotes success. */
-  uint   consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Actual compute units consumed per transaction (exec+account data), even when the bundle later reverts. 0 when the txn never executed. */
+  ushort scheduling_error; /* bam_types_SchedulingError reason code when the batch never scheduled; FD_BAM_SCHED_ERR_NONE when scheduling succeeded or the bundle executed. */
+  int transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Per-transaction bam_types_TransactionErrorReason for indices <bundle_txn_cnt. 0 denotes success. */
+  uint  consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Actual compute units consumed per transaction (exec+account data), even when the bundle later reverts. 0 when the txn never executed. */
   uchar sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];  /* Boolean sanitize outcome per transaction (1=passed bank sanitize, 0=failed). When 0, transaction_err typically reports SANITIZE_FAILURE. */
   uchar bundle_err;        /* FD_BAM_BUNDLE_ERR_* selector for bundle-level rejection prior to execution. */
   uchar deser_index;       /* Zero-based transaction index tied to the deserialization error; only valid when bundle_err==FD_BAM_BUNDLE_ERR_DESER. */

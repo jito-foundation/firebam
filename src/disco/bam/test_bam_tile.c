@@ -64,7 +64,6 @@ test_make_bundle_result( ulong bundle_id ) {
   res.seq_id        = (uint) bundle_id; /* FIXME: broken! */
   res.slot             = bundle_id + 1000UL;
   res.bundle_txn_cnt   = 2;
-  res.txn_cnt          = 2;
   res.execution_success = 1;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   for( uint i=0U; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {
@@ -453,7 +452,7 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   fd_txn_m_t * first = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
   FD_TEST( first->source_tpu    == FD_TXN_M_TPU_SOURCE_BAM );
   FD_TEST( first->bam.seq_id    == 0U );
-  FD_TEST( first->bam.batch_cnt == 1UL );
+  FD_TEST( first->bam.txn_cnt == 1UL );
 
   test_bam_env_destroy( env );
 }
@@ -485,7 +484,7 @@ test_bam_bundle_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( first->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
   FD_TEST( first->bam.seq_id == 1U );
   FD_TEST( first->bam.revert_on_error == 1U );
-  FD_TEST( first->bam.batch_cnt >= 1U );
+  FD_TEST( first->bam.txn_cnt >= 1U );
   FD_TEST( first->bam.batch_idx == 0U );
 
   test_bam_env_destroy( env );
@@ -564,17 +563,17 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
 
   FD_TEST( tx0->bam.seq_id == 6U );
   FD_TEST( tx0->bam.revert_on_error == 0U );
-  FD_TEST( tx0->bam.batch_cnt == 1U );
+  FD_TEST( tx0->bam.txn_cnt == 1U );
 
   FD_TEST( tx1->bam.seq_id == 7U );
   FD_TEST( tx1->bam.revert_on_error == 1U );
-  FD_TEST( tx1->bam.batch_cnt == 2U );
+  FD_TEST( tx1->bam.txn_cnt == 2U );
   FD_TEST( tx1->bam.batch_idx == 0U );
   FD_TEST( tx1->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
 
   FD_TEST( tx2->bam.seq_id == 7U );
   FD_TEST( tx2->bam.revert_on_error == 1U );
-  FD_TEST( tx2->bam.batch_cnt == 2U );
+  FD_TEST( tx2->bam.txn_cnt == 2U );
   FD_TEST( tx2->bam.batch_idx == 1U );
   FD_TEST( tx2->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
 
@@ -638,7 +637,7 @@ test_bam_bundle_requires_builder_info( fd_wksp_t * wksp ) {
   fd_bam_bundle_result_t const * res = &state->bam_results[ state->bam_results_head ];
   FD_TEST( res->seq_id == 2UL );
   FD_TEST( res->execution_success == 0U );
-  FD_TEST( res->txn_cnt == 2U );
+  FD_TEST( res->bundle_txn_cnt == 2U );
 
   test_bam_env_mock_conn_empty( env );
   test_bam_env_mock_h2_hs( state );
@@ -1616,7 +1615,7 @@ test_bam_scheduler_result_publishes_message( fd_wksp_t * wksp ) {
   FD_TEST( decoded.multi.result_cnt == 1UL );
   FD_TEST( decoded.multi.results[0].seq_id == 900U );
   FD_TEST( decoded.multi.results[0].which_result == bam_types_AtomicTxnBatchResult_committed_tag );
-  FD_TEST( decoded.multi.committed[0].txn_cnt == res.txn_cnt );
+  FD_TEST( decoded.multi.committed[0].txn_cnt == res.bundle_txn_cnt );
   FD_TEST( decoded.multi.committed[0].txns[0].cus_consumed == (uint32_t)res.consumed_cus[0] );
 
   test_bam_env_destroy( env );
@@ -1739,9 +1738,8 @@ test_bam_scheduler_result_not_committed_transaction_error_high_index( fd_wksp_t 
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 907UL );
   res.bundle_txn_cnt   = 3;
-  res.txn_cnt          = 3;
   res.execution_success = 0;
-  for( uint i=0U; i<res.txn_cnt; i++ ) res.sanitize_success[ i ] = 1;
+  for( uint i=0U; i<res.bundle_txn_cnt; i++ ) res.sanitize_success[ i ] = 1;
   res.transaction_err[ 2 ] = (uchar)bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
   test_enqueue_bundle_result( state, &res );
 

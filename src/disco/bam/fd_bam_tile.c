@@ -901,24 +901,18 @@ privileged_init( fd_topo_t *      topo,
   fd_memset( ctx->prio_fee_recipient, 0, sizeof( ctx->prio_fee_recipient ) );
 
   ulong bam_fee_cfg_obj_id = fd_pod_query_ulong( topo->props, "bam_fee_cfg", ULONG_MAX );
-  if( FD_LIKELY( bam_fee_cfg_obj_id != ULONG_MAX ) ) {
-    ctx->fee_cfg = fd_topo_obj_laddr( topo, bam_fee_cfg_obj_id );
-    fd_memset( ctx->fee_cfg, 0, sizeof(fd_bam_fee_cfg_t) );
-  } else {
-    ctx->fee_cfg = NULL;
-  }
+  if( FD_UNLIKELY( bam_fee_cfg_obj_id == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_fee_cfg object" ));
+  ctx->fee_cfg = fd_topo_obj_laddr( topo, bam_fee_cfg_obj_id );
+  fd_memset( ctx->fee_cfg, 0, sizeof(fd_bam_fee_cfg_t) );
 
   ulong bam_ctrl_obj_id = fd_pod_query_ulong( topo->props, "bam_ctrl", ULONG_MAX );
-  if( FD_LIKELY( bam_ctrl_obj_id != ULONG_MAX ) ) {
-    ctx->ctrl = fd_topo_obj_laddr( topo, bam_ctrl_obj_id );
-    fd_memset( ctx->ctrl, 0, sizeof(fd_bam_ctrl_t) );
-    ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
-    ctx->ctrl->enable = ctx->enabled;
-    strlcpy( ctx->ctrl->url, tile->bam.url, FD_URL_MAX );
-    strlcpy( ctx->ctrl->sni, tile->bam.sni, FD_SNI_BUF_MAX );
-  } else {
-    ctx->ctrl = NULL;
-  }
+  if( FD_UNLIKELY( bam_ctrl_obj_id == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_ctrl object" ));
+  ctx->ctrl = fd_topo_obj_laddr( topo, bam_ctrl_obj_id );
+  fd_memset( ctx->ctrl, 0, sizeof(fd_bam_ctrl_t) );
+  ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
+  ctx->ctrl->enable = ctx->enabled;
+  strlcpy( ctx->ctrl->url, tile->bam.url, FD_URL_MAX );
+  strlcpy( ctx->ctrl->sni, tile->bam.sni, FD_SNI_BUF_MAX );
 }
 
 static fd_bam_out_ctx_t
@@ -932,6 +926,16 @@ bam_out_link( fd_topo_t const *      topo,
   out.wmark  = fd_dcache_compact_wmark ( out.mem, link->dcache, link->mtu );
   out.chunk  = out.chunk0;
   return out;
+}
+
+static fd_bam_in_ctx_t
+bam_in_link( fd_topo_t const *      topo,
+             fd_topo_link_t const * link ) {
+  fd_bam_in_ctx_t in = {0};
+  in.mem    = topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ].wksp;
+  in.chunk0 = fd_dcache_compact_chunk0( in.mem, link->dcache );
+  in.wmark  = fd_dcache_compact_wmark ( in.mem, link->dcache, link->mtu );
+  return in;
 }
 
 static void
@@ -965,24 +969,16 @@ unprivileged_init( fd_topo_t *      topo,
   FD_TEST( ctx->keyswitch );
 
   ulong bank_in_idx = fd_topo_find_tile_in_link( topo, tile, "bank_bam", tile->kind_id );
-  if( bank_in_idx != ULONG_MAX ) {
-    ctx->bank_bam_in_idx = bank_in_idx;
-    fd_topo_link_t const * bank_in = &topo->links[ tile->in_link_id[ bank_in_idx ] ];
-    ctx->bank_in.mem    = topo->workspaces[ topo->objs[ bank_in->dcache_obj_id ].wksp_id ].wksp;
-    ctx->bank_in.chunk0 = fd_dcache_compact_chunk0( ctx->bank_in.mem, bank_in->dcache );
-    ctx->bank_in.wmark  = fd_dcache_compact_wmark ( ctx->bank_in.mem, bank_in->dcache, bank_in->mtu );
-  }
+  if( FD_UNLIKELY( bank_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bank_bam link" ));
+  ctx->bank_bam_in_idx = bank_in_idx;
+  fd_topo_link_t const * bank_in = &topo->links[ tile->in_link_id[ bank_in_idx ] ];
+  ctx->bank_in = bam_in_link( topo, bank_in );
 
   ulong leader_in_idx = fd_topo_find_tile_in_link( topo, tile, "pack_bam", tile->kind_id );
-  if( leader_in_idx != ULONG_MAX ) {
-    ctx->pack_leader_in_idx = leader_in_idx;
-    fd_topo_link_t const * leader_in = &topo->links[ tile->in_link_id[ leader_in_idx ] ];
-    ctx->leader_in.mem    = topo->workspaces[ topo->objs[ leader_in->dcache_obj_id ].wksp_id ].wksp;
-    ctx->leader_in.chunk0 = fd_dcache_compact_chunk0( ctx->leader_in.mem, leader_in->dcache );
-    ctx->leader_in.wmark  = fd_dcache_compact_wmark ( ctx->leader_in.mem, leader_in->dcache, leader_in->mtu );
-  } else {
-    ctx->pack_leader_in_idx = ULONG_MAX;
-  }
+  if( FD_UNLIKELY( leader_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing pack_bam link" ));
+  ctx->pack_leader_in_idx = leader_in_idx;
+  fd_topo_link_t const * leader_in = &topo->links[ tile->in_link_id[ leader_in_idx ] ];
+  ctx->leader_in = bam_in_link( topo, leader_in );
 
   ulong verify_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_verif", tile->kind_id );
   if( FD_UNLIKELY( verify_out_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_verif link" ));
@@ -1028,15 +1024,12 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
 
   ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
-  if( FD_LIKELY( bam_status_obj_id != ULONG_MAX ) ) {
-    ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
-    if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "bam tile missing bam_status fseq" ));
-    /* Start disconnected so a late BAM connect transitions the flag to 1
-       and wakes up peers waiting for the override. */
-    fd_fseq_update( ctx->bam_status_fseq, 0UL );
-  } else {
-    ctx->bam_status_fseq = NULL;
-  }
+  if( FD_UNLIKELY( bam_status_obj_id == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_status object" ));
+  ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
+  if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "bam tile missing bam_status fseq" ));
+  /* Start disconnected so a late BAM connect transitions the flag to 1
+     and wakes up peers waiting for the override. */
+  fd_fseq_update( ctx->bam_status_fseq, 0UL );
 
   fd_bam_tile_parse_endpoint( ctx, tile );
 

@@ -280,7 +280,7 @@ fd_bam_tile_publish_bundle_txn(
     .bam = {
       .max_schedule_slot = ctx->bundle_max_schedule_slot,
       .seq_id            = ctx->bundle_seq,
-      .batch_cnt         = bundle_txn_cnt,
+      .txn_cnt         = bundle_txn_cnt,
       .batch_idx         = batch_idx,
       .revert_on_error   = 1, // FIXME: check if this is correct
     },
@@ -322,7 +322,7 @@ fd_bam_tile_publish_txn(
     .bam = {
       .max_schedule_slot = max_schedule_slot,
       .seq_id            = seq_id,
-      .batch_cnt         = batch_cnt,
+      .txn_cnt         = batch_cnt,
       .batch_idx         = batch_idx,
       .revert_on_error   = !!revert_on_error,
     },
@@ -347,7 +347,7 @@ fd_bam_encode_committed_cb( pb_ostream_t *          stream,
   fd_bam_encode_ctx_t const * ctx = (fd_bam_encode_ctx_t const *)*arg;
   if( FD_UNLIKELY( !ctx || !ctx->res ) ) return false;
   fd_bam_bundle_result_t const * res = ctx->res;
-  for( uchar i=0U; i<res->txn_cnt; i++ ) {
+  for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
     bam_types_TransactionCommittedResult txn_res = bam_types_TransactionCommittedResult_init_default;
     txn_res.cus_consumed               = res->consumed_cus[ i ];
     txn_res.feepayer_balance_lamports  = 0UL;
@@ -417,7 +417,7 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
     return;
   }
 
-    for( uchar i=0U; i<res->txn_cnt; i++ ) {
+    for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
     if( FD_UNLIKELY( !res->sanitize_success[ i ] ) ) {
       out->which_reason                             = bam_types_NotCommitted_deserialization_error_tag;
       out->reason.deserialization_error.index       = i;
@@ -426,7 +426,7 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
     }
   }
 
-    for( uchar i=0U; i<res->txn_cnt; i++ ) {
+    for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
     int err = res->transaction_err[ i ];
     if( FD_UNLIKELY( err ) ) {
       if( FD_LIKELY( err < (int)_bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
@@ -671,12 +671,11 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( bam_config_fee_updated ) ) {
     /* Broadcast the new validator fee settings to shared memory readers. */
     ctx->fee_cfg_version++;
-    fd_bam_fee_cfg_t * fee_cfg = ctx->fee_cfg;
-    fd_memcpy( fee_cfg->prio_fee_recipient, ctx->prio_fee_recipient, sizeof( fee_cfg->prio_fee_recipient ) );
-    fee_cfg->commission_bps         = ctx->commission_bps;
-    fee_cfg->has_prio_fee_recipient = ctx->prio_fee_recipient_set;
+    fd_memcpy( ctx->fee_cfg->prio_fee_recipient, ctx->prio_fee_recipient, sizeof( ctx->fee_cfg->prio_fee_recipient ) );
+    ctx->fee_cfg->commission_bps         = ctx->commission_bps;
+    ctx->fee_cfg->has_prio_fee_recipient = ctx->prio_fee_recipient_set;
     FD_COMPILER_MFENCE();
-    fee_cfg->version = ctx->fee_cfg_version;
+    ctx->fee_cfg->version = ctx->fee_cfg_version;
     FD_COMPILER_MFENCE();
   }
 }

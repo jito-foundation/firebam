@@ -261,11 +261,10 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
     res.seq_id            = (uint)seed0;
     res.slot              = (ulong)seed0;
     res.bundle_txn_cnt    = 1U + (seed0 & 0x7U);
-    res.txn_cnt           = res.bundle_txn_cnt;
     res.execution_success = 1U;
     res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
     res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-    for( uchar i=0U; i<res.txn_cnt; i++ ) {
+    for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
       res.sanitize_success[ i ] = 1U;
       res.transaction_err [ i ] = 0;
       res.consumed_cus    [ i ] = (seed0 + i) & 0xffU;
@@ -279,7 +278,6 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
     res.seq_id            = seed0 | ((uint)seed1<<8);
     res.slot              = (ulong)( seed1 );
     res.bundle_txn_cnt    = 1U + (seed1 & 0x7U);
-    res.txn_cnt           = res.bundle_txn_cnt;
     res.execution_success = 0U;
     res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
     res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
@@ -298,7 +296,7 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
       res.sanitize_success[ 0 ] = 1U;
     }
 
-    for( uchar i=0U; i<res.txn_cnt; i++ ) {
+    for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
       res.consumed_cus[ i ] = (seed1 + i) & 0xffU;
       if( i ) {
         res.sanitize_success[ i ] = 1U;
