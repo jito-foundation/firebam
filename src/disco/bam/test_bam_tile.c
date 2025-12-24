@@ -66,8 +66,8 @@ test_make_bundle_result( ulong bundle_id ) {
   res.bundle_txn_cnt   = 2;
   res.execution_success = 1;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+  res.transaction_err_count = 0U;
   for( uint i=0U; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {
-    res.transaction_err[ i ]   = 0;
     res.consumed_cus[ i ]      = i + 1;
     res.sanitize_success[ i ]  = 1;
   }
@@ -1704,7 +1704,8 @@ test_bam_scheduler_result_not_committed_transaction_error_reason( fd_wksp_t * wk
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 903UL );
   res.execution_success  = 0;
-  res.transaction_err[1] = (uchar)bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  res.transaction_err[1] = bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  res.transaction_err_count = 1U;
   test_enqueue_bundle_result( state, &res );
 
   int flushed = fd_bam_test_flush_results( state );
@@ -1740,7 +1741,8 @@ test_bam_scheduler_result_not_committed_transaction_error_high_index( fd_wksp_t 
   res.bundle_txn_cnt   = 3;
   res.execution_success = 0;
   for( uint i=0U; i<res.bundle_txn_cnt; i++ ) res.sanitize_success[ i ] = 1;
-  res.transaction_err[ 2 ] = (uchar)bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  res.transaction_err[ 2 ] = bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  res.transaction_err_count = 1U;
   test_enqueue_bundle_result( state, &res );
 
   int flushed = fd_bam_test_flush_results( state );
@@ -1793,7 +1795,8 @@ test_bam_scheduler_result_not_committed_generic_failure_reason( fd_wksp_t * wksp
   /* Case 2: out-of-range transaction error falls back to generic_invalid with prefix */
   fd_bam_bundle_result_t invalid = test_make_bundle_result( 905UL );
   invalid.execution_success = 0;
-  invalid.transaction_err[0] = (uchar)_bam_types_TransactionErrorReason_ARRAYSIZE;
+  invalid.transaction_err[0] = _bam_types_TransactionErrorReason_ARRAYSIZE;
+  invalid.transaction_err_count = 1U;
   test_enqueue_bundle_result( state, &invalid );
 
   FD_TEST( fd_bam_test_flush_results( state ) == 1 );

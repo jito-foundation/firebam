@@ -352,7 +352,7 @@ fd_bam_encode_committed_cb( pb_ostream_t *          stream,
     txn_res.cus_consumed               = res->consumed_cus[ i ];
     txn_res.feepayer_balance_lamports  = 0UL;
     txn_res.loaded_accounts_data_size  = 0U;
-    txn_res.execution_success          = ( res->sanitize_success[ i ] && res->transaction_err[ i ] == 0U );
+    txn_res.execution_success          = ( res->sanitize_success[ i ] && !res->transaction_err_count );
     if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
     if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_TransactionCommittedResult_fields, &txn_res ) ) ) return false;
   }
@@ -417,7 +417,7 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
     return;
   }
 
-    for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
+  for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
     if( FD_UNLIKELY( !res->sanitize_success[ i ] ) ) {
       out->which_reason                             = bam_types_NotCommitted_deserialization_error_tag;
       out->reason.deserialization_error.index       = i;
@@ -426,19 +426,18 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
     }
   }
 
+  if( FD_UNLIKELY( res->transaction_err_count ) ) {
     for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
-    int err = res->transaction_err[ i ];
-    if( FD_UNLIKELY( err ) ) {
-      if( FD_LIKELY( err < (int)_bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
+      if( FD_LIKELY( res->transaction_err[ i ] < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
         out->which_reason                      = bam_types_NotCommitted_transaction_error_tag;
         out->reason.transaction_error.index    = i;
-        out->reason.transaction_error.reason   = (bam_types_TransactionErrorReason)err;
+        out->reason.transaction_error.reason   = res->transaction_err[ i ];
       } else {
         out->which_reason                      = bam_types_NotCommitted_generic_invalid_tag;
         snprintf( out->reason.generic_invalid.message,
                   sizeof(out->reason.generic_invalid.message),
                   FD_BAM_ERR_FMT_TRANSACTION_ERROR,
-                  err );
+                  res->transaction_err[ i ] );
       }
       return;
     }

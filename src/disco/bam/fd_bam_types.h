@@ -12,7 +12,7 @@
 #define FD_BAM_ERR_MSG_BUILDER_INFO_UNAVAILABLE "builder info unavailable"
 #define FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED  "bundle execution failed"
 
-#define FD_BAM_ERR_FMT_TRANSACTION_ERROR        "transaction error %i"
+#define FD_BAM_ERR_FMT_TRANSACTION_ERROR        "transaction error %u"
 #define FD_BAM_ERR_PREFIX_TRANSACTION_ERROR     "transaction error "
 
 #define FD_BAM_ERR_FMT_INVALID_SCHEDULING_ERROR "invalid scheduling error %u"
@@ -42,7 +42,8 @@ typedef struct {
   uchar bundle_txn_cnt;    /* Declared transaction count from the scheduler, capped to FD_PACK_MAX_TXN_PER_BUNDLE. Also the number of per-transaction result entries populated below; consumers must only examine indices [0,bundle_txn_cnt). */
   uchar execution_success; /* Bundle-level success flag. Set to 1 only when every transaction executed and committed; remains 0 for sanitize failures, revert_on_error cascades, or scheduler drops. */
   ushort scheduling_error; /* bam_types_SchedulingError reason code when the batch never scheduled; FD_BAM_SCHED_ERR_NONE when scheduling succeeded or the bundle executed. */
-  int transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Per-transaction bam_types_TransactionErrorReason for indices <bundle_txn_cnt. 0 denotes success. */
+  bam_types_TransactionErrorReason transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Per-transaction bam_types_TransactionErrorReason for indices <bundle_txn_cnt. */
+  uchar transaction_err_count; /* Number of transaction errors. 0 denotes success. */
   uint  consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Actual compute units consumed per transaction (exec+account data), even when the bundle later reverts. 0 when the txn never executed. */
   uchar sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];  /* Boolean sanitize outcome per transaction (1=passed bank sanitize, 0=failed). When 0, transaction_err typically reports SANITIZE_FAILURE. */
   uchar bundle_err;        /* FD_BAM_BUNDLE_ERR_* selector for bundle-level rejection prior to execution. */

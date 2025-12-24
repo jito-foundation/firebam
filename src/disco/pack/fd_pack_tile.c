@@ -541,7 +541,7 @@ pack_tile_publish_bam_result( fd_pack_ctx_t *             ctx,
 }
 
 /* Best-effort mapping from fd_pack insert errors to BAM TransactionErrorReason values. */
-static inline int
+static inline bam_types_TransactionErrorReason
 pack_tile_bam_txn_err_from_pack_insert( int pack_rc ) {
   switch( pack_rc ) {
   case FD_PACK_INSERT_REJECT_DUPLICATE:        return bam_types_TransactionErrorReason_ALREADY_PROCESSED;
@@ -556,7 +556,7 @@ pack_tile_bam_txn_err_from_pack_insert( int pack_rc ) {
   case FD_PACK_INSERT_REJECT_INVALID_NONCE:    return bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
   case FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST: return bam_types_TransactionErrorReason_PROGRAM_EXECUTION_TEMPORARILY_RESTRICTED;
   case FD_PACK_INSERT_REJECT_NONCE_CONFLICT:   return bam_types_TransactionErrorReason_SANITIZE_FAILURE;
-  default:                                     return -1;
+  default:                                     return bam_types_TransactionErrorReason_COMMIT_CANCELLED;
   }
 }
 
@@ -800,9 +800,13 @@ after_credit( fd_pack_ctx_t *     ctx,
         res.execution_success = 0;
         res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
         res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+        res.transaction_err_count = 0U;
         for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
           res.sanitize_success[ i ] = 1U;
-          res.transaction_err[ i ]  = ctx->current_bam_bundle->received[ i ] ? 0 : bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+          if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
+            res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+            res.transaction_err_count++;
+          }
         }
         pack_tile_publish_bam_result( ctx, stem, &res );
       }
@@ -1073,9 +1077,13 @@ after_credit( fd_pack_ctx_t *     ctx,
         res.execution_success = 0;
         res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
         res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+        res.transaction_err_count = 0U;
         for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
           res.sanitize_success[ i ] = 1U;
-          res.transaction_err[ i ]  = ctx->current_bam_bundle->received[ i ] ? 0 : bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+          if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
+            res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+            res.transaction_err_count++;
+          }
         }
         pack_tile_publish_bam_result( ctx, stem, &res );
       }
@@ -1206,11 +1214,13 @@ during_frag( fd_pack_ctx_t * ctx,
         res.execution_success = 0;
         res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
         res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+        res.transaction_err_count = 0U;
         for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
           res.sanitize_success[ i ] = 1U;
-          res.transaction_err[ i ]  = ctx->current_bam_bundle->received[ i ]
-                                      ? 0
-                                      : bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+          if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
+            res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+            res.transaction_err_count++;
+          }
         }
         ctx->pending_bam_result[0] = res;
         ctx->pending_bam_result_valid = true;
@@ -1364,11 +1374,13 @@ after_frag( fd_pack_ctx_t *     ctx,
           res.execution_success = 0;
           res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
           res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+          res.transaction_err_count = 0U;
           for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
             res.sanitize_success[ i ] = 1U;
-            res.transaction_err[ i ]  = ctx->current_bam_bundle->received[ i ]
-                ? 0
-                : (int)bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+            if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
+              res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+              res.transaction_err_count++;
+            }
           }
           pack_tile_publish_bam_result( ctx, stem, &res );
         }
@@ -1559,11 +1571,12 @@ after_frag( fd_pack_ctx_t *     ctx,
             res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
             res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
 
-            // FIXME: hack for non existant error types in protobuf
-            if( FD_UNLIKELY( result==FD_PACK_INSERT_REJECT_PRIORITY || result ==FD_PACK_INSERT_REJECT_NONCE_PRIORITY ) ) {
+            // FIXME: hack for non-existent error types in protobuf
+            if( FD_UNLIKELY( result==FD_PACK_INSERT_REJECT_PRIORITY || result==FD_PACK_INSERT_REJECT_NONCE_PRIORITY ) ) {
               res.scheduling_error = FD_BAM_SCHED_ERR_CONTAINER_FULL;
             } else {
               res.transaction_err[ 0 ] = pack_tile_bam_txn_err_from_pack_insert( result );
+              res.transaction_err_count = 1U;
               for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) res.sanitize_success[ i ] = 1U;
             }
 

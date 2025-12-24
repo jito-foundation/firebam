@@ -264,9 +264,9 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
     res.execution_success = 1U;
     res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
     res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+    res.transaction_err_count = 0U;
     for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
       res.sanitize_success[ i ] = 1U;
-      res.transaction_err [ i ] = 0;
       res.consumed_cus    [ i ] = (seed0 + i) & 0xffU;
     }
     fd_bam_enqueue_result( ctx, &res );
@@ -281,6 +281,7 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
     res.execution_success = 0U;
     res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
     res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+    res.transaction_err_count = 0U;
 
     uchar reason_sel = (uchar)( (seed1>>3) & 0x3U );
     if( reason_sel==0U ) {
@@ -293,6 +294,7 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
       res.sanitize_success[ 0 ] = 0U;
     } else {
       res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_ACCOUNT_NOT_FOUND;
+      res.transaction_err_count = 1U;
       res.sanitize_success[ 0 ] = 1U;
     }
 
@@ -300,7 +302,6 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
       res.consumed_cus[ i ] = (seed1 + i) & 0xffU;
       if( i ) {
         res.sanitize_success[ i ] = 1U;
-        res.transaction_err [ i ] = 0;
       }
     }
     fd_bam_enqueue_result( ctx, &res );
