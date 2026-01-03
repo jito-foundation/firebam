@@ -281,6 +281,7 @@ struct fd_topo_tile {
       ulong keepalive_interval_nanos;
       uchar tls_cert_verify : 1;
       uchar enabled         : 1;
+      uchar dump_txns       : 1;
     } bam;
 
     struct {

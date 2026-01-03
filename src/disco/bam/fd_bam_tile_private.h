@@ -130,6 +130,7 @@ struct fd_bam_tile {
   /* Currently running config, values loaded via TOML and updated by set_bam admin control */
   fd_bam_ctrl_t * ctrl;                  /* Runtime control shared object (NULL when tile launched without admin support) */
   uchar  enabled;                        /* Whether BAM runtime is enabled by the operator */
+  uchar  dump_txns;                      /* Whether to dump inbound BAM bundles/txns for debugging */
   char   server_fqdn[ FD_FQDN_BUF_MAX ]; /* cstr; hostname configured for BAM endpoint */
   ushort server_fqdn_len;                /* Length of server_fqdn (no terminator) */
   char   server_sni[ FD_SNI_BUF_MAX ];   /* cstr; optional override for TLS SNI */
