@@ -14,9 +14,6 @@
 #include "../pack/fd_pack_cost.h"
 #include "../pack/fd_pack_pacing.h"
 
-#include <linux/unistd.h>
-#include <string.h>
-
 /* fd_pack is responsible for taking verified transactions, and
    arranging them into "microblocks" (groups) of transactions to
    be executed serially.  It can try to do clever things so that
