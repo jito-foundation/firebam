@@ -1961,6 +1961,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, source_tpu     )+sizeof(((fd_txn_p_t*)NULL)->source_tpu    )<=1280UL, nt_memcpy );
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, source_ipv4    )+sizeof(((fd_txn_p_t*)NULL)->source_ipv4   )<=1280UL, nt_memcpy );
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, flags          )+sizeof(((fd_txn_p_t*)NULL)->flags         )<=1280UL, nt_memcpy );
+      FD_STATIC_ASSERT( offsetof(fd_txn_p_t, bam            )+sizeof(((fd_txn_p_t*)NULL)->bam           )<=1280UL, nt_memcpy );
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, _              )                                            <=1280UL, nt_memcpy );
       const ulong offset_into_txn = 1280UL - offsetof(fd_txn_p_t, _ );
       fd_memcpy( offset_into_txn+(uchar *)TXN(out), offset_into_txn+(uchar const *)txn,
@@ -1976,6 +1977,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
       out->source_tpu                      = cur->txn->source_tpu;
       out->source_ipv4                     = cur->txn->source_ipv4;
       out->flags                           = cur->txn->flags;
+      out->bam                             = cur->txn->bam;
     }
     out++;
 
@@ -2411,6 +2413,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     out->source_tpu                      = cur->txn->source_tpu;
     out->source_ipv4                     = cur->txn->source_ipv4;
     out->flags                           = cur->txn->flags;
+    out->bam                             = cur->txn->bam;
     out++;
 
     pack->cumulative_block_cost += cur->compute_est;

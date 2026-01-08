@@ -1304,6 +1304,17 @@ during_frag( fd_pack_ctx_t * ctx,
     ctx->cur_spot->txnp->payload_sz  = payload_sz;
     ctx->cur_spot->txnp->source_ipv4 = source_ipv4;
     ctx->cur_spot->txnp->source_tpu  = source_tpu;
+    if( FD_LIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+      ctx->cur_spot->txnp->bam.seq_id          = txnm->bam.seq_id;
+      ctx->cur_spot->txnp->bam.batch_idx       = txnm->bam.batch_idx;
+      ctx->cur_spot->txnp->bam.batch_cnt       = txnm->bam.txn_cnt;
+      ctx->cur_spot->txnp->bam.revert_on_error = txnm->bam.revert_on_error;
+    } else {
+      ctx->cur_spot->txnp->bam.seq_id          = 0U;
+      ctx->cur_spot->txnp->bam.batch_idx       = 0U;
+      ctx->cur_spot->txnp->bam.batch_cnt       = 0U;
+      ctx->cur_spot->txnp->bam.revert_on_error = 0U;
+    }
 
     break;
   }
@@ -1590,6 +1601,10 @@ after_frag( fd_pack_ctx_t *     ctx,
       if( FD_LIKELY( !ctx->insert_to_extra ) ) {
 #endif
         ulong blockhash_slot = sig;
+        fd_txn_p_t const * txnp = ctx->cur_spot->txnp;
+        uchar source_tpu        = txnp->source_tpu;
+        uint  bam_seq_id        = txnp->bam.seq_id;
+        uchar bam_revert        = txnp->bam.revert_on_error;
         ulong deleted;
         long insert_duration = -fd_tickcount();
         int result = fd_pack_insert_txn_fini( ctx->pack, ctx->cur_spot, blockhash_slot, &deleted );
@@ -1597,6 +1612,21 @@ after_frag( fd_pack_ctx_t *     ctx,
         FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
         ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ]++;
         fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
+        if( FD_UNLIKELY( result<0 &&
+                         source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                         !bam_revert ) ) {
+          fd_bam_bundle_result_t res = {0};
+          res.seq_id            = bam_seq_id;
+          res.slot              = 0UL;
+          res.bundle_txn_cnt    = 1U;
+          res.execution_success = 0;
+          res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+          res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+          res.transaction_err[ 0 ] = pack_tile_bam_txn_err_from_pack_insert( result );
+          res.transaction_err_count = 1U;
+          res.sanitize_success[ 0 ] = 1U;
+          pack_tile_publish_bam_result( ctx, stem, &res );
+        }
         if( FD_LIKELY( result>=0 ) ) ctx->last_successful_insert = now;
 #if FD_PACK_USE_EXTRA_STORAGE
       }

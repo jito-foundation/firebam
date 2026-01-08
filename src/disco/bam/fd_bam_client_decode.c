@@ -237,6 +237,24 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     return;
   }
 
+  if( FD_UNLIKELY( (!state->revert_on_error) && state->packet_cnt>1U ) ) {
+    /* For now, revert_on_error=0 batches are assumed to contain exactly one
+       packet so we can return one result per seq_id without BAM-node changes. */
+    fd_bam_bundle_result_t res = {
+      .seq_id            = batch->seq_id,
+      .slot              = batch->max_schedule_slot,
+      .bundle_txn_cnt    = state->packet_cnt,
+      .execution_success = 0,
+      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+      .deser_reason      = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE,
+      .deser_index       = 0
+    };
+    fd_bam_enqueue_result( ctx, &res );
+    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    return;
+  }
+
   if( state->revert_on_error ) {
     if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) {
       fd_bam_bundle_result_t res = {
@@ -273,9 +291,9 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                state->packets[i].data.size,
                                batch->max_schedule_slot,
                                batch->seq_id,
-                               0, // treat as individual transactions
-                               1,
-                               0,
+                               i,
+                               state->packet_cnt,
+                               state->revert_on_error,
                                0 );
     }
   }
