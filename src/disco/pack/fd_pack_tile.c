@@ -484,7 +484,7 @@ static inline void
 pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
                                     fd_stem_context_t * stem ) {
   if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) return;
-
+  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX || !ctx->bam_out_mem ) ) return;
   long now_ticks = fd_tickcount();
   long now_ns = ctx->approx_wallclock_ns + (long)((double)(now_ticks - ctx->approx_tickcount) / ctx->ticks_per_ns);
 
@@ -526,6 +526,7 @@ static inline void
 pack_tile_publish_bam_result( fd_pack_ctx_t *             ctx,
                               fd_stem_context_t *         stem,
                               fd_bam_bundle_result_t const * res ) {
+  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX || !ctx->bam_out_mem ) ) return;
   fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->bam_out_mem, ctx->bam_out_chunk );
   *out = *res;
   fd_stem_publish( stem,
