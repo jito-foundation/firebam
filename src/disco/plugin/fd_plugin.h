@@ -1,6 +1,8 @@
 #ifndef HEADER_fd_src_disco_plugin_fd_plugin_h
 #define HEADER_fd_src_disco_plugin_fd_plugin_h
 
+#include "../../waltz/http/fd_url.h"
+
 #define FD_PLUGIN_MSG_SLOT_ROOTED                   ( 0UL)
 #define FD_PLUGIN_MSG_SLOT_OPTIMISTICALLY_CONFIRMED ( 1UL)
 #define FD_PLUGIN_MSG_SLOT_COMPLETED                ( 2UL)
@@ -102,9 +104,52 @@ FD_STATIC_ASSERT( sizeof(fd_vote_update_msg_t) <= FD_GOSSIP_LINK_MSG_SIZE, fd_vo
 
 typedef struct {
   char name[ 16 ];
-  char url[ 256 ];
+  char url[ FD_URL_MAX ];
   char ip_cstr[ 40 ]; /* IPv4 or IPv6 cstr */
   int status;
 } fd_plugin_msg_block_engine_update_t;
+
+
+
+#define FD_PLUGIN_MSG_BAM_UPDATE           (15UL)
+
+typedef enum {
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED            = 0,
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED        = 1, // the client has recently failed and is currently backing off from a reconnect attempt
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING          = 2, // the client is currently reconnecting.
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY = 3, /* all of below conditions met, but didn't receive heartbeat yet
+  - TCP socket is alive
+  - SSL session is not in an error state
+  - HTTP/2 connection is established (SETTINGS exchange done)
+  - gRPC bundle and packet subscriptions are live
+  - HTTP/2 PING exchange was done recently */
+    FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY   = 4  /* recently exchanged heartbeats within timeout */
+} fd_plugin_bam_update_status_t;
+
+typedef struct {
+  char  name[ 16 ];
+  char  url[ FD_URL_MAX ];
+  char  sni[ FD_SNI_BUF_MAX ];
+  char  ip_cstr[ 40 ];    /* IPv4 or IPv6 cstr */
+  char  tpu_cstr[ 22 ];   /* "a.b.c.d:port" */
+  char  tpu_fwd_cstr[ 22 ];
+  fd_plugin_bam_update_status_t status_code;           /* FD_PLUGIN_MSG_BAM_UPDATE_STATUS_* */
+  uchar enabled;          /* Non-zero when operator enabled BAM */
+
+  // TODO: these fields should be moved to fd_gui.c, like line 303 for example
+  float rtt_sample;       /* Latest RTT sample (ns) */
+  float rtt_smoothed;     /* Smoothed RTT estimate (ns) */
+  float rtt_var;          /* Smoothed RTT variation (ns) */
+  ushort bam_pending_results; /* Pending results queued to BAM */
+  ulong heartbeat_sent;   /* Validator heartbeats sent */
+  ulong heartbeat_recv;   /* Builder heartbeats received */
+  ulong txn_received;     /* Transactions accepted from BAM */
+  ulong bundle_received;  /* Bundles accepted from BAM */
+  ulong packet_drop;      /* Network packet drops before TPU */
+  ulong err_protobuf;     /* Protobuf decode failures */
+  ulong err_transport;    /* Transport-layer failures */
+  ulong err_timeout;      /* Timeout failures */
+  ulong err_no_fee_info;  /* Missing fee info failures */
+} fd_plugin_msg_bam_update_t;
 
 #endif /* HEADER_fd_src_disco_plugin_fd_plugin_h */

@@ -8,12 +8,14 @@
 #include "../../disco/keyguard/fd_keyload.h"
 #include "../../disco/shred/fd_stake_ci.h"
 #include "../../disco/fd_txn_m.h"
+#include "../../disco/bam/fd_bam_types.h"
 
 #define IN_KIND_GOSSVF        (0)
 #define IN_KIND_SHRED_VERSION (1)
 #define IN_KIND_SIGN          (2)
 #define IN_KIND_SEND          (3)
 #define IN_KIND_STAKE         (4)
+#define IN_KIND_BAM_GOSSIP    (5)
 
 /* Symbols exported by version.c */
 extern ulong const firedancer_major_version;
@@ -228,6 +230,22 @@ handle_packet( fd_gossip_tile_ctx_t * ctx,
   }
 }
 
+void
+fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
+                                  fd_bam_contact_update_t const * update,
+                                  long                            now ) {
+
+  fd_ip4_port_t tpu     = update->tpu;
+  fd_ip4_port_t tpu_fwd = update->tpu_fwd;
+
+  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU ]               = tpu;
+  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS ]      = tpu_fwd;
+  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_QUIC ]          = tpu;
+  ctx->my_contact_info->sockets[ FD_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ] = tpu_fwd;
+  ctx->my_contact_info->wallclock_nanos = now;
+  fd_gossip_set_my_contact_info( ctx->gossip, ctx->my_contact_info, now );
+}
+
 static inline int
 returnable_frag( fd_gossip_tile_ctx_t * ctx,
                  ulong                  in_idx,
@@ -254,6 +272,16 @@ returnable_frag( fd_gossip_tile_ctx_t * ctx,
     case IN_KIND_SEND:          handle_local_vote( ctx, fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk ), stem ); break;
     case IN_KIND_STAKE:         handle_stakes( ctx, fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk ) ); break;
     case IN_KIND_GOSSVF:        handle_packet( ctx, sig, fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk ), sz, stem ); break;
+    case IN_KIND_BAM_GOSSIP: {
+      if( FD_UNLIKELY( sz!=sizeof(fd_bam_contact_update_t) ) ) {
+        FD_LOG_WARNING(( "Unexpected BAM gossip update size %lu", sz ));
+        break;
+      }
+      fd_bam_contact_update_t const * update = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
+      long now = ctx->last_wallclock + (long)((double)(fd_tickcount()-ctx->last_tickcount)/ctx->ticks_per_ns);
+      fd_gossip_tile_apply_bam_contact( ctx, update, now );
+      break;
+    }
   }
 
   return 0;
@@ -339,6 +367,8 @@ unprivileged_init( fd_topo_t *      topo,
       ctx->in[ i ].kind = IN_KIND_SEND;
     } else if( FD_UNLIKELY( !strcmp( link->name, "replay_stake" ) ) ) {
       ctx->in[ i ].kind = IN_KIND_STAKE;
+    } else if( FD_UNLIKELY( !strcmp( link->name, "bam_gossip" ) ) ) {
+      ctx->in[ i ].kind = IN_KIND_BAM_GOSSIP;
     } else {
       FD_LOG_ERR(( "unexpected input link name %s", link->name ));
     }
