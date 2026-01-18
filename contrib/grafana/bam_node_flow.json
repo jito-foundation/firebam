@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 5281,
+  "id": 0,
   "links": [],
   "panels": [
     {
@@ -26,88 +26,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "fillOpacity": 70,
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineWidth": 1
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 24,
-        "x": 0,
-        "y": 0
-      },
-      "id": 1,
-      "maxDataPoints": 200,
-      "options": {
-        "colWidth": 0.9,
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "rowHeight": 0.9,
-        "showValue": "never",
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "2.0.4",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "min_over_time(bam_healthy{instance=~\"$instance\"}[$__rate_interval])",
-          "instant": false,
-          "legendFormat": ".",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "BAM Health Timeline",
-      "description": "bam_healthy is a boolean gauge: 1 when the BAM client is connected to the BAM node and healthy, 0 otherwise. This panel uses min_over_time over $__rate_interval so any unhealthy sample marks the interval as 0.",
-      "transparent": true,
-      "type": "status-history"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
+      "description": "bam_enabled is a boolean operator toggle: 1 when BAM is enabled, 0 when disabled. The panel takes the max across the selected instance(s) to show whether BAM is enabled anywhere.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -134,7 +53,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -151,10 +70,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
-        "w": 12,
+        "h": 3,
+        "w": 2,
         "x": 0,
-        "y": 3
+        "y": 0
       },
       "id": 2,
       "maxDataPoints": 1,
@@ -175,7 +94,7 @@
         "textMode": "auto",
         "wideLayout": true
       },
-      "pluginVersion": "11.2.5",
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -192,7 +111,6 @@
         }
       ],
       "title": "BAM Enabled",
-      "description": "bam_enabled is a boolean operator toggle: 1 when BAM is enabled, 0 when disabled. The panel takes the max across the selected instance(s) to show whether BAM is enabled anywhere.",
       "type": "stat"
     },
     {
@@ -200,6 +118,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Current BAM client health (bam_healthy). Max across the selected instance(s) returns 1 when at least one BAM connection is healthy, 0 when none are.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -226,7 +145,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -243,10 +162,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
-        "w": 12,
-        "x": 12,
-        "y": 3
+        "h": 3,
+        "w": 2,
+        "x": 2,
+        "y": 0
       },
       "id": 3,
       "maxDataPoints": 1,
@@ -267,7 +186,7 @@
         "textMode": "auto",
         "wideLayout": true
       },
-      "pluginVersion": "11.2.5",
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -284,7 +203,6 @@
         }
       ],
       "title": "BAM Healthy",
-      "description": "Current BAM client health (bam_healthy). Max across the selected instance(s) returns 1 when at least one BAM connection is healthy, 0 when none are.",
       "type": "stat"
     },
     {
@@ -292,6 +210,104 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "bam_healthy is a boolean gauge: 1 when the BAM client is connected to the BAM node and healthy, 0 otherwise. This panel uses min_over_time over $__rate_interval so any unhealthy sample marks the interval as 0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "fillOpacity": 70,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 20,
+        "x": 4,
+        "y": 0
+      },
+      "id": 1,
+      "maxDataPoints": 200,
+      "options": {
+        "colWidth": 0.9,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "rowHeight": 0.9,
+        "showValue": "never",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "min_over_time(bam_healthy{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": ".",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Health Timeline",
+      "transparent": true,
+      "type": "status-history"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 3
+      },
+      "id": 20,
+      "panels": [],
+      "title": "Details",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Per-second ingest from the BAM node. bam_transaction_received counts accepted transactions (including those unpacked from bundles) and bam_bundle_received counts bundles received.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -321,6 +337,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -336,7 +353,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -352,7 +369,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 7
+        "y": 4
       },
       "id": 4,
       "options": {
@@ -365,10 +382,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -377,7 +396,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_transaction_received{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Transactions",
           "range": true,
@@ -390,7 +408,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_bundle_received{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Bundles",
           "range": true,
@@ -398,7 +415,6 @@
         }
       ],
       "title": "BAM Ingest Rate",
-      "description": "Per-second ingest from the BAM node. bam_transaction_received counts accepted transactions (including those unpacked from bundles) and bam_bundle_received counts bundles received.",
       "type": "timeseries"
     },
     {
@@ -406,6 +422,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Per-second rate of bundle execution result messages forwarded back to the BAM node (bam_results_sent counter).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -435,6 +452,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -450,7 +468,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -466,7 +484,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 7
+        "y": 4
       },
       "id": 5,
       "options": {
@@ -479,10 +497,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -491,7 +511,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_results_sent{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Results Sent",
           "range": true,
@@ -499,7 +518,6 @@
         }
       ],
       "title": "BAM Results Rate",
-      "description": "Per-second rate of bundle execution result messages forwarded back to the BAM node (bam_results_sent counter).",
       "type": "timeseries"
     },
     {
@@ -507,6 +525,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Current number of bundle execution results buffered for BAM feedback (bam_results_queue_depth gauge). A rising value indicates feedback is falling behind.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -536,6 +555,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -551,7 +571,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -567,7 +587,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 15
+        "y": 12
       },
       "id": 6,
       "options": {
@@ -580,10 +600,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -592,7 +614,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (bam_results_queue_depth{instance=~\"$instance\"})",
-          "hide": false,
           "instant": false,
           "legendFormat": "Queue Depth",
           "range": true,
@@ -600,7 +621,6 @@
         }
       ],
       "title": "BAM Results Queue Depth",
-      "description": "Current number of bundle execution results buffered for BAM feedback (bam_results_queue_depth gauge). A rising value indicates feedback is falling behind.",
       "type": "timeseries"
     },
     {
@@ -608,6 +628,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Drop rates from BAM ingest and feedback. bam_packets_dropped counts BAM network packets dropped before forwarding to the TPU pipeline; bam_bundle_results_dropped counts bundle execution results discarded before publication.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -637,6 +658,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -652,7 +674,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -668,7 +690,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 15
+        "y": 12
       },
       "id": 7,
       "options": {
@@ -681,10 +703,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -693,7 +717,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_packets_dropped{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Packets Dropped",
           "range": true,
@@ -706,7 +729,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_bundle_results_dropped{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Results Dropped",
           "range": true,
@@ -714,7 +736,6 @@
         }
       ],
       "title": "BAM Drops",
-      "description": "Drop rates from BAM ingest and feedback. bam_packets_dropped counts BAM network packets dropped before forwarding to the TPU pipeline; bam_bundle_results_dropped counts bundle execution results discarded before publication.",
       "type": "timeseries"
     },
     {
@@ -722,6 +743,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Per-second BAM client error rates grouped by bam_error. bam_errors is a cumulative counter for protobuf, transport, timeout, no_fee_info (missing fee info), and ssl_alloc failures.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -751,6 +773,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -766,7 +789,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -782,7 +805,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 20
       },
       "id": 8,
       "options": {
@@ -795,10 +818,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -807,7 +832,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (bam_error) (rate(bam_errors{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "{{bam_error}}",
           "range": true,
@@ -815,7 +839,6 @@
         }
       ],
       "title": "BAM Errors (by type)",
-      "description": "Per-second BAM client error rates grouped by bam_error. bam_errors is a cumulative counter for protobuf, transport, timeout, no_fee_info (missing fee info), and ssl_alloc failures.",
       "type": "timeseries"
     },
     {
@@ -823,6 +846,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Connection lifecycle and keepalive activity. bam_connections and bam_disconnects are counters for successful connects and teardowns; bam_keepalives counts HTTP/2 keepalive PINGs acknowledged by the BAM node.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -852,6 +876,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -867,7 +892,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -883,7 +908,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 20
       },
       "id": 9,
       "options": {
@@ -896,10 +921,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -908,7 +935,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_connections{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Connections",
           "range": true,
@@ -921,7 +947,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_disconnects{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Disconnects",
           "range": true,
@@ -934,7 +959,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_keepalives{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Keepalives",
           "range": true,
@@ -942,7 +966,6 @@
         }
       ],
       "title": "BAM Connections and Keepalives",
-      "description": "Connection lifecycle and keepalive activity. bam_connections and bam_disconnects are counters for successful connects and teardowns; bam_keepalives counts HTTP/2 keepalive PINGs acknowledged by the BAM node.",
       "type": "timeseries"
     },
     {
@@ -950,6 +973,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Heartbeat exchange with the BAM node. bam_heartbeats_sent counts validator heartbeat messages sent; bam_heartbeats_received counts builder heartbeats received, shown as rates.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -979,6 +1003,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -994,7 +1019,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -1010,7 +1035,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 31
+        "y": 28
       },
       "id": 10,
       "options": {
@@ -1023,10 +1048,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -1035,7 +1062,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_heartbeats_sent{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Heartbeats Sent",
           "range": true,
@@ -1048,7 +1074,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_heartbeats_received{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Heartbeats Received",
           "range": true,
@@ -1056,7 +1081,6 @@
         }
       ],
       "title": "BAM Heartbeats",
-      "description": "Heartbeat exchange with the BAM node. bam_heartbeats_sent counts validator heartbeat messages sent; bam_heartbeats_received counts builder heartbeats received, shown as rates.",
       "type": "timeseries"
     },
     {
@@ -1064,6 +1088,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "BAM round-trip time in nanoseconds. bam_rtt_sample is the latest sample, bam_rtt_smoothed is the exponentially smoothed estimate, and bam_rtt_var is the smoothed variance",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1093,6 +1118,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1108,7 +1134,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -1124,7 +1150,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 31
+        "y": 28
       },
       "id": 11,
       "options": {
@@ -1137,10 +1163,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -1149,7 +1177,6 @@
           },
           "editorMode": "code",
           "expr": "avg by (instance) (bam_rtt_smoothed{instance=~\"$instance\"})",
-          "hide": false,
           "instant": false,
           "legendFormat": "RTT Smoothed",
           "range": true,
@@ -1162,7 +1189,6 @@
           },
           "editorMode": "code",
           "expr": "avg by (instance) (bam_rtt_sample{instance=~\"$instance\"})",
-          "hide": false,
           "instant": false,
           "legendFormat": "RTT Sample",
           "range": true,
@@ -1175,7 +1201,6 @@
           },
           "editorMode": "code",
           "expr": "avg by (instance) (bam_rtt_var{instance=~\"$instance\"})",
-          "hide": false,
           "instant": false,
           "legendFormat": "RTT Variance",
           "range": true,
@@ -1183,7 +1208,6 @@
         }
       ],
       "title": "BAM RTT",
-      "description": "BAM round-trip time in nanoseconds. bam_rtt_sample is the latest sample, bam_rtt_smoothed is the exponentially smoothed estimate, and bam_rtt_var is the smoothed variance",
       "type": "timeseries"
     },
     {
@@ -1191,6 +1215,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Receive-delay distribution from BAM node to BAM client.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1220,6 +1245,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1235,7 +1261,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -1251,7 +1277,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 39
+        "y": 36
       },
       "id": 12,
       "options": {
@@ -1264,10 +1290,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -1276,7 +1304,6 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.5, sum by (le) (rate(bam_message_rx_delay_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "hide": false,
           "instant": false,
           "legendFormat": "p50",
           "range": true,
@@ -1289,7 +1316,6 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le) (rate(bam_message_rx_delay_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "hide": false,
           "instant": false,
           "legendFormat": "p95",
           "range": true,
@@ -1302,7 +1328,6 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.99, sum by (le) (rate(bam_message_rx_delay_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "hide": false,
           "instant": false,
           "legendFormat": "p99",
           "range": true,
@@ -1315,7 +1340,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_message_rx_delay_nanos_sum{instance=~\"$instance\"}[$__rate_interval])) / sum by (instance) (rate(bam_message_rx_delay_nanos_count{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Mean",
           "range": true,
@@ -1323,7 +1347,6 @@
         }
       ],
       "title": "BAM Message RX Delay",
-      "description": "Receive-delay distribution from BAM node to BAM client.",
       "type": "timeseries"
     },
     {
@@ -1331,6 +1354,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Per-second bundle-related transaction failures through verify/dedup/resolv plus pack drops. verify/dedup/resolv metrics count transactions that failed because a peer in the same bundle failed; pack_transaction_dropped_partial_bundle counts transactions dropped in pack because the bundle was partial. Failures are per-transaction even when the root cause is a bundle.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1360,6 +1384,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1375,7 +1400,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -1391,7 +1416,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 39
+        "y": 36
       },
       "id": 13,
       "options": {
@@ -1404,10 +1429,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -1416,7 +1443,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(verify_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Verify Peer Failures",
           "range": true,
@@ -1429,7 +1455,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(dedup_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Dedup Peer Failures",
           "range": true,
@@ -1442,7 +1467,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(resolv_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Resolv Peer Failures",
           "range": true,
@@ -1455,7 +1479,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(pack_transaction_dropped_partial_bundle{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Pack Partial Bundle Drops",
           "range": true,
@@ -1463,7 +1486,6 @@
         }
       ],
       "title": "Pipeline Bundle Peer Failures",
-      "description": "Per-second bundle-related transaction failures through verify/dedup/resolv plus pack drops. verify/dedup/resolv metrics count transactions that failed because a peer in the same bundle failed; pack_transaction_dropped_partial_bundle counts transactions dropped in pack because the bundle was partial. Failures are per-transaction even when the root cause is a bundle.",
       "type": "timeseries"
     },
     {
@@ -1471,6 +1493,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Bundle backlog in pack. pack_available_transactions with avail_txn_type=bundles is the count of pending bundle transactions available to schedule; pack_pending_transactions_heap_size is the fixed capacity of pack's pending heap.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1500,6 +1523,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1515,7 +1539,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -1531,7 +1555,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 47
+        "y": 44
       },
       "id": 14,
       "options": {
@@ -1544,10 +1568,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -1556,7 +1582,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (pack_available_transactions{instance=~\"$instance\",avail_txn_type=\"bundles\"})",
-          "hide": false,
           "instant": false,
           "legendFormat": "Bundles Available",
           "range": true,
@@ -1569,7 +1594,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (pack_pending_transactions_heap_size{instance=~\"$instance\"})",
-          "hide": false,
           "instant": false,
           "legendFormat": "Pack Capacity",
           "range": true,
@@ -1577,7 +1601,6 @@
         }
       ],
       "title": "Pack Bundle Backlog",
-      "description": "Bundle backlog in pack. pack_available_transactions with avail_txn_type=bundles is the count of pending bundle transactions available to schedule; pack_pending_transactions_heap_size is the fixed capacity of pack's pending heap.",
       "type": "timeseries"
     },
     {
@@ -1615,6 +1638,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1630,7 +1654,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -1646,7 +1670,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 47
+        "y": 44
       },
       "id": 15,
       "options": {
@@ -1659,10 +1683,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -1671,7 +1697,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bank_transaction_result{instance=~\"$instance\",transaction_error=\"bundle_peer\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Bundle Peer Failure",
           "range": true,
@@ -1686,6 +1711,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "BAM tile workspace heap usage in bytes. bam_heap_size is total reserved capacity, bam_heap_free_bytes is estimated free space, and used is computed as size minus free.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1715,6 +1741,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1730,7 +1757,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -1746,7 +1773,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 55
+        "y": 52
       },
       "id": 16,
       "options": {
@@ -1759,10 +1786,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -1771,7 +1800,6 @@
           },
           "editorMode": "code",
           "expr": "max by (instance) (bam_heap_size{instance=~\"$instance\"})",
-          "hide": false,
           "instant": false,
           "legendFormat": "Heap Size",
           "range": true,
@@ -1784,7 +1812,6 @@
           },
           "editorMode": "code",
           "expr": "max by (instance) (bam_heap_size{instance=~\"$instance\"}) - max by (instance) (bam_heap_free_bytes{instance=~\"$instance\"})",
-          "hide": false,
           "instant": false,
           "legendFormat": "Heap Used",
           "range": true,
@@ -1797,7 +1824,6 @@
           },
           "editorMode": "code",
           "expr": "max by (instance) (bam_heap_free_bytes{instance=~\"$instance\"})",
-          "hide": false,
           "instant": false,
           "legendFormat": "Heap Free",
           "range": true,
@@ -1805,7 +1831,6 @@
         }
       ],
       "title": "BAM Heap Usage",
-      "description": "BAM tile workspace heap usage in bytes. bam_heap_size is total reserved capacity, bam_heap_free_bytes is estimated free space, and used is computed as size minus free.",
       "type": "timeseries"
     },
     {
@@ -1813,6 +1838,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Per-second rate of leader state update messages sent to the BAM node (bam_leader_state_sent counter).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1842,6 +1868,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1857,7 +1884,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -1873,7 +1900,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 55
+        "y": 52
       },
       "id": 17,
       "options": {
@@ -1886,10 +1913,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.4.0-20781422371.patch2",
       "targets": [
         {
           "datasource": {
@@ -1898,7 +1927,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_leader_state_sent{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "Leader Updates",
           "range": true,
@@ -1906,7 +1934,6 @@
         }
       ],
       "title": "BAM Leader Updates",
-      "description": "Per-second rate of leader state update messages sent to the BAM node (bam_leader_state_sent counter).",
       "type": "timeseries"
     },
     {
@@ -1914,6 +1941,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Per-second results of pack's bundle crank checks, grouped by bundle_crank_result: not_needed (on-chain state already correct), inserted (initializer bundle inserted), creation_failed, and insertion_failed.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1957,8 +1985,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1974,7 +2001,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 63
+        "y": 60
       },
       "id": 18,
       "options": {
@@ -1999,7 +2026,6 @@
           },
           "editorMode": "code",
           "expr": "sum by (bundle_crank_result) (rate(pack_bundle_crank_status{instance=~\"$instance\"}[$__rate_interval]))",
-          "hide": false,
           "instant": false,
           "legendFormat": "{{bundle_crank_result}}",
           "range": true,
@@ -2007,7 +2033,6 @@
         }
       ],
       "title": "Bundle Crank Status",
-      "description": "Per-second results of pack's bundle crank checks, grouped by bundle_crank_result: not_needed (on-chain state already correct), inserted (initializer bundle inserted), creation_failed, and insertion_failed.",
       "type": "timeseries"
     },
     {
@@ -2015,6 +2040,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Delay in starting the slot caused by loading data needed for bundle crank transactions.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2058,8 +2084,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -2075,7 +2100,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 63
+        "y": 60
       },
       "id": 19,
       "options": {
@@ -2100,7 +2125,6 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.5, sum by (le) (rate(poh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "hide": false,
           "instant": false,
           "legendFormat": "p50",
           "range": true,
@@ -2113,7 +2137,6 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le) (rate(poh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "hide": false,
           "instant": false,
           "legendFormat": "p95",
           "range": true,
@@ -2126,7 +2149,6 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.99, sum by (le) (rate(poh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "hide": false,
           "instant": false,
           "legendFormat": "p99",
           "range": true,
@@ -2134,45 +2156,40 @@
         }
       ],
       "title": "PoH Bundle Init Delay",
-      "description": "Delay in starting the slot caused by loading data needed for bundle crank transactions.",
       "type": "timeseries"
     }
   ],
+  "preload": false,
+  "refresh": "",
+  "schemaVersion": 42,
+  "tags": [],
   "templating": {
     "list": [
       {
         "allValue": ".*",
         "current": {
-          "selected": false,
-          "text": "",
-          "value": ""
+          "text": "Jito Hosted Prometheus",
+          "value": "VNf0kp04z"
         },
-        "hide": 0,
         "includeAll": false,
-        "multi": false,
         "name": "datasource",
         "options": [],
         "query": "prometheus",
-        "queryValue": "",
         "refresh": 1,
         "regex": "",
-        "skipUrlSync": false,
         "type": "datasource"
       },
       {
         "current": {
-          "selected": false,
-          "text": "",
-          "value": ""
+          "text": "All",
+          "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
           "uid": "${datasource}"
         },
         "definition": "label_values(bam_enabled,instance)",
-        "hide": 0,
         "includeAll": true,
-        "multi": false,
         "name": "instance",
         "options": [],
         "query": {
@@ -2182,20 +2199,19 @@
         },
         "refresh": 1,
         "regex": "",
-        "skipUrlSync": false,
-        "sort": 0,
+        "regexApplyTo": "value",
         "type": "query"
       }
     ]
   },
   "time": {
-    "from": "now-6h",
+    "from": "now-12h",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "America/Chicago",
   "title": "Firedancer BAM Node Flow",
   "uid": "bamnodeflow",
-  "version": 1,
+  "version": 7,
   "weekStart": ""
 }
