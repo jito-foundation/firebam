@@ -262,6 +262,19 @@ fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
    - rbuf_tx is empty.  (HTTP/2 frames all flushed out to sockets) */
 
 fd_grpc_h2_stream_t *
+fd_grpc_client_request_start_ex(
+    fd_grpc_client_t *   client,
+    char const *         path,
+    ulong                path_len, /* in [0,128) */
+    ulong                request_ctx,
+    pb_msgdesc_t const * fields,
+    void const *         message,
+    char const *         auth_token,
+    ulong                auth_token_sz,
+    int                  end_stream
+);
+
+fd_grpc_h2_stream_t *
 fd_grpc_client_request_start(
     fd_grpc_client_t *   client,
     char const *         path,
@@ -271,6 +284,15 @@ fd_grpc_client_request_start(
     void const *         message,
     char const *         auth_token,
     ulong                auth_token_sz
+);
+
+int
+fd_grpc_client_stream_send(
+    fd_grpc_client_t *   client,
+    fd_grpc_h2_stream_t * stream,
+    pb_msgdesc_t const * fields,
+    void const *         message,
+    int                  end_stream
 );
 
 /* fd_grpc_client_deadline_set sets a request deadline (used to

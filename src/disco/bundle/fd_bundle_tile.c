@@ -4,6 +4,8 @@
 #include "../topo/fd_topo.h"
 #include "../keyguard/fd_keyload.h"
 #include "../plugin/fd_plugin.h"
+#include "../../util/pod/fd_pod.h"
+#include "../../tango/fseq/fd_fseq.h"
 #include "../../waltz/http/fd_url.h"
 
 #include <errno.h>
@@ -77,13 +79,33 @@ metrics_write( fd_bundle_tile_t * ctx ) {
 
 void
 fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
-  long log_interval_ns = (long)30e9;
-  int  status          = fd_bundle_client_status( ctx );
-  long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
-  long now_ns          = fd_log_wallclock();
-  if( FD_UNLIKELY( status!=FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED && now_ns>log_next_ns ) ) {
-    FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
-    ctx->last_bundle_status_log_nanos = now_ns;
+  _Bool bam_override = ctx->bam_status_fseq && fd_fseq_query( ctx->bam_status_fseq );
+  if( FD_UNLIKELY( bam_override!=ctx->bam_override_active ) ) {
+    ctx->bam_override_active = bam_override;
+    if( bam_override ) {
+      // disconnect
+      fd_bundle_client_reset( ctx );
+      ctx->bundle_status_plugin = 127;
+      ctx->bundle_status_recent = FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_DISCONNECTED;
+      ctx->bundle_status_logged = ctx->bundle_status_recent;
+      ctx->last_bundle_status_log_nanos = fd_log_wallclock();
+      FD_LOG_NOTICE(( "BAM healthy; pausing bundle gRPC connection" ));
+    } else {
+      ctx->backoff_until = 0;
+      ctx->defer_reset   = 0;
+      FD_LOG_NOTICE(( "BAM not healthy; resuming bundle gRPC connection" ));
+    }
+  }
+
+  if( FD_LIKELY( !ctx->bam_override_active ) ) {
+    long log_interval_ns = (long)30e9;
+    int status = fd_bundle_client_status( ctx );
+    long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
+    long now_ns          = fd_log_wallclock();
+    if( FD_UNLIKELY( status!=FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED && now_ns>log_next_ns ) ) {
+      FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
+      ctx->last_bundle_status_log_nanos = now_ns;
+    }
   }
 
   if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
@@ -139,7 +161,8 @@ after_credit( fd_bundle_tile_t *  ctx,
               int *               charge_busy ) {
   (void)opt_poll_in;
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
-  fd_bundle_client_step( ctx, charge_busy );
+  if( FD_LIKELY( !ctx->bam_override_active ) )
+    fd_bundle_client_step( ctx, charge_busy );
 
   if( ctx->plugin_out.mem ) {
     if( FD_UNLIKELY( ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
@@ -151,79 +174,19 @@ after_credit( fd_bundle_tile_t *  ctx,
 }
 
 static void
-parse_url( fd_url_t *   url_,
-           char const * url_str,
-           ulong        url_str_len,
-           ushort *     tcp_port,
-           _Bool *      is_ssl ) {
-
-  /* Parse URL */
-
-  int url_err[1];
-  fd_url_t * url = fd_url_parse_cstr( url_, url_str, url_str_len, url_err );
-  if( FD_UNLIKELY( !url ) ) {
-    switch( *url_err ) {
-    scheme_err:
-    case FD_URL_ERR_SCHEME:
-      FD_LOG_ERR(( "Invalid [tiles.bundle.url] `%.*s`: must start with `http://` or `https://`", (int)url_str_len, url_str ));
-      break;
-    case FD_URL_ERR_HOST_OVERSZ:
-      FD_LOG_ERR(( "Invalid [tiles.bundle.url] `%.*s`: domain name is too long", (int)url_str_len, url_str ));
-      break;
-    default:
-      FD_LOG_ERR(( "Invalid [tiles.bundle.url] `%.*s`", (int)url_str_len, url_str ));
-      break;
-    }
-  }
-
-  /* FIXME the URL scheme path technically shouldn't contain slashes */
-  if( url->scheme_len==8UL && fd_memeq( url->scheme, "https://", 8UL ) ) {
-    *is_ssl = 1;
-  } else if( url->scheme_len==7UL && fd_memeq( url->scheme, "http://", 7UL ) ) {
-    *is_ssl = 0;
-  } else {
-    goto scheme_err;
-  }
-
-  /* Parse port number */
-
-  *tcp_port = 443;
-  if( url->port_len ) {
-    if( FD_UNLIKELY( url->port_len > 5 ) ) {
-    invalid_port:
-      FD_LOG_ERR(( "Invalid [tiles.bundle.url] `%.*s`: invalid port number", (int)url_str_len, url_str ));
-    }
-
-    char port_cstr[6];
-    fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( port_cstr ), url->port, url->port_len ) );
-    ulong port_no = fd_cstr_to_ulong( port_cstr );
-    if( FD_UNLIKELY( !port_no || port_no>USHORT_MAX ) ) goto invalid_port;
-
-    *tcp_port = (ushort)port_no;
-  }
-
-  /* Resolve domain */
-
-  if( FD_UNLIKELY( url->host_len > 255 ) ) {
-    FD_LOG_CRIT(( "Invalid url->host_len" )); /* unreachable */
-  }
-  char host_cstr[ 256 ];
-  fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( host_cstr ), url->host, url->host_len ) );
-}
-
-static void
 fd_bundle_tile_parse_endpoint( fd_bundle_tile_t *     ctx,
                                fd_topo_tile_t const * tile ) {
   fd_url_t url[1];
   _Bool is_ssl = 0;
-  parse_url(
+  int res = fd_url_parse_endpoint(
       url,
       tile->bundle.url, tile->bundle.url_len,
       &ctx->server_tcp_port,
-      &is_ssl
+      &is_ssl,
+      "[tiles.bundle.url]"
   );
-  if( FD_UNLIKELY( url->host_len > 255 ) ) {
-    FD_LOG_CRIT(( "Invalid url->host_len" )); /* unreachable */
+  if( FD_UNLIKELY( res < 0 ) ) {
+    FD_LOG_CRIT(( "Failed to parse BAM endpoint" ));
   }
   fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_fqdn ), url->host, url->host_len ) );
   ctx->server_fqdn_len = url->host_len;
@@ -547,6 +510,15 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->plugin_out = bundle_out_link( topo, &topo->links[ tile->out_link_id[ plugin_out_idx ] ], plugin_out_idx );
   } else {
     ctx->plugin_out = (fd_bundle_out_ctx_t){ .idx=ULONG_MAX };
+  }
+
+  ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
+  if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
+    ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
+    if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "bundle tile missing bam_status fseq" ));
+    ctx->bam_override_active = fd_fseq_query( ctx->bam_status_fseq )!=0UL;
+  } else {
+    ctx->bam_status_fseq = NULL;
   }
 
   /* Set socket receive buffer size */

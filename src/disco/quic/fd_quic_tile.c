@@ -2,6 +2,8 @@
 #include "../metrics/fd_metrics.h"
 #include "../stem/fd_stem.h"
 #include "../topo/fd_topo.h"
+#include "../../util/pod/fd_pod.h"
+#include "../../tango/fseq/fd_fseq.h"
 #include "fd_tpu.h"
 #include "../../waltz/quic/fd_quic_private.h"
 #include "generated/quic_seccomp.h"
@@ -112,6 +114,9 @@ before_credit( fd_quic_ctx_t *     ctx,
   /* Publishes to mcache via callbacks */
   long now = fd_clock_now( ctx->clock );
   ctx->now = now;
+  if( FD_UNLIKELY( ctx->bam_override_active ) ) {
+    return;
+  }
   *charge_busy = fd_quic_service( ctx->quic, now );
 }
 
@@ -185,6 +190,8 @@ before_frag( fd_quic_ctx_t * ctx,
              ulong           sig ) {
   (void)in_idx;
   (void)seq;
+
+  if( FD_UNLIKELY( ctx->bam_override_active ) ) return 1;
 
   ulong proto = fd_disco_netmux_sig_proto( sig );
   if( FD_UNLIKELY( proto!=DST_PROTO_TPU_UDP && proto!=DST_PROTO_TPU_QUIC ) ) return 1;
@@ -446,6 +453,10 @@ quic_tls_keylog( void *       _ctx,
 
 static void
 during_housekeeping( fd_quic_ctx_t * ctx ) {
+  if( FD_LIKELY( ctx->bam_status_fseq ) ) {
+    ctx->bam_override_active = fd_fseq_query( ctx->bam_status_fseq )!=0UL;
+  }
+
   if( FD_UNLIKELY( ctx->recal_next <= ctx->now ) ) {
     ctx->recal_next = fd_clock_default_recal( ctx->clock );
   }
@@ -606,6 +617,15 @@ unprivileged_init( fd_topo_t *      topo,
   fd_topo_link_t * verify_out = &topo->links[ tile->out_link_id[ 0 ] ];
 
   ctx->verify_out_mem = topo->workspaces[ topo->objs[ verify_out->dcache_obj_id ].wksp_id ].wksp;
+
+  ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
+  if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
+    ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
+    if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "quic tile missing bam_status fseq" ));
+    ctx->bam_override_active = fd_fseq_query( ctx->bam_status_fseq )!=0UL;
+  } else {
+    ctx->bam_status_fseq = NULL;
+  }
 
   ctx->quic = quic;
 
