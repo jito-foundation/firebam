@@ -278,24 +278,27 @@ void
 fd_bam_client_step( fd_bam_tile_t * bundle,
                        int *              charge_busy );
 
-/* fd_bam_client_step_reconnect drives the 'reconnect' state machine.
-   Once the HTTP/2 conn is established (SETTINGS exchanged), this
-   function drives the auth logic, requests block builder info, sets up
-   packet and bundle subscriptions, and PINGs. */
+/* fd_bam_client_step_reconnect drives the BAM protocol state machine
+   once the HTTP/2 connection is established. It handles auth, stream
+   setup, config polling, heartbeats, leader state updates, keepalives,
+   and result flushing. */
 
 int
 fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
                                  long               now );
+
+/* Expose reconnect step logic for unit tests. Returns 1 if any work was
+   performed, 0 otherwise. Not used in production. */
+
+int
+fd_bam_test_client_step_reconnect( fd_bam_tile_t * ctx,
+                                      long               now );
 
 /* Expose internal result flushing logic for unit tests. Returns 1 if any
    results were flushed (busy), 0 otherwise. Not used in production. */
 
 int
 fd_bam_test_flush_results( fd_bam_tile_t * ctx );
-
-int
-fd_bam_test_drive( fd_bam_tile_t * ctx,
-                   long             now );
 
 /* fd_bam_tile_backoff is called whenever an error occurs.  Stalls
    forward progress for a randomized amount of time to prevent error

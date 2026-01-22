@@ -336,7 +336,7 @@ bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
     }
     fd_h2_rbuf_t * rbuf_tx = fd_grpc_client_rbuf_tx( ctx->grpc_client );
     fd_h2_rbuf_init( rbuf_tx, rbuf_tx->buf0, rbuf_tx->bufsz );
-    (void)fd_bam_test_drive( ctx, fd_bam_now() );
+    (void)fd_bam_test_client_step_reconnect( ctx, fd_bam_now() );
   }
 
   if( FD_UNLIKELY( ctx->bam_stream && !ctx->bam_stream_live ) ) {
@@ -361,7 +361,7 @@ bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
   ctx->bam_leader_pending = 1U;
 
   bam_fuzz_enqueue_results( ctx, data, size );
-  (void)fd_bam_test_drive( ctx, now );
+  (void)fd_bam_test_client_step_reconnect( ctx, now );
 }
 
 /* Synthesize an AuthChallengeResponse payload. selector drives length and

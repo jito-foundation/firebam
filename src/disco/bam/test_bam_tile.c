@@ -1508,7 +1508,7 @@ test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
   char const validator_key[] = "validator-key-test";
   strlcpy( state->bam_identity_pubkey_b58, validator_key, sizeof(validator_key) );
 
-  fd_bam_test_drive( state, g_clock );
+  fd_bam_test_client_step_reconnect( state, g_clock );
 
   FD_TEST( state->bam_stream != NULL );
   FD_TEST( state->bam_stream_connecting == 1U );
@@ -1540,7 +1540,7 @@ test_bam_scheduler_heartbeat_publishes_message( fd_wksp_t * wksp ) {
   state->bam_last_validator_heartbeat_ns = 0L;
   state->bam_last_config_poll_ns = now;
   test_bam_keepalive_sync( state, now );
-  int busy = fd_bam_test_drive( state, now );
+  int busy = fd_bam_test_client_step_reconnect( state, now );
   FD_TEST( busy == 1 );
   FD_TEST( state->bam_last_validator_heartbeat_ns == now );
 
@@ -1575,7 +1575,7 @@ test_bam_scheduler_leader_state_publishes_message( fd_wksp_t * wksp ) {
   state->bam_last_config_poll_ns = now;
   state->bam_last_validator_heartbeat_ns = now;
   test_bam_keepalive_sync( state, now );
-  int busy = fd_bam_test_drive( state, now );
+  int busy = fd_bam_test_client_step_reconnect( state, now );
   FD_TEST( busy == 1 );
   FD_TEST( state->bam_leader_pending == 0U );
 

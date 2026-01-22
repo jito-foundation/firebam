@@ -17,6 +17,7 @@
 #include "../../ballet/nanopb/pb_decode.h"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../util/net/fd_ip4.h"
+#include "../../util/fd_util.h"
 
 #include <fcntl.h>
 #include <errno.h>
@@ -123,17 +124,8 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
 
 static int
 fd_bam_client_do_connect( fd_bam_tile_t const * ctx,
-                             uint                     ip4_addr ) {
+                             uint               ip4_addr ) {
   if( FD_UNLIKELY( ctx->tcp_sock < 0 ) ) return EBADF;
-
-  if( FD_UNLIKELY( ip4_addr == 0U ) ) {
-    int so_err = 0;
-    socklen_t so_err_sz = sizeof(so_err);
-    if( FD_UNLIKELY( getsockopt( ctx->tcp_sock, SOL_SOCKET, SO_ERROR, &so_err, &so_err_sz ) ) ) {
-      return errno;
-    }
-    return so_err;
-  }
 
   struct sockaddr_in addr = {
     .sin_family      = AF_INET,
@@ -141,7 +133,8 @@ fd_bam_client_do_connect( fd_bam_tile_t const * ctx,
     .sin_port        = fd_ushort_bswap( ctx->server_tcp_port )
   };
   errno = 0;
-  connect( ctx->tcp_sock, fd_type_pun_const( &addr ), sizeof(struct sockaddr_in) );
+  if( FD_LIKELY( 0==connect( ctx->tcp_sock, fd_type_pun_const( &addr ), sizeof(struct sockaddr_in) ) ) ) return 0;
+  if( errno == EISCONN ) return 0;
   return errno;
 }
 
@@ -462,8 +455,6 @@ fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
 
 static void
 fd_bam_request_auth_challenge( fd_bam_tile_t * ctx ) {
-  if( FD_UNLIKELY( ctx->bam_auth_inflight ) ) return;
-  if( FD_UNLIKELY( !ctx->grpc_client ) ) return;
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
 
   bam_api_AuthChallengeRequest req = bam_api_AuthChallengeRequest_init_default;
@@ -487,8 +478,6 @@ fd_bam_request_auth_challenge( fd_bam_tile_t * ctx ) {
 static void
 fd_bam_request_config( fd_bam_tile_t * ctx,
                         long               now ) {
-  if( FD_UNLIKELY( ctx->bam_config_inflight ) ) return;
-  if( FD_UNLIKELY( !ctx->grpc_client ) ) return;
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
 
   bam_api_ConfigRequest req = bam_api_ConfigRequest_init_default;
@@ -833,57 +822,50 @@ fd_bam_client_send_ping( fd_bam_tile_t * ctx ) {
   }
 }
 
-static int
-fd_bam_drive( fd_bam_tile_t * ctx,
-              long             now ) {
-  int busy = 0;
-  if( FD_UNLIKELY( !ctx->grpc_client ) ) return busy;
-  if( FD_UNLIKELY( !fd_grpc_client_is_connected( ctx->grpc_client ) ) ) return busy;
+int
+fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
+                              long            now ) {
+  if( FD_UNLIKELY( !fd_grpc_client_is_connected( ctx->grpc_client ) ) ) return 0;
 
-  long builder_info_valid_until = ctx->builder_info_valid_until;
-  int  builder_info_ready       = builder_info_valid_until != 0L;
-  if( FD_UNLIKELY( builder_info_ready && now >= builder_info_valid_until ) ) {
+  int busy = 0;
+  if( FD_UNLIKELY( ctx->builder_info_valid_until &&
+                   now >= ctx->builder_info_valid_until ) ) {
     ctx->builder_info_valid_until = 0L;
     ctx->bam_last_config_poll_ns  = 0L;
-    builder_info_valid_until      = 0L;
-    builder_info_ready            = 0;
   }
 
+  /* Request auth challenge before opening the scheduler stream. */
   if( FD_UNLIKELY( !ctx->bam_auth_ready && !ctx->bam_auth_inflight && !ctx->bam_stream ) ) {
     fd_bam_request_auth_challenge( ctx );
     busy = 1;
   }
 
+  /* Start scheduler stream. */
   if( FD_LIKELY( ctx->bam_auth_ready ) ) {
     fd_bam_try_start_stream( ctx );
   }
 
-  long const config_refresh_margin_ns = (long)5e9;
-  int need_config = builder_info_ready ? 0 : 1;
-  if( FD_UNLIKELY( builder_info_ready ) ) {
-    if( FD_UNLIKELY( now + config_refresh_margin_ns >= builder_info_valid_until ) ) {
-      need_config = 1;
-    }
-  }
-  if( FD_UNLIKELY( ctx->bam_last_config_poll_ns == 0L ) ) need_config = 1;
-  if( FD_UNLIKELY( need_config && !ctx->bam_config_inflight ) ) {
-    long const throttle_ns = builder_info_ready ? (long)5e9 : (long)1e9;
-    if( FD_UNLIKELY( ctx->bam_last_config_poll_ns == 0L ||
-                     now - ctx->bam_last_config_poll_ns >= throttle_ns ) ) {
-      fd_bam_request_config( ctx, now );
-      busy = 1;
-    }
+  /* Poll builder config on a throttle to keep stream settings fresh. */
+  long const throttle_ns = ctx->builder_info_valid_until ? (long)5e9 : (long)1e9;
+  _Bool const never_polled = ctx->bam_last_config_poll_ns == 0L;
+  _Bool const poll_due = never_polled || now - ctx->bam_last_config_poll_ns >= throttle_ns;
+  _Bool const refresh_needed = !ctx->builder_info_valid_until ||
+                               ( now + (long)5e9 >= ctx->builder_info_valid_until );
+  if( FD_UNLIKELY( !ctx->bam_config_inflight && refresh_needed && poll_due ) ) {
+    fd_bam_request_config( ctx, now );
+    busy = 1;
   }
 
-  long const heartbeat_ns = (long)5e9;
+  /* Heartbeat to keep validator session live. */
   if( FD_LIKELY( ctx->bam_stream && ctx->bam_stream_live ) ) {
-    if( FD_UNLIKELY( ( ctx->bam_last_validator_heartbeat_ns == 0L ) ||
-                     ( now - ctx->bam_last_validator_heartbeat_ns >= heartbeat_ns ) ) ) {
+    if( FD_UNLIKELY( ctx->bam_last_validator_heartbeat_ns == 0L ||
+                     now - ctx->bam_last_validator_heartbeat_ns >= (long)5e9 ) ) {
       fd_bam_send_heartbeat( ctx, now );
       busy = 1;
     }
   }
 
+  /* Push leader state updates when slot/tick changes. */
   if( FD_UNLIKELY( ctx->bam_leader_pending ) ) {
     if( FD_LIKELY( fd_bam_send_leader_state( ctx, &ctx->bam_leader_state ) ) ) {
       ctx->bam_leader_pending = 0U;
@@ -891,32 +873,22 @@ fd_bam_drive( fd_bam_tile_t * ctx,
     }
   }
 
+  /* Send a PING */
   if( FD_UNLIKELY( fd_keepalive_should_tx( ctx->keepalive, now ) ) ) {
     fd_bam_client_send_ping( ctx );
     busy = 1;
   }
 
+  /* Flush queued execution results back to the BAM node. */
   if( FD_LIKELY( ctx->bam_stream_live ) ) busy |= fd_bam_flush_results( ctx );
 
   return busy;
 }
 
 int
-fd_bam_test_drive( fd_bam_tile_t * ctx,
+fd_bam_test_client_step_reconnect( fd_bam_tile_t * ctx,
                    long             now ) {
-  return fd_bam_drive( ctx, now );
-}
-
-int
-fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
-                                 long               now ) {
-  /* Send a PING */
-  if( FD_UNLIKELY( fd_keepalive_should_tx( ctx->keepalive, now ) ) ) {
-    fd_bam_client_send_ping( ctx );
-    return 1;
-  }
-
-  return 0;
+  return fd_bam_client_step_reconnect( ctx, now );
 }
 
 static void
@@ -924,18 +896,19 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
                        int *              charge_busy ) {
 
   if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) ) {
-    /* Admin can pause BAM without tearing the tile down; skip reconnect/IO until re-enabled. */
+    /* Admin can pause BAM, skip reconnect until re-enabled. */
     return;
   }
 
   if( FD_UNLIKELY( ctx->defer_reset ) ) {
     fd_bam_client_reset( ctx );
+    ctx->metrics.transport_fail_cnt++;
     *charge_busy = 1;
     FD_LOG_WARNING(( "BAM client reset requested; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
-                     ctx->server_fqdn,
-                     FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
-                     ctx->server_tcp_port,
-                     fd_bam_client_retry_ms( ctx ) ));
+      ctx->server_fqdn,
+      FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+      ctx->server_tcp_port,
+      fd_bam_client_retry_ms( ctx ) ));
     return;
   }
 
@@ -946,16 +919,16 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     struct pollfd pfds[1] = {
       { .fd = ctx->tcp_sock, .events = POLLOUT }
     };
-    int poll_res = poll( pfds, 1, 0 );
+    int poll_res = fd_syscall_poll( pfds, 1, 0 );
     if( FD_UNLIKELY( poll_res < 0 ) ) {
-      FD_LOG_ERR(( "poll(tcp_sock) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+      FD_LOG_ERR(( "fd_syscall_poll(tcp_sock) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
     }
     if( poll_res == 0 ) return;
 
     if( pfds[0].revents & (POLLERR|POLLHUP) ) {
       int connect_err = fd_bam_client_do_connect( ctx, 0U );
-      fd_bam_client_reset( ctx );
       ctx->metrics.transport_fail_cnt++;
+      fd_bam_client_reset( ctx );
       FD_LOG_WARNING(( "BAM gRPC connect attempt failed (%i-%s) while dialing %s/" FD_IP4_ADDR_FMT ":%hu; retrying in %.3f ms",
                        connect_err, fd_io_strerror( connect_err ),
                        ctx->server_fqdn,
@@ -967,6 +940,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     }
     if( pfds[0].revents & POLLOUT ) {
       int connect_err = fd_bam_client_do_connect( ctx, 0U );
+      if( connect_err==EINPROGRESS || connect_err==EALREADY ) return;
       if( FD_UNLIKELY( connect_err ) ) {
         fd_bam_client_reset( ctx );
         ctx->metrics.transport_fail_cnt++;
@@ -989,8 +963,12 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
 
   /* gRPC conn died? */
   if( FD_UNLIKELY( !ctx->grpc_client ) ) {
+    long sleep_start;
   reconnect:
-    if( FD_UNLIKELY( fd_bam_tile_should_stall( ctx, fd_bam_now() ) ) ) {
+    sleep_start = fd_bam_now();
+    if( FD_UNLIKELY( fd_bam_tile_should_stall( ctx, sleep_start ) ) ) {
+      long wait_dur = ctx->backoff_until - sleep_start;
+      fd_log_sleep( fd_long_min( wait_dur, 1e6 ) );
       return;
     }
     fd_bam_client_create_conn( ctx );
@@ -1001,16 +979,15 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   /* Did a HTTP/2 PING time out */
   long check_ts = ctx->cached_ts = fd_bam_now();
   if( FD_UNLIKELY( fd_keepalive_is_timeout( ctx->keepalive, check_ts ) ) ) {
-    double const timeout_sec = (double)( check_ts - ctx->keepalive->ts_last_tx )/1e9;
-    ctx->keepalive->inflight = 0;
-    fd_bam_client_reset( ctx );
-    ctx->metrics.transport_fail_cnt++;
     FD_LOG_WARNING(( "BAM gRPC timed out (HTTP/2 PING went unanswered for %.2f seconds); retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
-                     timeout_sec,
+                     (double)( check_ts - ctx->keepalive->ts_last_tx )/1e9,
                      ctx->server_fqdn,
                      FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
                      ctx->server_tcp_port,
                      fd_bam_client_retry_ms( ctx ) ));
+    ctx->keepalive->inflight = 0;
+    fd_bam_client_reset( ctx );
+    ctx->metrics.transport_fail_cnt++;
     *charge_busy = 1;
     return;
   }
@@ -1034,27 +1011,16 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   }
 
   /* Drive I/O, SSL handshake, and any inflight requests */
-  if( FD_UNLIKELY( !fd_bam_client_drive_io( ctx, charge_busy ) ) ) {
-    fd_bam_client_reset( ctx );
-    ctx->metrics.transport_fail_cnt++;
-    *charge_busy = 1;
-    FD_LOG_WARNING(( "BAM gRPC transport I/O failed; reconnecting to %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms (see preceding socket/TLS log for root cause)",
+  if( FD_UNLIKELY( !fd_bam_client_drive_io( ctx, charge_busy ) ||
+                   ctx->defer_reset /* new error? */ ) ) {
+    FD_LOG_WARNING(( "BAM client reset; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
                      ctx->server_fqdn,
                      FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
                      ctx->server_tcp_port,
                      fd_bam_client_retry_ms( ctx ) ));
-    return;
-  }
-
-  if( FD_UNLIKELY( ctx->defer_reset /* new error? */ ) ) {
     fd_bam_client_reset( ctx );
     ctx->metrics.transport_fail_cnt++;
     *charge_busy = 1;
-    FD_LOG_WARNING(( "BAM client requested reset; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
-                     ctx->server_fqdn,
-                     FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
-                     ctx->server_tcp_port,
-                     fd_bam_client_retry_ms( ctx ) ));
     return;
   }
 
@@ -1064,7 +1030,6 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( fd_bam_tile_should_stall( ctx, io_ts ) ) ) return;
 
   *charge_busy |= fd_bam_client_step_reconnect( ctx, io_ts );
-  *charge_busy |= fd_bam_drive( ctx, io_ts );
 }
 
 static void
