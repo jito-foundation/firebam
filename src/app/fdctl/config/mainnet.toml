@@ -16,23 +16,10 @@ vote_account_path = "/home/{user}/keys/validator-vote.json"
 authorized_voter_paths = ["/home/{user}/keys/validator-keypair.json"] # remove, this is for testing jito infra
 expected_genesis_hash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 known_validators = [
-  "2xpz6R62DcmY2fG34Qpk4jFuJUsJccm9CwUwhBzNwf7s",
-  "33zuMy9pGxW2zgxrwUeJg4KQeQfvVeR8AzaT4MAJtNLb",
-  "4CSCfi6dXKWfh4KtxERtD4jBzL8NVPXk8MRQEhQVxfYK",
-  "4bGcJHq9FzjNi9EGDF7uRgC4YQHShDSf4gSHExbuzQwV",
-  "5ForFoAV3wS1EXV2cFdh9sXKmifrLA23m3rxAm468MDW",
-  "6nMJguqQR2RsrsC6ApDpXc4GMPskZ3gEZCt3xpdYd3mp",
-  "6wSvyhhMVE1Qqy2jyDJSpsWeSrKR8gP6wLczR3vUXYEZ",
-  "BGiJXTGDBaAgwwqfDRjeW8zy4gqqt1cxTnSTCSrbGY9Z",
-  "D7c1CUeuzVam1CVUYnKPtB6kGrTw9VReuUJSg3257VYT",
-  "DtHLfyPW5C9F9qsxWuBa5TdBvt77sHRbizSUGrUoTcpZ",
-  "FNi5hiKviPzoqGoBXAx7uCyvHPq4gJ9bNDiJd1zyCwL1",
-  "Foi43MS44bmDawBQPSdePFgMJLBDZxZm32mhM9NDR54s",
-  "Gx8Qmdye9VAbKGjMRPvrf164bR85hF5mrE3SiMVoUUXf",
-  "J8Gt4r49zotUYFmQPEfEUEBGWNPf2jZ97XY7pJNJC9wy",
-  "ZhHtwJieXGxizjnc6KjCCPduUoMKdspwLZ2Z5C7gGMs",
-  "XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr",
-  "Ninja1spj6n9t5hVYgF3PdnYz2PLnkt7rvaw3firmjs",
+    "7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2",
+    "GdnSyH3YtwcxFvQrVVJMm1JhTS4QVX7MFsX56uJLUfiZ",
+    "DE1bawNcRJB9rVm3buyMVfr8mBEoyyu73NBovf2oXJsJ",
+    "CakcnaRDHka2gXyfbEd2d3xsvkJkqsLw2akB3zsN1D2S",
 ]
 
 [rpc]
