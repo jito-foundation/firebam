@@ -559,7 +559,9 @@ bam_fuzz_reset_tile( void ) {
   ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
 
   /* Assume a valid builder config was fetched so bundle publish paths don't abort */
-  ctx->builder_info_valid_until = fd_bam_now() + (long)5e9;
+  long now = fd_bam_now();
+  ctx->builder_info_valid_until = now + (long)5e9;
+  ctx->bam_last_config_poll_ns  = now;
 }
 
 /* Pre-mark request lifecycle state so rx_end/rx_timeout can exercise
