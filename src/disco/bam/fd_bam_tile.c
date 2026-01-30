@@ -161,7 +161,7 @@ fd_bam_try_agave_update_tpu(fd_bam_tile_t * ctx, _Bool use_bam) {
     fd_ushort_bswap( ctx->bam_tpu.port ),
     FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu_fwd.addr ),
     fd_ushort_bswap( ctx->bam_tpu_fwd.port ) ));
-  
+
   /* Cache the non-BAM TPU to restore it if BAM is disabled/disconnects.
    * This can't be done in init() since agave takes a long time to start */
   if( FD_UNLIKELY( !ctx->default_tpu_cached ) ) {

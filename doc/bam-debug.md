@@ -6,7 +6,7 @@ This page collects quick BAM-specific runtime checks for Firedancer.
 Metrics
 -------
 
-The BAM tile emits Prometheus metrics. 
+The BAM tile emits Prometheus metrics.
 
 Key counters/gauges to watch:
 - `bam_bundle_received`: Cumulative bundles received from the BAM node.

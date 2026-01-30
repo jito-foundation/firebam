@@ -126,7 +126,7 @@ message TransactionError {
 }
 
 
-// Source: 
+// Source:
 enum TransactionErrorReason {
   ACCOUNT_IN_USE = 0;
   ACCOUNT_LOADED_TWICE = 1;
