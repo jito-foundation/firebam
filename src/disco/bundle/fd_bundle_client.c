@@ -470,8 +470,9 @@ fd_bundle_tile_publish_bundle_txn(
     .block_engine   = {
       .bundle_id      = ctx->bundle_seq,
       .bundle_txn_cnt = bundle_txn_cnt,
-      .commission     = (uchar)ctx->builder_commission
+      .commission     = ctx->builder_commission
     },
+    .bam = {0},
   };
   memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL );
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
@@ -511,6 +512,7 @@ fd_bundle_tile_publish_txn(
       .commission        = 0U,
       .commission_pubkey = {0U}
     },
+    .bam = {0},
   };
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
 
@@ -932,7 +934,7 @@ fd_grpc_client_callbacks_t fd_bundle_client_grpc_callbacks = {
 /* Decrease verbosity */
 #define DISCONNECTED FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_DISCONNECTED
 #define CONNECTING   FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING
-#define CONNECTED    FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED
+#define CONNECTED FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED
 
 int
 fd_bundle_client_status( fd_bundle_tile_t const * ctx ) {

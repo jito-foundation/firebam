@@ -155,7 +155,11 @@ fd_gui_new( void *                shmem,
   gui->leader_slots_cnt      = 0UL;
 
 
+  memset( &gui->bam, 0, sizeof( gui->bam ) );
   gui->block_engine.has_block_engine = 0;
+  gui->bam.has_bam     = 0;
+  gui->bam.enabled     = 0;
+  gui->bam.status      = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
 
   gui->epoch.has_epoch[ 0 ] = 0;
   gui->epoch.has_epoch[ 1 ] = 0;
@@ -236,6 +240,10 @@ fd_gui_ws_open( fd_gui_t * gui,
 
   if( FD_LIKELY( gui->block_engine.has_block_engine ) ) {
     fd_gui_printf_block_engine( gui );
+    FD_TEST( !fd_http_server_ws_send( gui->http, ws_conn_id ) );
+  }
+  if( FD_LIKELY( gui->bam.has_bam ) ) {
+    fd_gui_printf_bam( gui );
     FD_TEST( !fd_http_server_ws_send( gui->http, ws_conn_id ) );
   }
 
@@ -396,6 +404,14 @@ fd_gui_txn_waterfall_snap( fd_gui_t *               gui,
     }
   }
 
+
+  cur->in.bam = 0UL;
+  ulong bam_tile_idx = fd_topo_find_tile( topo, "bam", 0UL );
+  if( FD_LIKELY( bam_tile_idx!=ULONG_MAX ) ) {
+    fd_topo_tile_t const * bam = &topo->tiles[ bam_tile_idx ];
+    volatile ulong const * bam_metrics = fd_metrics_tile( bam->metrics );
+    cur->in.bam = bam_metrics[ MIDX( COUNTER, BAM, TRANSACTION_RECEIVED ) ];
+  }
 
   fd_topo_tile_t const * pack = &topo->tiles[ fd_topo_find_tile( topo, "pack", 0UL ) ];
   volatile ulong const * pack_metrics = fd_metrics_tile( pack->metrics );
@@ -644,7 +660,8 @@ fd_gui_tile_stats_snap( fd_gui_t *                     gui,
                            waterfall->out.verify_failed;
   stats->verify_total_cnt = waterfall->in.gossip +
                             waterfall->in.quic +
-                            waterfall->in.udp -
+                            waterfall->in.udp +
+                            waterfall->in.bam -
                             waterfall->out.net_overrun -
                             waterfall->out.tpu_quic_invalid -
                             waterfall->out.tpu_udp_invalid -
@@ -2195,6 +2212,46 @@ fd_gui_handle_block_engine_update( fd_gui_t *    gui,
   fd_http_server_ws_broadcast( gui->http );
 }
 
+static void
+fd_gui_handle_bam_update( fd_gui_t *    gui,
+                          uchar const * msg ) {
+  fd_plugin_msg_bam_update_t const * update = (fd_plugin_msg_bam_update_t const *)msg;
+
+  gui->bam.has_bam = 1;
+  gui->bam.status  = update->status_code;
+  gui->bam.enabled = update->enabled;
+
+  memcpy( gui->bam.name, update->name, sizeof( gui->bam.name )-1 );
+  gui->bam.name[ sizeof( gui->bam.name )-1 ] = '\0';
+  memcpy( gui->bam.url, update->url, sizeof( gui->bam.url )-1 );
+  gui->bam.url[ sizeof( gui->bam.url )-1 ] = '\0';
+  memcpy( gui->bam.sni, update->sni, sizeof( gui->bam.sni )-1 );
+  gui->bam.sni[ sizeof( gui->bam.sni )-1 ] = '\0';
+  memcpy( gui->bam.ip_cstr, update->ip_cstr, sizeof( gui->bam.ip_cstr )-1 );
+  gui->bam.ip_cstr[ sizeof( gui->bam.ip_cstr )-1 ] = '\0';
+  memcpy( gui->bam.tpu_cstr, update->tpu_cstr, sizeof( gui->bam.tpu_cstr )-1 );
+  gui->bam.tpu_cstr[ sizeof( gui->bam.tpu_cstr )-1 ] = '\0';
+  memcpy( gui->bam.tpu_fwd_cstr, update->tpu_fwd_cstr, sizeof( gui->bam.tpu_fwd_cstr )-1 );
+  gui->bam.tpu_fwd_cstr[ sizeof( gui->bam.tpu_fwd_cstr )-1 ] = '\0';
+
+  gui->bam.rtt_sample    = update->rtt_sample;
+  gui->bam.rtt_smoothed  = update->rtt_smoothed;
+  gui->bam.rtt_var       = update->rtt_var;
+  gui->bam.bam_pending_results = update->bam_pending_results;
+  gui->bam.heartbeat_sent = update->heartbeat_sent;
+  gui->bam.heartbeat_recv = update->heartbeat_recv;
+  gui->bam.txn_received   = update->txn_received;
+  gui->bam.bundle_received= update->bundle_received;
+  gui->bam.packet_drop    = update->packet_drop;
+  gui->bam.err_protobuf   = update->err_protobuf;
+  gui->bam.err_transport  = update->err_transport;
+  gui->bam.err_timeout    = update->err_timeout;
+  gui->bam.err_no_fee_info= update->err_no_fee_info;
+
+  fd_gui_printf_bam( gui );
+  fd_http_server_ws_broadcast( gui->http );
+}
+
 void
 fd_gui_handle_snapshot_update( fd_gui_t *                 gui,
                                fd_snapct_update_t const * msg ) {
@@ -2631,6 +2688,10 @@ fd_gui_plugin_message( fd_gui_t *    gui,
     }
     case FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE: {
       fd_gui_handle_block_engine_update( gui, msg );
+      break;
+    }
+    case FD_PLUGIN_MSG_BAM_UPDATE: {
+      fd_gui_handle_bam_update( gui, msg );
       break;
     }
     default:

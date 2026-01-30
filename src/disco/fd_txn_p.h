@@ -28,6 +28,14 @@ struct __attribute__((aligned(64))) fd_txn_p {
      FD_TXN_P_FLAGS_* defined above.  The bank sets the high byte with
      the transaction result code. */
   uint  flags;
+
+  /* BAM metadata for transactions originating from BAM scheduling. */
+  struct {
+    uint  seq_id;
+    uchar batch_idx;
+    uchar batch_cnt;
+    uchar revert_on_error;
+  } bam;
   /* union {
     This would be ideal but doesn't work because of the flexible array member
     uchar _[FD_TXN_MAX_SZ];

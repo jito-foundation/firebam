@@ -71,9 +71,9 @@ RUST_CXXFLAGS=-include cstdint
 endif
 endif
 
-# Clang 20 hits the same missing <cstdint> include in RocksDB.
+# Clang 20+ hits the same missing <cstdint> include in RocksDB.
 ifeq ($(CC),clang)
-ifeq ($(CC_MAJOR_VERSION),20)
+ifeq ($(shell test $(CC_MAJOR_VERSION) -ge 20 && echo yes),yes)
 RUST_CXXFLAGS=-include cstdint
 endif
 endif
