@@ -189,7 +189,7 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
                 (int)ctx->server_sni_len, ctx->server_sni ));
 
   int connect_err = fd_bam_client_do_connect( ctx, ip4_addr );
-  if( FD_UNLIKELY( connect_err ) ) {
+  if( FD_LIKELY( connect_err ) ) {
     if( FD_UNLIKELY( connect_err != EINPROGRESS ) ) {
       fd_bam_client_reset( ctx );
       ctx->metrics.transport_fail_cnt++;
