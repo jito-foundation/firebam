@@ -450,6 +450,7 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->plugin_out = (fd_bundle_out_ctx_t){ .idx=ULONG_MAX };
   }
 
+  /* Init BAM override fields. Bundle tile should disconnect when BAM is active */
   ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
   if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
     ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );

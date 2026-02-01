@@ -271,7 +271,7 @@ fd_grpc_client_request_start_ex(
     void const *         message,
     char const *         auth_token,
     ulong                auth_token_sz,
-    int                  end_stream
+    _Bool                end_stream
 );
 
 fd_grpc_h2_stream_t *
@@ -292,7 +292,7 @@ fd_grpc_client_stream_send(
     fd_grpc_h2_stream_t * stream,
     pb_msgdesc_t const * fields,
     void const *         message,
-    int                  end_stream
+    _Bool                end_stream
 );
 
 /* fd_grpc_client_deadline_set sets a request deadline (used to

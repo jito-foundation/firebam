@@ -242,7 +242,7 @@ fd_keyguard_payload_authorize( fd_keyguard_authority_t const * authority,
 
   case FD_KEYGUARD_ROLE_BAM:
     if( FD_UNLIKELY( payload_mask != FD_KEYGUARD_PAYLOAD_BAM_AUTH ) ) {
-      FD_LOG_WARNING(( "unauthorized payload type for bam auth (mask=%#lx)", payload_mask ));
+      FD_LOG_WARNING(( "unauthorized payload type for BAM auth (mask=%#lx)", payload_mask ));
       return 0;
     }
     return 1;

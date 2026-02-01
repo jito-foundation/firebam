@@ -4,9 +4,42 @@
 #include "test_bam_common.c"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../ballet/nanopb/pb_decode.h"
-#include "../pack/fd_pack_tile_bam_fee.h"
+#include "../bundle/fd_bundle_crank.h"
 
 static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL, 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
+
+/* Applies a BAM fee configuration to the pack crank state. Updates
+   tip-receiver destinations stored in |crank3| and |crank2| and writes
+   a clamped copy of commission_bps into |crank3| when a new version is
+   observed. |cfg_version| is updated to the applied version and is
+   used to detect duplicates. If |crank_enabled| is zero, the call is a
+   no-op. */
+static inline void
+fd_pack_apply_bam_fee_cfg_impl( fd_bam_fee_cfg_t *      cfg,
+                                ulong *                 cfg_version,
+                                int                     crank_enabled,
+                                fd_bundle_crank_3_t *   crank3,
+                                fd_bundle_crank_2_t *   crank2 ) {
+  if( FD_UNLIKELY( !cfg ) ) return;
+  if( FD_UNLIKELY( !crank_enabled ) ) return;
+
+  ulong version = FD_VOLATILE_CONST( cfg->version );
+  if( FD_UNLIKELY( !version || version==*cfg_version ) ) return;
+
+  *cfg_version = version;
+
+  if( FD_LIKELY( cfg->has_prio_fee_recipient ) ) {
+    fd_memcpy( crank3->new_tip_receiver,
+               cfg->prio_fee_recipient,
+               sizeof( cfg->prio_fee_recipient ) );
+    fd_memcpy( crank2->new_tip_receiver,
+               cfg->prio_fee_recipient,
+               sizeof( cfg->prio_fee_recipient ) );
+  }
+
+  crank3->init_tip_distribution_acct.commission_bps =
+      (ushort)fd_uint_min( cfg->commission_bps, 10000U );
+}
 
 
 __attribute__((weak)) char const fdctl_version_string[] = "0.0.0";

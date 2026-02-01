@@ -934,7 +934,7 @@ fd_grpc_client_callbacks_t fd_bundle_client_grpc_callbacks = {
 /* Decrease verbosity */
 #define DISCONNECTED FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_DISCONNECTED
 #define CONNECTING   FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING
-#define CONNECTED FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED
+#define CONNECTED    FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED
 
 int
 fd_bundle_client_status( fd_bundle_tile_t const * ctx ) {

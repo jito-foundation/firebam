@@ -374,14 +374,8 @@ fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
 
   int rx_err = fd_h2_rbuf_recvmsg( client->frame_rx, sock_fd, MSG_NOSIGNAL|MSG_DONTWAIT );
   if( FD_UNLIKELY( rx_err ) ) {
-    if( FD_UNLIKELY( rx_err==EPERM ) ) {
-      FD_LOG_DEBUG(( "recvmsg returned EPERM; treating as retryable" ));
-      rx_err = 0;
-    }
-    if( FD_UNLIKELY( rx_err ) ) {
-      FD_LOG_INFO(( "Disconnected: recvmsg error (%i-%s)", rx_err, fd_io_strerror( rx_err ) ));
-      return 0;
-    }
+    FD_LOG_INFO(( "Disconnected: recvmsg error (%i-%s)", rx_err, fd_io_strerror( rx_err ) ));
+    return 0;
   }
 
   if( FD_UNLIKELY( conn->flags ) ) fd_h2_tx_control( conn, client->frame_tx, &fd_grpc_client_h2_callbacks );
@@ -389,12 +383,6 @@ fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
   fd_grpc_client_service_streams( client, fd_log_wallclock() );
 
   int tx_err = fd_h2_rbuf_sendmsg( client->frame_tx, sock_fd, MSG_NOSIGNAL|MSG_DONTWAIT );
-  if( FD_UNLIKELY( tx_err ) ) {
-    if( FD_UNLIKELY( tx_err==EPERM ) ) {
-      FD_LOG_DEBUG(( "sendmsg returned EPERM; treating as retryable" ));
-      tx_err = 0;
-    }
-  }
   if( FD_UNLIKELY( tx_err ) ) {
     FD_LOG_WARNING(( "fd_h2_rbuf_sendmsg failed (%i-%s)", tx_err, fd_io_strerror( tx_err ) ));
     return 0;
@@ -424,13 +412,12 @@ fd_grpc_client_request_continue1( fd_grpc_client_t * client ) {
   fd_h2_stream_t *      h2_stream = &stream->s;
   fd_h2_tx_op_copy( client->conn, h2_stream, client->frame_tx, client->request_tx_op );
   if( FD_UNLIKELY( client->request_tx_op->chunk_sz ) ) return 0;
-  int const fin = client->request_tx_op->fin;
-  if( FD_UNLIKELY( fin && h2_stream->state!=FD_H2_STREAM_STATE_CLOSING_TX ) ) return 0;
+  if( FD_UNLIKELY( client->request_tx_op->fin && h2_stream->state != FD_H2_STREAM_STATE_CLOSING_TX ) ) return 0;
   client->metrics->stream_chunks_tx_cnt++;
   /* Request finished */
   client->request_stream = NULL;
   client->callbacks->tx_complete( client->ctx, stream->request_ctx );
-  if( fin ) {
+  if( client->request_tx_op->fin ) {
     client->metrics->requests_sent++;
   }
   return 1;
@@ -472,7 +459,7 @@ fd_grpc_client_request_start_ex(
     void const *         message,
     char const *         auth_token,
     ulong                auth_token_sz,
-    int                  end_stream
+    _Bool                end_stream
 ) {
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( client ) ) ) return NULL;
 
@@ -543,20 +530,21 @@ fd_grpc_client_request_start(
     char const *         auth_token,
     ulong                auth_token_sz
 ) {
-  return fd_grpc_client_request_start_ex( client, path, path_len, request_ctx, fields, message, auth_token, auth_token_sz, 1 );
+  return fd_grpc_client_request_start_ex( client, path, path_len, request_ctx, fields, message, auth_token, auth_token_sz, true );
 }
 
+/* fd_grpc_client_stream_send writes a gRPC DATA message on an existing
+   stream. The caller must keep the stream open (end_stream=0) for
+   additional messages; setting end_stream closes the client side. */
 int
 fd_grpc_client_stream_send(
     fd_grpc_client_t *   client,
     fd_grpc_h2_stream_t * stream,
     pb_msgdesc_t const * fields,
     void const *         message,
-    int                  end_stream
+    _Bool                end_stream
 ) {
-  if( FD_UNLIKELY( !stream ) ) return 0;
-  if( FD_UNLIKELY( stream->s.state==FD_H2_STREAM_STATE_CLOSED ) ) return 0;
-  if( FD_UNLIKELY( client->request_stream ) ) return 0;
+  if( FD_UNLIKELY( !stream || stream->s.state == FD_H2_STREAM_STATE_CLOSED || client->request_stream ) ) return 0;
 
   FD_TEST( client->nanopb_tx_max > sizeof(fd_grpc_hdr_t) );
   uchar * proto_buf = client->nanopb_tx + sizeof(fd_grpc_hdr_t);
@@ -565,14 +553,13 @@ fd_grpc_client_stream_send(
     FD_LOG_WARNING(( "Failed to encode streaming gRPC message" ));
     return 0;
   }
-  ulong const serialized_sz = ostream.bytes_written;
 
   fd_grpc_hdr_t hdr = {
     .compressed = 0,
-    .msg_sz     = fd_uint_bswap( (uint)serialized_sz )
+    .msg_sz     = fd_uint_bswap( (uint)ostream.bytes_written )
   };
   memcpy( client->nanopb_tx, &hdr, sizeof(fd_grpc_hdr_t) );
-  ulong const payload_sz = serialized_sz + sizeof(fd_grpc_hdr_t);
+  ulong const payload_sz = ostream.bytes_written + sizeof(fd_grpc_hdr_t);
 
   client->request_stream = stream;
   fd_h2_tx_op_init( client->request_tx_op, client->nanopb_tx, payload_sz, end_stream ? FD_H2_FLAG_END_STREAM : 0U );

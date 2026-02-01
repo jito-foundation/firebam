@@ -5,10 +5,6 @@
 #include "../../ballet/txn/fd_txn.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../disco/metrics/fd_metrics.h"
-#include <math.h>
-#include <limits.h>
-#include <string.h>
-
 
 #if FD_USING_GCC && __GNUC__ >= 15
 #pragma GCC diagnostic ignored "-Wunterminated-string-initialization"
@@ -66,19 +62,6 @@ typedef struct {
   ulong          max_schedule_slot;
 } test_bundle_meta_t;
 
-static inline ulong
-extract_txn_id( fd_txn_p_t const * txnp ) {
-  ulong id = 0UL;
-  fd_memcpy( &id, txnp->payload + 1UL, sizeof(ulong) );
-  return id;
-}
-
-static inline void
-reset_rebate( fd_pack_rebate_t * rebate ) {
-  fd_memset( rebate, 0, sizeof(fd_pack_rebate_t) );
-}
-
-
 static fd_pack_t *
 init_all_with_meta( ulong pack_depth,
                     ulong bank_tile_cnt,
@@ -100,7 +83,6 @@ init_all_with_meta( ulong pack_depth,
   else                         FD_LOG_NOTICE(( "Test required %lu bytes of %lu available bytes",    footprint, PACK_SCRATCH_SZ ));
 #endif
 
-  fd_memset( pack_scratch, 0, footprint );
   fd_pack_t * pack = fd_pack_join( fd_pack_new( pack_scratch, pack_depth, bundle_meta_sz, bank_tile_cnt, limits, rng ) );
 #define MAX_BANKING_THREADS 64
 
@@ -1795,7 +1777,7 @@ test_initializer_bundle_state_machine( void ) {
 
   /* Simulate IB success via rebate (transition to [Ready]) */
   fd_pack_rebate_t rebate[1];
-  reset_rebate( rebate );
+  fd_memset( rebate, 0, sizeof(fd_pack_rebate_t) );
   rebate->total_cost_rebate = 5000U;
   rebate->ib_result         = 1;
   fd_pack_rebate_cus( pack, rebate );
@@ -1846,7 +1828,9 @@ test_bundle_priority_ordering( void ) {
     for( ulong j=0UL; j<txn_cnt; j++ ) {
       ulong expected_bundle = i;
       ulong expected_txn_id = expected_bundle*2UL + j;
-      FD_TEST( extract_txn_id( outcome.results + j )==expected_txn_id );
+      ulong actual_txn_id = 0UL;
+      fd_memcpy( &actual_txn_id, outcome.results[j].payload + 1UL, sizeof(ulong) );
+      FD_TEST( actual_txn_id==expected_txn_id );
     }
     fd_pack_microblock_complete( pack, 0UL );
   }
@@ -1915,7 +1899,7 @@ test_bundle_cu_limits( void ) {
 
   /* Simulate partial CU usage and rebate */
   fd_pack_rebate_t rebate[1];
-  reset_rebate( rebate );
+  fd_memset( rebate, 0, sizeof(fd_pack_rebate_t) );
   ulong rebate_per_txn = 500000UL; /* each txn used half of its requested CUs */
   rebate->total_cost_rebate = txn_cnt * rebate_per_txn;
   fd_pack_rebate_cus( pack, rebate );
@@ -2082,7 +2066,7 @@ test_initializer_bundle_failure( void ) {
 
   /* State: [Pending] - Simulate IB failure via rebate (transition to [Failed]) */
   fd_pack_rebate_t rebate[1];
-  reset_rebate( rebate );
+  fd_memset( rebate, 0, sizeof(fd_pack_rebate_t) );
   rebate->total_cost_rebate = 5000U;
   rebate->ib_result         = -1;
   fd_pack_rebate_cus( pack, rebate );
@@ -2393,7 +2377,7 @@ test_ib_then_multiple_bundles( void ) {
 
   /* Simulate IB success */
   fd_pack_rebate_t rebate[1];
-  reset_rebate( rebate );
+  fd_memset( rebate, 0, sizeof(fd_pack_rebate_t) );
   rebate->total_cost_rebate = 5000U;
   rebate->ib_result         = 1;
   fd_pack_rebate_cus( pack, rebate );

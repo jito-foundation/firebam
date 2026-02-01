@@ -316,7 +316,7 @@ FD_FN_PURE static int
 fd_keyguard_payload_matches_bam_auth( uchar const * data,
                                       ulong         sz,
                                       int           sign_type ) {
-  /* from fd_bam_tile.h */
+  /* copied from fd_bam_tile.h */
   #define FD_BAM_AUTH_LABEL "X_OFF_CHAIN_JITO_BAM_V1\0"
   #define FD_BAM_AUTH_LABEL_LEN 24
   #define FD_BAM_MAX_AUTH_CHALLENGE_SZ 128 /* sizeof(bam_api_AuthChallengeResponse) */
