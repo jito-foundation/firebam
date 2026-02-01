@@ -73,14 +73,20 @@ set_bam_apply_request( args_t *   args,
                        fd_bam_ctrl_t * ctrl ) {
   (void)config;
 
-  uchar state = FD_VOLATILE_CONST( ctrl->state );
-  if( FD_UNLIKELY( state == FD_BAM_CTRL_STATE_REQUEST ||
-                   state == FD_BAM_CTRL_STATE_APPLYING ) )
-    FD_LOG_ERR(( "Another BAM configuration update is in progress" ));
-
-  if( state == FD_BAM_CTRL_STATE_SUCCESS || state == FD_BAM_CTRL_STATE_ERROR )
-    /* Make sure the tile sees a fresh request after a previous completion/error path. */
-    FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
+  /* Acquire exclusive ownership so request fields cannot be written by two CLI instances. */
+  for( ;; ) {
+    uchar state = FD_VOLATILE_CONST( ctrl->state );
+    if( FD_UNLIKELY( state == FD_BAM_CTRL_STATE_REQUEST  ||
+                     state == FD_BAM_CTRL_STATE_APPLYING ||
+                     state == FD_BAM_CTRL_STATE_SUCCESS  ||
+                     state == FD_BAM_CTRL_STATE_ERROR    ||
+                     state == FD_BAM_CTRL_STATE_LOCKED ) )
+      FD_LOG_ERR(( "Another BAM configuration update is in progress" ));
+    if( FD_UNLIKELY( state != FD_BAM_CTRL_STATE_IDLE ) )
+      FD_LOG_ERR(( "Unexpected BAM configuration state: %u", (uint)state ));
+    if( FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_IDLE, FD_BAM_CTRL_STATE_LOCKED ) == FD_BAM_CTRL_STATE_IDLE )
+      break;
+  }
 
   uchar command = 0;
   if( args->set_bam.enable>=0 ) command |= FD_BAM_CTRL_CMD_ENABLE;
@@ -118,19 +124,18 @@ set_bam_apply_request( args_t *   args,
 
   if( FD_UNLIKELY( ctrl->state == FD_BAM_CTRL_STATE_ERROR ) ) {
     char err_buf[ FD_BAM_CTRL_ERR_MAX ];
-    strlcpy( err_buf, ctrl->error, sizeof(err_buf) );
-    FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
+    fd_memcpy( err_buf, ctrl->error, sizeof(err_buf) );
+    (void)FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_ERROR, FD_BAM_CTRL_STATE_IDLE );
     FD_LOG_ERR(( "Failed to update BAM configuration: %s", err_buf[0] ? err_buf : "unknown error" ));
   }
 
-  uchar enabled = FD_VOLATILE_CONST( ctrl->enable );
   char out_buf[ FD_URL_MAX + FD_SNI_BUF_MAX + 96 ];
   int  out_sz = snprintf( out_buf, sizeof( out_buf ),
                      "BAM runtime configuration updated (enabled=%s, url=%s, sni=%s)",
-                     enabled ? "true" : "false",
+                     FD_VOLATILE_CONST( ctrl->enable ) ? "true" : "false",
                      ctrl->url[ 0 ] ? ctrl->url : "(unset)",
                      ctrl->sni[ 0 ] ? ctrl->sni : "(default)" );
-  FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
+  (void)FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_SUCCESS, FD_BAM_CTRL_STATE_IDLE );
 
   if( FD_UNLIKELY( out_sz<0 || (ulong)out_sz>=sizeof( out_buf ) ) )
     FD_LOG_ERR(( "Failed to format BAM runtime configuration output" ));

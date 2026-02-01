@@ -30,7 +30,9 @@ get_bam_cmd_fn( args_t *   args FD_PARAM_UNUSED,
      settle so this command prints a consistent snapshot. */
   for( ;; ) {
     uchar st = FD_VOLATILE_CONST( ctrl->state );
-    if( st != FD_BAM_CTRL_STATE_REQUEST && st != FD_BAM_CTRL_STATE_APPLYING )
+    if( st != FD_BAM_CTRL_STATE_REQUEST &&
+        st != FD_BAM_CTRL_STATE_APPLYING &&
+        st != FD_BAM_CTRL_STATE_LOCKED )
       break;
     if( FD_UNLIKELY( fd_log_wallclock() - start_ns > timeout_ns ) ) {
       fd_topo_leave_workspaces( topo );
