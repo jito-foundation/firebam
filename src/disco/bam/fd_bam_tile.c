@@ -73,7 +73,7 @@ fd_ext_is_agave_running( void ) {
 
 FD_FN_CONST static ulong
 scratch_align( void ) {
-  return alignof(fd_bam_tile_t);
+  return fd_ulong_max( fd_ulong_max( alignof(fd_bam_tile_t), fd_grpc_client_align() ), fd_alloc_align() );
 }
 
 FD_FN_CONST static ulong
@@ -83,7 +83,7 @@ scratch_footprint( fd_topo_tile_t const * tile ) {
   l = FD_LAYOUT_APPEND( l, alignof(fd_bam_tile_t), sizeof(fd_bam_tile_t)                        );
   l = FD_LAYOUT_APPEND( l, fd_grpc_client_align(),    fd_grpc_client_footprint( tile->bam.buf_sz ) );
   l = FD_LAYOUT_APPEND( l, fd_alloc_align(),          fd_alloc_footprint()                            );
-  return FD_LAYOUT_FINI( l, 32 );
+  return FD_LAYOUT_FINI( l, scratch_align() );
 }
 
 FD_FN_CONST static inline ulong
