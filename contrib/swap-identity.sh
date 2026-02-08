@@ -46,7 +46,7 @@ Environment overrides (defaults shown):
   ALLOW_NON_SYMLINK=0   # set to 1 to overwrite a non-symlink identity.json
   DUMMY_KEY_OWNER=      # optional owner for newly generated dummy key
   CLUSTER_RPC_URL=https://api.mainnet.solana.com
-  SKIP_CLUSTER_CHECK=1  # set to 0 to check cluster identity pubkey is already in use
+  SKIP_CLUSTER_CHECK=0  # set to 1 to skip checking target identity pubkey is already in use
 USAGE
 }
 
@@ -148,7 +148,7 @@ MIN_IDLE_TIME="${MIN_IDLE_TIME:-2}"
 SET_IDENTITY_FORCE="${SET_IDENTITY_FORCE:-0}"
 ALLOW_NON_SYMLINK="${ALLOW_NON_SYMLINK:-0}"
 CLUSTER_RPC_URL="${CLUSTER_RPC_URL:-https://api.mainnet.solana.com}"
-SKIP_CLUSTER_CHECK="${SKIP_CLUSTER_CHECK:-1}"
+SKIP_CLUSTER_CHECK="${SKIP_CLUSTER_CHECK:-0}"
 
 DEFAULT_OWNER="$(id -un)"
 [[ "$DEFAULT_OWNER" == "root" && -n "${SUDO_USER:-}" ]] && DEFAULT_OWNER="$SUDO_USER"
