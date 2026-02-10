@@ -420,20 +420,28 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
   }
 
   if( FD_UNLIKELY( res->transaction_err_count ) ) {
+    /* Prefer reporting the "real" failing index over CommitCancelled
+       (used for atomicity cascade) to match bam_spec.md semantics. */
+    uchar err_idx = 0U;
     for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
-      if( FD_LIKELY( res->transaction_err[ i ] < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
-        out->which_reason                      = bam_types_NotCommitted_transaction_error_tag;
-        out->reason.transaction_error.index    = i;
-        out->reason.transaction_error.reason   = res->transaction_err[ i ];
-      } else {
-        out->which_reason                      = bam_types_NotCommitted_generic_invalid_tag;
-        snprintf( out->reason.generic_invalid.message,
-                  sizeof(out->reason.generic_invalid.message),
-                  FD_BAM_ERR_FMT_TRANSACTION_ERROR,
-                  res->transaction_err[ i ] );
+      if( FD_LIKELY( res->transaction_err[ i ] != bam_types_TransactionErrorReason_COMMIT_CANCELLED ) ) {
+        err_idx = i;
+        break;
       }
-      return;
     }
+
+    if( FD_LIKELY( res->transaction_err[ err_idx ] < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
+      out->which_reason                      = bam_types_NotCommitted_transaction_error_tag;
+      out->reason.transaction_error.index    = err_idx;
+      out->reason.transaction_error.reason   = res->transaction_err[ err_idx ];
+    } else {
+      out->which_reason                      = bam_types_NotCommitted_generic_invalid_tag;
+      snprintf( out->reason.generic_invalid.message,
+                sizeof(out->reason.generic_invalid.message),
+                FD_BAM_ERR_FMT_TRANSACTION_ERROR,
+                res->transaction_err[ err_idx ] );
+    }
+    return;
   }
 
   out->which_reason = bam_types_NotCommitted_generic_invalid_tag;

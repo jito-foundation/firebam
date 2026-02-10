@@ -141,17 +141,23 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
 
   /* revert_on_error=0 batches are assumed to be single-packet, so emit one
      result per seq_id without aggregating multiple transactions. */
+  int committed = !!( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
   fd_bam_bundle_result_t res = {0};
   res.seq_id            = txn->bam.seq_id;
   res.slot              = slot;
   res.bundle_txn_cnt    = 1U;
-  res.execution_success = (exec_err==FD_RUNTIME_EXECUTE_SUCCESS);
+  res.execution_success = (uchar)committed;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
   res.consumed_cus[ 0 ] = txn->bank_cu.actual_consumed_cus;
   res.sanitize_success[ 0 ] = 1U;
   if( FD_UNLIKELY( exec_err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
     res.transaction_err[ 0 ] = bank_tile_bam_txn_err_from_runtime_err( exec_err );
+    res.transaction_err_count = 1U;
+  } else if( FD_UNLIKELY( !committed ) ) {
+    /* Defensive fallback: if we somehow didn't commit but also have no
+       runtime error, avoid emitting a reasonless NotCommitted. */
+    res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
     res.transaction_err_count = 1U;
   }
   bank_tile_publish_bam_result( ctx, stem, &res );
@@ -423,6 +429,8 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   ulong                  tips        [ MAX_TXN_PER_MICROBLOCK ] = { 0U };
 
   int execution_success = 1;
+  ulong fail_idx        = ULONG_MAX;
+  int   fail_exec_err   = FD_RUNTIME_EXECUTE_SUCCESS;
 
   /* Every transaction in the bundle should be executed in order against
      different transaciton contexts. */
@@ -442,6 +450,10 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     txn_ctx->exec_err = fd_runtime_prepare_and_execute_txn( ctx->banks, ctx->_bank_idx, txn_ctx, txn, NULL, &ctx->exec_stack, &ctx->exec_accounts[ i ], NULL, NULL );
     txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-txn_ctx->exec_err)<<24);
     if( FD_UNLIKELY( !(txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS ) || txn_ctx->exec_err ) ) {
+      if( FD_UNLIKELY( fail_idx==ULONG_MAX ) ) {
+        fail_idx      = i;
+        fail_exec_err = txn_ctx->exec_err;
+      }
       execution_success = 0;
       continue;
     }
@@ -499,6 +511,40 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   }
 
   fd_pack_rebate_sum_add_txn( ctx->rebater, txns, writable_alt, txn_cnt );
+
+  /* Publish execution results for BAM atomic batches (revert_on_error==true).
+     Pack emits only pre-execution drops; for executed work, the bank tile is
+     the source of truth. */
+  if( FD_LIKELY( txn_cnt ) ) {
+    fd_txn_p_t const * first = &txns[ 0 ];
+    if( FD_LIKELY( first->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && first->bam.revert_on_error ) ) {
+      fd_bam_bundle_result_t res = {0};
+      res.seq_id         = first->bam.seq_id;
+      res.slot           = slot;
+      res.bundle_txn_cnt = (uchar)txn_cnt;
+      res.execution_success = (uchar)execution_success;
+      res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+      res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+
+      for( ulong i=0UL; i<txn_cnt; i++ ) {
+        res.consumed_cus[ i ]     = txns[ i ].bank_cu.actual_consumed_cus;
+        res.sanitize_success[ i ] = 1U;
+      }
+
+      if( FD_UNLIKELY( !execution_success ) ) {
+        res.transaction_err_count = (uchar)txn_cnt;
+        for( ulong i=0UL; i<txn_cnt; i++ ) {
+          res.transaction_err[ i ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+        }
+        ulong err_idx = (fail_idx==ULONG_MAX) ? 0UL : fail_idx;
+        if( FD_LIKELY( err_idx < txn_cnt ) ) {
+          res.transaction_err[ err_idx ] = bank_tile_bam_txn_err_from_runtime_err( fail_exec_err );
+        }
+      }
+
+      bank_tile_publish_bam_result( ctx, stem, &res );
+    }
+  }
 
   /* Indicate to pack tile we are done processing the transactions so
      it can pack new microblocks using these accounts. */
