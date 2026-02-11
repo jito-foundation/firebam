@@ -125,17 +125,17 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
 static int
 fd_bam_client_do_connect( fd_bam_tile_t const * ctx,
                              uint               ip4_addr ) {
-  if( FD_UNLIKELY( ctx->tcp_sock < 0 ) ) return EBADF;
-
   struct sockaddr_in addr = {
     .sin_family      = AF_INET,
     .sin_addr.s_addr = ip4_addr,
     .sin_port        = fd_ushort_bswap( ctx->server_tcp_port )
   };
-  errno = 0;
-  if( FD_LIKELY( 0==connect( ctx->tcp_sock, fd_type_pun_const( &addr ), sizeof(struct sockaddr_in) ) ) ) return 0;
-  if( errno == EISCONN ) return 0;
-  return errno;
+  int err = connect( ctx->tcp_sock, fd_type_pun_const( &addr ), sizeof(struct sockaddr_in) );
+  /* FD_LIKELY is used here as EINPROGRESS is expected even to local tcp ports */
+  if( FD_LIKELY( err==-1 ) ) {
+    return errno;
+  }
+  return 0;
 }
 
 static void
