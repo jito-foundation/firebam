@@ -14,7 +14,9 @@ fd_openssl_crypto_malloc( ulong        num,
                           char const * file,
                           int          line ) {
   (void)file; (void)line;
-  void * result = fd_alloc_malloc( fd_openssl_alloc_ctx, 16UL, num + 8UL );
+  ulong alloc_sz;
+  if( FD_UNLIKELY( __builtin_uaddl_overflow( num, 8UL, &alloc_sz ) ) ) return NULL;
+  void * result = fd_alloc_malloc( fd_openssl_alloc_ctx, 16UL, alloc_sz );
   if( FD_UNLIKELY( !result ) ) return NULL;
   *(ulong *)result = num;
   return (uchar *)result + 8UL;
@@ -42,7 +44,9 @@ fd_openssl_crypto_realloc( void *       addr,
     return NULL;
   }
 
-  void * new = fd_alloc_malloc( fd_openssl_alloc_ctx, 16UL, num + 8UL );
+  ulong alloc_sz;
+  if( FD_UNLIKELY( __builtin_uaddl_overflow( num, 8UL, &alloc_sz ) ) ) return NULL;
+  void * new = fd_alloc_malloc( fd_openssl_alloc_ctx, 16UL, alloc_sz );
   if( FD_UNLIKELY( !new ) ) return NULL;
 
   ulong old_num = *(ulong *)( (uchar *)addr - 8UL );
