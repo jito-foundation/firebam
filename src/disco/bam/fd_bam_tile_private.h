@@ -72,8 +72,7 @@ typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
   bam_types_Packet    packets[ FD_PACK_MAX_TXN_PER_BUNDLE ];   /* decoded packet cache; indices [0,packet_cnt) valid */
   uchar               packet_cnt;                              /* number of packets collected; [0,FD_PACK_MAX_TXN_PER_BUNDLE) */
-  uchar               revert_on_error;                         /* 0/1 flag mirrored from packet meta; only meaningful when revert_flag_set != 0 */
-  uchar               revert_flag_set;                         /* 0 before first flag observed, 1 after; prevents defaulting to revert_on_error=0 */
+  uchar               revert_on_error;                         /* 0/1 value for the most recently collected packet; missing flags default to 0 */
   uchar               has_deser_err;                           /* 0/1 value if we have batch-level not-committed reason */
   uchar               deser_index;                             /* zero-based transaction index tied to deserialization error */
   uchar               deser_reason;                            /* bam_types_DeserializationErrorReason enum value */

@@ -139,6 +139,7 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     return false;
   }
 
+  uchar packet_revert_on_error = 0U;
   if( packet.has_meta && packet.meta.has_flags ) {
     if( FD_UNLIKELY( packet.meta.flags.simple_vote_tx ) ) {
       state->has_deser_err = true;
@@ -146,19 +147,17 @@ fd_bam_collect_packet( pb_istream_t *         stream,
       state->deser_index  = state->packet_cnt;
       return false;
     }
-
-    if( state->revert_flag_set && state->revert_on_error != packet.meta.flags.revert_on_error ) {
-      FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
-      state->has_deser_err = true;
-      state->deser_reason = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
-      state->deser_index  = state->packet_cnt;
-      state->revert_on_error = state->revert_on_error | packet.meta.flags.revert_on_error;
-      state->revert_flag_set = 1;
-      return false;
-    }
-    state->revert_on_error = packet.meta.flags.revert_on_error;
-    state->revert_flag_set = 1;
+    packet_revert_on_error = packet.meta.flags.revert_on_error;
   }
+
+  if( FD_UNLIKELY( state->packet_cnt && state->revert_on_error != packet_revert_on_error ) ) {
+    FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
+    state->has_deser_err = true;
+    state->deser_reason  = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+    state->deser_index   = state->packet_cnt;
+    return false;
+  }
+  state->revert_on_error = packet_revert_on_error;
 
   ulong declared_sz = fd_ulong_max( packet.data.size, packet.meta.size );
   if( FD_UNLIKELY( declared_sz > FD_TXN_MTU ) ) {
@@ -182,12 +181,11 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch ) {
   if( FD_UNLIKELY( !!ctx->dump_txns ) ) {
-    FD_LOG_NOTICE(( "BAM rx bundle begin >>> seq_id=%u max_schedule_slot=%lu packet_cnt=%u revert_on_error=%u revert_flag_set=%u has_deser_err=%u deser_reason=%u deser_index=%u",
+    FD_LOG_NOTICE(( "BAM rx bundle begin >>> seq_id=%u max_schedule_slot=%lu packet_cnt=%u revert_on_error=%u has_deser_err=%u deser_reason=%u deser_index=%u",
                     batch->seq_id,
                     batch->max_schedule_slot,
                     (uint)state->packet_cnt,
                     (uint)state->revert_on_error,
-                    (uint)state->revert_flag_set,
                     (uint)state->has_deser_err,
                     (uint)state->deser_reason,
                     (uint)state->deser_index ));
