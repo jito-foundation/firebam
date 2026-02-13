@@ -3387,6 +3387,25 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   FD_TEST( fd_base58_decode_32( resp.block_engine_config.builder_pubkey, decoded ) );
   FD_TEST( 0 == memcmp( state->builder_pubkey, decoded, 32UL ) );
 
+  /* Rejecting invalid base58 must not clobber prior builder pubkey state. */
+  uchar prev_builder_pubkey[ 32 ];
+  fd_memcpy( prev_builder_pubkey, state->builder_pubkey, sizeof(prev_builder_pubkey) );
+
+  bam_api_ConfigResponse bad_resp = bam_api_ConfigResponse_init_default;
+  bad_resp.has_block_engine_config = true;
+  fd_memset( bad_resp.block_engine_config.builder_pubkey, '1', FD_BASE58_ENCODED_32_LEN );
+  bad_resp.block_engine_config.builder_pubkey[ FD_BASE58_ENCODED_32_LEN ] = '\0';
+  bad_resp.block_engine_config.builder_commission = 7U;
+
+  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  if( FD_UNLIKELY( !pb_encode( &ostream, bam_api_ConfigResponse_fields, &bad_resp ) ) ) {
+    FD_LOG_ERR(( "pb_encode bad fee info failed: %s", PB_GET_ERROR( &ostream ) ));
+  }
+  fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+
+  FD_TEST( 0 == memcmp( state->builder_pubkey, prev_builder_pubkey, sizeof(prev_builder_pubkey) ) );
+  FD_TEST( state->builder_commission == 7U );
+
   test_bam_env_destroy( env );
 }
 

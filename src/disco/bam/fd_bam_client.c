@@ -568,11 +568,13 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
       ctx->builder_commission = (uchar)cfg->builder_commission;
     }
 
-    if( FD_UNLIKELY( !fd_base58_decode_32( cfg->builder_pubkey, ctx->builder_pubkey ) ) ) {
+    uchar decoded_builder_pubkey[ 32 ];
+    if( FD_UNLIKELY( !fd_base58_decode_32( cfg->builder_pubkey, decoded_builder_pubkey ) ) ) {
       FD_LOG_HEXDUMP_WARNING(( "Invalid builder pubkey in ConfigResponse",
                                cfg->builder_pubkey,
                                strnlen( cfg->builder_pubkey, sizeof(cfg->builder_pubkey) ) ));
     } else {
+      fd_memcpy( ctx->builder_pubkey, decoded_builder_pubkey, sizeof(ctx->builder_pubkey) );
       ctx->builder_info_valid_until  = fd_bam_now() + (long)( 60e9 * 5. );
     }
   }
