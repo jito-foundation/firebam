@@ -6,6 +6,36 @@
 #include "../../ballet/txn/fd_txn.h"
 #include "../../ballet/nanopb/pb_decode.h"
 
+#define FD_BAM_MAX_TXN_PER_ATOMIC_BATCH        5U
+#define FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET   8U
+
+FD_STATIC_ASSERT( FD_BAM_MAX_TXN_PER_ATOMIC_BATCH <= FD_PACK_MAX_TXN_PER_BUNDLE,
+                  bam_decode_packet_limit_fits_staging );
+
+typedef struct {
+  bam_types_AtomicTxnBatch batch;
+  fd_bam_batch_ctx_t       state;
+} fd_bam_decoded_batch_t;
+
+typedef struct {
+  fd_bam_decoded_batch_t batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ];
+  uint                   batch_cnt;
+  _Bool                  has_err_result;
+  fd_bam_bundle_result_t err_result;
+} fd_bam_decoded_multi_batch_t;
+
+typedef enum {
+  FD_BAM_V0_STAGED_NONE      = 0,
+  FD_BAM_V0_STAGED_HEARTBEAT = 1,
+  FD_BAM_V0_STAGED_MULTI     = 2
+} fd_bam_v0_staged_kind_t;
+
+typedef struct {
+  fd_bam_v0_staged_kind_t kind;
+  uint64_t                heartbeat_time_sent_microseconds;
+  fd_bam_decoded_multi_batch_t multi;
+} fd_bam_decoded_v0_t;
+
 static void
 fd_bam_dump_inbound_txn( uint                 seq_id,
                          ulong                max_schedule_slot,
@@ -123,7 +153,7 @@ fd_bam_collect_packet( pb_istream_t *         stream,
                        void **                arg ) {
   (void)field;
   fd_bam_batch_ctx_t * state = *arg;
-  if( FD_UNLIKELY( state->packet_cnt >= FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
+  if( FD_UNLIKELY( state->packet_cnt >= FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ) ) {
     FD_LOG_WARNING(( "Received AtomicTxnBatch exceeding max bundle size, already have %u txns", state->packet_cnt ));
     state->has_deser_err   = true;
     state->deser_reason    = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
@@ -176,6 +206,79 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   return true;
 }
 
+static _Bool
+fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
+                       fd_bam_batch_ctx_t const *       state,
+                       bam_types_AtomicTxnBatch const * batch ) {
+  if( FD_UNLIKELY( state->has_deser_err ) ) {
+    fd_bam_bundle_result_t res = {
+      .seq_id            = batch->seq_id,
+      .slot              = batch->max_schedule_slot,
+      .bundle_txn_cnt    = state->packet_cnt,
+      .execution_success = 0,
+      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+      .deser_reason      = state->deser_reason,
+      .deser_index       = state->deser_index
+    };
+    fd_bam_enqueue_result( ctx, &res );
+    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    return 0;
+  }
+
+  if( FD_UNLIKELY( state->packet_cnt == 0U ) ) {
+    fd_bam_bundle_result_t res = {
+      .seq_id            = batch->seq_id,
+      .slot              = batch->max_schedule_slot,
+      .bundle_txn_cnt    = state->packet_cnt,
+      .execution_success = 0,
+      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+      .deser_reason      = bam_types_DeserializationErrorReason_EMPTY,
+      .deser_index       = 0
+    };
+    fd_bam_enqueue_result( ctx, &res );
+    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    return 0;
+  }
+
+  if( FD_UNLIKELY( (!state->revert_on_error) && state->packet_cnt>1U ) ) {
+    /* For now, revert_on_error=0 batches are assumed to contain exactly one
+       packet so we can return one result per seq_id without BAM-node changes. */
+    fd_bam_bundle_result_t res = {
+      .seq_id            = batch->seq_id,
+      .slot              = batch->max_schedule_slot,
+      .bundle_txn_cnt    = state->packet_cnt,
+      .execution_success = 0,
+      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+      .deser_reason      = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE,
+      .deser_index       = 0
+    };
+    fd_bam_enqueue_result( ctx, &res );
+    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    return 0;
+  }
+
+  if( FD_UNLIKELY( state->revert_on_error && !ctx->builder_info_valid_until ) ) {
+    fd_bam_bundle_result_t res = {
+      .seq_id                 = batch->seq_id,
+      .slot                   = batch->max_schedule_slot,
+      .bundle_txn_cnt         = state->packet_cnt,
+      .execution_success      = 0,
+      .scheduling_error       = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err             = FD_BAM_BUNDLE_ERR_GENERIC_INVALID,
+      .generic_invalid_reason = FD_BAM_ERR_GENERIC_INVALID_BUILDER_INFO_UNAVAILABLE,
+      .generic_invalid_index  = 0,
+    };
+    fd_bam_enqueue_result( ctx, &res );
+    ctx->metrics.missing_builder_info_fail_cnt++;
+    return 0;
+  }
+
+  return 1;
+}
+
 void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
@@ -203,72 +306,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                     (uint)state->packet_cnt ));
   }
 
-  if( FD_UNLIKELY( state->has_deser_err ) ) {
-    fd_bam_bundle_result_t res = {
-      .seq_id            = batch->seq_id,
-      .slot              = batch->max_schedule_slot,
-      .bundle_txn_cnt    = state->packet_cnt,
-      .execution_success = 0,
-      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
-      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
-      .deser_reason      = state->deser_reason,
-      .deser_index       = state->deser_index
-    };
-    fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
-    return;
-  }
-
-  if( FD_UNLIKELY( state->packet_cnt == 0U ) ) {
-    fd_bam_bundle_result_t res = {
-      .seq_id            = batch->seq_id,
-      .slot              = batch->max_schedule_slot,
-      .bundle_txn_cnt    = state->packet_cnt,
-      .execution_success = 0,
-      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
-      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
-      .deser_reason      = bam_types_DeserializationErrorReason_EMPTY,
-      .deser_index       = 0
-    };
-    fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
-    return;
-  }
-
-  if( FD_UNLIKELY( (!state->revert_on_error) && state->packet_cnt>1U ) ) {
-    /* For now, revert_on_error=0 batches are assumed to contain exactly one
-       packet so we can return one result per seq_id without BAM-node changes. */
-    fd_bam_bundle_result_t res = {
-      .seq_id            = batch->seq_id,
-      .slot              = batch->max_schedule_slot,
-      .bundle_txn_cnt    = state->packet_cnt,
-      .execution_success = 0,
-      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
-      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
-      .deser_reason      = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE,
-      .deser_index       = 0
-    };
-    fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
-    return;
-  }
-
   if( state->revert_on_error ) {
-    if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) {
-      fd_bam_bundle_result_t res = {
-        .seq_id                 = batch->seq_id,
-        .slot                   = batch->max_schedule_slot,
-        .bundle_txn_cnt         = state->packet_cnt,
-        .execution_success      = 0,
-        .scheduling_error       = FD_BAM_SCHED_ERR_NONE,
-        .bundle_err             = FD_BAM_BUNDLE_ERR_GENERIC_INVALID,
-        .generic_invalid_reason = FD_BAM_ERR_GENERIC_INVALID_BUILDER_INFO_UNAVAILABLE,
-        .generic_invalid_index  = 0,
-      };
-      fd_bam_enqueue_result( ctx, &res );
-      ctx->metrics.missing_builder_info_fail_cnt++;
-      return;
-    }
     ctx->bundle_seq                = batch->seq_id;
     ctx->bundle_txn_cnt            = state->packet_cnt;
     ctx->bundle_max_schedule_slot  = batch->max_schedule_slot;
@@ -298,53 +336,66 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
 }
 
-/* Decodes one bam_types.AtomicTxnBatch message. Returns 1 when the batch was
-   fully consumed (success path publishes to tiles); returns 0 when protobuf
-   decoding failed after logging/enqueuing the appropriate bundle error. */
+/* Decodes one bam_types.AtomicTxnBatch message into staged state only.
+   This function never publishes transactions. Returns 1 when the batch was
+   fully consumed. Returns 0 when protobuf decoding failed after
+   logging/enqueuing the appropriate bundle error. */
 static _Bool
-fd_bam_decode_batch( fd_bam_tile_t * ctx,
-                     pb_istream_t *  stream ) {
-  fd_bam_batch_ctx_t state = { .ctx = ctx };
-  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
-  batch.packets = (pb_callback_t){
+fd_bam_decode_batch( fd_bam_tile_t *          ctx,
+                     pb_istream_t *           stream,
+                     fd_bam_decoded_batch_t * decoded ) {
+  fd_memset( decoded, 0, sizeof(fd_bam_decoded_batch_t) );
+  decoded->state.ctx          = ctx;
+  decoded->state.deser_reason = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+  decoded->state.deser_index  = 0U;
+  decoded->batch = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
+  decoded->batch.packets = (pb_callback_t){
     .funcs.decode = fd_bam_collect_packet,
-    .arg          = &state
+    .arg          = &decoded->state
   };
 
-  if( FD_UNLIKELY( !pb_decode( stream, &bam_types_AtomicTxnBatch_msg, &batch ) ) ) {
-    ctx->metrics.decode_fail_cnt++;
+  if( FD_UNLIKELY( !pb_decode( stream, &bam_types_AtomicTxnBatch_msg, &decoded->batch ) ) ) {
+    uchar deser_reason = decoded->state.has_deser_err
+                       ? decoded->state.deser_reason
+                       : (uchar)bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+    uchar deser_index  = decoded->state.has_deser_err
+                       ? decoded->state.deser_index
+                       : decoded->state.packet_cnt;
     FD_MCNT_INC( BAM, ERRORS_PROTOBUF, 1UL );
     char const * err = PB_GET_ERROR( stream );
     FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)", err ));
     fd_bam_bundle_result_t res = {
-      .seq_id            = batch.seq_id,
-      .slot              = batch.max_schedule_slot,
-      .bundle_txn_cnt    = state.packet_cnt,
+      .seq_id            = decoded->batch.seq_id,
+      .slot              = decoded->batch.max_schedule_slot,
+      .bundle_txn_cnt    = decoded->state.packet_cnt,
       .execution_success = 0,
       .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
       .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
-      .deser_reason      = state.deser_reason,
-      .deser_index       = state.deser_index
+      .deser_reason      = deser_reason,
+      .deser_index       = deser_index
     };
     fd_bam_enqueue_result( ctx, &res );
     return 0;
   }
 
-  fd_bam_publish_batch( ctx, &state, &batch );
   return 1;
 }
 
-/* Decodes a bam_types.MultipleAtomicTxnBatch wrapper. Returns 1 on successful
-   parsing of the outer message (including the empty-batch case where an error
-   result is enqueued); returns 0 on protobuf failures while walking the tag
-   stream. */
+/* Decodes a bam_types.MultipleAtomicTxnBatch wrapper into staged state.
+   Returns 1 once the message bytes were consumed, including semantic error
+   cases that stage a not-committed result. Returns 0 on protobuf failures.
+   No transaction publish occurs in this stage. */
 static int
 fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
-                                         pb_istream_t *   stream ) {
-  uint32_t      tag;
+                                         pb_istream_t *   stream,
+                                         fd_bam_decoded_multi_batch_t * decoded_multi ) {
+  fd_memset( decoded_multi, 0, sizeof(fd_bam_decoded_multi_batch_t) );
+
+  uint32_t       tag;
   pb_wire_type_t wire_type;
-  bool          eof = false;
-  int           seen_batch_count = 0;
+  bool           eof = false;
+  uint           seen_batch_count = 0U;
+
   while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
     if( FD_UNLIKELY( tag != bam_types_MultipleAtomicTxnBatch_batches_tag ) ) {
       if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
@@ -354,19 +405,47 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
       continue;
     }
+
     pb_istream_t substream;
     if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return 0;
-    seen_batch_count++;
-    const _Bool ok = fd_bam_decode_batch( ctx, &substream );
+
+    if( FD_UNLIKELY( seen_batch_count >= FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ) ) {
+      fd_bam_decoded_batch_t overflow_batch;
+      _Bool const ok = fd_bam_decode_batch( ctx, &substream, &overflow_batch );
+      pb_close_string_substream( stream, &substream );
+      if( FD_UNLIKELY( !ok ) ) return 0;
+
+      FD_LOG_WARNING(( "MultipleAtomicTxnBatch exceeded max batch count (%u>%u)",
+                       seen_batch_count + 1U,
+                       FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ));
+      decoded_multi->has_err_result = 1;
+      decoded_multi->err_result = (fd_bam_bundle_result_t){
+        .seq_id            = overflow_batch.batch.seq_id,
+        .slot              = overflow_batch.batch.max_schedule_slot,
+        .bundle_txn_cnt    = overflow_batch.state.packet_cnt,
+        .execution_success = 0,
+        .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+        .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+        .deser_reason      = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE,
+        .deser_index       = 0
+      };
+      return 1;
+    }
+
+    _Bool const ok = fd_bam_decode_batch( ctx, &substream, &decoded_multi->batches[ seen_batch_count ] );
     pb_close_string_substream( stream, &substream );
     if( FD_UNLIKELY( !ok ) ) return 0;
+    seen_batch_count++;
   }
 
   if( FD_UNLIKELY( !eof ) ) return 0;
-  if( FD_UNLIKELY( seen_batch_count == 0 ) ) {
+  decoded_multi->batch_cnt = seen_batch_count;
+
+  if( FD_UNLIKELY( seen_batch_count == 0U ) ) {
     FD_LOG_WARNING(( "MultipleAtomicTxnBatch contained no AtomicTxnBatch entries" ));
     bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
-    fd_bam_bundle_result_t res = {
+    decoded_multi->has_err_result = 1;
+    decoded_multi->err_result = (fd_bam_bundle_result_t){
       .seq_id            = batch.seq_id,
       .slot              = batch.max_schedule_slot,
       .bundle_txn_cnt    = 0,
@@ -376,17 +455,46 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       .deser_reason      = bam_types_DeserializationErrorReason_EMPTY,
       .deser_index       = 0
     };
-    fd_bam_enqueue_result( ctx, &res );
   }
   return 1;
 }
 
-/* Decodes the v0 scheduler response payload (heartbeats and nested batches).
-   Returns 1 once the message was consumed; returns 0 on protobuf failures so
-   the caller can reset/tear down the stream. */
+static void
+fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ctx,
+                                         fd_bam_decoded_multi_batch_t *       decoded_multi ) {
+  /* Commit phase for MultipleAtomicTxnBatch is all-or-nothing:
+     - If a staged message-level error exists, emit only that not-committed result.
+     - Validate every staged batch first.
+     - Publish only after all staged batches validate.
+     This prevents partial publish when a later batch is malformed/invalid. */
+  if( FD_UNLIKELY( decoded_multi->has_err_result ) ) {
+    fd_bam_enqueue_result( ctx, &decoded_multi->err_result );
+    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    return;
+  }
+
+  for( uint i=0U; i<decoded_multi->batch_cnt; i++ ) {
+    if( FD_UNLIKELY( !fd_bam_validate_batch( ctx,
+                                             &decoded_multi->batches[ i ].state,
+                                             &decoded_multi->batches[ i ].batch ) ) ) return;
+  }
+
+  for( uint i=0U; i<decoded_multi->batch_cnt; i++ ) {
+    fd_bam_publish_batch( ctx,
+                          &decoded_multi->batches[ i ].state,
+                          &decoded_multi->batches[ i ].batch );
+  }
+}
+
+/* Decodes the v0 scheduler response payload (heartbeats and nested batches)
+   into staged state. Returns 1 once the message was consumed; returns 0 on
+   protobuf failures so the caller can reject the message before commit. */
 static int
 fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
-                                     pb_istream_t *   stream ) {
+                                     pb_istream_t *   stream,
+                                     fd_bam_decoded_v0_t * decoded_v0 ) {
+  fd_memset( decoded_v0, 0, sizeof(fd_bam_decoded_v0_t) );
+
   uint32_t      tag;
   pb_wire_type_t wire_type;
   bool          eof = false;
@@ -406,9 +514,8 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
         FD_LOG_WARNING(( "BuilderHeartBeat decode failed: %s", PB_GET_ERROR( &hb_stream ) ));
         return 0;
       }
-      ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
-      fd_bam_client_sample_heartbeat_delay( ctx, hb.time_sent_microseconds );
-      ctx->metrics.heartbeat_recv_cnt++;
+      decoded_v0->kind = FD_BAM_V0_STAGED_HEARTBEAT;
+      decoded_v0->heartbeat_time_sent_microseconds = hb.time_sent_microseconds;
       break;
     }
     case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag: {
@@ -418,10 +525,12 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
       }
       pb_istream_t substream;
       if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return 0;
-      int ok = fd_bam_decode_multiple_atomic_txn_batch( ctx, &substream );
+      fd_bam_decoded_multi_batch_t decoded_multi;
+      int ok = fd_bam_decode_multiple_atomic_txn_batch( ctx, &substream, &decoded_multi );
       pb_close_string_substream( stream, &substream );
       if( FD_UNLIKELY( !ok ) ) return 0;
-      ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
+      decoded_v0->kind  = FD_BAM_V0_STAGED_MULTI;
+      decoded_v0->multi = decoded_multi;
       break;
     }
     default:
@@ -433,9 +542,9 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
   return 1;
 }
 
-/* Decodes bam_api.SchedulerResponse (versioned envelope). On decode failure or
-   unsupported version it bumps metrics and may request a reset; otherwise it
-   dispatches nested payloads to versioned handlers. */
+/* Decodes bam_api.SchedulerResponse (versioned envelope) using a two-phase
+   stage/commit flow. On decode failure or unsupported version it bumps metrics
+   and may request a reset; otherwise it commits the staged versioned payload. */
 void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
                                    void const *      data,
@@ -447,23 +556,28 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   bool          eof         = false;
   uint32_t      version_tag = 0U;
   int           seen_v0     = 0;
+  fd_bam_decoded_v0_t decoded_v0 = {0};
 
   while( pb_decode_tag( &istream, &wire_type, &tag, &eof ) ) {
     version_tag = tag;
-    if( tag == bam_api_SchedulerResponse_v0_tag ) {
-      if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
-        if( FD_UNLIKELY( !pb_skip_field( &istream, wire_type ) ) ) goto fail;
-        continue;
-      }
-      pb_istream_t substream;
-      if( FD_UNLIKELY( !pb_make_string_substream( &istream, &substream ) ) ) goto fail;
-      int ok = fd_bam_decode_scheduler_response_v0( ctx, &substream );
-      pb_close_string_substream( &istream, &substream );
-      if( FD_UNLIKELY( !ok ) ) goto fail;
-      seen_v0 = 1;
-    } else {
+    if( FD_UNLIKELY( tag != bam_api_SchedulerResponse_v0_tag ) ) {
       if( FD_UNLIKELY( !pb_skip_field( &istream, wire_type ) ) ) goto fail;
+      continue;
     }
+
+    if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
+      if( FD_UNLIKELY( !pb_skip_field( &istream, wire_type ) ) ) goto fail;
+      continue;
+    }
+
+    pb_istream_t substream;
+    if( FD_UNLIKELY( !pb_make_string_substream( &istream, &substream ) ) ) goto fail;
+    fd_bam_decoded_v0_t staged_v0;
+    int ok = fd_bam_decode_scheduler_response_v0( ctx, &substream, &staged_v0 );
+    pb_close_string_substream( &istream, &substream );
+    if( FD_UNLIKELY( !ok ) ) goto fail;
+    decoded_v0 = staged_v0;
+    seen_v0 = 1;
   }
 
   if( FD_UNLIKELY( !eof ) ) goto fail;
@@ -476,6 +590,21 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       ctx->metrics.decode_fail_cnt++;
       FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) missing version" ));
     }
+    return;
+  }
+
+  switch( decoded_v0.kind ) {
+  case FD_BAM_V0_STAGED_HEARTBEAT:
+    ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
+    fd_bam_client_sample_heartbeat_delay( ctx, decoded_v0.heartbeat_time_sent_microseconds );
+    ctx->metrics.heartbeat_recv_cnt++;
+    break;
+  case FD_BAM_V0_STAGED_MULTI:
+    fd_bam_commit_multiple_atomic_txn_batch( ctx, &decoded_v0.multi );
+    ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
+    break;
+  default:
+    break;
   }
   return;
 
