@@ -114,6 +114,45 @@ before_credit( fd_quic_ctx_t *     ctx,
   /* Publishes to mcache via callbacks */
   long now = fd_clock_now( ctx->clock );
   ctx->now = now;
+
+  if( FD_LIKELY( ctx->bam_status_fseq ) ) {
+    _Bool bam_override_prev = ctx->bam_override_active;
+    _Bool bam_override = fd_fseq_query( ctx->bam_status_fseq )!=0UL;
+    if( FD_UNLIKELY( bam_override && ctx->quic->metrics.conn_alloc_cnt ) ) {
+      fd_quic_t *       quic      = ctx->quic;
+      fd_quic_state_t * quic_state = fd_quic_get_state( quic );
+
+      /* BAM owns TPU ingress while active. Explicitly close and service
+         all outstanding QUIC connections now so cleanup is not deferred
+         until BAM deactivates. */
+      for( ulong conn_idx=0UL; conn_idx<quic->limits.conn_cnt; conn_idx++ ) {
+        fd_quic_conn_t * conn = fd_quic_conn_at_idx( quic_state, conn_idx );
+        switch( conn->state ) {
+          case FD_QUIC_CONN_STATE_INVALID:
+          case FD_QUIC_CONN_STATE_DEAD:
+            continue;
+          case FD_QUIC_CONN_STATE_ABORT:
+            break; /* already scheduled to die; just drain below */
+          default:
+            fd_quic_conn_close( conn, 0U );
+            break;
+        }
+      }
+
+      ulong max_iters = fd_ulong_max( 8UL*quic->limits.conn_cnt, 1UL );
+      while( quic->metrics.conn_alloc_cnt && max_iters ) {
+        if( FD_UNLIKELY( !fd_quic_service( quic, now ) ) ) break;
+        max_iters--;
+      }
+
+      if( FD_UNLIKELY( !bam_override_prev && quic->metrics.conn_alloc_cnt ) ) {
+        FD_LOG_WARNING(( "BAM override active, but %lu QUIC connections remain after cleanup",
+                         quic->metrics.conn_alloc_cnt ));
+      }
+    }
+    ctx->bam_override_active = bam_override;
+  }
+
   if( FD_UNLIKELY( ctx->bam_override_active ) ) {
     return;
   }
@@ -453,10 +492,6 @@ quic_tls_keylog( void *       _ctx,
 
 static void
 during_housekeeping( fd_quic_ctx_t * ctx ) {
-  if( FD_LIKELY( ctx->bam_status_fseq ) ) {
-    ctx->bam_override_active = fd_fseq_query( ctx->bam_status_fseq )!=0UL;
-  }
-
   if( FD_UNLIKELY( ctx->recal_next <= ctx->now ) ) {
     ctx->recal_next = fd_clock_default_recal( ctx->clock );
   }
