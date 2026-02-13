@@ -546,8 +546,8 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
 }
 
 /* Decodes bam_api.ConfigResponse. On protobuf failure it increments decode
-   metrics and returns early; otherwise it updates cached builder/BAM config in
-   place. */
+   metrics and returns early; otherwise it updates cached BAM config in place
+   and applies builder config atomically (all-or-nothing). */
 static void
 fd_bam_handle_config( fd_bam_tile_t * ctx,
                       void const *    protobuf,
@@ -562,20 +562,24 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
 
   if( FD_LIKELY( resp.has_block_engine_config ) ) {
     bam_types_BlockEngineBuilderConfig const * cfg = &resp.block_engine_config;
-    if( FD_UNLIKELY( cfg->builder_commission > 100UL ) ) {
-      FD_LOG_WARNING(( "BlockEngine builder commission out of range (0-100): %u", cfg->builder_commission ));
-    } else {
-      ctx->builder_commission = (uchar)cfg->builder_commission;
-    }
-
+    _Bool commission_ok = FD_LIKELY( cfg->builder_commission <= 100UL );
     uchar decoded_builder_pubkey[ 32 ];
-    if( FD_UNLIKELY( !fd_base58_decode_32( cfg->builder_pubkey, decoded_builder_pubkey ) ) ) {
+    _Bool pubkey_ok = FD_LIKELY( fd_base58_decode_32( cfg->builder_pubkey, decoded_builder_pubkey ) );
+
+    if( FD_UNLIKELY( !commission_ok ) ) {
+      FD_LOG_WARNING(( "BlockEngine builder commission out of range (0-100): %u", cfg->builder_commission ));
+    }
+    if( FD_UNLIKELY( !pubkey_ok ) ) {
       FD_LOG_HEXDUMP_WARNING(( "Invalid builder pubkey in ConfigResponse",
                                cfg->builder_pubkey,
-                               strnlen( cfg->builder_pubkey, sizeof(cfg->builder_pubkey) ) ));
-    } else {
+                               strnlen( cfg->builder_pubkey, sizeof( cfg->builder_pubkey ) ) ));
+    }
+
+    /* Apply builder info atomically to avoid mixed old/new state. */
+    if( FD_LIKELY( commission_ok && pubkey_ok ) ) {
+      ctx->builder_commission = (uchar)cfg->builder_commission;
       fd_memcpy( ctx->builder_pubkey, decoded_builder_pubkey, sizeof(ctx->builder_pubkey) );
-      ctx->builder_info_valid_until  = fd_bam_now() + (long)( 60e9 * 5. );
+      ctx->builder_info_valid_until = fd_bam_now() + (long)( 60e9 * 5. );
     }
   }
 
