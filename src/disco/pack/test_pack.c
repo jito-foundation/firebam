@@ -5,6 +5,7 @@
 #include "../../ballet/txn/fd_txn.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../disco/metrics/fd_metrics.h"
+#include "../../disco/fd_txn_m.h"
 
 #if FD_USING_GCC && __GNUC__ >= 15
 #pragma GCC diagnostic ignored "-Wunterminated-string-initialization"
@@ -252,6 +253,27 @@ make_vote_transaction1( fd_txn_p_t * txnp,
 static void
 make_vote_transaction( ulong i ) {
   make_vote_transaction1( &txnp_scratch[ i ], i );
+}
+
+static ulong
+test_txn_id( fd_txn_p_t const * txnp ) {
+  ulong txn_id = 0UL;
+  fd_memcpy( &txn_id, txnp->payload + 1UL, sizeof(ulong) );
+  return txn_id;
+}
+
+static void
+mark_bundle_as_bam( fd_txn_e_t * const * bundle,
+                    ulong                txn_cnt,
+                    uint                 seq_id,
+                    uchar                revert_on_error ) {
+  for( ulong i=0UL; i<txn_cnt; i++ ) {
+    bundle[i]->txnp->source_tpu          = FD_TXN_M_TPU_SOURCE_BAM;
+    bundle[i]->txnp->bam.seq_id          = seq_id;
+    bundle[i]->txnp->bam.batch_idx       = (uchar)i;
+    bundle[i]->txnp->bam.batch_cnt       = (uchar)txn_cnt;
+    bundle[i]->txnp->bam.revert_on_error = revert_on_error;
+  }
 }
 
 /* Makes enough of a durable nonce transaction to be scheduleable.
@@ -1740,6 +1762,76 @@ test_bundle_account_conflicts( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
+/* BAM bundles with conflicting accesses keep seq order, while independent
+   bundles can bypass blocked conflicting work. */
+static void
+test_bam_bundle_seq_conflict_order_and_bypass( void ) {
+  pack_outcome_t outcome;
+  fd_pack_t * pack = init_all_with_meta( 64UL, 2UL, 8UL, sizeof(test_bundle_meta_t), &outcome );
+  fd_pack_set_initializer_bundles_ready( pack );
+
+  fd_txn_e_t * _bundle[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  fd_txn_e_t * const * bundle;
+  ulong _deleted;
+  ulong txn_cnt;
+
+  /* seq=10: conflicts with seq=11 on account x */
+  bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
+  make_transaction1( bundle[0]->txnp, 100UL, 2000U, 32U, 10.0, "x", "", NULL, NULL );
+  mark_bundle_as_bam( bundle, 1UL, 10U, 1U );
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted )>=0 );
+
+  /* seq=11: conflicts with seq=10 */
+  bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
+  make_transaction1( bundle[0]->txnp, 101UL, 2000U, 32U, 10.0, "x", "", NULL, NULL );
+  mark_bundle_as_bam( bundle, 1UL, 11U, 1U );
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted )>=0 );
+
+  /* seq=12: non-conflicting bundle (2 txns), can bypass seq=11 while seq=10 is in flight */
+  bundle = fd_pack_insert_bundle_init( pack, _bundle, 2UL );
+  make_transaction1( bundle[0]->txnp, 102UL, 2000U, 32U, 10.0, "y", "", NULL, NULL );
+  make_transaction1( bundle[1]->txnp, 103UL, 2000U, 32U, 10.0, "z", "", NULL, NULL );
+  mark_bundle_as_bam( bundle, 2UL, 12U, 1U );
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 1000UL, 0, NULL, &_deleted )>=0 );
+
+  txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
+  FD_TEST( txn_cnt==1UL );
+  FD_TEST( test_txn_id( &outcome.results[0] )==100UL );
+  FD_TEST( outcome.results[0].bam.seq_id==10U );
+  FD_TEST( outcome.results[0].bam.batch_idx==0U );
+  FD_TEST( outcome.results[0].bam.batch_cnt==1U );
+
+  /* seq=11 is blocked by outstanding seq=10, so seq=12 should bypass. */
+  txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
+  FD_TEST( txn_cnt==2UL );
+  FD_TEST( test_txn_id( &outcome.results[0] )==102UL );
+  FD_TEST( test_txn_id( &outcome.results[1] )==103UL );
+  for( ulong i=0UL; i<txn_cnt; i++ ) {
+    FD_TEST( outcome.results[i].bam.seq_id==12U );
+    FD_TEST( outcome.results[i].bam.batch_idx==(uchar)i );
+    FD_TEST( outcome.results[i].bam.batch_cnt==2U );
+    FD_TEST( outcome.results[i].bam.revert_on_error==1U );
+  }
+  fd_pack_microblock_complete( pack, 1UL );
+
+  /* seq=11 still conflicts with seq=10, so no bundle can schedule yet. */
+  txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
+  FD_TEST( txn_cnt==0UL );
+
+  /* Once seq=10 completes, conflicting seq=11 can execute. */
+  fd_pack_microblock_complete( pack, 0UL );
+  txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
+  FD_TEST( txn_cnt==1UL );
+  FD_TEST( test_txn_id( &outcome.results[0] )==101UL );
+  FD_TEST( outcome.results[0].bam.seq_id==11U );
+  FD_TEST( outcome.results[0].bam.batch_idx==0U );
+  FD_TEST( outcome.results[0].bam.batch_cnt==1U );
+  fd_pack_microblock_complete( pack, 0UL );
+
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
+  fd_pack_delete( fd_pack_leave( pack ) );
+}
+
 /* Test initializer bundle state machine */
 static void
 test_initializer_bundle_state_machine( void ) {
@@ -2424,6 +2516,7 @@ main( int     argc,
   /* BAM Bundle Tests */
   test_bundle_strategies();
   test_bundle_account_conflicts();
+  test_bam_bundle_seq_conflict_order_and_bypass();
   test_initializer_bundle_state_machine();
   test_bundle_expiration_during_slot();
   test_bundle_priority_ordering();
