@@ -18,46 +18,12 @@ fd_bam_now( void ) {
 
 /* ---------- Node-side protobuf helpers ---------- */
 
-typedef struct {
-  bam_types_Packet * packets;
-  size_t             packet_cnt;
-} bam_e2e_packet_encode_ctx_t;
-
-static bool
-bam_e2e_encode_packets_cb( pb_ostream_t *       stream,
-                           pb_field_t const *   field,
-                           void * const *       arg ) {
-  bam_e2e_packet_encode_ctx_t * ctx = (bam_e2e_packet_encode_ctx_t *)(*arg);
-  for( size_t i=0UL; i<ctx->packet_cnt; i++ ) {
-    if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
-    if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_Packet_fields, &ctx->packets[ i ] ) ) ) return false;
-  }
-  return true;
-}
-
-typedef struct {
-  bam_types_AtomicTxnBatch * batches;
-  size_t                     batch_cnt;
-} bam_e2e_batch_encode_ctx_t;
-
-static bool
-bam_e2e_encode_batches_cb( pb_ostream_t *       stream,
-                           pb_field_t const *   field,
-                           void * const *       arg ) {
-  bam_e2e_batch_encode_ctx_t * ctx = (bam_e2e_batch_encode_ctx_t *)(*arg);
-  for( size_t i=0UL; i<ctx->batch_cnt; i++ ) {
-    if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
-    if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_AtomicTxnBatch_fields, &ctx->batches[ i ] ) ) ) return false;
-  }
-  return true;
-}
-
 static size_t
 bam_e2e_encode_scheduler_batches( bam_types_AtomicTxnBatch * batches,
                                   size_t                     batch_cnt,
                                   uchar *                    out,
                                   size_t                     out_sz ) {
-  bam_e2e_batch_encode_ctx_t ctx = {
+  test_bam_batch_encode_ctx_t ctx = {
     .batches   = batches,
     .batch_cnt = batch_cnt
   };
@@ -65,7 +31,7 @@ bam_e2e_encode_scheduler_batches( bam_types_AtomicTxnBatch * batches,
   bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
   resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
   resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag;
-  resp.versioned_msg.v0.resp.multiple_atomic_txn_batch.batches.funcs.encode = bam_e2e_encode_batches_cb;
+  resp.versioned_msg.v0.resp.multiple_atomic_txn_batch.batches.funcs.encode = test_bam_encode_batches_cb;
   resp.versioned_msg.v0.resp.multiple_atomic_txn_batch.batches.arg          = &ctx;
 
   pb_ostream_t ostream = pb_ostream_from_buffer( out, out_sz );
@@ -539,7 +505,7 @@ bam_e2e_node_deliver_batches( bam_e2e_harness_t *      h,
                               ulong                     def_cnt,
                               uchar                     drop_last_idx ) {
   bam_types_AtomicTxnBatch batches[ 32 ];
-  bam_e2e_packet_encode_ctx_t packet_ctx[ 32 ];
+  test_bam_packet_encode_ctx_t packet_ctx[ 32 ];
   bam_types_Packet packets[ 32 ][ FD_PACK_MAX_TXN_PER_BUNDLE ];
   FD_TEST( def_cnt <= 32UL );
 
@@ -571,7 +537,7 @@ bam_e2e_node_deliver_batches( bam_e2e_harness_t *      h,
       }
     }
 
-    batches[ i ].packets.funcs.encode = bam_e2e_encode_packets_cb;
+    batches[ i ].packets.funcs.encode = test_bam_encode_packets_cb;
     batches[ i ].packets.arg          = &packet_ctx[ i ];
   }
 

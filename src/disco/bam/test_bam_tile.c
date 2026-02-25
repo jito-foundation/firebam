@@ -122,40 +122,6 @@ test_enqueue_bundle_result( fd_bam_tile_t *               state,
 }
 
 typedef struct {
-  bam_types_Packet * packets;
-  size_t             packet_cnt;
-} test_bam_packet_encode_ctx_t;
-
-static bool
-test_bam_encode_packets_cb( pb_ostream_t *       stream,
-                            pb_field_t const *   field,
-                            void * const *       arg ) {
-  test_bam_packet_encode_ctx_t * ctx = (test_bam_packet_encode_ctx_t *)(*arg);
-  for( size_t i=0UL; i<ctx->packet_cnt; i++ ) {
-    if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
-    if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_Packet_fields, &ctx->packets[ i ] ) ) ) return false;
-  }
-  return true;
-}
-
-typedef struct {
-  bam_types_AtomicTxnBatch * batches;
-  size_t                     batch_cnt;
-} test_bam_batch_encode_ctx_t;
-
-static bool
-test_bam_encode_batches_cb( pb_ostream_t *       stream,
-                            pb_field_t const *   field,
-                            void * const *       arg ) {
-  test_bam_batch_encode_ctx_t * ctx = (test_bam_batch_encode_ctx_t *)(*arg);
-  for( size_t i=0UL; i<ctx->batch_cnt; i++ ) {
-    if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
-    if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_AtomicTxnBatch_fields, &ctx->batches[ i ] ) ) ) return false;
-  }
-  return true;
-}
-
-typedef struct {
   uchar const * const * batches;
   size_t const *         batch_sz;
   size_t                 batch_cnt;

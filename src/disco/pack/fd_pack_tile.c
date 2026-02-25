@@ -635,6 +635,93 @@ get_done_packing( fd_pack_ctx_t * ctx, fd_done_packing_t * done_packing ) {
   fd_pack_get_pending_smallest( ctx->pack, done_packing->pending_smallest, done_packing->pending_votes_smallest );
 }
 
+static inline _Bool
+pack_tile_build_missing_bam_bundle_result( fd_pack_ctx_t *        ctx,
+                                           fd_bam_bundle_result_t * out ) {
+  if( FD_UNLIKELY( !ctx->current_bam_bundle->bundle ) ) return 0;
+  if( FD_UNLIKELY( ctx->current_bam_bundle->txn_received==ctx->current_bam_bundle->txn_cnt ) ) return 0;
+
+  fd_bam_bundle_result_t res = {0};
+  res.seq_id            = ctx->current_bam_bundle->seq_id;
+  res.slot              = ctx->current_bam_bundle->max_schedule_slot;
+  res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
+  res.execution_success = 0;
+  res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+  res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+  res.transaction_err_count = 0U;
+  for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
+    res.sanitize_success[ i ] = 1U;
+    if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
+      res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+      res.transaction_err_count++;
+    }
+  }
+  *out = res;
+  return 1;
+}
+
+static inline void
+pack_tile_publish_pending_bam_result_if_needed( fd_pack_ctx_t *     ctx,
+                                                fd_stem_context_t * stem ) {
+  if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
+    pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
+    ctx->pending_bam_result_valid = false;
+  }
+}
+
+static inline void
+pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *     ctx,
+                                      fd_stem_context_t * stem,
+                                      _Bool               queue_missing_result ) {
+  if( FD_UNLIKELY( !ctx->current_bam_bundle->bundle ) ) return;
+
+  fd_bam_bundle_result_t res;
+  if( FD_UNLIKELY( pack_tile_build_missing_bam_bundle_result( ctx, &res ) ) ) {
+    if( FD_UNLIKELY( queue_missing_result ) ) {
+      ctx->pending_bam_result[0] = res;
+      ctx->pending_bam_result_valid = true;
+    } else {
+      pack_tile_publish_bam_result( ctx, stem, &res );
+    }
+  }
+
+  fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
+  ctx->current_bam_bundle->bundle = NULL;
+}
+
+static inline void
+pack_tile_cancel_current_block_engine_bundle( fd_pack_ctx_t * ctx ) {
+  if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
+    fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
+    ctx->current_bundle->bundle = NULL;
+  }
+}
+
+static inline void
+pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
+                              fd_stem_context_t * stem,
+                              long                now,
+                              char const *        reason ) {
+  pack_tile_publish_pending_bam_result_if_needed( ctx, stem );
+  pack_tile_abandon_current_bam_bundle( ctx, stem, 0 );
+  pack_tile_cancel_current_block_engine_bundle( ctx );
+
+  fd_done_packing_t * done_packing = fd_chunk_to_laddr( ctx->poh_out_mem, ctx->poh_out_chunk );
+  get_done_packing( ctx, done_packing );
+  fd_pack_end_block( ctx->pack );
+  fd_pack_get_top_writers( ctx->pack, done_packing->limits_usage->top_writers );
+
+  fd_stem_publish( stem, 1UL, fd_disco_bank_sig( ctx->leader_slot, ctx->pack_idx ), ctx->poh_out_chunk, sizeof(fd_done_packing_t), 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
+  ctx->poh_out_chunk = fd_dcache_compact_next( ctx->poh_out_chunk, sizeof(fd_done_packing_t), ctx->poh_out_chunk0, ctx->poh_out_wmark );
+  ctx->pack_idx++;
+
+  log_end_block_metrics( ctx, now, reason, done_packing->limits_usage->block_cost );
+  ctx->drain_banks         = 1;
+  ctx->leader_slot         = ULONG_MAX;
+  ctx->slot_microblock_cnt = 0UL;
+  remove_ib( ctx );
+}
+
 static inline void
 metrics_write( fd_pack_ctx_t * ctx ) {
   FD_MCNT_ENUM_COPY( PACK, TRANSACTION_INSERTED,          ctx->insert_result  );
@@ -785,55 +872,7 @@ after_credit( fd_pack_ctx_t *     ctx,
      happen in the first after_credit after a housekeeping. */
   if( FD_UNLIKELY( ctx->approx_wallclock_ns>=ctx->slot_end_ns && ctx->leader_slot!=ULONG_MAX ) ) {
     *charge_busy = 1;
-
-    if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
-      pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
-      ctx->pending_bam_result_valid = false;
-    }
-
-    if( FD_UNLIKELY( ctx->current_bam_bundle->bundle ) ) {
-      if( FD_UNLIKELY( ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt ) ) {
-        fd_bam_bundle_result_t res = {0};
-        res.seq_id            = ctx->current_bam_bundle->seq_id;
-        res.slot              = ctx->current_bam_bundle->max_schedule_slot;
-        res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-        res.execution_success = 0;
-        res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-        res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-        res.transaction_err_count = 0U;
-        for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
-          res.sanitize_success[ i ] = 1U;
-          if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
-            res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
-            res.transaction_err_count++;
-          }
-        }
-        pack_tile_publish_bam_result( ctx, stem, &res );
-      }
-
-      fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
-      ctx->current_bam_bundle->bundle = NULL;
-    }
-
-    if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
-      fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
-      ctx->current_bundle->bundle = NULL;
-    }
-
-    fd_done_packing_t * done_packing = fd_chunk_to_laddr( ctx->poh_out_mem, ctx->poh_out_chunk );
-    get_done_packing( ctx, done_packing ); /* needs to be called before fd_pack_end_block */
-    fd_pack_end_block( ctx->pack );
-    fd_pack_get_top_writers( ctx->pack, done_packing->limits_usage->top_writers ); /* needs to be called after fd_pack_end_block */
-
-    fd_stem_publish( stem, 1UL, fd_disco_bank_sig( ctx->leader_slot, ctx->pack_idx ), ctx->poh_out_chunk, sizeof(fd_done_packing_t), 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
-    ctx->poh_out_chunk = fd_dcache_compact_next( ctx->poh_out_chunk, sizeof(fd_done_packing_t), ctx->poh_out_chunk0, ctx->poh_out_wmark );
-    ctx->pack_idx++;
-
-    log_end_block_metrics( ctx, now, "time", done_packing->limits_usage->block_cost );
-    ctx->drain_banks         = 1;
-    ctx->leader_slot         = ULONG_MAX;
-    ctx->slot_microblock_cnt = 0UL;
-    remove_ib( ctx );
+    pack_tile_finish_leader_slot( ctx, stem, now, "time" );
 
     update_metric_state( ctx, now, FD_PACK_METRIC_STATE_LEADER,       0 );
     update_metric_state( ctx, now, FD_PACK_METRIC_STATE_BANKS,        0 );
@@ -1062,55 +1101,7 @@ after_credit( fd_pack_ctx_t *     ctx,
        metric, but we end the slot early so won't see it unless we also
        increment it here. */
     FD_MCNT_INC( PACK, MICROBLOCK_PER_BLOCK_LIMIT, 1UL );
-
-    if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
-      pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
-      ctx->pending_bam_result_valid = false;
-    }
-
-    if( FD_UNLIKELY( ctx->current_bam_bundle->bundle ) ) {
-      if( FD_UNLIKELY( ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt ) ) {
-        fd_bam_bundle_result_t res = {0};
-        res.seq_id            = ctx->current_bam_bundle->seq_id;
-        res.slot              = ctx->current_bam_bundle->max_schedule_slot;
-        res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-        res.execution_success = 0;
-        res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-        res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-        res.transaction_err_count = 0U;
-        for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
-          res.sanitize_success[ i ] = 1U;
-          if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
-            res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
-            res.transaction_err_count++;
-          }
-        }
-        pack_tile_publish_bam_result( ctx, stem, &res );
-      }
-
-      fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
-      ctx->current_bam_bundle->bundle = NULL;
-    }
-
-    if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
-      fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
-      ctx->current_bundle->bundle = NULL;
-    }
-
-    fd_done_packing_t * done_packing = fd_chunk_to_laddr( ctx->poh_out_mem, ctx->poh_out_chunk );
-    get_done_packing( ctx, done_packing );
-    fd_pack_end_block( ctx->pack );
-    fd_pack_get_top_writers( ctx->pack, done_packing->limits_usage->top_writers );
-
-    fd_stem_publish( stem, 1UL, fd_disco_bank_sig( ctx->leader_slot, ctx->pack_idx ), ctx->poh_out_chunk, sizeof(fd_done_packing_t), 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
-    ctx->poh_out_chunk = fd_dcache_compact_next( ctx->poh_out_chunk, sizeof(fd_done_packing_t), ctx->poh_out_chunk0, ctx->poh_out_wmark );
-    ctx->pack_idx++;
-
-    log_end_block_metrics( ctx, now, "microblock", done_packing->limits_usage->block_cost );
-    ctx->drain_banks         = 1;
-    ctx->leader_slot         = ULONG_MAX;
-    ctx->slot_microblock_cnt = 0UL;
-    remove_ib( ctx );
+    pack_tile_finish_leader_slot( ctx, stem, now, "microblock" );
   }
 }
 
@@ -1207,25 +1198,7 @@ during_frag( fd_pack_ctx_t * ctx,
       if( FD_UNLIKELY( new_bam_bundle &&
                        ctx->current_bam_bundle->bundle &&
                        ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt ) ) {
-        fd_bam_bundle_result_t res = {0};
-        res.seq_id            = ctx->current_bam_bundle->seq_id;
-        res.slot              = ctx->current_bam_bundle->max_schedule_slot;
-        res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-        res.execution_success = 0;
-        res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-        res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-        res.transaction_err_count = 0U;
-        for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
-          res.sanitize_success[ i ] = 1U;
-          if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
-            res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
-            res.transaction_err_count++;
-          }
-        }
-        ctx->pending_bam_result[0] = res;
-        ctx->pending_bam_result_valid = true;
-
-        fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
+        pack_tile_abandon_current_bam_bundle( ctx, NULL, 1 );
       }
 
       if( FD_LIKELY( new_bam_bundle ) ) {
@@ -1371,55 +1344,9 @@ after_frag( fd_pack_ctx_t *     ctx,
     long now_ns    = fd_log_wallclock();
 
     if( FD_UNLIKELY( ctx->leader_slot!=ULONG_MAX ) ) {
-      if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
-        pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
-        ctx->pending_bam_result_valid = false;
-      }
-
-      if( FD_UNLIKELY( ctx->current_bam_bundle->bundle ) ) {
-        if( FD_UNLIKELY( ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt ) ) {
-          fd_bam_bundle_result_t res = {0};
-          res.seq_id            = ctx->current_bam_bundle->seq_id;
-          res.slot              = ctx->current_bam_bundle->max_schedule_slot;
-          res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-          res.execution_success = 0;
-          res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-          res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-          res.transaction_err_count = 0U;
-          for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
-            res.sanitize_success[ i ] = 1U;
-            if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
-              res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
-              res.transaction_err_count++;
-            }
-          }
-          pack_tile_publish_bam_result( ctx, stem, &res );
-        }
-
-        fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
-        ctx->current_bam_bundle->bundle = NULL;
-      }
-
-      if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
-        fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
-        ctx->current_bundle->bundle = NULL;
-      }
-
-      fd_done_packing_t * done_packing = fd_chunk_to_laddr( ctx->poh_out_mem, ctx->poh_out_chunk );
-      get_done_packing( ctx, done_packing );
-      fd_pack_end_block( ctx->pack );
-      fd_pack_get_top_writers( ctx->pack, done_packing->limits_usage->top_writers );
-
-      fd_stem_publish( stem, 1UL, fd_disco_bank_sig( ctx->leader_slot, ctx->pack_idx ), ctx->poh_out_chunk, sizeof(fd_done_packing_t), 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
-      ctx->poh_out_chunk = fd_dcache_compact_next( ctx->poh_out_chunk, sizeof(fd_done_packing_t), ctx->poh_out_chunk0, ctx->poh_out_wmark );
-      ctx->pack_idx++;
-
-      FD_LOG_WARNING(( "switching to slot %lu while packing for slot %lu. Draining bank tiles.", leader_slot, ctx->leader_slot ));
-      log_end_block_metrics( ctx, now_ticks, "switch", done_packing->limits_usage->block_cost );
-      ctx->drain_banks         = 1;
-      ctx->leader_slot         = ULONG_MAX;
-      ctx->slot_microblock_cnt = 0UL;
-      remove_ib( ctx );
+      ulong old_leader_slot = ctx->leader_slot;
+      FD_LOG_WARNING(( "switching to slot %lu while packing for slot %lu. Draining bank tiles.", leader_slot, old_leader_slot ));
+      pack_tile_finish_leader_slot( ctx, stem, now_ticks, "switch" );
     }
     ctx->leader_slot = leader_slot;
 
@@ -1485,10 +1412,7 @@ after_frag( fd_pack_ctx_t *     ctx,
     break;
   }
   case IN_KIND_RESOLV: {
-    if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
-      pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
-      ctx->pending_bam_result_valid = false;
-    }
+    pack_tile_publish_pending_bam_result_if_needed( ctx, stem );
 
     if( FD_UNLIKELY( ctx->bundle_kind!=PACK_TILE_BUNDLE_KIND_NONE ) ) {
       if( FD_LIKELY( ctx->bundle_kind==PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE ) ) {

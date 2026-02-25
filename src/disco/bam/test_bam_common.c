@@ -3,8 +3,43 @@
 #include "../plugin/fd_plugin.h"
 #include "../fd_txn_m.h"
 #include "../../waltz/grpc/fd_grpc_client_private.h"
+#include "../../ballet/nanopb/pb_encode.h"
 #include <sys/socket.h>
 #include <unistd.h>
+
+typedef struct {
+  bam_types_Packet * packets;
+  size_t             packet_cnt;
+} test_bam_packet_encode_ctx_t;
+
+FD_FN_UNUSED static bool
+test_bam_encode_packets_cb( pb_ostream_t *       stream,
+                            pb_field_t const *   field,
+                            void * const *       arg ) {
+  test_bam_packet_encode_ctx_t * ctx = (test_bam_packet_encode_ctx_t *)(*arg);
+  for( size_t i=0UL; i<ctx->packet_cnt; i++ ) {
+    if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
+    if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_Packet_fields, &ctx->packets[ i ] ) ) ) return false;
+  }
+  return true;
+}
+
+typedef struct {
+  bam_types_AtomicTxnBatch * batches;
+  size_t                     batch_cnt;
+} test_bam_batch_encode_ctx_t;
+
+FD_FN_UNUSED static bool
+test_bam_encode_batches_cb( pb_ostream_t *       stream,
+                            pb_field_t const *   field,
+                            void * const *       arg ) {
+  test_bam_batch_encode_ctx_t * ctx = (test_bam_batch_encode_ctx_t *)(*arg);
+  for( size_t i=0UL; i<ctx->batch_cnt; i++ ) {
+    if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
+    if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_AtomicTxnBatch_fields, &ctx->batches[ i ] ) ) ) return false;
+  }
+  return true;
+}
 
 struct test_bam_env {
   fd_stem_context_t stem[1];
