@@ -1068,219 +1068,119 @@ test_bam_bundle_requires_builder_info( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+typedef struct {
+  uint seq_id;
+  long flush_clock_ns;
+  int  expected_deser_index; /* <0 means do not assert index */
+  struct {
+    uchar payload;
+    uchar has_meta;
+    uchar has_flags;
+    uchar revert_on_error;
+  } packet[ 2 ];
+} test_bam_revert_case_t;
+
 static void
-test_bam_bundle_rejects_mixed_revert_flags( fd_wksp_t * wksp ) {
-  /* Mixed revert_on_error flags inside a bundle must be rejected and surfaced
+test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
+  /* These cases verify that mixed/defaulted revert_on_error flags are rejected
      as INCONSISTENT_BUNDLE. */
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
-  fd_bam_tile_t * state = env->state;
+  test_bam_revert_case_t const cases[] = {
+    /* Case 0: Explicit true/false mismatch across two packets. */
+    {
+      .seq_id = 42U,
+      .flush_clock_ns = (long)15e9,
+      .expected_deser_index = -1,
+      .packet = {
+        { .payload = (uchar)'Z', .has_meta = 1U, .has_flags = 1U, .revert_on_error = 1U },
+        { .payload = (uchar)'[', .has_meta = 1U, .has_flags = 1U, .revert_on_error = 0U },
+      }
+    },
+    /* Case 1: First packet omits flags (defaults false), second sets true. */
+    {
+      .seq_id = 44U,
+      .flush_clock_ns = (long)17e9,
+      .expected_deser_index = 1,
+      .packet = {
+        { .payload = (uchar)'x', .has_meta = 0U, .has_flags = 0U, .revert_on_error = 0U },
+        { .payload = (uchar)'y', .has_meta = 1U, .has_flags = 1U, .revert_on_error = 1U },
+      }
+    },
+    /* Case 2: First packet sets true, second omits flags (defaults false). */
+    {
+      .seq_id = 45U,
+      .flush_clock_ns = (long)18e9,
+      .expected_deser_index = 1,
+      .packet = {
+        { .payload = (uchar)'u', .has_meta = 1U, .has_flags = 1U, .revert_on_error = 1U },
+        { .payload = (uchar)'v', .has_meta = 0U, .has_flags = 0U, .revert_on_error = 0U },
+      }
+    },
+    /* Case 3: has_meta without has_flags still defaults false and mismatches true. */
+    {
+      .seq_id = 46U,
+      .flush_clock_ns = (long)19e9,
+      .expected_deser_index = 1,
+      .packet = {
+        { .payload = (uchar)'w', .has_meta = 1U, .has_flags = 0U, .revert_on_error = 0U },
+        { .payload = (uchar)'z', .has_meta = 1U, .has_flags = 1U, .revert_on_error = 1U },
+      }
+    },
+  };
 
-  bam_types_Packet packets[ 2 ];
-  fd_memset( packets, 0, sizeof( packets ) );
-  for( size_t i=0UL; i<2UL; i++ ) {
-    packets[ i ].data.size = 1U;
-    packets[ i ].data.bytes[0] = (uchar)( 'Z' + (int)i );
-    packets[ i ].has_meta = 1;
-    packets[ i ].meta.has_flags = 1;
-    packets[ i ].meta.flags.revert_on_error = (i == 0UL);
+  for( ulong case_idx=0UL; case_idx<sizeof(cases)/sizeof(cases[0]); case_idx++ ) {
+    test_bam_revert_case_t const * tc = &cases[ case_idx ];
+
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    test_bam_env_mock_conn( env );
+    fd_bam_tile_t * state = env->state;
+
+    bam_types_Packet packets[ 2 ];
+    fd_memset( packets, 0, sizeof( packets ) );
+    for( ulong i=0UL; i<2UL; i++ ) {
+      packets[ i ].data.size     = 1U;
+      packets[ i ].data.bytes[0] = tc->packet[ i ].payload;
+      if( FD_LIKELY( tc->packet[ i ].has_meta ) ) {
+        packets[ i ].has_meta = 1U;
+        packets[ i ].meta.has_flags = tc->packet[ i ].has_flags;
+        if( FD_LIKELY( tc->packet[ i ].has_flags ) )
+          packets[ i ].meta.flags.revert_on_error = tc->packet[ i ].revert_on_error;
+      }
+    }
+
+    uchar protobuf[256];
+    size_t protobuf_sz = test_bam_encode_scheduler_response( packets, 2UL, tc->seq_id, protobuf, sizeof( protobuf ) );
+
+    fd_bam_client_grpc_rx_msg( state,
+                               protobuf,
+                               protobuf_sz,
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+    FD_TEST( state->metrics.bundle_received_cnt == 0UL );
+    FD_TEST( state->metrics.txn_received_cnt == 0UL );
+    FD_TEST( state->bam_pending_results == 1UL );
+
+    test_bam_prepare_scheduler_stream( state );
+    g_clock = tc->flush_clock_ns;
+    test_bam_keepalive_sync( state, g_clock );
+    state->bam_last_config_poll_ns = g_clock;
+
+    FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+    FD_TEST( state->bam_pending_results == 0UL );
+
+    test_bam_decoded_message_t decoded;
+    test_bam_decode_last_message( state, &decoded );
+    FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+    FD_TEST( decoded.multi.result_cnt == 1UL );
+    bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+    FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
+    FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
+    FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
+    if( FD_UNLIKELY( tc->expected_deser_index>=0 ) )
+      FD_TEST( result->result.not_committed.reason.deserialization_error.index == (uint)tc->expected_deser_index );
+
+    test_bam_env_destroy( env );
   }
-
-  uchar protobuf[256];
-  size_t protobuf_sz = test_bam_encode_scheduler_response( packets, 2UL, 42U, protobuf, sizeof( protobuf ) );
-
-  fd_bam_client_grpc_rx_msg( state,
-                             protobuf,
-                             protobuf_sz,
-                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-
-  FD_TEST( state->metrics.bundle_received_cnt == 0UL );
-  FD_TEST( state->bam_pending_results == 1UL );
-
-  test_bam_prepare_scheduler_stream( state );
-  g_clock = (long)15e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
-  FD_TEST( state->bam_pending_results == 0UL );
-
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
-
-  test_bam_env_destroy( env );
-}
-
-static void
-test_bam_bundle_defaults_missing_revert_flag_to_false( fd_wksp_t * wksp ) {
-  /* Missing meta/flags must behave like revert_on_error=false and still be
-     checked for mixed flag consistency across packets. */
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
-  fd_bam_tile_t * state = env->state;
-
-  bam_types_Packet packets[ 2 ];
-  fd_memset( packets, 0, sizeof( packets ) );
-
-  packets[0].data.size     = 1U;
-  packets[0].data.bytes[0] = (uchar)'x';
-  /* packets[0] intentionally omits meta.flags -> effective revert_on_error=0 */
-
-  packets[1].data.size                     = 1U;
-  packets[1].data.bytes[0]                 = (uchar)'y';
-  packets[1].has_meta                      = 1U;
-  packets[1].meta.has_flags                = 1U;
-  packets[1].meta.flags.revert_on_error    = 1U;
-
-  uchar protobuf[256];
-  size_t protobuf_sz = test_bam_encode_scheduler_response( packets, 2UL, 44U, protobuf, sizeof( protobuf ) );
-
-  fd_bam_client_grpc_rx_msg( state,
-                             protobuf,
-                             protobuf_sz,
-                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-
-  FD_TEST( state->metrics.bundle_received_cnt == 0UL );
-  FD_TEST( state->metrics.txn_received_cnt == 0UL );
-  FD_TEST( state->bam_pending_results == 1UL );
-
-  test_bam_prepare_scheduler_stream( state );
-  g_clock = (long)17e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
-  FD_TEST( state->bam_pending_results == 0UL );
-
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 1U );
-
-  test_bam_env_destroy( env );
-}
-
-static void
-test_bam_bundle_rejects_missing_revert_flag_after_true( fd_wksp_t * wksp ) {
-  /* Missing meta/flags default to false. A true packet followed by missing
-     flags must be rejected as mixed revert_on_error. */
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
-  fd_bam_tile_t * state = env->state;
-
-  bam_types_Packet packets[ 2 ];
-  fd_memset( packets, 0, sizeof( packets ) );
-
-  packets[0].data.size                     = 1U;
-  packets[0].data.bytes[0]                 = (uchar)'u';
-  packets[0].has_meta                      = 1U;
-  packets[0].meta.has_flags                = 1U;
-  packets[0].meta.flags.revert_on_error    = 1U;
-
-  packets[1].data.size     = 1U;
-  packets[1].data.bytes[0] = (uchar)'v';
-  /* packets[1] intentionally omits meta.flags -> effective revert_on_error=0 */
-
-  uchar protobuf[256];
-  size_t protobuf_sz = test_bam_encode_scheduler_response( packets, 2UL, 45U, protobuf, sizeof( protobuf ) );
-
-  fd_bam_client_grpc_rx_msg( state,
-                             protobuf,
-                             protobuf_sz,
-                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-
-  FD_TEST( state->metrics.bundle_received_cnt == 0UL );
-  FD_TEST( state->metrics.txn_received_cnt == 0UL );
-  FD_TEST( state->bam_pending_results == 1UL );
-
-  test_bam_prepare_scheduler_stream( state );
-  g_clock = (long)18e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
-  FD_TEST( state->bam_pending_results == 0UL );
-
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 1U );
-
-  test_bam_env_destroy( env );
-}
-
-static void
-test_bam_bundle_defaults_meta_without_flags_to_false( fd_wksp_t * wksp ) {
-  /* has_meta without has_flags must also default to revert_on_error=false. */
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
-  fd_bam_tile_t * state = env->state;
-
-  bam_types_Packet packets[ 2 ];
-  fd_memset( packets, 0, sizeof( packets ) );
-
-  packets[0].data.size     = 1U;
-  packets[0].data.bytes[0] = (uchar)'w';
-  packets[0].has_meta      = 1U;
-  packets[0].meta.has_flags = 0U;
-
-  packets[1].data.size                     = 1U;
-  packets[1].data.bytes[0]                 = (uchar)'z';
-  packets[1].has_meta                      = 1U;
-  packets[1].meta.has_flags                = 1U;
-  packets[1].meta.flags.revert_on_error    = 1U;
-
-  uchar protobuf[256];
-  size_t protobuf_sz = test_bam_encode_scheduler_response( packets, 2UL, 46U, protobuf, sizeof( protobuf ) );
-
-  fd_bam_client_grpc_rx_msg( state,
-                             protobuf,
-                             protobuf_sz,
-                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-
-  FD_TEST( state->metrics.bundle_received_cnt == 0UL );
-  FD_TEST( state->metrics.txn_received_cnt == 0UL );
-  FD_TEST( state->bam_pending_results == 1UL );
-
-  test_bam_prepare_scheduler_stream( state );
-  g_clock = (long)19e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
-  FD_TEST( state->bam_pending_results == 0UL );
-
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 1U );
-
-  test_bam_env_destroy( env );
 }
 
 static void
@@ -3501,10 +3401,7 @@ main( int     argc,
   test_bam_multiple_batches_do_not_partially_publish_on_corruption( wksp );
   test_bam_multiple_batches_reject_excess_batch_count( wksp );
   test_bam_bundle_requires_builder_info( wksp );
-  test_bam_bundle_rejects_mixed_revert_flags( wksp );
-  test_bam_bundle_defaults_missing_revert_flag_to_false( wksp );
-  test_bam_bundle_rejects_missing_revert_flag_after_true( wksp );
-  test_bam_bundle_defaults_meta_without_flags_to_false( wksp );
+  test_bam_bundle_revert_flag_cases( wksp );
   test_bam_bundle_rejects_multi_packet_non_reverting_bundle( wksp );
   test_bam_bundle_rejects_vote_transactions( wksp );
   test_bam_bundle_rejects_excess_packet_count( wksp );

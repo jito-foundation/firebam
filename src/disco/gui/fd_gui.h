@@ -693,7 +693,6 @@ struct fd_gui {
     ulong err_transport;
     ulong err_timeout;
     ulong err_no_fee_info;
-    ulong err_ssl_alloc;
   } bam;
 
   struct {

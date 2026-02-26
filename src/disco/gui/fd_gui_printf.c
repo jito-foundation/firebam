@@ -508,7 +508,6 @@ fd_gui_printf_bam( fd_gui_t * gui ) {
       jsonp_ulong( gui->http, "err_transport",      gui->bam.err_transport );
       jsonp_ulong( gui->http, "err_timeout",        gui->bam.err_timeout );
       jsonp_ulong( gui->http, "err_no_fee_info",    gui->bam.err_no_fee_info );
-      jsonp_ulong( gui->http, "err_ssl_alloc",      gui->bam.err_ssl_alloc );
     jsonp_close_object( gui->http );
   jsonp_close_envelope( gui->http );
 }
