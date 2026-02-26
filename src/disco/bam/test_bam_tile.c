@@ -107,6 +107,8 @@ test_make_bundle_result( uint  seq_id,
   res.transaction_err_count = 0U;
   for( uint i=0U; i<bundle_txn_cnt; i++ ) {
     res.consumed_cus[ i ]      = i + 1;
+    res.feepayer_balance_lamports[ i ] = 1000UL + i;
+    res.loaded_accounts_data_size[ i ] = 2000U + i;
     res.sanitize_success[ i ]  = 1;
   }
   return res;
@@ -2191,6 +2193,8 @@ test_bam_scheduler_result_publishes_message( fd_wksp_t * wksp ) {
   FD_TEST( decoded.multi.results[0].which_result == bam_types_AtomicTxnBatchResult_committed_tag );
   FD_TEST( decoded.multi.committed[0].txn_cnt == res.bundle_txn_cnt );
   FD_TEST( decoded.multi.committed[0].txns[0].cus_consumed == res.consumed_cus[0] );
+  FD_TEST( decoded.multi.committed[0].txns[0].feepayer_balance_lamports == res.feepayer_balance_lamports[0] );
+  FD_TEST( decoded.multi.committed[0].txns[0].loaded_accounts_data_size == res.loaded_accounts_data_size[0] );
 
   test_bam_env_destroy( env );
 }

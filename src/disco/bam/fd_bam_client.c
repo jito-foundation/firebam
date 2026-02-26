@@ -343,8 +343,8 @@ fd_bam_encode_committed_cb( pb_ostream_t *          stream,
   for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
     bam_types_TransactionCommittedResult txn_res = bam_types_TransactionCommittedResult_init_default;
     txn_res.cus_consumed               = res->consumed_cus[ i ];
-    txn_res.feepayer_balance_lamports  = 0UL;
-    txn_res.loaded_accounts_data_size  = 0U;
+    txn_res.feepayer_balance_lamports  = res->feepayer_balance_lamports[ i ];
+    txn_res.loaded_accounts_data_size  = res->loaded_accounts_data_size[ i ];
     txn_res.execution_success          = ( res->sanitize_success[ i ] && !res->transaction_err_count );
     if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
     if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_TransactionCommittedResult_fields, &txn_res ) ) ) return false;

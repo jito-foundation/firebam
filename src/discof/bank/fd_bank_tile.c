@@ -134,6 +134,7 @@ static inline void
 bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
                                     fd_stem_context_t * stem,
                                     fd_txn_p_t const *  txn,
+                                    fd_exec_txn_ctx_t const * txn_ctx,
                                     ulong               slot,
                                     int                 exec_err ) {
   if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
@@ -150,6 +151,10 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
   res.consumed_cus[ 0 ] = txn->bank_cu.actual_consumed_cus;
+  if( FD_LIKELY( committed ) ) {
+    res.feepayer_balance_lamports[ 0 ] = fd_txn_account_get_lamports( &txn_ctx->accounts[ FD_FEE_PAYER_TXN_IDX ] );
+    res.loaded_accounts_data_size[ 0 ] = (uint)txn_ctx->loaded_accounts_data_size;
+  }
   res.sanitize_success[ 0 ] = 1U;
   if( FD_UNLIKELY( exec_err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
     res.transaction_err[ 0 ] = bank_tile_bam_txn_err_from_runtime_err( exec_err );
@@ -274,7 +279,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     if( FD_UNLIKELY( !(txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS ) ) ) {
       fd_pack_rebate_sum_add_txn( ctx->rebater, txn, NULL, 1UL );
       ctx->metrics.txn_result[ fd_bank_err_from_runtime_err( txn_ctx->exec_err ) ]++;
-      bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, txn_ctx->exec_err );
+      bank_tile_maybe_publish_bam_result( ctx, stem, txn, txn_ctx, slot, txn_ctx->exec_err );
       continue;
     }
 
@@ -355,7 +360,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
                    txn_ctx->exec_err ));
     }
 
-    bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, txn_ctx->exec_err );
+    bank_tile_maybe_publish_bam_result( ctx, stem, txn, txn_ctx, slot, txn_ctx->exec_err );
 
   }
 
@@ -528,6 +533,11 @@ handle_bundle( fd_bank_ctx_t *     ctx,
 
       for( ulong i=0UL; i<txn_cnt; i++ ) {
         res.consumed_cus[ i ]     = txns[ i ].bank_cu.actual_consumed_cus;
+        if( FD_LIKELY( execution_success ) ) {
+          fd_exec_txn_ctx_t const * txn_ctx = &ctx->txn_ctx[ i ];
+          res.feepayer_balance_lamports[ i ] = fd_txn_account_get_lamports( &txn_ctx->accounts[ FD_FEE_PAYER_TXN_IDX ] );
+          res.loaded_accounts_data_size[ i ] = (uint)txn_ctx->loaded_accounts_data_size;
+        }
         res.sanitize_success[ i ] = 1U;
       }
 
