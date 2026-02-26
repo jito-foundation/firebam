@@ -2571,8 +2571,6 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   for( treap_rev_iter_t _txn0=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _txn0 ); _txn0=fd_pack_bundle_next( _txn0, pool ) ) {
     fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
     ulong bundle_idx = fd_pack_bundle_idx( txn0 );
-    int candidate_is_bam = ( txn0->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) && (!!txn0->txn->bam.revert_on_error);
-    uint candidate_seq_id = txn0->txn->bam.seq_id;
 
     if( FD_UNLIKELY( txn0->skip==pack->compressed_slot_number ) ) {
       for( treap_rev_iter_t _cur=_txn0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
@@ -2586,41 +2584,14 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_NOT_INITIALIZED) & !is_ib ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
 
     int blocked_by_prior = 0;
-    /* Enforce BAM sequence constraints: a bundle cannot bypass any earlier
-       non-skipped bundle it conflicts with.  For BAM-vs-BAM conflicts,
-       lower seq_id wins regardless of insertion order. */
+    /* Enforce insertion-order conflict semantics: among conflicting bundles,
+       earlier insertion wins. */
     for( treap_rev_iter_t _prior=treap_rev_iter_init( bundles, pool ); _prior!=_txn0; _prior=fd_pack_bundle_next( _prior, pool ) ) {
       fd_pack_ord_txn_t * prior = treap_rev_iter_ele( _prior, pool );
       if( FD_UNLIKELY( prior->skip==pack->compressed_slot_number ) ) continue;
       if( FD_LIKELY( !fd_pack_bundle_conflicts( pack, _prior, _txn0 ) ) ) continue;
-
-      if( FD_UNLIKELY( candidate_is_bam &&
-                       prior->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
-                       !!prior->txn->bam.revert_on_error ) ) {
-        if( FD_UNLIKELY( prior->txn->bam.seq_id<=candidate_seq_id ) ) {
-          blocked_by_prior = 1;
-          break;
-        }
-      } else {
-        blocked_by_prior = 1;
-        break;
-      }
-    }
-    /* Also check lower-seq BAM conflicts that were inserted later. */
-    if( FD_UNLIKELY( (!blocked_by_prior) && candidate_is_bam ) ) {
-      for( treap_rev_iter_t _later=fd_pack_bundle_next( _txn0, pool );
-           !treap_rev_iter_done( _later );
-           _later=fd_pack_bundle_next( _later, pool ) ) {
-        fd_pack_ord_txn_t * later = treap_rev_iter_ele( _later, pool );
-        if( FD_UNLIKELY( later->skip==pack->compressed_slot_number ) ) continue;
-        if( FD_UNLIKELY( !( later->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
-                            !!later->txn->bam.revert_on_error ) ) ) continue;
-        if( FD_UNLIKELY( later->txn->bam.seq_id>=candidate_seq_id ) ) continue;
-        if( FD_UNLIKELY( fd_pack_bundle_conflicts( pack, _later, _txn0 ) ) ) {
-          blocked_by_prior = 1;
-          break;
-        }
-      }
+      blocked_by_prior = 1;
+      break;
     }
     if( FD_UNLIKELY( blocked_by_prior ) ) {
       saw_conflict = 1;
