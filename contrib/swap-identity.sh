@@ -46,7 +46,7 @@ Environment overrides (defaults shown):
   ALLOW_NON_SYMLINK=0   # set to 1 to overwrite a non-symlink identity.json
   DUMMY_KEY_OWNER=      # optional owner for newly generated dummy key
   CLUSTER_RPC_URL=https://api.mainnet.solana.com
-  SKIP_CLUSTER_CHECK=0  # set to 1 to skip checking target identity pubkey is already in use
+  SKIP_CLUSTER_CHECK=0  # set to 1 to skip checking target identity + interface is already in use
 USAGE
 }
 
@@ -209,6 +209,12 @@ else
 fi
 
 if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
+  INTERFACE_IP="$(ip -4 route get 8.8.8.8 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}')"
+  if [[ -z "$INTERFACE_IP" ]]; then
+    echo "error: failed to detect local interface IP"
+    exit 1
+  fi
+
   CLUSTER_JSON="$(curl -s --fail --max-time 10 \
     -X POST -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' \
@@ -218,10 +224,41 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
     }
 
   TARGET_PUBKEY=$([[ "$TARGET_MODE" == "staked" ]] && echo "$STAKED_PUBKEY" || echo "$DUMMY_PUBKEY")
-  if echo "$CLUSTER_JSON" | grep -q "$TARGET_PUBKEY"; then
-    echo "error: target identity $TARGET_PUBKEY already present in cluster ($CLUSTER_RPC_URL)"
+  # Match scope from getClusterNodes gossip address:
+  # "our" = target pubkey on this host IP, "other" = target pubkey on a different IP, "none" = target pubkey absent.
+  TARGET_MATCH_SCOPE="$(echo "$CLUSTER_JSON" | jq -r --arg pubkey "$TARGET_PUBKEY" --arg iface "$INTERFACE_IP" '
+    .result
+    | map(select(.pubkey == $pubkey))
+    | if length == 0 then
+        "none"
+      elif any(
+        .[];
+        .gossip
+        | type == "string"
+        and (
+          startswith($iface + ":")
+          or startswith("[" + $iface + "]:")
+        )
+      ) then
+        "our"
+      else
+        "other"
+      end
+  ')" || {
+    echo "error: failed to parse cluster nodes from $CLUSTER_RPC_URL"
     exit 1
-  fi
+  }
+
+  case "$TARGET_MATCH_SCOPE" in
+    our)
+      echo "error: target identity $TARGET_PUBKEY already advertised on interface $INTERFACE_IP ($CLUSTER_RPC_URL)"
+      exit 1
+      ;;
+    other)
+      echo "error: target identity $TARGET_PUBKEY already present in cluster on another interface ($CLUSTER_RPC_URL)"
+      exit 1
+      ;;
+  esac
 fi
 
 case "$MODE" in
