@@ -7,17 +7,136 @@
 # Output: NDJSON (one JSON object per slot).
 set -euo pipefail
 
-HOST="${1:-64.130.59.250}"
-MODE="${2:-recent}"
-RECENT_COUNT="${3:-16}"
-SNAPSHOT_SECS="${4:-2}"
-QUERY_WAIT_SECS="${5:-3}"
-DETAIL_TIMEOUT_SECS="${6:-25}"
+DEFAULT_HOST="64.130.59.250"
+DEFAULT_MODE="recent"
+DEFAULT_RECENT_COUNT="16"
+DEFAULT_SNAPSHOT_SECS="2"
+DEFAULT_QUERY_WAIT_SECS="4"
+DEFAULT_DETAIL_TIMEOUT_SECS="25"
+
+HOST="${DEFAULT_HOST}"
+MODE="${DEFAULT_MODE}"
+RECENT_COUNT="${DEFAULT_RECENT_COUNT}"
+SNAPSHOT_SECS="${DEFAULT_SNAPSHOT_SECS}"
+QUERY_WAIT_SECS="${DEFAULT_QUERY_WAIT_SECS}"
+DETAIL_TIMEOUT_SECS="${DEFAULT_DETAIL_TIMEOUT_SECS}"
+
+usage() {
+  cat <<EOF
+Usage:
+  scrape_websocket.sh [OPTIONS]
+
+Options:
+  --host HOST                      Websocket host (default: ${DEFAULT_HOST})
+  --mode MODE                      One of: recent, since-startup (default: ${DEFAULT_MODE})
+  --recent-count N                 Slots to keep in recent mode (default: ${DEFAULT_RECENT_COUNT})
+  --snapshot-secs N                Snapshot capture duration (default: ${DEFAULT_SNAPSHOT_SECS})
+  --query-wait-secs N              Wait after sending queries (default: ${DEFAULT_QUERY_WAIT_SECS})
+  --detail-timeout-secs N          Timeout for detailed query websocket (default: ${DEFAULT_DETAIL_TIMEOUT_SECS})
+  -h, --help                       Show this help
+
+Modes:
+  recent         Return the newest RECENT_COUNT produced slots.
+  since-startup  Return produced slots completed since validator startup time.
+
+Notes:
+  - RECENT_COUNT is only used when MODE=recent.
+  - Output is NDJSON (one JSON object per slot).
+
+Examples:
+  # Newest 16 produced slots from host 64.130.59.250
+  scrape_websocket.sh --host 64.130.59.250 --mode recent --recent-count 16
+
+  # All produced slots completed since startup for host 64.130.59.250
+  scrape_websocket.sh --host 64.130.59.250 --mode since-startup
+
+  # More aggressive timing and larger recent window
+  scrape_websocket.sh --host localhost --mode recent --recent-count 50 --snapshot-secs 3 --query-wait-secs 6 --detail-timeout-secs 30
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      [[ $# -ge 2 ]] || { echo "error: --host requires a value" >&2; usage >&2; exit 1; }
+      HOST="$2"
+      shift 2
+      ;;
+    --host=*)
+      HOST="${1#*=}"
+      shift
+      ;;
+    --mode)
+      [[ $# -ge 2 ]] || { echo "error: --mode requires a value" >&2; usage >&2; exit 1; }
+      MODE="$2"
+      shift 2
+      ;;
+    --mode=*)
+      MODE="${1#*=}"
+      shift
+      ;;
+    --recent-count)
+      [[ $# -ge 2 ]] || { echo "error: --recent-count requires a value" >&2; usage >&2; exit 1; }
+      RECENT_COUNT="$2"
+      shift 2
+      ;;
+    --recent-count=*)
+      RECENT_COUNT="${1#*=}"
+      shift
+      ;;
+    --snapshot-secs)
+      [[ $# -ge 2 ]] || { echo "error: --snapshot-secs requires a value" >&2; usage >&2; exit 1; }
+      SNAPSHOT_SECS="$2"
+      shift 2
+      ;;
+    --snapshot-secs=*)
+      SNAPSHOT_SECS="${1#*=}"
+      shift
+      ;;
+    --query-wait-secs)
+      [[ $# -ge 2 ]] || { echo "error: --query-wait-secs requires a value" >&2; usage >&2; exit 1; }
+      QUERY_WAIT_SECS="$2"
+      shift 2
+      ;;
+    --query-wait-secs=*)
+      QUERY_WAIT_SECS="${1#*=}"
+      shift
+      ;;
+    --detail-timeout-secs)
+      [[ $# -ge 2 ]] || { echo "error: --detail-timeout-secs requires a value" >&2; usage >&2; exit 1; }
+      DETAIL_TIMEOUT_SECS="$2"
+      shift 2
+      ;;
+    --detail-timeout-secs=*)
+      DETAIL_TIMEOUT_SECS="${1#*=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      [[ $# -eq 0 ]] || { echo "error: positional args are not supported; use long options only" >&2; usage >&2; exit 1; }
+      ;;
+    -*)
+      echo "error: unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      echo "error: positional args are not supported; use long options only (unexpected: $1)" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
 
 for bin in websocat jq; do
   command -v "${bin}" >/dev/null 2>&1 || { echo "error: ${bin} not found in PATH" >&2; exit 1; }
 done
-[[ "${MODE}" =~ ^(recent|since-startup)$ ]] || { echo "error: MODE must be 'recent' or 'since-startup'" >&2; exit 1; }
+[[ -n "${HOST}" ]] || { echo "error: --host must be non-empty" >&2; usage >&2; exit 1; }
+[[ "${MODE}" =~ ^(recent|since-startup)$ ]] || { echo "error: MODE must be 'recent' or 'since-startup'" >&2; usage >&2; exit 1; }
 for n in "${RECENT_COUNT}" "${SNAPSHOT_SECS}" "${QUERY_WAIT_SECS}" "${DETAIL_TIMEOUT_SECS}"; do
   [[ "${n}" =~ ^[0-9]+$ ]] || { echo "error: numeric args must be integers >= 0" >&2; exit 1; }
 done
