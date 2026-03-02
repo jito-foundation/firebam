@@ -635,48 +635,28 @@ get_done_packing( fd_pack_ctx_t * ctx, fd_done_packing_t * done_packing ) {
   fd_pack_get_pending_smallest( ctx->pack, done_packing->pending_smallest, done_packing->pending_votes_smallest );
 }
 
-static inline _Bool
-pack_tile_build_missing_bam_bundle_result( fd_pack_ctx_t *        ctx,
-                                           fd_bam_bundle_result_t * out ) {
-  if( FD_UNLIKELY( !ctx->current_bam_bundle->bundle ) ) return 0;
-  if( FD_UNLIKELY( ctx->current_bam_bundle->txn_received==ctx->current_bam_bundle->txn_cnt ) ) return 0;
-
-  fd_bam_bundle_result_t res = {0};
-  res.seq_id            = ctx->current_bam_bundle->seq_id;
-  res.slot              = ctx->current_bam_bundle->max_schedule_slot;
-  res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-  res.execution_success = 0;
-  res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-  res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-  res.transaction_err_count = 0U;
-  for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
-    res.sanitize_success[ i ] = 1U;
-    if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
-      res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
-      res.transaction_err_count++;
-    }
-  }
-  *out = res;
-  return 1;
-}
-
-static inline void
-pack_tile_publish_pending_bam_result_if_needed( fd_pack_ctx_t *     ctx,
-                                                fd_stem_context_t * stem ) {
-  if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
-    pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
-    ctx->pending_bam_result_valid = false;
-  }
-}
-
 static inline void
 pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *     ctx,
                                       fd_stem_context_t * stem,
                                       _Bool               queue_missing_result ) {
   if( FD_UNLIKELY( !ctx->current_bam_bundle->bundle ) ) return;
 
-  fd_bam_bundle_result_t res;
-  if( FD_UNLIKELY( pack_tile_build_missing_bam_bundle_result( ctx, &res ) ) ) {
+  if( FD_UNLIKELY( ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt ) ) {
+    fd_bam_bundle_result_t res = {0};
+    res.seq_id            = ctx->current_bam_bundle->seq_id;
+    res.slot              = ctx->current_bam_bundle->max_schedule_slot;
+    res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
+    res.execution_success = 0;
+    res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+    res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+    res.transaction_err_count = 0U;
+    for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
+      res.sanitize_success[ i ] = 1U;
+      if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
+        res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+        res.transaction_err_count++;
+      }
+    }
     if( FD_UNLIKELY( queue_missing_result ) ) {
       ctx->pending_bam_result[0] = res;
       ctx->pending_bam_result_valid = true;
@@ -690,21 +670,19 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *     ctx,
 }
 
 static inline void
-pack_tile_cancel_current_block_engine_bundle( fd_pack_ctx_t * ctx ) {
-  if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
-    fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
-    ctx->current_bundle->bundle = NULL;
-  }
-}
-
-static inline void
 pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               fd_stem_context_t * stem,
                               long                now,
                               char const *        reason ) {
-  pack_tile_publish_pending_bam_result_if_needed( ctx, stem );
+  if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
+    pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
+    ctx->pending_bam_result_valid = false;
+  }
   pack_tile_abandon_current_bam_bundle( ctx, stem, 0 );
-  pack_tile_cancel_current_block_engine_bundle( ctx );
+  if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
+    fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
+    ctx->current_bundle->bundle = NULL;
+  }
 
   fd_done_packing_t * done_packing = fd_chunk_to_laddr( ctx->poh_out_mem, ctx->poh_out_chunk );
   get_done_packing( ctx, done_packing );
@@ -1412,7 +1390,10 @@ after_frag( fd_pack_ctx_t *     ctx,
     break;
   }
   case IN_KIND_RESOLV: {
-    pack_tile_publish_pending_bam_result_if_needed( ctx, stem );
+    if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
+      pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
+      ctx->pending_bam_result_valid = false;
+    }
 
     if( FD_UNLIKELY( ctx->bundle_kind!=PACK_TILE_BUNDLE_KIND_NONE ) ) {
       if( FD_LIKELY( ctx->bundle_kind==PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE ) ) {
