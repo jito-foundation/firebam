@@ -92,7 +92,6 @@ fd_url_parse_endpoint( fd_url_t *   url_,
   if( FD_UNLIKELY( !url ) ) {
     switch( *url_err ) {
     case FD_URL_ERR_SCHEME:
-scheme_err:
       FD_LOG_WARNING(( "Invalid %s `%.*s`: must start with `http://` or `https://`", ctx, (int)url_str_len, url_str ));
       return -1;
     case FD_URL_ERR_HOST_OVERSZ:
@@ -107,14 +106,8 @@ scheme_err:
     }
   }
 
-  /* FIXME the URL scheme path technically shouldn't contain slashes */
-  if( url->scheme_len==8UL && fd_memeq( url->scheme, "https://", 8UL ) ) {
-    *is_ssl = 1;
-  } else if( url->scheme_len==7UL && fd_memeq( url->scheme, "http://", 7UL ) ) {
-    *is_ssl = 0;
-  } else {
-    goto scheme_err;
-  }
+  /* fd_url_parse_cstr() already guarantees http:// or https:// */
+  *is_ssl = ( url->scheme_len==8UL );
 
   /* Parse port number */
   *tcp_port = *is_ssl ? 443 : 80;
@@ -131,11 +124,6 @@ scheme_err:
     if( FD_UNLIKELY( !port_no || port_no>USHORT_MAX ) ) goto invalid_port;
 
     *tcp_port = (ushort)port_no;
-  }
-
-  if( FD_UNLIKELY( url->host_len > 255 ) ) {
-    FD_LOG_WARNING(( "Invalid %s `%.*s`: domain name is too long", ctx, (int)url_str_len, url_str ));
-    return -1;
   }
 
   return 0;

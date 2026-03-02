@@ -82,7 +82,7 @@ set_bam_apply_request( args_t *   args,
                      state == FD_BAM_CTRL_STATE_ERROR    ||
                      state == FD_BAM_CTRL_STATE_LOCKED ) )
       FD_LOG_ERR(( "Another BAM configuration update is in progress" ));
-    if( FD_UNLIKELY( state != FD_BAM_CTRL_STATE_IDLE ) )
+    else if( FD_UNLIKELY( state != FD_BAM_CTRL_STATE_IDLE ) )
       FD_LOG_ERR(( "Unexpected BAM configuration state: %u", (uint)state ));
     if( FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_IDLE, FD_BAM_CTRL_STATE_LOCKED ) == FD_BAM_CTRL_STATE_IDLE )
       break;

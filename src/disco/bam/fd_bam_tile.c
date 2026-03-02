@@ -674,6 +674,7 @@ fd_bam_tile_load_certs( SSL_CTX * ssl_ctx ) {
   }
 
   struct dirent * entry;
+  errno = 0; /* Clear stale errno before the first readdir() call */
   while( (entry = readdir( dir )) ) {
     if( !strcmp( entry->d_name, "." ) || !strcmp( entry->d_name, ".." ) ) continue;
 

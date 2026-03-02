@@ -1260,13 +1260,12 @@ during_frag( fd_pack_ctx_t * ctx,
       _Bool new_bam_bundle = !ctx->current_bam_bundle->bundle ||
                              ctx->current_bam_bundle->seq_id != txnm->bam.seq_id;
 
-      if( FD_UNLIKELY( new_bam_bundle &&
-                       ctx->current_bam_bundle->bundle &&
-                       ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt ) ) {
-        pack_tile_abandon_current_bam_bundle( ctx, NULL, 1 );
-      }
-
       if( FD_LIKELY( new_bam_bundle ) ) {
+        if( FD_UNLIKELY( ctx->current_bam_bundle->bundle &&
+                         ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt ) ) {
+          pack_tile_abandon_current_bam_bundle( ctx, NULL, 1 );
+        }
+
         ctx->current_bam_bundle->seq_id            = txnm->bam.seq_id;
         ctx->current_bam_bundle->txn_cnt           = txnm->bam.txn_cnt;
         ctx->current_bam_bundle->txn_received      = 0U;
@@ -1481,7 +1480,8 @@ after_frag( fd_pack_ctx_t *     ctx,
       ctx->pending_bam_result_valid = false;
     }
 
-    if( FD_LIKELY( ctx->bundle_kind==PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE ) ) {
+    switch( ctx->bundle_kind ) {
+    case PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE: {
       if( FD_UNLIKELY( ctx->current_bundle->txn_cnt==0UL ) ) return;
       if( FD_UNLIKELY( ++(ctx->current_bundle->txn_received)==ctx->current_bundle->txn_cnt ) ) {
         ulong deleted;
@@ -1493,7 +1493,9 @@ after_frag( fd_pack_ctx_t *     ctx,
         fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
         ctx->current_bundle->bundle = NULL;
       }
-    } else if( FD_LIKELY( ctx->bundle_kind==PACK_TILE_BUNDLE_KIND_BAM ) ) {
+      break;
+    }
+    case PACK_TILE_BUNDLE_KIND_BAM: {
       uchar idx = ctx->bam_batch_idx;
       if( FD_LIKELY( !ctx->current_bam_bundle->received[ idx ] ) ) {
         ctx->current_bam_bundle->received[ idx ] = 1U;
@@ -1569,7 +1571,10 @@ after_frag( fd_pack_ctx_t *     ctx,
 
         ctx->current_bam_bundle->bundle = NULL;
       }
-    } else {
+      break;
+    }
+    case PACK_TILE_BUNDLE_KIND_NONE:
+    default: {
       fd_txn_p_t const * txnp = ctx->cur_spot->txnp;
       uchar source_tpu        = txnp->source_tpu;
       uint  bam_seq_id        = txnp->bam.seq_id;
@@ -1630,6 +1635,8 @@ after_frag( fd_pack_ctx_t *     ctx,
 #if FD_PACK_USE_EXTRA_STORAGE
       }
 #endif
+      break;
+    }
     }
 
     ctx->cur_spot = NULL;
