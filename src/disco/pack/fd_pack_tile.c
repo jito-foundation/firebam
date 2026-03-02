@@ -118,6 +118,9 @@ typedef struct {
    this as a block_builder_info_t view. */
 typedef struct {
   block_builder_info_t builder[1];
+  /* TODO(bam): These fields are currently written by pack but not
+     consumed in-tree yet. Keep them for downstream metadata consumers,
+     and either wire up a local reader or remove when no longer needed. */
   ulong                bam_max_schedule_slot;
   uint                 bam_seq_id;
   uchar                kind; /* PACK_BUNDLE_META_KIND_* */
@@ -1191,9 +1194,8 @@ during_frag( fd_pack_ctx_t * ctx,
 
       ctx->cur_spot                                = ctx->current_bam_bundle->bundle[ txnm->bam.batch_idx ];
       ctx->current_bam_bundle->min_blockhash_slot   = fd_ulong_min( ctx->current_bam_bundle->min_blockhash_slot, sig );
-    } else {
-    ulong bundle_id = txnm->block_engine.bundle_id;
-    if( FD_UNLIKELY( bundle_id ) ) {
+    } else if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) {
+      ulong bundle_id = txnm->block_engine.bundle_id;
       ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE;
       if( FD_LIKELY( bundle_id!=ctx->current_bundle->id ) ) {
         if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
@@ -1242,7 +1244,6 @@ during_frag( fd_pack_ctx_t * ctx,
 #else
       ctx->cur_spot = fd_pack_insert_txn_init( ctx->pack );
 #endif
-    }
     }
 
     /* We get transactions from the resolv tile.
@@ -1395,112 +1396,108 @@ after_frag( fd_pack_ctx_t *     ctx,
       ctx->pending_bam_result_valid = false;
     }
 
-    if( FD_UNLIKELY( ctx->bundle_kind!=PACK_TILE_BUNDLE_KIND_NONE ) ) {
-      if( FD_LIKELY( ctx->bundle_kind==PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE ) ) {
-        if( FD_UNLIKELY( ctx->current_bundle->txn_cnt==0UL ) ) return;
-        if( FD_UNLIKELY( ++(ctx->current_bundle->txn_received)==ctx->current_bundle->txn_cnt ) ) {
-          ulong deleted;
-          long insert_duration = -fd_tickcount();
-          int result = fd_pack_insert_bundle_fini( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt, ctx->current_bundle->min_blockhash_slot, 0, ctx->bundle_meta, &deleted );
-          insert_duration      += fd_tickcount();
-          FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
-          ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
-          fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
-          ctx->current_bundle->bundle = NULL;
-        }
-      } else if( FD_LIKELY( ctx->bundle_kind==PACK_TILE_BUNDLE_KIND_BAM ) ) {
-        if( FD_UNLIKELY( ctx->current_bam_bundle->txn_cnt==0UL ) ) return;
+    if( FD_LIKELY( ctx->bundle_kind==PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE ) ) {
+      if( FD_UNLIKELY( ctx->current_bundle->txn_cnt==0UL ) ) return;
+      if( FD_UNLIKELY( ++(ctx->current_bundle->txn_received)==ctx->current_bundle->txn_cnt ) ) {
+        ulong deleted;
+        long insert_duration = -fd_tickcount();
+        int result = fd_pack_insert_bundle_fini( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt, ctx->current_bundle->min_blockhash_slot, 0, ctx->bundle_meta, &deleted );
+        insert_duration      += fd_tickcount();
+        FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
+        ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
+        fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
+        ctx->current_bundle->bundle = NULL;
+      }
+    } else if( FD_LIKELY( ctx->bundle_kind==PACK_TILE_BUNDLE_KIND_BAM ) ) {
+      uchar idx = ctx->bam_batch_idx;
+      if( FD_LIKELY( !ctx->current_bam_bundle->received[ idx ] ) ) {
+        ctx->current_bam_bundle->received[ idx ] = 1U;
+        ctx->current_bam_bundle->txn_received++;
+      }
 
-        uchar idx = ctx->bam_batch_idx;
-        if( FD_LIKELY( !ctx->current_bam_bundle->received[ idx ] ) ) {
-          ctx->current_bam_bundle->received[ idx ] = 1U;
-          ctx->current_bam_bundle->txn_received++;
-        }
+      if( FD_LIKELY( ctx->current_bam_bundle->txn_received==ctx->current_bam_bundle->txn_cnt ) ) {
+        ulong max_schedule_slot = ctx->current_bam_bundle->max_schedule_slot;
 
-        if( FD_LIKELY( ctx->current_bam_bundle->txn_received==ctx->current_bam_bundle->txn_cnt ) ) {
-          ulong max_schedule_slot = ctx->current_bam_bundle->max_schedule_slot;
-
-          if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) {
-            fd_bam_bundle_result_t res = {0};
-            res.seq_id            = ctx->current_bam_bundle->seq_id;
-            res.slot              = max_schedule_slot;
-            res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-            res.execution_success = 0;
-            res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
-            res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-            pack_tile_publish_bam_result( ctx, stem, &res );
-            fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
-            ctx->current_bam_bundle->bundle = NULL;
-            ctx->cur_spot = NULL;
-            break;
-          }
-
-          if( FD_UNLIKELY( (max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT) &
-                           (max_schedule_slot!=0UL) &
-                           (max_schedule_slot<ctx->leader_slot) ) ) {
-            fd_bam_bundle_result_t res = {0};
-            res.seq_id            = ctx->current_bam_bundle->seq_id;
-            res.slot              = max_schedule_slot;
-            res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-            res.execution_success = 0;
-            res.scheduling_error  = FD_BAM_SCHED_ERR_POH_TIMEOUT;
-            res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-            pack_tile_publish_bam_result( ctx, stem, &res );
-            fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
-            ctx->current_bam_bundle->bundle = NULL;
-            ctx->cur_spot = NULL;
-            break;
-          }
-
-          fd_memset( ctx->bundle_meta, 0, sizeof(pack_bundle_meta_t) );
-          ctx->bundle_meta->kind                  = PACK_BUNDLE_META_KIND_BAM;
-          ctx->bundle_meta->bam_seq_id            = ctx->current_bam_bundle->seq_id;
-          ctx->bundle_meta->bam_max_schedule_slot = max_schedule_slot;
-          if( FD_LIKELY( ctx->bam_fee_cfg && FD_VOLATILE_CONST( ctx->bam_fee_cfg->has_prio_fee_recipient ) ) ) {
-            fd_memcpy( ctx->bundle_meta->builder->commission_pubkey->b,
-                       ctx->bam_fee_cfg->prio_fee_recipient,
-                       32UL );
-            ctx->bundle_meta->builder->commission = (ulong)fd_uint_min( FD_VOLATILE_CONST( ctx->bam_fee_cfg->commission_bps )/100U, 100U );
-          }
-
-          ulong deleted;
-          long insert_duration = -fd_tickcount();
-          int result = fd_pack_insert_bundle_fini( ctx->pack,
-                                                   ctx->current_bam_bundle->bundle,
-                                                   ctx->current_bam_bundle->txn_cnt,
-                                                   ctx->current_bam_bundle->min_blockhash_slot,
-                                                   0,
-                                                   ctx->bundle_meta,
-                                                   &deleted );
-          insert_duration      += fd_tickcount();
-
-          FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
-          ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bam_bundle->txn_received;
-          fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
-
-          if( FD_UNLIKELY( result<0 ) ) {
-            fd_bam_bundle_result_t res = {0};
-            res.seq_id            = ctx->current_bam_bundle->seq_id;
-            res.slot              = max_schedule_slot;
-            res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-            res.execution_success = 0;
-            res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-            res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-
-            // FIXME: hack for non-existent error types in protobuf
-            if( FD_UNLIKELY( result==FD_PACK_INSERT_REJECT_PRIORITY || result==FD_PACK_INSERT_REJECT_NONCE_PRIORITY ) ) {
-              res.scheduling_error = FD_BAM_SCHED_ERR_CONTAINER_FULL;
-            } else {
-              res.transaction_err[ 0 ] = pack_tile_bam_txn_err_from_pack_insert( result );
-              res.transaction_err_count = 1U;
-              for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) res.sanitize_success[ i ] = 1U;
-            }
-
-            pack_tile_publish_bam_result( ctx, stem, &res );
-          }
-
+        if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) {
+          fd_bam_bundle_result_t res = {0};
+          res.seq_id            = ctx->current_bam_bundle->seq_id;
+          res.slot              = max_schedule_slot;
+          res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
+          res.execution_success = 0;
+          res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
+          res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+          pack_tile_publish_bam_result( ctx, stem, &res );
+          fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
           ctx->current_bam_bundle->bundle = NULL;
+          ctx->cur_spot = NULL;
+          break;
         }
+
+        if( FD_UNLIKELY( (max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT) &
+                         (max_schedule_slot!=0UL) &
+                         (max_schedule_slot<ctx->leader_slot) ) ) {
+          fd_bam_bundle_result_t res = {0};
+          res.seq_id            = ctx->current_bam_bundle->seq_id;
+          res.slot              = max_schedule_slot;
+          res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
+          res.execution_success = 0;
+          res.scheduling_error  = FD_BAM_SCHED_ERR_POH_TIMEOUT;
+          res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+          pack_tile_publish_bam_result( ctx, stem, &res );
+          fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
+          ctx->current_bam_bundle->bundle = NULL;
+          ctx->cur_spot = NULL;
+          break;
+        }
+
+        fd_memset( ctx->bundle_meta, 0, sizeof(pack_bundle_meta_t) );
+        ctx->bundle_meta->kind                  = PACK_BUNDLE_META_KIND_BAM;
+        ctx->bundle_meta->bam_seq_id            = ctx->current_bam_bundle->seq_id;
+        ctx->bundle_meta->bam_max_schedule_slot = max_schedule_slot;
+        if( FD_LIKELY( ctx->bam_fee_cfg && FD_VOLATILE_CONST( ctx->bam_fee_cfg->has_prio_fee_recipient ) ) ) {
+          fd_memcpy( ctx->bundle_meta->builder->commission_pubkey->b,
+                     ctx->bam_fee_cfg->prio_fee_recipient,
+                     32UL );
+          ctx->bundle_meta->builder->commission = (ulong)fd_uint_min( FD_VOLATILE_CONST( ctx->bam_fee_cfg->commission_bps )/100U, 100U );
+        }
+
+        ulong deleted;
+        long insert_duration = -fd_tickcount();
+        int result = fd_pack_insert_bundle_fini( ctx->pack,
+                                                 ctx->current_bam_bundle->bundle,
+                                                 ctx->current_bam_bundle->txn_cnt,
+                                                 ctx->current_bam_bundle->min_blockhash_slot,
+                                                 0,
+                                                 ctx->bundle_meta,
+                                                 &deleted );
+        insert_duration      += fd_tickcount();
+
+        FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
+        ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bam_bundle->txn_received;
+        fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
+
+        if( FD_UNLIKELY( result<0 ) ) {
+          fd_bam_bundle_result_t res = {0};
+          res.seq_id            = ctx->current_bam_bundle->seq_id;
+          res.slot              = max_schedule_slot;
+          res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
+          res.execution_success = 0;
+          res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+          res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+
+          // FIXME: hack for non-existent error types in protobuf
+          if( FD_UNLIKELY( result==FD_PACK_INSERT_REJECT_PRIORITY || result==FD_PACK_INSERT_REJECT_NONCE_PRIORITY ) ) {
+            res.scheduling_error = FD_BAM_SCHED_ERR_CONTAINER_FULL;
+          } else {
+            res.transaction_err[ 0 ] = pack_tile_bam_txn_err_from_pack_insert( result );
+            res.transaction_err_count = 1U;
+            for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) res.sanitize_success[ i ] = 1U;
+          }
+
+          pack_tile_publish_bam_result( ctx, stem, &res );
+        }
+
+        ctx->current_bam_bundle->bundle = NULL;
       }
     } else {
 #if FD_PACK_USE_EXTRA_STORAGE
@@ -1510,7 +1507,6 @@ after_frag( fd_pack_ctx_t *     ctx,
         fd_txn_p_t const * txnp = ctx->cur_spot->txnp;
         uchar source_tpu        = txnp->source_tpu;
         uint  bam_seq_id        = txnp->bam.seq_id;
-        uchar bam_revert        = txnp->bam.revert_on_error;
         ulong deleted;
         long insert_duration = -fd_tickcount();
         int result = fd_pack_insert_txn_fini( ctx->pack, ctx->cur_spot, blockhash_slot, &deleted );
@@ -1519,8 +1515,7 @@ after_frag( fd_pack_ctx_t *     ctx,
         ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ]++;
         fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
         if( FD_UNLIKELY( result<0 &&
-                         source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
-                         !bam_revert ) ) {
+                         source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
           fd_bam_bundle_result_t res = {0};
           res.seq_id            = bam_seq_id;
           res.slot              = 0UL;

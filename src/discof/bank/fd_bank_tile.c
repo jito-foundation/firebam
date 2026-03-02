@@ -159,11 +159,6 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
   if( FD_UNLIKELY( exec_err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
     res.transaction_err[ 0 ] = bank_tile_bam_txn_err_from_runtime_err( exec_err );
     res.transaction_err_count = 1U;
-  } else if( FD_UNLIKELY( !committed ) ) {
-    /* Defensive fallback: if we somehow didn't commit but also have no
-       runtime error, avoid emitting a reasonless NotCommitted. */
-    res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
-    res.transaction_err_count = 1U;
   }
   bank_tile_publish_bam_result( ctx, stem, &res );
 }
