@@ -491,7 +491,7 @@ pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
   long now_ticks = fd_tickcount();
   long now_ns = ctx->approx_wallclock_ns + (long)((double)(now_ticks - ctx->approx_tickcount) / ctx->ticks_per_ns);
 
-  uint tick = 0UL;
+  uint tick = 0U;
   if( FD_LIKELY( ctx->_became_leader->tick_duration_ns ) ) {
     long slot_start_ns = ctx->slot_end_ns - (long)(ctx->_became_leader->tick_duration_ns * ctx->_became_leader->ticks_per_slot);
     long elapsed_ns    = now_ns - slot_start_ns;
@@ -503,10 +503,7 @@ pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
     .slot_cu_budget_remaining = (uint)fd_ulong_sat_sub( ctx->limits.slot_max_cost, fd_pack_current_block_cost( ctx->pack ) )
   };
 
-  /* pack_tile_publish_bam_leader_state() can get called a lot (e.g. every after_credit, after scheduling a microblock, on leader transition). Most of those calls would compute the same {slot, tick, slot_cu_budget_remaining} as the previous call. Without
-  this check we’d publish identical fd_bam_leader_state_t frags repeatedly, burn dcache bandwidth / ring space on pack_bam, make the BAM tile do pointless work (and potentially backlog the polled reliable link).
-  last_bam_leader_state_valid avoids memcmp against uninitialized storage on the very first publish. memcmp is used because fd_bam_leader_state_t is a simple POD (no padding concerns here) and it’s the quickest way to compare all fields at once.
-  */
+  /* Avoid publishing duplicate leader-state frags. */
   if( FD_LIKELY( ctx->last_bam_leader_state_valid && !memcmp( &state, &ctx->last_bam_leader_state, sizeof(state) ) ) ) return;
   ctx->last_bam_leader_state       = state;
   ctx->last_bam_leader_state_valid = true;
@@ -541,6 +538,24 @@ pack_tile_publish_bam_result( fd_pack_ctx_t *             ctx,
                    0UL,
                    fd_frag_meta_ts_comp( fd_tickcount() ) );
   ctx->bam_out_chunk = fd_dcache_compact_next( ctx->bam_out_chunk, sizeof(fd_bam_bundle_result_t), ctx->bam_out_chunk0, ctx->bam_out_wmark );
+}
+
+static inline void
+pack_tile_reject_current_bam_bundle( fd_pack_ctx_t *     ctx,
+                                     fd_stem_context_t * stem,
+                                     ushort              scheduling_error,
+                                     ulong               slot ) {
+  fd_bam_bundle_result_t res = {0};
+  res.seq_id            = ctx->current_bam_bundle->seq_id;
+  res.slot              = slot;
+  res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
+  res.execution_success = 0;
+  res.scheduling_error  = scheduling_error;
+  res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+  pack_tile_publish_bam_result( ctx, stem, &res );
+  fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
+  ctx->current_bam_bundle->bundle = NULL;
+  ctx->cur_spot = NULL;
 }
 
 /* Best-effort mapping from fd_pack insert errors to BAM TransactionErrorReason values. */
@@ -1166,7 +1181,7 @@ during_frag( fd_pack_ctx_t * ctx,
       FD_MCNT_INC( PACK, TRANSACTION_EXPIRED, exp_cnt );
     }
 
-    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !!txnm->bam.revert_on_error ) ) {
+    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.revert_on_error ) ) {
       FD_TEST( txnm->bam.txn_cnt>0UL && txnm->bam.txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
       FD_TEST( txnm->bam.batch_idx<txnm->bam.txn_cnt );
 
@@ -1419,34 +1434,14 @@ after_frag( fd_pack_ctx_t *     ctx,
         ulong max_schedule_slot = ctx->current_bam_bundle->max_schedule_slot;
 
         if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) {
-          fd_bam_bundle_result_t res = {0};
-          res.seq_id            = ctx->current_bam_bundle->seq_id;
-          res.slot              = max_schedule_slot;
-          res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-          res.execution_success = 0;
-          res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
-          res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-          pack_tile_publish_bam_result( ctx, stem, &res );
-          fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
-          ctx->current_bam_bundle->bundle = NULL;
-          ctx->cur_spot = NULL;
+          pack_tile_reject_current_bam_bundle( ctx, stem, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, max_schedule_slot );
           break;
         }
 
         if( FD_UNLIKELY( (max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT) &
                          (max_schedule_slot!=0UL) &
                          (max_schedule_slot<ctx->leader_slot) ) ) {
-          fd_bam_bundle_result_t res = {0};
-          res.seq_id            = ctx->current_bam_bundle->seq_id;
-          res.slot              = max_schedule_slot;
-          res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-          res.execution_success = 0;
-          res.scheduling_error  = FD_BAM_SCHED_ERR_POH_TIMEOUT;
-          res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-          pack_tile_publish_bam_result( ctx, stem, &res );
-          fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
-          ctx->current_bam_bundle->bundle = NULL;
-          ctx->cur_spot = NULL;
+          pack_tile_reject_current_bam_bundle( ctx, stem, FD_BAM_SCHED_ERR_POH_TIMEOUT, max_schedule_slot );
           break;
         }
 
