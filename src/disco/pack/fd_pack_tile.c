@@ -107,6 +107,34 @@ FD_IMPORT( wait_duration, "src/disco/pack/pack_delay.bin", ulong, 6, "" );
 
 static char const * const schedule_strategy_strings[3] = { "PRF", "BAL", "BUN" };
 
+typedef enum {
+  PACK_TILE_BAM_BUNDLE_ABANDON_NEW_SEQ_BEFORE_COMPLETE = 0, /* dropped when a newer seq arrives before current BAM bundle is complete */
+  PACK_TILE_BAM_BUNDLE_ABANDON_LEADER_SLOT_END,             /* dropped at normal leader-slot end */
+  PACK_TILE_BAM_BUNDLE_ABANDON_OUTSIDE_LEADER_SLOT,         /* dropped because scheduling moved outside the active leader slot */
+  PACK_TILE_BAM_BUNDLE_ABANDON_POH_TIMEOUT,                 /* dropped when PoH wallclock deadline ends the leader slot */
+} pack_tile_bam_bundle_abandon_reason_t;
+
+static inline void
+pack_tile_record_bam_bundle_abandon( ulong *                                 bam_bundle_abandon_cnt,
+                                     pack_tile_bam_bundle_abandon_reason_t    reason ) {
+  switch( reason ) {
+  case PACK_TILE_BAM_BUNDLE_ABANDON_NEW_SEQ_BEFORE_COMPLETE:
+    bam_bundle_abandon_cnt[ FD_METRICS_ENUM_PACK_BAM_BUNDLE_ABANDON_REASON_V_NEW_SEQ_BEFORE_COMPLETE_IDX ]++;
+    break;
+  case PACK_TILE_BAM_BUNDLE_ABANDON_LEADER_SLOT_END:
+    bam_bundle_abandon_cnt[ FD_METRICS_ENUM_PACK_BAM_BUNDLE_ABANDON_REASON_V_LEADER_SLOT_END_IDX ]++;
+    break;
+  case PACK_TILE_BAM_BUNDLE_ABANDON_OUTSIDE_LEADER_SLOT:
+    bam_bundle_abandon_cnt[ FD_METRICS_ENUM_PACK_BAM_BUNDLE_ABANDON_REASON_V_OUTSIDE_LEADER_SLOT_IDX ]++;
+    break;
+  case PACK_TILE_BAM_BUNDLE_ABANDON_POH_TIMEOUT:
+    bam_bundle_abandon_cnt[ FD_METRICS_ENUM_PACK_BAM_BUNDLE_ABANDON_REASON_V_POH_TIMEOUT_IDX ]++;
+    break;
+  default:
+    break;
+  }
+}
+
 
 typedef struct {
   fd_acct_addr_t commission_pubkey[1];
@@ -290,6 +318,7 @@ typedef struct {
   ulong       bam_out_chunk;
 
   ulong      insert_result[ FD_PACK_INSERT_RETVAL_CNT ];
+  ulong      bam_bundle_abandon_cnt[ FD_METRICS_ENUM_PACK_BAM_BUNDLE_ABANDON_REASON_CNT ];
   fd_histf_t schedule_duration[ 1 ];
   fd_histf_t no_sched_duration[ 1 ];
   fd_histf_t insert_duration  [ 1 ];
@@ -557,6 +586,10 @@ pack_tile_reject_current_bam_bundle( fd_pack_ctx_t *     ctx,
                                      fd_stem_context_t * stem,
                                      ushort              scheduling_error,
                                      ulong               slot ) {
+  if( FD_UNLIKELY( scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT ) ) {
+    pack_tile_record_bam_bundle_abandon( ctx->bam_bundle_abandon_cnt, PACK_TILE_BAM_BUNDLE_ABANDON_OUTSIDE_LEADER_SLOT );
+  }
+
   fd_bam_bundle_result_t res = {0};
   res.seq_id            = ctx->current_bam_bundle->seq_id;
   res.slot              = slot;
@@ -702,8 +735,10 @@ get_done_packing( fd_pack_ctx_t * ctx, fd_done_packing_t * done_packing ) {
 static inline void
 pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *     ctx,
                                       fd_stem_context_t * stem,
-                                      _Bool               queue_missing_result ) {
+                                      _Bool               queue_missing_result,
+                                      pack_tile_bam_bundle_abandon_reason_t reason ) {
   if( FD_UNLIKELY( !ctx->current_bam_bundle->bundle ) ) return;
+  pack_tile_record_bam_bundle_abandon( ctx->bam_bundle_abandon_cnt, reason );
 
   if( FD_UNLIKELY( ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt ) ) {
     fd_bam_bundle_result_t res = {0};
@@ -737,7 +772,8 @@ static inline void
 pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               fd_stem_context_t * stem,
                               long                now,
-                              char const *        reason ) {
+                              char const *        reason,
+                              pack_tile_bam_bundle_abandon_reason_t bam_abandon_reason ) {
   if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
     pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
     ctx->pending_bam_result_valid = false;
@@ -757,7 +793,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
     pack_tile_publish_bam_result( ctx, stem, &res );
   }
   ctx->bam_pending_work_cnt = 0UL;
-  pack_tile_abandon_current_bam_bundle( ctx, stem, 0 );
+  pack_tile_abandon_current_bam_bundle( ctx, stem, 0, bam_abandon_reason );
   if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
     fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
     ctx->current_bundle->bundle = NULL;
@@ -782,6 +818,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
 static inline void
 metrics_write( fd_pack_ctx_t * ctx ) {
   FD_MCNT_ENUM_COPY( PACK, TRANSACTION_INSERTED,          ctx->insert_result  );
+  FD_MCNT_ENUM_COPY( PACK, BAM_BUNDLE_ABANDON,            ctx->bam_bundle_abandon_cnt );
   FD_MCNT_ENUM_COPY( PACK, METRIC_TIMING,        ((ulong*)ctx->metric_timing) );
   FD_MCNT_ENUM_COPY( PACK, BUNDLE_CRANK_STATUS,           ctx->crank->metrics );
   FD_MHIST_COPY( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS, ctx->schedule_duration );
@@ -929,7 +966,7 @@ after_credit( fd_pack_ctx_t *     ctx,
      happen in the first after_credit after a housekeeping. */
   if( FD_UNLIKELY( ctx->approx_wallclock_ns>=ctx->slot_end_ns && ctx->leader_slot!=ULONG_MAX ) ) {
     *charge_busy = 1;
-    pack_tile_finish_leader_slot( ctx, stem, now, "time" );
+    pack_tile_finish_leader_slot( ctx, stem, now, "time", PACK_TILE_BAM_BUNDLE_ABANDON_POH_TIMEOUT );
 
     update_metric_state( ctx, now, FD_PACK_METRIC_STATE_LEADER,       0 );
     update_metric_state( ctx, now, FD_PACK_METRIC_STATE_BANKS,        0 );
@@ -1165,7 +1202,7 @@ after_credit( fd_pack_ctx_t *     ctx,
        metric, but we end the slot early so won't see it unless we also
        increment it here. */
     FD_MCNT_INC( PACK, MICROBLOCK_PER_BLOCK_LIMIT, 1UL );
-    pack_tile_finish_leader_slot( ctx, stem, now, "microblock" );
+    pack_tile_finish_leader_slot( ctx, stem, now, "microblock", PACK_TILE_BAM_BUNDLE_ABANDON_LEADER_SLOT_END );
   }
 }
 
@@ -1263,7 +1300,7 @@ during_frag( fd_pack_ctx_t * ctx,
       if( FD_LIKELY( new_bam_bundle ) ) {
         if( FD_UNLIKELY( ctx->current_bam_bundle->bundle &&
                          ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt ) ) {
-          pack_tile_abandon_current_bam_bundle( ctx, NULL, 1 );
+          pack_tile_abandon_current_bam_bundle( ctx, NULL, 1, PACK_TILE_BAM_BUNDLE_ABANDON_NEW_SEQ_BEFORE_COMPLETE );
         }
 
         ctx->current_bam_bundle->seq_id            = txnm->bam.seq_id;
@@ -1409,7 +1446,7 @@ after_frag( fd_pack_ctx_t *     ctx,
     if( FD_UNLIKELY( ctx->leader_slot!=ULONG_MAX ) ) {
       ulong old_leader_slot = ctx->leader_slot;
       FD_LOG_WARNING(( "switching to slot %lu while packing for slot %lu. Draining bank tiles.", leader_slot, old_leader_slot ));
-      pack_tile_finish_leader_slot( ctx, stem, now_ticks, "switch" );
+      pack_tile_finish_leader_slot( ctx, stem, now_ticks, "switch", PACK_TILE_BAM_BUNDLE_ABANDON_LEADER_SLOT_END );
     }
     ctx->leader_slot = leader_slot;
 
@@ -1904,6 +1941,7 @@ unprivileged_init( fd_topo_t *      topo,
 
   /* Initialize metrics storage */
   memset( ctx->insert_result, '\0', FD_PACK_INSERT_RETVAL_CNT * sizeof(ulong) );
+  memset( ctx->bam_bundle_abandon_cnt, '\0', sizeof(ctx->bam_bundle_abandon_cnt) );
   fd_histf_join( fd_histf_new( ctx->schedule_duration, FD_MHIST_SECONDS_MIN( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS ),
                                                        FD_MHIST_SECONDS_MAX( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS ) ) );
   fd_histf_join( fd_histf_new( ctx->no_sched_duration, FD_MHIST_SECONDS_MIN( PACK, NO_SCHED_MICROBLOCK_DURATION_SECONDS ),

@@ -63,6 +63,12 @@ struct fd_bam_metrics {
   ulong result_sent_cnt;
   ulong leader_state_sent_cnt;
 
+  /* Enum counters staged locally and flushed during housekeeping. */
+  ulong send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_CNT ];
+  ulong client_step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_CNT ];
+  ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
+  ulong leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
+
   fd_histf_t msg_rx_delay[1];
 };
 

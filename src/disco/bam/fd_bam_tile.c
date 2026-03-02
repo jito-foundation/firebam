@@ -110,6 +110,10 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, ERRORS_NO_FEE_INFO,     ctx->metrics.missing_builder_info_fail_cnt );
   FD_MCNT_SET( BAM, RESULTS_SENT,           ctx->metrics.result_sent_cnt           );
   FD_MCNT_SET( BAM, LEADER_STATE_SENT,      ctx->metrics.leader_state_sent_cnt     );
+  FD_MCNT_ENUM_COPY( BAM, SEND_ATTEMPT,           ctx->metrics.send_attempt_cnt        );
+  FD_MCNT_ENUM_COPY( BAM, CLIENT_STEP_SKIP,       ctx->metrics.client_step_skip_cnt    );
+  FD_MCNT_ENUM_COPY( BAM, STREAM_STATE_TRANSITION, ctx->metrics.stream_transition_cnt    );
+  FD_MCNT_ENUM_COPY( BAM, LEADER_PENDING_DROPPED, ctx->metrics.leader_pending_drop_cnt );
 
   FD_MGAUGE_SET( BAM, RTT_SAMPLE,   (ulong)ctx->rtt->latest_rtt   );
   FD_MGAUGE_SET( BAM, RTT_SMOOTHED, (ulong)ctx->rtt->smoothed_rtt );
@@ -674,8 +678,10 @@ fd_bam_tile_load_certs( SSL_CTX * ssl_ctx ) {
   }
 
   struct dirent * entry;
-  errno = 0; /* Clear stale errno before the first readdir() call */
-  while( (entry = readdir( dir )) ) {
+  for( ;; ) {
+    errno = 0; /* Track errors from this readdir() call only */
+    entry = readdir( dir );
+    if( FD_UNLIKELY( !entry ) ) break;
     if( !strcmp( entry->d_name, "." ) || !strcmp( entry->d_name, ".." ) ) continue;
 
     char cert_path[ PATH_MAX ];

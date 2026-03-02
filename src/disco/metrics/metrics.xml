@@ -385,6 +385,34 @@ metric introduced.
     <int value="5" name="SslAlloc" label="OpenSSL alloc fail" />
 </enum>
 
+<enum name="BamSendAttempt">
+    <int value="0" name="LeaderStateSent" label="Leader-state message sent successfully" />
+    <int value="1" name="LeaderStateNoStream" label="Leader-state send skipped because stream is unavailable (not established or not live)" />
+    <int value="2" name="LeaderStateSendFail" label="Leader-state send attempted but failed in gRPC stream_send" />
+    <int value="3" name="ResultSent" label="Result message sent successfully" />
+    <int value="4" name="ResultNoStream" label="Result send skipped because stream is unavailable (not established or not live)" />
+    <int value="5" name="ResultSendFail" label="Result send attempted but failed in gRPC stream_send" />
+</enum>
+
+<enum name="BamClientStepSkipReason">
+    <int value="0" name="RequestBlocked" label="Client step skipped because gRPC request path is blocked" />
+    <int value="1" name="StallBackoff" label="Client step skipped because reconnect backoff is active" />
+    <int value="2" name="NotConnected" label="Client step skipped while waiting for TCP connect progression" />
+    <int value="3" name="DriveIoFail" label="Client step skipped because drive_io failed or a deferred reset was pending" />
+</enum>
+
+<enum name="BamStreamTransition">
+    <int value="0" name="DownToLive" label="Scheduler stream transitioned from not-live to live" />
+    <int value="1" name="LiveToDown" label="Scheduler stream transitioned from live to not-live" />
+</enum>
+
+<enum name="BamLeaderPendingDropReason">
+    <int value="0" name="ClientReset" label="Pending leader-state cleared because BAM client was reset" />
+    <int value="1" name="RequestFailed" label="Pending leader-state cleared because scheduler stream request failed" />
+    <int value="2" name="StreamEnded" label="Pending leader-state cleared because scheduler stream ended" />
+    <int value="3" name="StreamTimeout" label="Pending leader-state cleared because scheduler stream timed out" />
+</enum>
+
 <tile name="bam">
     <gauge name="Enabled" summary="Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled" />
     <gauge name="Healthy" summary="Boolean gauge: 1 when the BAM client is connected to the BAM node and connection is healthy, otherwise 0" />
@@ -402,6 +430,10 @@ metric introduced.
     <counter name="Disconnects" summary="Cumulative number of connection teardowns between the BAM client and BAM node" />
     <counter name="ResultsSent" summary="Cumulative number of bundle execution result messages forwarded to the BAM node" />
     <counter name="LeaderStateSent" summary="Cumulative number of leader state update messages sent to the BAM node" />
+    <counter name="SendAttempt" enum="BamSendAttempt" summary="Cumulative number of BAM outbound message send attempts by message kind and outcome" />
+    <counter name="ClientStepSkip" enum="BamClientStepSkipReason" summary="Cumulative number of BAM client-step skips by reason" />
+    <counter name="StreamStateTransition" enum="BamStreamTransition" summary="Cumulative number of scheduler stream live-state transitions" />
+    <counter name="LeaderPendingDropped" enum="BamLeaderPendingDropReason" summary="Cumulative number of pending leader-state updates dropped before send, by reason" />
     <gauge name="RttSample" summary="Latest BAM round-trip time sample captured at scrape time (nanoseconds)" />
     <gauge name="RttSmoothed" summary="Exponentially smoothed BAM round-trip time estimate (nanoseconds)" />
     <gauge name="RttVar" summary="Smoothed variance of the BAM round-trip time estimator (nanoseconds)" />
@@ -545,6 +577,13 @@ metric introduced.
   <int value="3" name="InsertionFailed" label="Tried to insert an initializer bundle to update the on-chain state, but insertion failed" />
 </enum>
 
+<enum name="PackBamBundleAbandonReason">
+  <int value="0" name="NewSeqBeforeComplete" label="Active BAM bundle abandoned because a new sequence arrived before completion" />
+  <int value="1" name="LeaderSlotEnd" label="Active BAM bundle abandoned at leader slot end" />
+  <int value="2" name="OutsideLeaderSlot" label="BAM bundle abandoned because packing moved outside the leader slot" />
+  <int value="3" name="PohTimeout" label="Active BAM bundle abandoned because the PoH leader-slot wallclock deadline elapsed" />
+</enum>
+
 <tile name="pack">
     <histogram name="ScheduleMicroblockDurationSeconds" min="0.00000001" max="0.1" converter="seconds">
         <summary>Duration of scheduling one microblock</summary>
@@ -586,6 +625,7 @@ metric introduced.
     <counter name="TransactionSchedule" enum="PackTxnSchedule" summary="Result of trying to consider a transaction for scheduling" />
 
     <counter name="BundleCrankStatus" enum="BundleCrankResult" summary="Result of considering whether bundle cranks are needed" />
+    <counter name="BamBundleAbandon" enum="PackBamBundleAbandonReason" summary="Cumulative number of active BAM bundles abandoned before bundle insertion/execution, by reason" />
 
     <gauge name="CusConsumedInBlock" summary="The number of cost units consumed in the current block, or 0 if pack is not currently packing a block" />
     <histogram name="CusScheduled" min="1000000" max="240000000">
