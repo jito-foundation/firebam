@@ -1286,6 +1286,21 @@ bam_e2e_run_scenario_prevalidation_stale_slot( bam_e2e_harness_t * h ) {
 }
 
 static void
+bam_e2e_run_scenario_non_atomic_stale_slot( bam_e2e_harness_t * h ) {
+  h->leader_working_present = 1U;
+  h->leader_working_slot    = 220UL;
+  h->bankforks_working_slot = 220UL;
+
+  bam_e2e_batch_def_t b = bam_e2e_make_batch( 930U, 219UL, 0U, 1U );
+  bam_e2e_node_deliver_batches( h, &b, 1UL, 0U );
+  bam_e2e_apply_pipeline( h );
+
+  FD_TEST( h->sut_result_cnt==1UL );
+  FD_TEST( !h->sut_results[0].execution_success );
+  FD_TEST( h->sut_results[0].scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+}
+
+static void
 bam_e2e_run_scenario_slot_source_fallback( bam_e2e_harness_t * h ) {
   h->leader_working_present = 0U;
   h->bankforks_working_slot = 140UL;
@@ -1482,6 +1497,18 @@ bam_e2e_run_scenario_non_atomic_success_fail( bam_e2e_harness_t * h ) {
 }
 
 static void
+bam_e2e_run_scenario_non_atomic_sanitize_fail( bam_e2e_harness_t * h ) {
+  bam_e2e_batch_def_t bad = bam_e2e_make_batch( 931U, 100UL, 0U, 1U );
+  bad.txn[0].mode = BAM_E2E_TXN_SANITIZE_FAIL;
+  bam_e2e_node_deliver_batches( h, &bad, 1UL, 0U );
+  bam_e2e_apply_pipeline( h );
+
+  FD_TEST( h->sut_result_cnt==1UL );
+  FD_TEST( h->sut_results[0].bundle_err==FD_BAM_BUNDLE_ERR_DESER );
+  FD_TEST( h->sut_results[0].deser_reason==bam_types_DeserializationErrorReason_SANITIZE_ERROR );
+}
+
+static void
 bam_e2e_run_scenario_replay_same_seq( bam_e2e_harness_t * h ) {
   bam_e2e_batch_def_t b = bam_e2e_make_batch( 18U, 100UL, 1U, 2U );
   bam_e2e_node_deliver_batches( h, &b, 1UL, 0U );
@@ -1609,6 +1636,11 @@ bam_e2e_run_scenarios( fd_wksp_t * wksp ) {
   bam_e2e_fini( h );
 
   bam_e2e_init( h, wksp );
+  bam_e2e_run_scenario_non_atomic_stale_slot( h );
+  bam_e2e_assert_differential( h );
+  bam_e2e_fini( h );
+
+  bam_e2e_init( h, wksp );
   bam_e2e_run_scenario_slot_source_fallback( h );
   bam_e2e_assert_differential( h );
   bam_e2e_fini( h );
@@ -1652,6 +1684,11 @@ bam_e2e_run_scenarios( fd_wksp_t * wksp ) {
 
   bam_e2e_init( h, wksp );
   bam_e2e_run_scenario_non_atomic_success_fail( h );
+  bam_e2e_assert_differential( h );
+  bam_e2e_fini( h );
+
+  bam_e2e_init( h, wksp );
+  bam_e2e_run_scenario_non_atomic_sanitize_fail( h );
   bam_e2e_assert_differential( h );
   bam_e2e_fini( h );
 

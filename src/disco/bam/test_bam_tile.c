@@ -2415,6 +2415,45 @@ test_bam_scheduler_result_not_committed_transaction_error_prefers_non_cancelled(
 }
 
 static void
+test_bam_scheduler_result_not_committed_all_cancelled_falls_back_to_poh_timeout( fd_wksp_t * wksp ) {
+  /* Atomic bundles with only CommitCancelled reasons should fall back to
+     SchedulingError::POH_TIMEOUT when no primary transaction reason exists. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  test_bam_prepare_scheduler_stream( state );
+
+  g_clock = (long)12e9;
+  test_bam_keepalive_sync( state, g_clock );
+
+  fd_bam_bundle_result_t res = test_make_bundle_result( 910, 1910, 3 );
+  res.execution_success = 0;
+  for( uint i=0U; i<res.bundle_txn_cnt; i++ ) {
+    res.sanitize_success[ i ] = 1U;
+    res.transaction_err[ i ]  = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+  }
+  res.transaction_err_count = (uchar)res.bundle_txn_cnt;
+  test_enqueue_bundle_result( state, &res );
+
+  int flushed = fd_bam_test_flush_results( state );
+  FD_TEST( flushed == 1 );
+  FD_TEST( state->bam_pending_results == 0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt == 1UL );
+  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_scheduling_error_tag );
+  FD_TEST( result->result.not_committed.reason.scheduling_error == bam_types_SchedulingError_POH_TIMEOUT );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_scheduler_result_not_committed_generic_failure_reason( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -3433,6 +3472,7 @@ main( int     argc,
   test_bam_scheduler_result_not_committed_transaction_error_reason( wksp );
   test_bam_scheduler_result_not_committed_transaction_error_high_index( wksp );
   test_bam_scheduler_result_not_committed_transaction_error_prefers_non_cancelled( wksp );
+  test_bam_scheduler_result_not_committed_all_cancelled_falls_back_to_poh_timeout( wksp );
   test_bam_scheduler_result_not_committed_generic_failure_reason( wksp );
   test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( wksp );
 

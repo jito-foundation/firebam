@@ -137,7 +137,6 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
                                     fd_exec_txn_ctx_t const * txn_ctx,
                                     ulong               slot,
                                     int                 exec_err ) {
-  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
   if( FD_UNLIKELY( txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM || txn->bam.revert_on_error ) ) return;
 
   /* revert_on_error=0 batches are assumed to be single-packet, so emit one
@@ -155,8 +154,11 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
     res.feepayer_balance_lamports[ 0 ] = fd_txn_account_get_lamports( &txn_ctx->accounts[ FD_FEE_PAYER_TXN_IDX ] );
     res.loaded_accounts_data_size[ 0 ] = (uint)txn_ctx->loaded_accounts_data_size;
   }
-  res.sanitize_success[ 0 ] = 1U;
-  if( FD_UNLIKELY( exec_err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
+  res.sanitize_success[ 0 ] = (uchar)!!( txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+  if( FD_UNLIKELY( !res.sanitize_success[ 0 ] ) ) {
+    res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_SANITIZE_FAILURE;
+    res.transaction_err_count = 1U;
+  } else if( FD_UNLIKELY( exec_err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
     res.transaction_err[ 0 ] = bank_tile_bam_txn_err_from_runtime_err( exec_err );
     res.transaction_err_count = 1U;
   }
@@ -515,40 +517,40 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   /* Publish execution results for BAM atomic batches (revert_on_error==true).
      Pack emits only pre-execution drops; for executed work, the bank tile is
      the source of truth. */
-  if( FD_LIKELY( txn_cnt ) ) {
-    fd_txn_p_t const * first = &txns[ 0 ];
-    if( FD_LIKELY( first->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && first->bam.revert_on_error ) ) {
-      fd_bam_bundle_result_t res = {0};
-      res.seq_id         = first->bam.seq_id;
-      res.slot           = slot;
-      res.bundle_txn_cnt = (uchar)txn_cnt;
-      res.execution_success = (uchar)execution_success;
-      res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-      res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+  if( FD_LIKELY( txn_cnt &&
+                 txns[ 0 ].source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                 txns[ 0 ].bam.revert_on_error ) ) {
+    fd_bam_bundle_result_t res = {0};
+    res.seq_id         = txns[ 0 ].bam.seq_id;
+    res.slot           = slot;
+    res.bundle_txn_cnt = (uchar)txn_cnt;
+    res.execution_success = (uchar)execution_success;
+    res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+    res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
 
-      for( ulong i=0UL; i<txn_cnt; i++ ) {
-        res.consumed_cus[ i ]     = txns[ i ].bank_cu.actual_consumed_cus;
-        if( FD_LIKELY( execution_success ) ) {
-          fd_exec_txn_ctx_t const * txn_ctx = &ctx->txn_ctx[ i ];
-          res.feepayer_balance_lamports[ i ] = fd_txn_account_get_lamports( &txn_ctx->accounts[ FD_FEE_PAYER_TXN_IDX ] );
-          res.loaded_accounts_data_size[ i ] = (uint)txn_ctx->loaded_accounts_data_size;
-        }
-        res.sanitize_success[ i ] = 1U;
+    for( ulong i=0UL; i<txn_cnt; i++ ) {
+      res.consumed_cus[ i ]     = txns[ i ].bank_cu.actual_consumed_cus;
+      if( FD_LIKELY( execution_success ) ) {
+        fd_exec_txn_ctx_t const * txn_ctx = &ctx->txn_ctx[ i ];
+        res.feepayer_balance_lamports[ i ] = fd_txn_account_get_lamports( &txn_ctx->accounts[ FD_FEE_PAYER_TXN_IDX ] );
+        res.loaded_accounts_data_size[ i ] = (uint)txn_ctx->loaded_accounts_data_size;
       }
-
-      if( FD_UNLIKELY( !execution_success ) ) {
-        res.transaction_err_count = (uchar)txn_cnt;
-        for( ulong i=0UL; i<txn_cnt; i++ ) {
-          res.transaction_err[ i ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
-        }
-        ulong err_idx = (fail_idx==ULONG_MAX) ? 0UL : fail_idx;
-        if( FD_LIKELY( err_idx < txn_cnt ) ) {
-          res.transaction_err[ err_idx ] = bank_tile_bam_txn_err_from_runtime_err( fail_exec_err );
-        }
-      }
-
-      bank_tile_publish_bam_result( ctx, stem, &res );
+      res.sanitize_success[ i ] = (uchar)!!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
     }
+
+    if( FD_UNLIKELY( !execution_success ) ) {
+      res.transaction_err_count = (uchar)txn_cnt;
+      for( ulong i=0UL; i<txn_cnt; i++ ) {
+        res.transaction_err[ i ] = FD_UNLIKELY( !res.sanitize_success[ i ] )
+                                 ? bam_types_TransactionErrorReason_SANITIZE_FAILURE
+                                 : bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+      }
+      if( FD_LIKELY( fail_idx < txn_cnt && res.sanitize_success[ fail_idx ] ) ) {
+        res.transaction_err[ fail_idx ] = bank_tile_bam_txn_err_from_runtime_err( fail_exec_err );
+      }
+    }
+
+    bank_tile_publish_bam_result( ctx, stem, &res );
   }
 
   /* Indicate to pack tile we are done processing the transactions so

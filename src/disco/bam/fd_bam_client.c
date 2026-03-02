@@ -423,11 +423,21 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
     /* Prefer reporting the "real" failing index over CommitCancelled
        (used for atomicity cascade) to match bam_spec.md semantics. */
     uchar err_idx = 0U;
+    _Bool found_non_cancelled = 0;
     for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
       if( FD_LIKELY( res->transaction_err[ i ] != bam_types_TransactionErrorReason_COMMIT_CANCELLED ) ) {
         err_idx = i;
+        found_non_cancelled = 1;
         break;
       }
+    }
+
+    /* For reverted atomic bundles, all-COMMIT_CANCELLED should surface as
+       POH_TIMEOUT fallback when no primary reason is available. */
+    if( FD_UNLIKELY( !found_non_cancelled && res->bundle_txn_cnt>1U ) ) {
+      out->which_reason = bam_types_NotCommitted_scheduling_error_tag;
+      out->reason.scheduling_error = bam_types_SchedulingError_POH_TIMEOUT;
+      return;
     }
 
     if( FD_LIKELY( res->transaction_err[ err_idx ] < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {

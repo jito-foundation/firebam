@@ -130,6 +130,12 @@ typedef struct {
 #define PACK_BUNDLE_META_KIND_BAM          (2)
 
 typedef struct {
+  fd_ed25519_sig_t sig[1];
+  ulong            slot;
+  uint             seq_id;
+} pack_bam_pending_work_t;
+
+typedef struct {
   long time;
   ulong sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_CNT ];
 } fd_pack_sched_results_snap_t;
@@ -145,6 +151,7 @@ typedef struct {
   fd_txn_e_t * cur_spot;
   uchar        bundle_kind; /* PACK_TILE_BUNDLE_KIND_* (none/BE/BAM) */
   uchar        bam_batch_idx; /* current BAM bundle txn idx */
+  ulong        bam_txn_max_schedule_slot; /* current BAM non-revert txn window hint */
 
   uchar executed_txn_sig[ 64UL ];
 
@@ -442,6 +449,11 @@ typedef struct {
 
   fd_bam_bundle_result_t pending_bam_result[1];
   _Bool                  pending_bam_result_valid;
+
+  /* BAM batches accepted into fd_pack but not yet handed off to bank.
+     Used to flush buffered BAM work on non-leader transitions. */
+  pack_bam_pending_work_t * bam_pending_work;
+  ulong                     bam_pending_work_cnt;
 } fd_pack_ctx_t;
 
 /* Bundle metadata must fit both block engine and BAM uses. */
@@ -558,6 +570,39 @@ pack_tile_reject_current_bam_bundle( fd_pack_ctx_t *     ctx,
   ctx->cur_spot = NULL;
 }
 
+static inline void
+pack_tile_remove_pending_bam_work_seq( fd_pack_ctx_t * ctx,
+                                       uint            seq_id ) {
+  for( ulong i=0UL; i<ctx->bam_pending_work_cnt; ) {
+    if( FD_UNLIKELY( ctx->bam_pending_work[ i ].seq_id==seq_id ) ) {
+      ulong last_idx = ctx->bam_pending_work_cnt - 1UL;
+      if( FD_LIKELY( i < last_idx ) ) {
+        ctx->bam_pending_work[ i ] = ctx->bam_pending_work[ last_idx ];
+      }
+      ctx->bam_pending_work_cnt = last_idx;
+      continue;
+    }
+    i++;
+  }
+}
+
+static inline void
+pack_tile_track_pending_bam_work( fd_pack_ctx_t *          ctx,
+                                  void const *             sig,
+                                  uint                     seq_id,
+                                  ulong                    slot ) {
+  pack_tile_remove_pending_bam_work_seq( ctx, seq_id );
+  if( FD_UNLIKELY( ctx->bam_pending_work_cnt >= ctx->max_pending_transactions ) ) {
+    FD_LOG_WARNING(( "BAM pending-work tracker full (%lu), seq_id=%u will not flush on leader transition",
+                     ctx->max_pending_transactions, seq_id ));
+    return;
+  }
+  pack_bam_pending_work_t * item = &ctx->bam_pending_work[ ctx->bam_pending_work_cnt++ ];
+  fd_memcpy( item->sig, sig, sizeof(fd_ed25519_sig_t) );
+  item->seq_id = seq_id;
+  item->slot   = slot;
+}
+
 /* Best-effort mapping from fd_pack insert errors to BAM TransactionErrorReason values. */
 static inline bam_types_TransactionErrorReason
 pack_tile_bam_txn_err_from_pack_insert( int pack_rc ) {
@@ -605,6 +650,7 @@ scratch_footprint( fd_topo_tile_t const * tile ) {
 #if FD_PACK_USE_EXTRA_STORAGE
   l = FD_LAYOUT_APPEND( l, extra_txn_deq_align(),    extra_txn_deq_footprint()                                 );
 #endif
+  l = FD_LAYOUT_APPEND( l, alignof(pack_bam_pending_work_t), tile->pack.max_pending_transactions*sizeof(pack_bam_pending_work_t) );
   return FD_LAYOUT_FINI( l, scratch_align() );
 }
 
@@ -696,6 +742,21 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
     pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
     ctx->pending_bam_result_valid = false;
   }
+  for( ulong i=0UL; i<ctx->bam_pending_work_cnt; i++ ) {
+    pack_bam_pending_work_t const * item = &ctx->bam_pending_work[ i ];
+    ulong deleted = fd_pack_delete_transaction( ctx->pack, item->sig );
+    if( FD_UNLIKELY( !deleted ) ) continue;
+
+    fd_bam_bundle_result_t res = {0};
+    res.seq_id            = item->seq_id;
+    res.slot              = item->slot;
+    res.bundle_txn_cnt    = (uchar)fd_ulong_min( deleted, UCHAR_MAX );
+    res.execution_success = 0;
+    res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
+    res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+    pack_tile_publish_bam_result( ctx, stem, &res );
+  }
+  ctx->bam_pending_work_cnt = 0UL;
   pack_tile_abandon_current_bam_bundle( ctx, stem, 0 );
   if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
     fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
@@ -1067,6 +1128,13 @@ after_credit( fd_pack_ctx_t *     ctx,
         */
       fd_long_store_if( ctx->use_consumed_cus, &(ctx->skip_cnt), (long)(ctx->bank_cnt + 1) );
 
+      for( ulong j=0UL; j<schedule_cnt; j++ ) {
+        fd_txn_p_t const * txnp = microblock_dst + j;
+        if( FD_UNLIKELY( txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
+        if( FD_UNLIKELY( txnp->bam.revert_on_error && txnp->bam.batch_idx ) ) continue;
+        pack_tile_remove_pending_bam_work_seq( ctx, txnp->bam.seq_id );
+      }
+
       pack_tile_publish_bam_leader_state( ctx, stem );
     }
   }
@@ -1160,6 +1228,7 @@ during_frag( fd_pack_ctx_t * ctx,
     ulong txn_t_sz    = txnm->txn_t_sz;
     uint  source_ipv4 = txnm->source_ipv4;
     uchar source_tpu  = txnm->source_tpu;
+    ctx->bam_txn_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
     FD_TEST( payload_sz<=FD_TPU_MTU    );
     FD_TEST( txn_t_sz  <=FD_TXN_MAX_SZ );
     fd_txn_t * txn  = fd_txn_m_txn_t( txnm );
@@ -1277,6 +1346,7 @@ during_frag( fd_pack_ctx_t * ctx,
       ctx->cur_spot->txnp->bam.batch_idx       = txnm->bam.batch_idx;
       ctx->cur_spot->txnp->bam.batch_cnt       = txnm->bam.txn_cnt;
       ctx->cur_spot->txnp->bam.revert_on_error = txnm->bam.revert_on_error;
+      ctx->bam_txn_max_schedule_slot           = txnm->bam.max_schedule_slot;
     } else {
       ctx->cur_spot->txnp->bam.seq_id          = 0U;
       ctx->cur_spot->txnp->bam.batch_idx       = 0U;
@@ -1441,7 +1511,7 @@ after_frag( fd_pack_ctx_t *     ctx,
         if( FD_UNLIKELY( (max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT) &
                          (max_schedule_slot!=0UL) &
                          (max_schedule_slot<ctx->leader_slot) ) ) {
-          pack_tile_reject_current_bam_bundle( ctx, stem, FD_BAM_SCHED_ERR_POH_TIMEOUT, max_schedule_slot );
+          pack_tile_reject_current_bam_bundle( ctx, stem, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, max_schedule_slot );
           break;
         }
 
@@ -1490,30 +1560,58 @@ after_frag( fd_pack_ctx_t *     ctx,
           }
 
           pack_tile_publish_bam_result( ctx, stem, &res );
+        } else {
+          pack_tile_track_pending_bam_work( ctx,
+                                            ctx->current_bam_bundle->bundle[ 0 ]->txnp->payload + 1UL,
+                                            ctx->current_bam_bundle->seq_id,
+                                            max_schedule_slot );
         }
 
         ctx->current_bam_bundle->bundle = NULL;
       }
     } else {
+      fd_txn_p_t const * txnp = ctx->cur_spot->txnp;
+      uchar source_tpu        = txnp->source_tpu;
+      uint  bam_seq_id        = txnp->bam.seq_id;
+      ulong bam_slot          = ctx->bam_txn_max_schedule_slot;
+
+      if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                       ( ctx->leader_slot==ULONG_MAX ||
+                         ( (bam_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT) &&
+                           (bam_slot!=0UL) &&
+                           (bam_slot<ctx->leader_slot) ) ) ) ) {
+#if FD_PACK_USE_EXTRA_STORAGE
+        if( FD_UNLIKELY( ctx->insert_to_extra ) ) extra_txn_deq_remove_tail( ctx->extra_txn_deq );
+        else                                       fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
+#else
+        fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
+#endif
+        fd_bam_bundle_result_t res = {0};
+        res.seq_id            = bam_seq_id;
+        res.slot              = bam_slot;
+        res.bundle_txn_cnt    = 1U;
+        res.execution_success = 0;
+        res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
+        res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+        pack_tile_publish_bam_result( ctx, stem, &res );
+        ctx->cur_spot = NULL;
+        break;
+      }
+
 #if FD_PACK_USE_EXTRA_STORAGE
       if( FD_LIKELY( !ctx->insert_to_extra ) ) {
 #endif
-        ulong blockhash_slot = sig;
-        fd_txn_p_t const * txnp = ctx->cur_spot->txnp;
-        uchar source_tpu        = txnp->source_tpu;
-        uint  bam_seq_id        = txnp->bam.seq_id;
         ulong deleted;
         long insert_duration = -fd_tickcount();
-        int result = fd_pack_insert_txn_fini( ctx->pack, ctx->cur_spot, blockhash_slot, &deleted );
+        int result = fd_pack_insert_txn_fini( ctx->pack, ctx->cur_spot, sig, &deleted );
         insert_duration      += fd_tickcount();
         FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
         ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ]++;
         fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
-        if( FD_UNLIKELY( result<0 &&
-                         source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+        if( FD_UNLIKELY( result<0 && source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
           fd_bam_bundle_result_t res = {0};
           res.seq_id            = bam_seq_id;
-          res.slot              = 0UL;
+          res.slot              = bam_slot;
           res.bundle_txn_cnt    = 1U;
           res.execution_success = 0;
           res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
@@ -1523,7 +1621,12 @@ after_frag( fd_pack_ctx_t *     ctx,
           res.sanitize_success[ 0 ] = 1U;
           pack_tile_publish_bam_result( ctx, stem, &res );
         }
-        if( FD_LIKELY( result>=0 ) ) ctx->last_successful_insert = now;
+        if( FD_LIKELY( result>=0 ) ) {
+          ctx->last_successful_insert = now;
+          if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+            pack_tile_track_pending_bam_work( ctx, txnp->payload + 1UL, bam_seq_id, bam_slot );
+          }
+        }
 #if FD_PACK_USE_EXTRA_STORAGE
       }
 #endif
@@ -1535,6 +1638,18 @@ after_frag( fd_pack_ctx_t *     ctx,
   case IN_KIND_EXECUTED_TXN: {
     ulong deleted = fd_pack_delete_transaction( ctx->pack, fd_type_pun( ctx->executed_txn_sig ) );
     FD_MCNT_INC( PACK, TRANSACTION_ALREADY_EXECUTED, deleted );
+    if( FD_UNLIKELY( deleted ) ) {
+      for( ulong i=0UL; i<ctx->bam_pending_work_cnt; i++ ) {
+        if( FD_UNLIKELY( !memcmp( ctx->bam_pending_work[ i ].sig, ctx->executed_txn_sig, sizeof(fd_ed25519_sig_t) ) ) ) {
+          ulong last_idx = ctx->bam_pending_work_cnt - 1UL;
+          if( FD_LIKELY( i < last_idx ) ) {
+            ctx->bam_pending_work[ i ] = ctx->bam_pending_work[ last_idx ];
+          }
+          ctx->bam_pending_work_cnt = last_idx;
+          break;
+        }
+      }
+    }
     break;
   }
   }
@@ -1683,10 +1798,15 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->extra_txn_deq = extra_txn_deq_join( extra_txn_deq_new( FD_SCRATCH_ALLOC_APPEND( l, extra_txn_deq_align(),
                                                                                           extra_txn_deq_footprint() ) ) );
 #endif
+  ctx->bam_pending_work = FD_SCRATCH_ALLOC_APPEND( l,
+                                                    alignof(pack_bam_pending_work_t),
+                                                    tile->pack.max_pending_transactions*sizeof(pack_bam_pending_work_t) );
 
   ctx->cur_spot                      = NULL;
   ctx->bundle_kind                   = PACK_TILE_BUNDLE_KIND_NONE;
   ctx->bam_batch_idx                 = 0U;
+  ctx->bam_txn_max_schedule_slot     = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  ctx->bam_pending_work_cnt          = 0UL;
   ctx->strategy                      = tile->pack.schedule_strategy;
   ctx->max_pending_transactions      = tile->pack.max_pending_transactions;
   ctx->leader_slot                   = ULONG_MAX;
@@ -1771,11 +1891,9 @@ unprivileged_init( fd_topo_t *      topo,
   }
 
   ulong bam_fee_cfg_obj_id = fd_pod_query_ulong( topo->props, "bam_fee_cfg", ULONG_MAX );
-  if( FD_LIKELY( bam_fee_cfg_obj_id!=ULONG_MAX ) ) {
-    ctx->bam_fee_cfg = (fd_bam_fee_cfg_t const *)fd_topo_obj_laddr( topo, bam_fee_cfg_obj_id );
-  } else {
-    ctx->bam_fee_cfg = NULL;
-  }
+  ctx->bam_fee_cfg = FD_LIKELY( bam_fee_cfg_obj_id!=ULONG_MAX )
+                   ? (fd_bam_fee_cfg_t const *)fd_topo_obj_laddr( topo, bam_fee_cfg_obj_id )
+                   : NULL;
 
   /* Initialize metrics storage */
   memset( ctx->insert_result, '\0', FD_PACK_INSERT_RETVAL_CNT * sizeof(ulong) );
@@ -1795,6 +1913,7 @@ unprivileged_init( fd_topo_t *      topo,
   memset( ctx->bundle_meta,               '\0', sizeof(ctx->bundle_meta)               );
   memset( ctx->pending_bam_result,        '\0', sizeof(ctx->pending_bam_result)        );
   ctx->pending_bam_result_valid = false;
+  ctx->bam_pending_work_cnt     = 0UL;
   ctx->last_bam_leader_state_valid = false;
   memset( ctx->last_sched_metrics,        '\0', sizeof(ctx->last_sched_metrics)        );
   memset( ctx->start_block_sched_metrics, '\0', sizeof(ctx->start_block_sched_metrics) );
