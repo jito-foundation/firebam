@@ -11,8 +11,8 @@ DEFAULT_HOST="64.130.59.250"
 DEFAULT_MODE="recent"
 DEFAULT_RECENT_COUNT="16"
 DEFAULT_SNAPSHOT_SECS="2"
-DEFAULT_QUERY_WAIT_SECS="4"
-DEFAULT_DETAIL_TIMEOUT_SECS="25"
+DEFAULT_QUERY_WAIT_SECS="8"
+DEFAULT_DETAIL_TIMEOUT_SECS="60"
 
 HOST="${DEFAULT_HOST}"
 MODE="${DEFAULT_MODE}"
@@ -318,15 +318,15 @@ for attempt in 1 2; do
   wait_secs="${QUERY_WAIT_SECS}"
   timeout_secs="${DETAIL_TIMEOUT_SECS}"
   if [[ "${attempt}" == "2" ]]; then
-    wait_secs=$((QUERY_WAIT_SECS + 2))
-    timeout_secs=$((DETAIL_TIMEOUT_SECS + 20))
+    wait_secs=$((QUERY_WAIT_SECS + 4))
+    timeout_secs=$((DETAIL_TIMEOUT_SECS + 40))
   fi
   (
     cat "${query_file}"
     sleep "${wait_secs}"
   ) | timeout "${timeout_secs}s" websocat -B 12000000 "ws://${HOST}:80/websocket" > "${details_file}" 2>/dev/null || true
 
-  query_result_count="$(jq -rc '[select(.topic=="slot" and ((.key=="query") or (.key=="query_detailed")) and (.value != null))] | length' "${details_file}")"
+  query_result_count="$(jq -sc '[.[] | select(.topic=="slot" and ((.key=="query") or (.key=="query_detailed")) and (.value != null))] | length' "${details_file}")"
   if [[ "${query_result_count}" -gt 0 ]]; then
     seen_query_results=1
   fi

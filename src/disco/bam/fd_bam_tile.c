@@ -334,27 +334,29 @@ bam_during_frag( fd_bam_tile_t * ctx,
     return;
   }
 
-  if( FD_UNLIKELY( in_idx == ctx->pack_leader_in_idx ) ) {
-    if( FD_LIKELY( sz == sizeof(fd_bam_leader_state_t) ) ) {
-      if( FD_UNLIKELY( ( chunk < ctx->leader_in.chunk0 ) | ( chunk > ctx->leader_in.wmark ) ) ) {
-        FD_LOG_WARNING(( "BAM leader state chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
-        return;
-      }
-      fd_bam_leader_state_t const * state = (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->leader_in.mem, chunk );
-      ctx->bam_leader_state  = *state;
-      ctx->bam_leader_pending = 1U;
-      return;
-    }
-    if( FD_LIKELY( sz == sizeof(fd_bam_bundle_result_t) ) ) {
-      if( FD_UNLIKELY( ( chunk < ctx->leader_in.chunk0 ) | ( chunk > ctx->leader_in.wmark ) ) ) {
-        FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
-        return;
-      }
-      fd_bam_bundle_result_t const * res = (fd_bam_bundle_result_t const *)fd_chunk_to_laddr( ctx->leader_in.mem, chunk );
-      fd_bam_enqueue_result( ctx, res );
-      return;
-    }
+  if( FD_UNLIKELY( in_idx != ctx->pack_leader_in_idx ) ) return;
+
+  _Bool is_leader_state = sz == sizeof(fd_bam_leader_state_t);
+  _Bool is_bundle_result = sz == sizeof(fd_bam_bundle_result_t);
+  if( FD_UNLIKELY( !is_leader_state && !is_bundle_result ) ) {
     FD_LOG_WARNING(( "Unexpected pack->bam fragment size %lu", sz ));
+    return;
+  }
+
+  if( FD_UNLIKELY( ( chunk < ctx->leader_in.chunk0 ) | ( chunk > ctx->leader_in.wmark ) ) ) {
+    if( FD_UNLIKELY( is_leader_state ) )
+      FD_LOG_WARNING(( "BAM leader state chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
+    else
+      FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
+    return;
+  }
+
+  void const * payload = fd_chunk_to_laddr( ctx->leader_in.mem, chunk );
+  if( is_leader_state ) {
+    ctx->bam_leader_state  = *(fd_bam_leader_state_t const *)payload;
+    ctx->bam_leader_pending = 1U;
+  } else {
+    fd_bam_enqueue_result( ctx, (fd_bam_bundle_result_t const *)payload );
   }
 }
 
@@ -916,13 +918,18 @@ unprivileged_init( fd_topo_t *      topo,
 
   ulong bank_in_idx = fd_topo_find_tile_in_link( topo, tile, "bank_bam", tile->kind_id );
   if( FD_UNLIKELY( bank_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bank_bam link" ));
-  ctx->bank_bam_in_idx = bank_in_idx;
+  if( FD_UNLIKELY( !tile->in_link_poll[ bank_in_idx ] ) ) FD_LOG_ERR(( "bank_bam must be polled" ));
+  /* stem callback in_idx is compacted over polled links only. */
+  ctx->bank_bam_in_idx = 0UL;
+  for( ulong i=0UL; i<bank_in_idx; i++ ) ctx->bank_bam_in_idx += (ulong)!!tile->in_link_poll[ i ];
   fd_topo_link_t const * bank_in = &topo->links[ tile->in_link_id[ bank_in_idx ] ];
   ctx->bank_in = bam_in_link( topo, bank_in );
 
   ulong leader_in_idx = fd_topo_find_tile_in_link( topo, tile, "pack_bam", tile->kind_id );
   if( FD_UNLIKELY( leader_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing pack_bam link" ));
-  ctx->pack_leader_in_idx = leader_in_idx;
+  if( FD_UNLIKELY( !tile->in_link_poll[ leader_in_idx ] ) ) FD_LOG_ERR(( "pack_bam must be polled" ));
+  ctx->pack_leader_in_idx = 0UL;
+  for( ulong i=0UL; i<leader_in_idx; i++ ) ctx->pack_leader_in_idx += (ulong)!!tile->in_link_poll[ i ];
   fd_topo_link_t const * leader_in = &topo->links[ tile->in_link_id[ leader_in_idx ] ];
   ctx->leader_in = bam_in_link( topo, leader_in );
 

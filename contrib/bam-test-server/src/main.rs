@@ -1,5 +1,5 @@
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc,
@@ -25,6 +25,7 @@ use anyhow::Result;
 use clap::Parser;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_keypair::Keypair;
+use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use solana_system_interface::instruction::transfer;
 use solana_transaction::{Hash, Transaction};
@@ -47,11 +48,11 @@ pub(crate) mod proto {
 struct Args {
     /// Address to bind the BAM test server (gRPC)
     #[arg(long, default_value = "0.0.0.0:50055")]
-    bind: String,
+    bind: SocketAddr,
 
     /// TPU address to advertise to the validator
     #[arg(long, default_value = "127.0.0.1")]
-    tpu_ip: String,
+    tpu_ip: IpAddr,
 
     /// TPU port to advertise to the validator
     #[arg(long, default_value_t = 5004)]
@@ -59,7 +60,7 @@ struct Args {
 
     /// TPU forward address to advertise to the validator
     #[arg(long, default_value = "127.0.0.1")]
-    tpu_fwd_ip: String,
+    tpu_fwd_ip: IpAddr,
 
     /// TPU forward port to advertise to the validator
     #[arg(long, default_value_t = 5005)]
@@ -70,8 +71,8 @@ struct Args {
     builder_commission_bps: u32,
 
     /// Builder pubkey to advertise (random if omitted)
-    #[arg(long, default_value = "")]
-    builder_pubkey: String,
+    #[arg(long)]
+    builder_pubkey: Option<Pubkey>,
 
     /// Target compute units per bundle
     #[arg(long, default_value_t = 60_000_000)]
@@ -83,11 +84,11 @@ struct Args {
 
     /// Heartbeat interval in seconds
     #[arg(long, default_value_t = 2)]
-    heartbeat_secs: u64,
+    heartbeat_secs: u8,
 
     /// Bundle interval in seconds
     #[arg(long, default_value_t = 1)]
-    bundle_interval_secs: u64,
+    bundle_interval_secs: u8,
 }
 
 #[derive(Clone)]
@@ -137,6 +138,7 @@ impl BamNodeApi for MockBamNode {
                             SchedulerMsg::HeartBeat(_) => (),
                             SchedulerMsg::LeaderState(_) => (),
                             SchedulerMsg::MultipleAtomicTxnBatchResult(_) => (),
+                            SchedulerMsg::Pong(_) => (),
                         })
                     }
                 });
@@ -244,11 +246,11 @@ fn build_config(args: &Args, builder_pubkey: String) -> ConfigResponse {
 
     let bam_config = BamConfig {
         tpu_sock: Some(Socket {
-            ip: args.tpu_ip.clone(),
+            ip: args.tpu_ip.to_string(),
             port: u32::from(args.tpu_port),
         }),
         tpu_fwd_sock: Some(Socket {
-            ip: args.tpu_fwd_ip.clone(),
+            ip: args.tpu_fwd_ip.to_string(),
             port: u32::from(args.tpu_fwd_port),
         }),
         commission_bps: args.builder_commission_bps,
@@ -264,11 +266,11 @@ fn build_config(args: &Args, builder_pubkey: String) -> ConfigResponse {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let builder_pubkey = if args.builder_pubkey.is_empty() {
-        solana_pubkey::Pubkey::new_unique().to_string()
-    } else {
-        args.builder_pubkey.clone()
-    };
+    let builder_pubkey = args
+        .builder_pubkey
+        .clone()
+        .unwrap_or_else(Pubkey::new_unique)
+        .to_string();
 
     let config = build_config(&args, builder_pubkey);
     let bundle_packets = build_packets(args.target_cus, args.cu_per_tx);
@@ -278,11 +280,11 @@ async fn main() -> Result<()> {
         config: Arc::new(config),
         bundle_packets: Arc::new(bundle_packets),
         next_seq_id: Arc::new(AtomicU32::new(1)),
-        heartbeat_interval: Duration::from_secs(args.heartbeat_secs),
-        bundle_interval: Duration::from_secs(args.bundle_interval_secs),
+        heartbeat_interval: Duration::from_secs(u64::from(args.heartbeat_secs)),
+        bundle_interval: Duration::from_secs(u64::from(args.bundle_interval_secs)),
     };
 
-    let addr: SocketAddr = args.bind.parse()?;
+    let addr = args.bind;
     println!("BAM test server listening on {addr}");
     println!(
         "Bundles: target_cus={}, cu_per_tx={}",

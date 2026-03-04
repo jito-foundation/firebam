@@ -118,8 +118,8 @@ struct fd_bam_tile {
   fd_keyswitch_t * keyswitch;                     /* Manages the identity keypair */
   fd_keyguard_client_t keyguard_client[1];        /* Keyguard client used to request signatures */
 
-  ulong            bank_bam_in_idx;               /* Topology link index for bank->bam input */
-  ulong            pack_leader_in_idx;            /* Topology link index for leader->bam input */
+  ulong            bank_bam_in_idx;               /* Polled input index for bank->bam in stem callback space */
+  ulong            pack_leader_in_idx;            /* Polled input index for pack->bam in stem callback space */
   fd_bam_in_ctx_t  bank_in;                       /* Bank bundle ingress dcache context */
   fd_bam_in_ctx_t  leader_in;                     /* Pack tile ingress for leader state/results */
 
