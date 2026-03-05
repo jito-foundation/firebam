@@ -673,7 +673,7 @@ def main() -> int:
             sleep_for = max(0.1, min(2.0, secs_remaining / 2.0))
         time.sleep(sleep_for)
 
-    run_dir = Path(args.output_root) / f"slot_{next_leader_slot}_{dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")}"
+    run_dir = Path(args.output_root) / f"slot_{next_leader_slot}_{dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
     run_dir.mkdir(parents=True, exist_ok=True)
     pcap_cmd = ["timeout", str(args.capture_time_sec), "sudo", "tcpdump", "-nn", "-w", f"dump_{next_leader_slot}.pcap"]
 
