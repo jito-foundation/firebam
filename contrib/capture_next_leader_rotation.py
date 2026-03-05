@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+"""Capture tcpdump/metrics around the next leader slot and scrape websocket slot results."""
+
 import argparse
 import datetime as dt
 import json
@@ -685,7 +687,7 @@ def main() -> int:
     try:
         while (remaining := capture_deadline - time.monotonic()) > 0:
             with urllib.request.urlopen(args.metrics_url, timeout=max(0.1, min(10.0, remaining))) as resp:
-                (run_dir / f"log_{i}.txt").write_bytes(resp.read())
+                (run_dir / f"metrics_{i}.txt").write_bytes(resp.read())
             i += 1
 
             sleep_for = min(args.metrics_interval, capture_deadline - time.monotonic())
