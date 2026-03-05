@@ -743,7 +743,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second BAM client error rates grouped by bam_error. bam_errors is a cumulative counter for protobuf, transport, timeout, no_fee_info (missing fee info), and ssl_alloc failures.",
+      "description": "Per-second BAM client error rates grouped by bam_error. bam_errors is a cumulative counter for protobuf, transport, timeout, no_fee_info (missing builder info), and ssl_alloc failures.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1215,7 +1215,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Receive-delay distribution from BAM node to BAM client.",
+      "description": "Receive-delay distribution for builder heartbeats from BAM node to BAM client.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2159,12 +2159,384 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of decoded SchedulerResponseV0 message classes from BAM ingress.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 68
+      },
+      "id": 29,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_v0_heartbeat_msg{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "V0 Heartbeat Msg",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_v0_multi_msg{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "V0 Multi Msg",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "BAM Ingress V0 Message Mix",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of multi-message structure issues. Empty messages have zero AtomicTxnBatch entries; overflow messages exceed local max batch count.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 68
+      },
+      "id": 32,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_multi_empty_msg{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Multi Empty Msg",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_multi_overflow_msg{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Multi Overflow Msg",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "BAM Ingress Multi Message Health",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) through BAM ingress batch lifecycle: staged entries, commit attempts, published entries, and rejected entries.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 68
+      },
+      "id": 30,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_multi_batch_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Staged Batch Entries",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_batch_commit_attempt{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Commit Attempt",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_batch_publish{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Published",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_batch_reject{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Rejected",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "BAM Ingress Batch Lifecycle",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of BAM ingress batch rejects by root cause. Splits deserialization/inconsistent-bundle, empty payload, non-revert multi-packet, and missing-builder-info rejects.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 76
+      },
+      "id": 31,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_reject_deser{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Reject: Deser/Inconsistent",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_reject_empty{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Reject: Empty",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_reject_non_revert_multi_packet{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Reject: Non-Revert Multi-Packet",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_ingress_reject_missing_builder_info{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Reject: Missing Builder Info",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "BAM Ingress Reject Reasons",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 68
+        "y": 84
       },
       "id": 21,
       "panels": [],
@@ -2204,7 +2576,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 77
+        "y": 93
       },
       "id": 22,
       "options": {
@@ -2273,7 +2645,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 77
+        "y": 93
       },
       "id": 23,
       "options": {
@@ -2342,7 +2714,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 77
+        "y": 93
       },
       "id": 27,
       "options": {
@@ -2411,7 +2783,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 69
+        "y": 85
       },
       "id": 24,
       "maxDataPoints": 1,
@@ -2483,7 +2855,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 69
+        "y": 85
       },
       "id": 25,
       "maxDataPoints": 1,
@@ -2555,7 +2927,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 85
+        "y": 101
       },
       "id": 26,
       "options": {
@@ -2624,7 +2996,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 69
+        "y": 85
       },
       "id": 28,
       "maxDataPoints": 1,
