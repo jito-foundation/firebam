@@ -42,7 +42,9 @@ struct fd_bam_in_ctx {
 typedef struct fd_bam_in_ctx fd_bam_in_ctx_t;
 
 /* fd_bam_metrics_t contains private metric counters.  These get
-   published to fd_metrics periodically. */
+   published to fd_metrics periodically.
+   Counters are cumulative over the BAM tile lifetime and are not reset
+   by reconnects (fd_bam_client_reset). */
 
 struct fd_bam_metrics {
   ulong txn_received_cnt;
@@ -62,6 +64,22 @@ struct fd_bam_metrics {
 
   ulong result_sent_cnt;
   ulong leader_state_sent_cnt;
+
+  /* Ingress diagnostics for BAM scheduler responses. */
+  ulong ingress_v0_heartbeat_msg_cnt;
+  ulong ingress_v0_multi_msg_cnt;
+  ulong ingress_multi_batch_total_cnt;
+  ulong ingress_multi_empty_msg_cnt;
+  ulong ingress_multi_overflow_msg_cnt;
+
+  ulong ingress_batch_commit_attempt_cnt;
+  ulong ingress_batch_publish_cnt;
+  ulong ingress_batch_reject_cnt;
+
+  ulong ingress_reject_deser_cnt;
+  ulong ingress_reject_empty_cnt;
+  ulong ingress_reject_non_revert_multi_packet_cnt;
+  ulong ingress_reject_missing_builder_info_cnt;
 
   /* Enum counters staged locally and flushed during housekeeping. */
   ulong send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_CNT ];

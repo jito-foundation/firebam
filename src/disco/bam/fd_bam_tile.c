@@ -110,6 +110,18 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, ERRORS_NO_FEE_INFO,     ctx->metrics.missing_builder_info_fail_cnt );
   FD_MCNT_SET( BAM, RESULTS_SENT,           ctx->metrics.result_sent_cnt           );
   FD_MCNT_SET( BAM, LEADER_STATE_SENT,      ctx->metrics.leader_state_sent_cnt     );
+  FD_MCNT_SET( BAM, INGRESS_V0_HEARTBEAT_MSG,               ctx->metrics.ingress_v0_heartbeat_msg_cnt );
+  FD_MCNT_SET( BAM, INGRESS_V0_MULTI_MSG,                   ctx->metrics.ingress_v0_multi_msg_cnt );
+  FD_MCNT_SET( BAM, INGRESS_MULTI_BATCH_TOTAL,              ctx->metrics.ingress_multi_batch_total_cnt );
+  FD_MCNT_SET( BAM, INGRESS_MULTI_EMPTY_MSG,                ctx->metrics.ingress_multi_empty_msg_cnt );
+  FD_MCNT_SET( BAM, INGRESS_MULTI_OVERFLOW_MSG,             ctx->metrics.ingress_multi_overflow_msg_cnt );
+  FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
+  FD_MCNT_SET( BAM, INGRESS_BATCH_PUBLISH,                  ctx->metrics.ingress_batch_publish_cnt );
+  FD_MCNT_SET( BAM, INGRESS_BATCH_REJECT,                   ctx->metrics.ingress_batch_reject_cnt );
+  FD_MCNT_SET( BAM, INGRESS_REJECT_DESER,                   ctx->metrics.ingress_reject_deser_cnt );
+  FD_MCNT_SET( BAM, INGRESS_REJECT_EMPTY,                   ctx->metrics.ingress_reject_empty_cnt );
+  FD_MCNT_SET( BAM, INGRESS_REJECT_NON_REVERT_MULTI_PACKET, ctx->metrics.ingress_reject_non_revert_multi_packet_cnt );
+  FD_MCNT_SET( BAM, INGRESS_REJECT_MISSING_BUILDER_INFO,    ctx->metrics.ingress_reject_missing_builder_info_cnt );
   FD_MCNT_ENUM_COPY( BAM, SEND_ATTEMPT,           ctx->metrics.send_attempt_cnt        );
   FD_MCNT_ENUM_COPY( BAM, CLIENT_STEP_SKIP,       ctx->metrics.client_step_skip_cnt    );
   FD_MCNT_ENUM_COPY( BAM, STREAM_STATE_TRANSITION, ctx->metrics.stream_transition_cnt    );
@@ -130,7 +142,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
     FD_LOG_ERR(( "fd_wksp_usage failed" )); /* unreachable */
   }
   FD_MGAUGE_SET( BAM, HEAP_SIZE,       usage->total_sz );
-  FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->used_sz  );
+  FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->free_sz  );
 
   fd_plugin_bam_update_status_t bundle_status = fd_bam_client_status( ctx );
   FD_MGAUGE_SET( BAM, HEALTHY, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
@@ -473,7 +485,19 @@ fd_bam_tile_publish_gui_update(
   update->err_protobuf   = ctx->metrics.decode_fail_cnt;
   update->err_transport  = ctx->metrics.transport_fail_cnt;
   update->err_timeout    = ctx->metrics.timeout_fail_cnt;
-  update->err_no_fee_info= ctx->metrics.missing_builder_info_fail_cnt;
+  update->err_missing_builder_info = ctx->metrics.missing_builder_info_fail_cnt;
+  update->ingress_v0_heartbeat_msg = ctx->metrics.ingress_v0_heartbeat_msg_cnt;
+  update->ingress_v0_multi_msg = ctx->metrics.ingress_v0_multi_msg_cnt;
+  update->ingress_multi_batch_total = ctx->metrics.ingress_multi_batch_total_cnt;
+  update->ingress_multi_empty_msg = ctx->metrics.ingress_multi_empty_msg_cnt;
+  update->ingress_multi_overflow_msg = ctx->metrics.ingress_multi_overflow_msg_cnt;
+  update->ingress_batch_commit_attempt = ctx->metrics.ingress_batch_commit_attempt_cnt;
+  update->ingress_batch_publish = ctx->metrics.ingress_batch_publish_cnt;
+  update->ingress_batch_reject = ctx->metrics.ingress_batch_reject_cnt;
+  update->ingress_reject_deser = ctx->metrics.ingress_reject_deser_cnt;
+  update->ingress_reject_empty = ctx->metrics.ingress_reject_empty_cnt;
+  update->ingress_reject_non_revert_multi_packet = ctx->metrics.ingress_reject_non_revert_multi_packet_cnt;
+  update->ingress_reject_missing_builder_info = ctx->metrics.ingress_reject_missing_builder_info_cnt;
 
   ulong tspub = fd_frag_meta_ts_comp( fd_bam_now() );
   fd_stem_publish(

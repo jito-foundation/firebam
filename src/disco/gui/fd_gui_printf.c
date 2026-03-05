@@ -507,7 +507,19 @@ fd_gui_printf_bam( fd_gui_t * gui ) {
       jsonp_ulong( gui->http, "err_protobuf",       gui->bam.err_protobuf );
       jsonp_ulong( gui->http, "err_transport",      gui->bam.err_transport );
       jsonp_ulong( gui->http, "err_timeout",        gui->bam.err_timeout );
-      jsonp_ulong( gui->http, "err_no_fee_info",    gui->bam.err_no_fee_info );
+      jsonp_ulong( gui->http, "err_missing_builder_info", gui->bam.err_missing_builder_info );
+      jsonp_ulong( gui->http, "ingress_v0_heartbeat_msg",               gui->bam.ingress_v0_heartbeat_msg );
+      jsonp_ulong( gui->http, "ingress_v0_multi_msg",                   gui->bam.ingress_v0_multi_msg );
+      jsonp_ulong( gui->http, "ingress_multi_batch_total",              gui->bam.ingress_multi_batch_total );
+      jsonp_ulong( gui->http, "ingress_multi_empty_msg",                gui->bam.ingress_multi_empty_msg );
+      jsonp_ulong( gui->http, "ingress_multi_overflow_msg",             gui->bam.ingress_multi_overflow_msg );
+      jsonp_ulong( gui->http, "ingress_batch_commit_attempt",           gui->bam.ingress_batch_commit_attempt );
+      jsonp_ulong( gui->http, "ingress_batch_publish",                  gui->bam.ingress_batch_publish );
+      jsonp_ulong( gui->http, "ingress_batch_reject",                   gui->bam.ingress_batch_reject );
+      jsonp_ulong( gui->http, "ingress_reject_deser",                   gui->bam.ingress_reject_deser );
+      jsonp_ulong( gui->http, "ingress_reject_empty",                   gui->bam.ingress_reject_empty );
+      jsonp_ulong( gui->http, "ingress_reject_non_revert_multi_packet", gui->bam.ingress_reject_non_revert_multi_packet );
+      jsonp_ulong( gui->http, "ingress_reject_missing_builder_info",    gui->bam.ingress_reject_missing_builder_info );
     jsonp_close_object( gui->http );
   jsonp_close_envelope( gui->http );
 }

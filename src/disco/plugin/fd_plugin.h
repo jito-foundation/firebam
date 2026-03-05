@@ -149,7 +149,21 @@ typedef struct {
   ulong err_protobuf;     /* Protobuf decode failures */
   ulong err_transport;    /* Transport-layer failures */
   ulong err_timeout;      /* Timeout failures */
-  ulong err_no_fee_info;  /* Missing fee info failures */
+  ulong err_missing_builder_info;  /* Missing builder-info failures */
+
+  /* BAM ingress diagnostics (mirrors bam_ingress_* metrics counters). */
+  ulong ingress_v0_heartbeat_msg;
+  ulong ingress_v0_multi_msg;
+  ulong ingress_multi_batch_total;
+  ulong ingress_multi_empty_msg;
+  ulong ingress_multi_overflow_msg;
+  ulong ingress_batch_commit_attempt;
+  ulong ingress_batch_publish;
+  ulong ingress_batch_reject;
+  ulong ingress_reject_deser;
+  ulong ingress_reject_empty;
+  ulong ingress_reject_non_revert_multi_packet;
+  ulong ingress_reject_missing_builder_info;
 } fd_plugin_msg_bam_update_t;
 
 #endif /* HEADER_fd_src_disco_plugin_fd_plugin_h */

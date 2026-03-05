@@ -198,7 +198,7 @@
 | <span class="metrics-name">bundle_&#8203;errors</span><br/>{bundle_&#8203;error="<span class="metrics-enum">protobuf</span>"} | counter | Number of gRPC errors encountered (Protobuf decode/encode error) |
 | <span class="metrics-name">bundle_&#8203;errors</span><br/>{bundle_&#8203;error="<span class="metrics-enum">transport</span>"} | counter | Number of gRPC errors encountered (Transport error) |
 | <span class="metrics-name">bundle_&#8203;errors</span><br/>{bundle_&#8203;error="<span class="metrics-enum">timeout</span>"} | counter | Number of gRPC errors encountered (I/O timeout) |
-| <span class="metrics-name">bundle_&#8203;errors</span><br/>{bundle_&#8203;error="<span class="metrics-enum">no_&#8203;fee_&#8203;info</span>"} | counter | Number of gRPC errors encountered (Bundle dropped due to missing fee info) |
+| <span class="metrics-name">bundle_&#8203;errors</span><br/>{bundle_&#8203;error="<span class="metrics-enum">no_&#8203;fee_&#8203;info</span>"} | counter | Number of gRPC errors encountered (Bundle dropped due to missing builder info) |
 | <span class="metrics-name">bundle_&#8203;errors</span><br/>{bundle_&#8203;error="<span class="metrics-enum">ssl_&#8203;alloc</span>"} | counter | Number of gRPC errors encountered (OpenSSL alloc fail) |
 | <span class="metrics-name">bundle_&#8203;heap_&#8203;size</span> | gauge | Workspace heap size |
 | <span class="metrics-name">bundle_&#8203;heap_&#8203;free_&#8203;bytes</span> | gauge | Approx free space in workspace |
@@ -1140,7 +1140,7 @@
 | <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">protobuf</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (Protobuf decode/encode error) |
 | <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">transport</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (Transport error) |
 | <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">timeout</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (I/O timeout) |
-| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">no_&#8203;fee_&#8203;info</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (Bundle dropped due to missing fee info) |
+| <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">no_&#8203;fee_&#8203;info</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (Bundle dropped due to missing builder info) |
 | <span class="metrics-name">bam_&#8203;errors</span><br/>{bam_&#8203;error="<span class="metrics-enum">ssl_&#8203;alloc</span>"} | counter | Cumulative number of BAM client errors encountered, bucketed by BamError (OpenSSL alloc fail) |
 | <span class="metrics-name">bam_&#8203;heap_&#8203;size</span> | gauge | Total workspace capacity reserved for the BAM tile (bytes) |
 | <span class="metrics-name">bam_&#8203;heap_&#8203;free_&#8203;bytes</span> | gauge | Estimated free capacity in the BAM tile workspace heap (bytes) |
@@ -1149,6 +1149,18 @@
 | <span class="metrics-name">bam_&#8203;disconnects</span> | counter | Cumulative number of connection teardowns between the BAM client and BAM node |
 | <span class="metrics-name">bam_&#8203;results_&#8203;sent</span> | counter | Cumulative number of bundle execution result messages forwarded to the BAM node |
 | <span class="metrics-name">bam_&#8203;leader_&#8203;state_&#8203;sent</span> | counter | Cumulative number of leader state update messages sent to the BAM node |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;v0_&#8203;heartbeat_&#8203;msg</span> | counter | Cumulative number of SchedulerResponseV0 heartbeat messages decoded from BAM ingress |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;v0_&#8203;multi_&#8203;msg</span> | counter | Cumulative number of SchedulerResponseV0 multiple_atomic_txn_batch messages decoded from BAM ingress |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;multi_&#8203;batch_&#8203;total</span> | counter | Cumulative number of AtomicTxnBatch entries staged from multiple_atomic_txn_batch messages (capped by local per-message max) |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;multi_&#8203;empty_&#8203;msg</span> | counter | Cumulative number of multiple_atomic_txn_batch messages that contained zero AtomicTxnBatch entries |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;multi_&#8203;overflow_&#8203;msg</span> | counter | Cumulative number of multiple_atomic_txn_batch messages exceeding local max batch count |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;batch_&#8203;commit_&#8203;attempt</span> | counter | Cumulative number of decoded AtomicTxnBatch entries entering validate/commit |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;batch_&#8203;publish</span> | counter | Cumulative number of AtomicTxnBatch entries successfully published to verify |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;batch_&#8203;reject</span> | counter | Cumulative number of BAM ingress batch outcomes rejected before publish (includes decode-time not-committed results) |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;reject_&#8203;deser</span> | counter | Cumulative number of BAM ingress rejects caused by deserialization/inconsistent-bundle conditions |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;reject_&#8203;empty</span> | counter | Cumulative number of BAM ingress rejects caused by empty batch payloads (including empty wrapper messages) |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;reject_&#8203;non_&#8203;revert_&#8203;multi_&#8203;packet</span> | counter | Cumulative number of batch rejects caused by non-revert multi-packet batches |
+| <span class="metrics-name">bam_&#8203;ingress_&#8203;reject_&#8203;missing_&#8203;builder_&#8203;info</span> | counter | Cumulative number of batch rejects caused by missing builder info for revert-on-error batches |
 | <span class="metrics-name">bam_&#8203;send_&#8203;attempt</span><br/>{bam_&#8203;send_&#8203;attempt="<span class="metrics-enum">leader_&#8203;state_&#8203;sent</span>"} | counter | Cumulative number of BAM outbound message send attempts by message kind and outcome (Leader-state message sent successfully) |
 | <span class="metrics-name">bam_&#8203;send_&#8203;attempt</span><br/>{bam_&#8203;send_&#8203;attempt="<span class="metrics-enum">leader_&#8203;state_&#8203;no_&#8203;stream</span>"} | counter | Cumulative number of BAM outbound message send attempts by message kind and outcome (Leader-state send skipped because stream is unavailable (not established or not live)) |
 | <span class="metrics-name">bam_&#8203;send_&#8203;attempt</span><br/>{bam_&#8203;send_&#8203;attempt="<span class="metrics-enum">leader_&#8203;state_&#8203;send_&#8203;fail</span>"} | counter | Cumulative number of BAM outbound message send attempts by message kind and outcome (Leader-state send attempted but failed in gRPC stream_send) |
@@ -1169,6 +1181,6 @@
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;smoothed</span> | gauge | Exponentially smoothed BAM round-trip time estimate (nanoseconds) |
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;var</span> | gauge | Smoothed variance of the BAM round-trip time estimator (nanoseconds) |
 | <span class="metrics-name">bam_&#8203;results_&#8203;queue_&#8203;depth</span> | gauge | Current number of bundle execution results buffered for BAM feedback |
-| <span class="metrics-name">bam_&#8203;message_&#8203;rx_&#8203;delay_&#8203;nanos</span> | histogram | Distribution of message receive delays from the BAM node to the BAM client (nanoseconds) |
+| <span class="metrics-name">bam_&#8203;message_&#8203;rx_&#8203;delay_&#8203;nanos</span> | histogram | Distribution of builder-heartbeat receive delays from the BAM node to the BAM client (nanoseconds) |
 
 </div>

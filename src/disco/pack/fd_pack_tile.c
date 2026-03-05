@@ -784,8 +784,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
   }
   for( ulong i=0UL; i<ctx->bam_pending_work_cnt; i++ ) {
     pack_bam_pending_work_t const * item = &ctx->bam_pending_work[ i ];
-    ulong deleted = fd_pack_delete_transaction( ctx->pack, item->sig );
-    if( FD_UNLIKELY( !deleted ) ) continue;
+    fd_pack_delete_transaction( ctx->pack, item->sig );
 
     fd_bam_bundle_result_t res = {0};
     res.seq_id            = item->seq_id;

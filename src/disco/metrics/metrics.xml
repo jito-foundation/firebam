@@ -373,7 +373,7 @@ metric introduced.
     <int value="1" name="Protobuf" label="Protobuf decode/encode error" />
     <int value="2" name="Transport" label="Transport error" />
     <int value="3" name="Timeout" label="I/O timeout" />
-    <int value="4" name="NoFeeInfo" label="Bundle dropped due to missing fee info" />
+    <int value="4" name="NoFeeInfo" label="Bundle dropped due to missing builder info" />
     <int value="5" name="SslAlloc" label="OpenSSL alloc fail" />
 </enum>
 
@@ -381,7 +381,7 @@ metric introduced.
     <int value="1" name="Protobuf" label="Protobuf decode/encode error" />
     <int value="2" name="Transport" label="Transport error" />
     <int value="3" name="Timeout" label="I/O timeout" />
-    <int value="4" name="NoFeeInfo" label="Bundle dropped due to missing fee info" />
+    <int value="4" name="NoFeeInfo" label="Bundle dropped due to missing builder info" />
     <int value="5" name="SslAlloc" label="OpenSSL alloc fail" />
 </enum>
 
@@ -430,6 +430,18 @@ metric introduced.
     <counter name="Disconnects" summary="Cumulative number of connection teardowns between the BAM client and BAM node" />
     <counter name="ResultsSent" summary="Cumulative number of bundle execution result messages forwarded to the BAM node" />
     <counter name="LeaderStateSent" summary="Cumulative number of leader state update messages sent to the BAM node" />
+    <counter name="IngressV0HeartbeatMsg" summary="Cumulative number of SchedulerResponseV0 heartbeat messages decoded from BAM ingress" />
+    <counter name="IngressV0MultiMsg" summary="Cumulative number of SchedulerResponseV0 multiple_atomic_txn_batch messages decoded from BAM ingress" />
+    <counter name="IngressMultiBatchTotal" summary="Cumulative number of AtomicTxnBatch entries staged from multiple_atomic_txn_batch messages (capped by local per-message max)" />
+    <counter name="IngressMultiEmptyMsg" summary="Cumulative number of multiple_atomic_txn_batch messages that contained zero AtomicTxnBatch entries" />
+    <counter name="IngressMultiOverflowMsg" summary="Cumulative number of multiple_atomic_txn_batch messages exceeding local max batch count" />
+    <counter name="IngressBatchCommitAttempt" summary="Cumulative number of decoded AtomicTxnBatch entries entering validate/commit" />
+    <counter name="IngressBatchPublish" summary="Cumulative number of AtomicTxnBatch entries successfully published to verify" />
+    <counter name="IngressBatchReject" summary="Cumulative number of BAM ingress batch outcomes rejected before publish (includes decode-time not-committed results)" />
+    <counter name="IngressRejectDeser" summary="Cumulative number of BAM ingress rejects caused by deserialization/inconsistent-bundle conditions" />
+    <counter name="IngressRejectEmpty" summary="Cumulative number of BAM ingress rejects caused by empty batch payloads (including empty wrapper messages)" />
+    <counter name="IngressRejectNonRevertMultiPacket" summary="Cumulative number of batch rejects caused by non-revert multi-packet batches" />
+    <counter name="IngressRejectMissingBuilderInfo" summary="Cumulative number of batch rejects caused by missing builder info for revert-on-error batches" />
     <counter name="SendAttempt" enum="BamSendAttempt" summary="Cumulative number of BAM outbound message send attempts by message kind and outcome" />
     <counter name="ClientStepSkip" enum="BamClientStepSkipReason" summary="Cumulative number of BAM client-step skips by reason" />
     <counter name="StreamStateTransition" enum="BamStreamTransition" summary="Cumulative number of scheduler stream live-state transitions" />
@@ -439,7 +451,7 @@ metric introduced.
     <gauge name="RttVar" summary="Smoothed variance of the BAM round-trip time estimator (nanoseconds)" />
     <gauge name="ResultsQueueDepth" summary="Current number of bundle execution results buffered for BAM feedback" />
     <histogram name="MessageRxDelayNanos" min="100000" max="1000000000">
-        <summary>Distribution of message receive delays from the BAM node to the BAM client (nanoseconds)</summary>
+        <summary>Distribution of builder-heartbeat receive delays from the BAM node to the BAM client (nanoseconds)</summary>
     </histogram>
 </tile>
 

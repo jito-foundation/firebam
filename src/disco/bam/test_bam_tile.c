@@ -1192,7 +1192,7 @@ test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
     {
       .seq_id = 42U,
       .flush_clock_ns = (long)15e9,
-      .expected_deser_index = -1,
+      .expected_deser_index = 0,
       .packet = {
         { .payload = (uchar)'Z', .has_meta = 1U, .has_flags = 1U, .revert_on_error = 1U },
         { .payload = (uchar)'[', .has_meta = 1U, .has_flags = 1U, .revert_on_error = 0U },
@@ -1202,7 +1202,7 @@ test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
     {
       .seq_id = 44U,
       .flush_clock_ns = (long)17e9,
-      .expected_deser_index = 1,
+      .expected_deser_index = 0,
       .packet = {
         { .payload = (uchar)'x', .has_meta = 0U, .has_flags = 0U, .revert_on_error = 0U },
         { .payload = (uchar)'y', .has_meta = 1U, .has_flags = 1U, .revert_on_error = 1U },
@@ -1212,7 +1212,7 @@ test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
     {
       .seq_id = 45U,
       .flush_clock_ns = (long)18e9,
-      .expected_deser_index = 1,
+      .expected_deser_index = 0,
       .packet = {
         { .payload = (uchar)'u', .has_meta = 1U, .has_flags = 1U, .revert_on_error = 1U },
         { .payload = (uchar)'v', .has_meta = 0U, .has_flags = 0U, .revert_on_error = 0U },
@@ -1222,7 +1222,7 @@ test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
     {
       .seq_id = 46U,
       .flush_clock_ns = (long)19e9,
-      .expected_deser_index = 1,
+      .expected_deser_index = 0,
       .packet = {
         { .payload = (uchar)'w', .has_meta = 1U, .has_flags = 0U, .revert_on_error = 0U },
         { .payload = (uchar)'z', .has_meta = 1U, .has_flags = 1U, .revert_on_error = 1U },

@@ -1949,12 +1949,6 @@ test_initializer_bundle_state_machine( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
-/* Test bundle expiration based on max_schedule_slot */
-static void
-test_bundle_expiration_during_slot( void ) {
- // TODO: implement this
-}
-
 /* Test multiple bundles with priority ordering */
 static void
 test_bundle_priority_ordering( void ) {
@@ -2586,7 +2580,6 @@ main( int     argc,
   test_bam_bundle_seq_conflict_order_and_bypass();
   test_bam_bundle_seq_conflict_order_independent_of_insertion();
   test_initializer_bundle_state_machine();
-  test_bundle_expiration_during_slot();
   test_bundle_priority_ordering();
   test_bundle_varying_sizes();
   test_bundle_cu_limits();
