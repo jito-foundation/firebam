@@ -358,7 +358,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "1 - (sum by (kind, kind_id) (increase(tile_regime_duration_nanos{instance=~\"$instance\",tile_regime=~\"caught_up_\\w+\"}[$__rate_interval])) / sum by (kind, kind_id) (increase(tile_regime_duration_nanos{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "1 - (sum by (kind, kind_id) (increase(tile_regime_duration_nanos{instance=~\"$instance\",tile_regime=~\"caught_up_.*\"}[$__rate_interval])) / sum by (kind, kind_id) (increase(tile_regime_duration_nanos{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "{{kind}}:{{kind_id}}",
           "range": true,
@@ -474,7 +474,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Time since each tile last heartbeated. Series: each line is a tile (kind/kind_id); value is time since last heartbeat (nanoseconds; auto-scaled).",
+      "description": "Approximate time since each tile last heartbeated. Computed from tile heartbeat tick deltas (same-instance baseline), then normalized to seconds using observed heartbeat tick rate.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -528,7 +528,7 @@
               }
             ]
           },
-          "unit": "ns"
+          "unit": "s"
         },
         "overrides": []
       },
@@ -560,7 +560,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "time() * 1e9 - tile_heartbeat{instance=~\"$instance\"}",
+          "expr": "(scalar(max(tile_heartbeat{instance=~\"$instance\"})) - tile_heartbeat{instance=~\"$instance\"}) / scalar(max(rate(tile_heartbeat{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "{{kind}}:{{kind_id}}",
           "range": true,
@@ -676,7 +676,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 28
       },
       "id": 56,
       "panels": [],
@@ -749,7 +749,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 21
+        "y": 29
       },
       "id": 57,
       "options": {
@@ -873,7 +873,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 21
+        "y": 29
       },
       "id": 58,
       "options": {
@@ -949,7 +949,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 37
       },
       "id": 8,
       "panels": [],
@@ -1023,7 +1023,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 30
+        "y": 38
       },
       "id": 9,
       "options": {
@@ -1136,7 +1136,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 30
+        "y": 38
       },
       "id": 10,
       "options": {
@@ -1248,7 +1248,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 38
+        "y": 46
       },
       "id": 11,
       "options": {
@@ -1372,7 +1372,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 38
+        "y": 46
       },
       "id": 12,
       "options": {
@@ -1472,7 +1472,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 46
+        "y": 62
       },
       "id": 59,
       "panels": [],
@@ -1548,7 +1548,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 47
+        "y": 63
       },
       "id": 60,
       "options": {
@@ -1660,7 +1660,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 47
+        "y": 63
       },
       "id": 61,
       "options": {
@@ -1784,7 +1784,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 55
+        "y": 71
       },
       "id": 62,
       "options": {
@@ -1860,7 +1860,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 63
+        "y": 79
       },
       "id": 13,
       "panels": [],
@@ -1934,7 +1934,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 64
+        "y": 80
       },
       "id": 14,
       "options": {
@@ -2035,7 +2035,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 64
+        "y": 80
       },
       "id": 15,
       "options": {
@@ -2148,7 +2148,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 72
+        "y": 88
       },
       "id": 16,
       "options": {
@@ -2248,7 +2248,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 72
+        "y": 88
       },
       "id": 17,
       "options": {
@@ -2421,7 +2421,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 80
+        "y": 96
       },
       "id": 18,
       "options": {
@@ -2581,7 +2581,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 80
+        "y": 96
       },
       "id": 19,
       "options": {
@@ -2693,7 +2693,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 88
+        "y": 104
       },
       "id": 63,
       "panels": [],
@@ -2766,7 +2766,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 89
+        "y": 105
       },
       "id": 64,
       "options": {
@@ -2926,7 +2926,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 89
+        "y": 105
       },
       "id": 65,
       "options": {
@@ -3050,7 +3050,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 97
+        "y": 113
       },
       "id": 66,
       "options": {
@@ -3138,7 +3138,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 105
+        "y": 129
       },
       "id": 20,
       "panels": [],
@@ -3211,7 +3211,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 106
+        "y": 130
       },
       "id": 21,
       "options": {
@@ -3359,7 +3359,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 106
+        "y": 130
       },
       "id": 22,
       "options": {
@@ -3483,7 +3483,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 114
+        "y": 138
       },
       "id": 23,
       "options": {
@@ -3607,7 +3607,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 114
+        "y": 138
       },
       "id": 24,
       "options": {
@@ -3647,7 +3647,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 122
+        "y": 146
       },
       "id": 25,
       "panels": [],
@@ -3721,7 +3721,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 123
+        "y": 147
       },
       "id": 26,
       "options": {
@@ -3824,7 +3824,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 123
+        "y": 147
       },
       "id": 27,
       "options": {
@@ -3924,7 +3924,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 131
+        "y": 155
       },
       "id": 28,
       "options": {
@@ -4024,7 +4024,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 131
+        "y": 155
       },
       "id": 29,
       "options": {
@@ -4173,7 +4173,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 139
+        "y": 163
       },
       "id": 30,
       "options": {
@@ -4370,7 +4370,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 139
+        "y": 163
       },
       "id": 31,
       "options": {
@@ -4434,7 +4434,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 147
+        "y": 171
       },
       "id": 67,
       "panels": [],
@@ -4507,7 +4507,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 148
+        "y": 172
       },
       "id": 68,
       "options": {
@@ -4619,7 +4619,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 148
+        "y": 172
       },
       "id": 69,
       "options": {
@@ -4722,7 +4722,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 156
+        "y": 180
       },
       "id": 70,
       "options": {
@@ -4822,7 +4822,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 156
+        "y": 180
       },
       "id": 71,
       "options": {
@@ -4874,7 +4874,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 164
+        "y": 196
       },
       "id": 72,
       "panels": [],
@@ -4947,7 +4947,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 165
+        "y": 197
       },
       "id": 73,
       "options": {
@@ -5047,7 +5047,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 165
+        "y": 197
       },
       "id": 74,
       "options": {
@@ -5099,7 +5099,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 173
+        "y": 205
       },
       "id": 32,
       "panels": [],
@@ -5172,7 +5172,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 174
+        "y": 206
       },
       "id": 33,
       "options": {
@@ -5308,7 +5308,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 174
+        "y": 206
       },
       "id": 34,
       "options": {
@@ -5408,7 +5408,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 182
+        "y": 214
       },
       "id": 35,
       "options": {
@@ -5508,7 +5508,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 182
+        "y": 214
       },
       "id": 36,
       "options": {
@@ -5609,7 +5609,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 190
+        "y": 222
       },
       "id": 37,
       "options": {
@@ -5781,7 +5781,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 198
+        "y": 230
       },
       "id": 39,
       "panels": [],
@@ -5854,7 +5854,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 199
+        "y": 231
       },
       "id": 40,
       "options": {
@@ -5954,7 +5954,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 199
+        "y": 231
       },
       "id": 41,
       "options": {
@@ -6127,7 +6127,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 207
+        "y": 239
       },
       "id": 42,
       "options": {
@@ -6359,7 +6359,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 207
+        "y": 239
       },
       "id": 43,
       "options": {
@@ -6460,7 +6460,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 215
+        "y": 247
       },
       "id": 44,
       "options": {
@@ -6524,7 +6524,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 223
+        "y": 263
       },
       "id": 51,
       "panels": [],
@@ -6597,7 +6597,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 224
+        "y": 264
       },
       "id": 49,
       "options": {
@@ -6722,7 +6722,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 224
+        "y": 264
       },
       "id": 53,
       "options": {
@@ -6834,7 +6834,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 232
+        "y": 272
       },
       "id": 52,
       "options": {
@@ -6947,7 +6947,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 232
+        "y": 272
       },
       "id": 54,
       "options": {
@@ -7071,7 +7071,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 240
+        "y": 280
       },
       "id": 50,
       "options": {
@@ -7174,7 +7174,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 240
+        "y": 280
       },
       "id": 55,
       "options": {
@@ -7206,6 +7206,1134 @@
         }
       ],
       "title": "Bundle Heap Utilization %",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rates of tile_context_switch_involuntary_count and tile_context_switch_voluntary_count per tile.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "id": 76,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(tile_context_switch_involuntary_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "{{kind}}:{{kind_id}} involuntary/s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(tile_context_switch_voluntary_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "{{kind}}:{{kind_id}} voluntary/s",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Tile Context Switch Rates",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Latest tile_pid and tile_tid per tile.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "id": 77,
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": "",
+          "countRows": false
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "tile_pid{instance=~\"$instance\"}",
+          "instant": true,
+          "range": false,
+          "refId": "A",
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "tile_tid{instance=~\"$instance\"}",
+          "instant": true,
+          "range": false,
+          "refId": "B",
+          "format": "table"
+        }
+      ],
+      "title": "Tile PID / TID",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rates of net_xsk_rx_wakeup_cnt, net_xsk_tx_wakeup_cnt, and net_tx_complete_cnt.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "id": 78,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(net_xsk_rx_wakeup_cnt{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "xsk_rx_wakeup/s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(net_xsk_tx_wakeup_cnt{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "xsk_tx_wakeup/s",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(net_tx_complete_cnt{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "tx_complete/s",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Net XSK Wakeups / TX Complete",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Netlink interface count plus neighbor probe send/fail/rate-limit rates.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 71
+      },
+      "id": 79,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max(netlnk_interface_count{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "interface_count",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(netlnk_neigh_probe_sent{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "probe_sent/s",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(netlnk_neigh_probe_fails{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "probe_fail/s",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(netlnk_neigh_probe_rate_limit_host{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "probe_rl_host/s",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(netlnk_neigh_probe_rate_limit_global{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "probe_rl_global/s",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "title": "Netlink Probes / Interface Count",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Current quic_connections_alloc and quic_txn_reasms_active, plus quic_frame_fail_parse rate.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 113
+      },
+      "id": 80,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "quic_connections_alloc{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "{{kind}}:{{kind_id}} connections_alloc",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "quic_txn_reasms_active{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "{{kind}}:{{kind_id}} txn_reasms_active",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(quic_frame_fail_parse{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "{{kind}}:{{kind_id}} frame_fail_parse/s",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "QUIC Connections / Reassembly",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rates of quic_ack_tx outcomes, top quic_received_frames types, and quic_frame_tx_alloc outcomes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 121
+      },
+      "id": 81,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (quic_ack_tx) (rate(quic_ack_tx{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "ack_tx {{quic_ack_tx}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk(6, sum by (quic_frame_type) (rate(quic_received_frames{instance=~\"$instance\"}[$__rate_interval])))",
+          "instant": false,
+          "legendFormat": "rx_frame {{quic_frame_type}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (frame_tx_alloc_result) (rate(quic_frame_tx_alloc{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "tx_alloc {{frame_tx_alloc_result}}",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "QUIC ACK / Frame Rates",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Mean scheduler/insert/complete pack durations from *_sum/*_count rate ratios.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 188
+      },
+      "id": 82,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(pack_schedule_microblock_duration_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pack_schedule_microblock_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "schedule_mean_s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(pack_insert_transaction_duration_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pack_insert_transaction_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "insert_mean_s",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(pack_complete_microblock_duration_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pack_complete_microblock_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "complete_mean_s",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Pack Scheduler Mean Durations",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rates of pack_bundle_crank_status outcomes with pack_cus_consumed_in_block and pack_smallest_pending_transaction.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 188
+      },
+      "id": 83,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (bundle_crank_result) (rate(pack_bundle_crank_status{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "crank {{bundle_crank_result}}/s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max(pack_cus_consumed_in_block{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "cus_consumed_in_block",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "pack_smallest_pending_transaction{instance=~\"$instance\"} unless pack_smallest_pending_transaction{instance=~\"$instance\"} == 18446744073709551615",
+          "instant": false,
+          "legendFormat": "smallest_pending_cus",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Pack Bundle Crank / CU State",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Mean PoH delays by stage from *_sum/*_count rate ratios.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 222
+      },
+      "id": 84,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(poh_begin_leader_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(poh_begin_leader_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "begin_leader_mean_s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(poh_first_microblock_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(poh_first_microblock_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "first_microblock_mean_s",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(poh_slot_done_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(poh_slot_done_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "slot_done_mean_s",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(poh_bundle_initialize_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(poh_bundle_initialize_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "bundle_init_mean_s",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "PoH Mean Delay by Stage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rates of shred_shred_turbine_rcv and shred_shred_out_rcv plus key shred error counters.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 255
+      },
+      "id": 85,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(shred_shred_turbine_rcv{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "turbine_rcv/s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(shred_shred_out_rcv{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "shred_out_rcv/s",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(shred_force_complete_request{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "force_complete_req/s",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(shred_invalid_block_id{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "invalid_block_id/s",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Shred Input / Error Rates",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Mean shredding/add/store-insert durations from *_sum/*_count rate ratios.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 255
+      },
+      "id": 86,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(shred_shredding_duration_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(shred_shredding_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "shredding_mean_s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(shred_add_shred_duration_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(shred_add_shred_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "add_shred_mean_s",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(shred_store_insert_wait_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(shred_store_insert_wait_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "store_insert_wait_mean_s",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(shred_store_insert_work_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(shred_store_insert_work_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "store_insert_work_mean_s",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Shred Mean Durations",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Sign ops rate (sign_sign_duration_seconds_count) and mean sign duration (sum/count).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sign_mean_s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 247
+      },
+      "id": 87,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch4",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(sign_sign_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "sign_ops/s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(sign_sign_duration_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(sign_sign_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "instant": false,
+          "legendFormat": "sign_mean_s",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Sign Throughput / Mean Duration",
       "type": "timeseries"
     }
   ],
