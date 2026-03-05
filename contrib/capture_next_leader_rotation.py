@@ -654,7 +654,7 @@ def main() -> int:
     print(f"validator identity: {identity}")
     print(f"current slot: {current_slot}")
     print(f"next leader slot: {next_leader_slot}")
-    print(f"estimated slot seconds: {slot_seconds:.6f}")
+    print(f"estimated slot length (sec): {slot_seconds:.2f}")
     print(f"starting capture at slot >= {start_slot} (~{args.capture_lead_time_sec}s before leader slot)")
 
     while True:
@@ -664,10 +664,7 @@ def main() -> int:
 
         slots_remaining = start_slot - now_slot
         secs_remaining = slots_remaining * slot_seconds
-        print(
-            f"waiting: slot {now_slot}, start_slot {start_slot} "
-            f"(est {secs_remaining:.2f}s remaining)"
-        )
+        print(f"current slot: {now_slot}, capture start slot: {start_slot}, (~{secs_remaining:.1f}s remaining)")
         if secs_remaining <= FAST_POLL_WINDOW_SEC:
             sleep_for = min(FAST_POLL_INTERVAL_SEC, max(0.1, secs_remaining))
         else:
