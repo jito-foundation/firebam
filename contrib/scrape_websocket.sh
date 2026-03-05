@@ -13,6 +13,7 @@ DEFAULT_RECENT_COUNT="16"
 DEFAULT_SNAPSHOT_SECS="2"
 DEFAULT_QUERY_WAIT_SECS="8"
 DEFAULT_DETAIL_TIMEOUT_SECS="60"
+DEFAULT_OUTPUT_FILE=""
 
 HOST="${DEFAULT_HOST}"
 MODE="${DEFAULT_MODE}"
@@ -20,6 +21,7 @@ RECENT_COUNT="${DEFAULT_RECENT_COUNT}"
 SNAPSHOT_SECS="${DEFAULT_SNAPSHOT_SECS}"
 QUERY_WAIT_SECS="${DEFAULT_QUERY_WAIT_SECS}"
 DETAIL_TIMEOUT_SECS="${DEFAULT_DETAIL_TIMEOUT_SECS}"
+OUTPUT_FILE="${DEFAULT_OUTPUT_FILE}"
 
 usage() {
   cat <<EOF
@@ -30,9 +32,10 @@ Options:
   --host HOST                      Websocket host (default: ${DEFAULT_HOST})
   --mode MODE                      One of: recent, since-startup (default: ${DEFAULT_MODE})
   --recent-count N                 Slots to keep in recent mode (default: ${DEFAULT_RECENT_COUNT})
-  --snapshot-secs N                Snapshot capture duration (default: ${DEFAULT_SNAPSHOT_SECS})
-  --query-wait-secs N              Wait after sending queries (default: ${DEFAULT_QUERY_WAIT_SECS})
-  --detail-timeout-secs N          Timeout for detailed query websocket (default: ${DEFAULT_DETAIL_TIMEOUT_SECS})
+  --snapshot-secs N                Max seconds to wait for required snapshot messages (default: ${DEFAULT_SNAPSHOT_SECS})
+  --query-wait-secs N              Idle seconds without new query responses before retrying (default: ${DEFAULT_QUERY_WAIT_SECS})
+  --detail-timeout-secs N          Max seconds per detailed query attempt (default: ${DEFAULT_DETAIL_TIMEOUT_SECS})
+  --output-file PATH               Write NDJSON results to PATH instead of stdout
   -h, --help                       Show this help
 
 Modes:
@@ -111,6 +114,15 @@ while [[ $# -gt 0 ]]; do
       DETAIL_TIMEOUT_SECS="${1#*=}"
       shift
       ;;
+    --output-file)
+      [[ $# -ge 2 ]] || { echo "error: --output-file requires a value" >&2; usage >&2; exit 1; }
+      OUTPUT_FILE="$2"
+      shift 2
+      ;;
+    --output-file=*)
+      OUTPUT_FILE="${1#*=}"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -150,7 +162,158 @@ query_file="${tmpdir}/query.ndjson"
 details_file="${tmpdir}/details.ndjson"
 results_out_file="${tmpdir}/results_out.ndjson"
 
-(sleep "${SNAPSHOT_SECS}") | timeout "$((SNAPSHOT_SECS + 5))s" websocat -B 12000000 "ws://${HOST}:80/websocket" > "${snapshot_file}" 2>/dev/null || true
+capture_snapshot_until_ready() {
+  local out_file="$1"
+  local max_wait_secs="$2"
+
+  local got_identity=0
+  local got_startup=0
+  local got_completed=0
+  local got_epoch=0
+
+  : > "${out_file}"
+
+  coproc SNAPSHOT_WS { websocat -B 12000000 "ws://${HOST}:80/websocket" 2>/dev/null; }
+  local ws_pid="${SNAPSHOT_WS_PID:-}"
+  local ws_out_fd="${SNAPSHOT_WS[0]:-}"
+  local ws_in_fd="${SNAPSHOT_WS[1]:-}"
+  if [[ -z "${ws_out_fd}" || -z "${ws_in_fd}" ]]; then
+    if [[ -n "${ws_pid}" ]]; then
+      wait "${ws_pid}" 2>/dev/null || true
+    fi
+    return 1
+  fi
+  local deadline=$((SECONDS + max_wait_secs))
+  local line=""
+  local json_line=""
+  local msg_kind=""
+
+  while (( SECONDS <= deadline )); do
+    if IFS= read -r -u "${ws_out_fd}" -t 1 line 2>/dev/null; then
+      json_line="$(jq -c 'if type=="object" then . else empty end' <<< "${line}" 2>/dev/null || true)"
+      [[ -n "${json_line}" ]] || continue
+      printf '%s\n' "${json_line}" >> "${out_file}"
+
+      msg_kind="$(jq -r '
+        if .topic=="summary" and .key=="identity_key" and .value!=null then "identity"
+        elif .topic=="summary" and .key=="startup_time_nanos" and .value!=null then "startup"
+        elif .topic=="summary" and .key=="completed_slot" and .value!=null then "completed"
+        elif .topic=="epoch" and .key=="new" then "epoch"
+        else empty
+        end
+      ' <<< "${json_line}" 2>/dev/null || true)"
+
+      case "${msg_kind}" in
+        identity) got_identity=1 ;;
+        startup) got_startup=1 ;;
+        completed) got_completed=1 ;;
+        epoch) got_epoch=1 ;;
+      esac
+
+      if (( got_identity && got_startup && got_completed && got_epoch )); then
+        break
+      fi
+    fi
+  done
+
+  [[ -n "${ws_in_fd}" ]] && exec {ws_in_fd}>&- || true
+  [[ -n "${ws_out_fd}" ]] && exec {ws_out_fd}<&- || true
+  if [[ -n "${ws_pid}" ]]; then
+    kill "${ws_pid}" 2>/dev/null || true
+    wait "${ws_pid}" 2>/dev/null || true
+  fi
+
+  (( got_identity && got_startup && got_completed && got_epoch ))
+}
+
+collect_query_details() {
+  local request_file="$1"
+  local out_file="$2"
+  local idle_wait_secs="$3"
+  local max_wait_secs="$4"
+
+  local -A pending_ids=()
+  local -A seen_ids=()
+  local request_id=""
+  while IFS= read -r request_id; do
+    [[ -n "${request_id}" ]] || continue
+    pending_ids["${request_id}"]=1
+  done < <(jq -r '.id // empty | tostring' "${request_file}")
+
+  local expected_count="${#pending_ids[@]}"
+  : > "${out_file}"
+  (( expected_count > 0 )) || return 0
+
+  coproc DETAIL_WS { websocat -B 12000000 "ws://${HOST}:80/websocket" 2>/dev/null; }
+  local ws_pid="${DETAIL_WS_PID:-}"
+  local ws_out_fd="${DETAIL_WS[0]:-}"
+  local ws_in_fd="${DETAIL_WS[1]:-}"
+  if [[ -z "${ws_out_fd}" || -z "${ws_in_fd}" ]]; then
+    if [[ -n "${ws_pid}" ]]; then
+      wait "${ws_pid}" 2>/dev/null || true
+    fi
+    return 1
+  fi
+  local send_failed=0
+  local query_line=""
+  while IFS= read -r query_line; do
+    [[ -n "${query_line}" ]] || continue
+    if ! printf '%s\n' "${query_line}" >&"${ws_in_fd}"; then
+      send_failed=1
+      break
+    fi
+  done < "${request_file}"
+
+  local deadline=$((SECONDS + max_wait_secs))
+  local idle_deadline=$((SECONDS + idle_wait_secs))
+  local line=""
+  local json_line=""
+  while (( SECONDS <= deadline )); do
+    (( send_failed == 0 )) || break
+    if (( ${#seen_ids[@]} >= expected_count )); then
+      break
+    fi
+
+    if IFS= read -r -u "${ws_out_fd}" -t 1 line 2>/dev/null; then
+      json_line="$(jq -c 'if type=="object" then . else empty end' <<< "${line}" 2>/dev/null || true)"
+      [[ -n "${json_line}" ]] || continue
+      printf '%s\n' "${json_line}" >> "${out_file}"
+      if [[ "${json_line}" == *'"topic":"slot"'* ]] && [[ "${json_line}" == *'"id":'* ]] && \
+         ( [[ "${json_line}" == *'"key":"query"'* ]] || [[ "${json_line}" == *'"key":"query_detailed"'* ]] ); then
+        local response_id=""
+        response_id="$(jq -r '
+          if .topic=="slot" and ((.key=="query") or (.key=="query_detailed")) and (.id!=null)
+          then (.id|tostring)
+          else empty
+          end
+        ' <<< "${json_line}" 2>/dev/null || true)"
+        if [[ -n "${response_id}" ]] && [[ -n "${pending_ids[${response_id}]+x}" ]] && [[ -z "${seen_ids[${response_id}]+x}" ]]; then
+          seen_ids["${response_id}"]=1
+          idle_deadline=$((SECONDS + idle_wait_secs))
+        fi
+      fi
+    fi
+
+    if (( SECONDS > idle_deadline )) && (( ${#seen_ids[@]} < expected_count )); then
+      break
+    fi
+  done
+
+  [[ -n "${ws_in_fd}" ]] && exec {ws_in_fd}>&- || true
+  [[ -n "${ws_out_fd}" ]] && exec {ws_out_fd}<&- || true
+  if [[ -n "${ws_pid}" ]]; then
+    kill "${ws_pid}" 2>/dev/null || true
+    wait "${ws_pid}" 2>/dev/null || true
+  fi
+
+  (( send_failed == 0 )) || return 1
+  (( ${#seen_ids[@]} >= expected_count ))
+}
+
+if ! capture_snapshot_until_ready "${snapshot_file}" "${SNAPSHOT_SECS}"; then
+  echo "error: timed out waiting for required websocket snapshot data; try increasing SNAPSHOT_SECS" >&2
+  exit 1
+fi
 [[ -s "${snapshot_file}" ]] || { echo "error: websocket snapshot is empty" >&2; exit 1; }
 
 if ! jq -sc '
@@ -321,10 +484,8 @@ for attempt in 1 2; do
     wait_secs=$((QUERY_WAIT_SECS + 4))
     timeout_secs=$((DETAIL_TIMEOUT_SECS + 40))
   fi
-  (
-    cat "${query_file}"
-    sleep "${wait_secs}"
-  ) | timeout "${timeout_secs}s" websocat -B 12000000 "ws://${HOST}:80/websocket" > "${details_file}" 2>/dev/null || true
+
+  collect_query_details "${query_file}" "${details_file}" "${wait_secs}" "${timeout_secs}" || true
 
   query_result_count="$(jq -sc '[.[] | select(.topic=="slot" and ((.key=="query") or (.key=="query_detailed")) and (.value != null))] | length' "${details_file}")"
   if [[ "${query_result_count}" -gt 0 ]]; then
@@ -338,4 +499,9 @@ done
 [[ "${seen_query_results}" -eq 1 ]] || { echo "error: no slot query results returned; try increasing QUERY_WAIT_SECS/DETAIL_TIMEOUT_SECS" >&2; exit 1; }
 [[ -s "${results_out_file}" ]] || { echo "warning: no produced slots matched mode='${MODE}'" >&2; exit 0; }
 
-cat "${results_out_file}"
+if [[ -n "${OUTPUT_FILE}" ]]; then
+  mkdir -p "$(dirname "${OUTPUT_FILE}")"
+  cp "${results_out_file}" "${OUTPUT_FILE}"
+else
+  cat "${results_out_file}"
+fi
