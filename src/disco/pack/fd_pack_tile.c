@@ -185,6 +185,7 @@ typedef struct {
 
   /* One of the FD_PACK_STRATEGY_* values defined above */
   int      strategy;
+  uchar    bam_no_drop_mode;
 
   /* The value passed to fd_pack_new, etc. */
   ulong    max_pending_transactions;
@@ -319,6 +320,7 @@ typedef struct {
 
   ulong      insert_result[ FD_PACK_INSERT_RETVAL_CNT ];
   ulong      bam_bundle_abandon_cnt[ FD_METRICS_ENUM_PACK_BAM_BUNDLE_ABANDON_REASON_CNT ];
+  ulong      bam_would_have_dropped_outside_slot_cnt;
   fd_histf_t schedule_duration[ 1 ];
   fd_histf_t no_sched_duration[ 1 ];
   fd_histf_t insert_duration  [ 1 ];
@@ -778,22 +780,26 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
     pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
     ctx->pending_bam_result_valid = false;
   }
-  for( ulong i=0UL; i<ctx->bam_pending_work_cnt; i++ ) {
-    pack_bam_pending_work_t const * item = &ctx->bam_pending_work[ i ];
-    ulong deleted = fd_pack_delete_transaction( ctx->pack, item->sig );
-    if( FD_UNLIKELY( !deleted ) ) continue;
+  if( FD_UNLIKELY( !ctx->bam_no_drop_mode ) ) {
+    for( ulong i=0UL; i<ctx->bam_pending_work_cnt; i++ ) {
+      pack_bam_pending_work_t const * item = &ctx->bam_pending_work[ i ];
+      ulong deleted = fd_pack_delete_transaction( ctx->pack, item->sig );
+      if( FD_UNLIKELY( !deleted ) ) continue;
 
-    fd_bam_bundle_result_t res = {0};
-    res.seq_id            = item->seq_id;
-    res.slot              = item->slot;
-    res.bundle_txn_cnt    = (uchar)fd_ulong_min( deleted, FD_PACK_MAX_TXN_PER_BUNDLE );
-    res.execution_success = 0;
-    res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
-    res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-    pack_tile_publish_bam_result( ctx, stem, &res );
+      fd_bam_bundle_result_t res = {0};
+      res.seq_id            = item->seq_id;
+      res.slot              = item->slot;
+      res.bundle_txn_cnt    = (uchar)fd_ulong_min( deleted, FD_PACK_MAX_TXN_PER_BUNDLE );
+      res.execution_success = 0;
+      res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
+      res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+      pack_tile_publish_bam_result( ctx, stem, &res );
+    }
   }
   ctx->bam_pending_work_cnt = 0UL;
-  pack_tile_abandon_current_bam_bundle( ctx, stem, 0, bam_abandon_reason );
+  if( FD_UNLIKELY( !ctx->bam_no_drop_mode ) ) {
+    pack_tile_abandon_current_bam_bundle( ctx, stem, 0, bam_abandon_reason );
+  }
   if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
     fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
     ctx->current_bundle->bundle = NULL;
@@ -1168,7 +1174,7 @@ after_credit( fd_pack_ctx_t *     ctx,
       for( ulong j=0UL; j<schedule_cnt; j++ ) {
         fd_txn_p_t const * txnp = microblock_dst + j;
         if( FD_UNLIKELY( txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
-        if( FD_UNLIKELY( txnp->bam.revert_on_error && txnp->bam.batch_idx ) ) continue;
+        if( FD_UNLIKELY( !ctx->bam_no_drop_mode && txnp->bam.revert_on_error && txnp->bam.batch_idx ) ) continue;
         pack_tile_remove_pending_bam_work_seq( ctx, txnp->bam.seq_id );
       }
 
@@ -1287,7 +1293,7 @@ during_frag( fd_pack_ctx_t * ctx,
       FD_MCNT_INC( PACK, TRANSACTION_EXPIRED, exp_cnt );
     }
 
-    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.revert_on_error ) ) {
+    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.revert_on_error && !ctx->bam_no_drop_mode ) ) {
       FD_TEST( txnm->bam.txn_cnt>0UL && txnm->bam.txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
       FD_TEST( txnm->bam.batch_idx<txnm->bam.txn_cnt );
 
@@ -1543,15 +1549,23 @@ after_frag( fd_pack_ctx_t *     ctx,
         ulong max_schedule_slot = ctx->current_bam_bundle->max_schedule_slot;
 
         if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) {
-          pack_tile_reject_current_bam_bundle( ctx, stem, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, max_schedule_slot );
-          break;
+          if( FD_UNLIKELY( ctx->bam_no_drop_mode ) ) {
+            ctx->bam_would_have_dropped_outside_slot_cnt++;
+          } else {
+            pack_tile_reject_current_bam_bundle( ctx, stem, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, max_schedule_slot );
+            break;
+          }
         }
 
         if( FD_UNLIKELY( (max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT) &
                          (max_schedule_slot!=0UL) &
                          (max_schedule_slot<ctx->leader_slot) ) ) {
-          pack_tile_reject_current_bam_bundle( ctx, stem, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, max_schedule_slot );
-          break;
+          if( FD_UNLIKELY( ctx->bam_no_drop_mode ) ) {
+            ctx->bam_would_have_dropped_outside_slot_cnt++;
+          } else {
+            pack_tile_reject_current_bam_bundle( ctx, stem, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, max_schedule_slot );
+            break;
+          }
         }
 
         fd_memset( ctx->bundle_meta, 0, sizeof(pack_bundle_meta_t) );
@@ -1629,22 +1643,26 @@ after_frag( fd_pack_ctx_t *     ctx,
                          ( (bam_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT) &&
                            (bam_slot!=0UL) &&
                            (bam_slot<ctx->leader_slot) ) ) ) ) {
+        if( FD_UNLIKELY( ctx->bam_no_drop_mode ) ) {
+          ctx->bam_would_have_dropped_outside_slot_cnt++;
+        } else {
 #if FD_PACK_USE_EXTRA_STORAGE
-        if( FD_UNLIKELY( ctx->insert_to_extra ) ) extra_txn_deq_remove_tail( ctx->extra_txn_deq );
-        else                                       fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
+          if( FD_UNLIKELY( ctx->insert_to_extra ) ) extra_txn_deq_remove_tail( ctx->extra_txn_deq );
+          else                                       fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
 #else
-        fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
+          fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
 #endif
-        fd_bam_bundle_result_t res = {0};
-        res.seq_id            = bam_seq_id;
-        res.slot              = bam_slot;
-        res.bundle_txn_cnt    = 1U;
-        res.execution_success = 0;
-        res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
-        res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-        pack_tile_publish_bam_result( ctx, stem, &res );
-        ctx->cur_spot = NULL;
-        break;
+          fd_bam_bundle_result_t res = {0};
+          res.seq_id            = bam_seq_id;
+          res.slot              = bam_slot;
+          res.bundle_txn_cnt    = 1U;
+          res.execution_success = 0;
+          res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
+          res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+          pack_tile_publish_bam_result( ctx, stem, &res );
+          ctx->cur_spot = NULL;
+          break;
+        }
       }
 
 #if FD_PACK_USE_EXTRA_STORAGE
@@ -1770,6 +1788,7 @@ unprivileged_init( fd_topo_t *      topo,
                                          tile->pack.max_pending_transactions, BUNDLE_META_SZ, tile->pack.bank_tile_count,
                                          limits_lower, rng ) );
   if( FD_UNLIKELY( !ctx->pack ) ) FD_LOG_ERR(( "fd_pack_new failed" ));
+  fd_pack_set_bam_no_drop_mode( ctx->pack, tile->pack.bam_no_drop_mode );
 
   if( FD_UNLIKELY( tile->in_cnt>32UL ) ) FD_LOG_ERR(( "Too many input links (%lu>32) to pack tile", tile->in_cnt ));
 
@@ -1859,6 +1878,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_txn_max_schedule_slot     = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
   ctx->bam_pending_work_cnt          = 0UL;
   ctx->strategy                      = tile->pack.schedule_strategy;
+  ctx->bam_no_drop_mode              = !!tile->pack.bam_no_drop_mode;
   ctx->max_pending_transactions      = tile->pack.max_pending_transactions;
   ctx->leader_slot                   = ULONG_MAX;
   ctx->leader_bank                   = NULL;
@@ -1949,6 +1969,7 @@ unprivileged_init( fd_topo_t *      topo,
   /* Initialize metrics storage */
   memset( ctx->insert_result, '\0', FD_PACK_INSERT_RETVAL_CNT * sizeof(ulong) );
   memset( ctx->bam_bundle_abandon_cnt, '\0', sizeof(ctx->bam_bundle_abandon_cnt) );
+  ctx->bam_would_have_dropped_outside_slot_cnt = 0UL;
   fd_histf_join( fd_histf_new( ctx->schedule_duration, FD_MHIST_SECONDS_MIN( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS ),
                                                        FD_MHIST_SECONDS_MAX( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS ) ) );
   fd_histf_join( fd_histf_new( ctx->no_sched_duration, FD_MHIST_SECONDS_MIN( PACK, NO_SCHED_MICROBLOCK_DURATION_SECONDS ),

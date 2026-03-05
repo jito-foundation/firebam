@@ -301,8 +301,11 @@ fd_bam_tile_publish_bundle_txn(
     uint               source_ipv4
 ) {
   if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) {
-    ctx->metrics.missing_builder_info_fail_cnt++; /* unreachable */
-    return;
+    if( FD_UNLIKELY( !ctx->no_drop_mode ) ) {
+      ctx->metrics.missing_builder_info_fail_cnt++; /* unreachable */
+      return;
+    }
+    ctx->metrics.would_have_dropped_missing_builder_info_cnt++;
   }
 
   fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );

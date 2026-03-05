@@ -160,6 +160,7 @@ typedef struct {
 
   fd_replay_root_advanced_t  _rooted_slot_msg;
   fd_replay_slot_completed_t _completed_slot_msg;
+  uchar bam_no_drop_mode;
 
   struct {
     ulong lut[ FD_METRICS_COUNTER_RESOLV_LUT_RESOLVED_CNT ];
@@ -167,6 +168,11 @@ typedef struct {
     ulong bundle_peer_failure;
     ulong stash[ FD_METRICS_COUNTER_RESOLV_STASH_OPERATION_CNT ];
     ulong db_race;
+    ulong bam_would_have_dropped_bundle_peer_failure;
+    ulong bam_would_have_dropped_blockhash_expired;
+    ulong bam_would_have_dropped_unknown_blockhash;
+    ulong bam_would_have_dropped_no_bank;
+    ulong bam_would_have_dropped_lut_fail;
   } metrics;
 
   fd_resolv_in_ctx_t in[ 64UL ];
@@ -475,6 +481,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
   FD_TEST( txnm->payload_sz<=FD_TPU_MTU );
   FD_TEST( txnm->txn_t_sz<=FD_TXN_MAX_SZ );
   fd_txn_t const * txnt = fd_txn_m_txn_t( txnm );
+  _Bool is_bam_no_drop = ctx->bam_no_drop_mode && txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
 
   /* If we find the recent blockhash, life is simple.  We drop
      transactions that couldn't possibly execute any more, and forward
@@ -506,7 +513,8 @@ after_frag( fd_resolv_ctx_t *   ctx,
 
   if( FD_UNLIKELY( txnm->block_engine.bundle_id && ctx->bundle_failed ) ) {
     ctx->metrics.bundle_peer_failure++;
-    return;
+    if( FD_UNLIKELY( is_bam_no_drop ) ) ctx->metrics.bam_would_have_dropped_bundle_peer_failure++;
+    if( FD_LIKELY( !is_bam_no_drop ) ) return;
   }
 
   txnm->reference_slot = ctx->completed_slot;
@@ -514,9 +522,12 @@ after_frag( fd_resolv_ctx_t *   ctx,
   if( FD_LIKELY( blockhash ) ) {
     txnm->reference_slot = blockhash->slot;
     if( FD_UNLIKELY( txnm->reference_slot+151UL<ctx->completed_slot ) ) {
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
       ctx->metrics.blockhash_expired++;
-      return;
+      if( FD_UNLIKELY( is_bam_no_drop ) ) ctx->metrics.bam_would_have_dropped_blockhash_expired++;
+      if( FD_UNLIKELY( !is_bam_no_drop ) ) {
+        if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+        return;
+      }
     }
   }
 
@@ -524,6 +535,9 @@ after_frag( fd_resolv_ctx_t *   ctx,
   int is_durable_nonce = fd_resolv_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
 
   if( FD_UNLIKELY( !is_bundle_member && !is_durable_nonce && !blockhash ) ) {
+    if( FD_UNLIKELY( is_bam_no_drop ) ) {
+      ctx->metrics.bam_would_have_dropped_unknown_blockhash++;
+    } else {
     ulong pool_idx;
     if( FD_UNLIKELY( !pool_free( ctx->pool ) ) ) {
       pool_idx = lru_list_idx_pop_tail( ctx->lru_list, ctx->pool );
@@ -551,19 +565,30 @@ after_frag( fd_resolv_ctx_t *   ctx,
     lru_list_idx_push_head( ctx->lru_list, pool_idx, ctx->pool );
 
     return;
+    }
   }
 
   if( FD_UNLIKELY( txnt->addr_table_adtl_cnt ) ) {
     if( FD_UNLIKELY( !ctx->bank ) ) {
       FD_MCNT_INC( RESOLF, NO_BANK_DROP, 1 );
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-      return;
+      if( FD_UNLIKELY( is_bam_no_drop ) ) {
+        ctx->metrics.bam_would_have_dropped_no_bank++;
+        fd_memset( fd_txn_m_alut( txnm ), 0, 32UL*(ulong)txnt->addr_table_adtl_cnt );
+      } else {
+        if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+        return;
+      }
     }
 
     int result = peek_aluts( ctx, txnm );
     if( FD_UNLIKELY( result ) ) {
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-      return;
+      if( FD_UNLIKELY( is_bam_no_drop ) ) {
+        ctx->metrics.bam_would_have_dropped_lut_fail++;
+        fd_memset( fd_txn_m_alut( txnm ), 0, 32UL*(ulong)txnt->addr_table_adtl_cnt );
+      } else {
+        if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+        return;
+      }
     }
   }
 
@@ -586,6 +611,7 @@ unprivileged_init( fd_topo_t *      topo,
 
   ctx->bundle_failed = 0;
   ctx->bundle_id     = 0UL;
+  ctx->bam_no_drop_mode = !!tile->resolv.bam_no_drop_mode;
 
   ctx->completed_slot = 0UL;
   ctx->blockhash_ring_idx = 0UL;

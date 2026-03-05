@@ -1278,6 +1278,11 @@ dynamic_port_range = "8900-9000"
         # is very verbose and should remain disabled in production.
         dump_txns = false
 
+        # If true, bypass BAM-specific pre-bank filtering in the BAM,
+        # verify, dedup, resolv, and pack stages so decodable BAM
+        # transactions preferentially reach bank execution.
+        no_drop_mode = false
+
     # The pack tile takes incoming transactions that have been verified
     # by the verify tile and then deduplicated, and attempts to order
     # them in an optimal way to generate the most fees per compute

@@ -213,6 +213,7 @@ fd_config_extract_pod( uchar *       pod,
   CFG_POP      ( ulong,  tiles.bam.keepalive_interval_millis              );
   CFG_POP      ( bool,   tiles.bam.tls_cert_verify                        );
   CFG_POP      ( bool,   tiles.bam.dump_txns                              );
+  CFG_POP      ( bool,   tiles.bam.no_drop_mode                           );
 
   CFG_POP      ( uint,   tiles.pack.max_pending_transactions              );
   CFG_POP      ( bool,   tiles.pack.use_consumed_cus                      );

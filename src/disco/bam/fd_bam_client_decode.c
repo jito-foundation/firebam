@@ -172,20 +172,29 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   uchar packet_revert_on_error = 0U;
   if( packet.has_meta && packet.meta.has_flags ) {
     if( FD_UNLIKELY( packet.meta.flags.simple_vote_tx ) ) {
-      state->has_deser_err = true;
-      state->deser_reason = bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE;
-      state->deser_index  = state->packet_cnt;
-      return false;
+      if( FD_UNLIKELY( !state->ctx->no_drop_mode ) ) {
+        state->has_deser_err = true;
+        state->deser_reason = bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE;
+        state->deser_index  = state->packet_cnt;
+        return false;
+      }
+      state->ctx->metrics.would_have_dropped_simple_vote_cnt++;
     }
     packet_revert_on_error = packet.meta.flags.revert_on_error;
   }
 
   if( FD_UNLIKELY( state->packet_cnt && state->revert_on_error != packet_revert_on_error ) ) {
-    FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
-    state->has_deser_err = true;
-    state->deser_reason  = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
-    state->deser_index   = state->packet_cnt;
-    return false;
+    if( FD_UNLIKELY( !state->ctx->no_drop_mode ) ) {
+      FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
+      state->has_deser_err = true;
+      state->deser_reason  = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+      state->deser_index   = state->packet_cnt;
+      return false;
+    }
+    state->ctx->metrics.would_have_dropped_mixed_revert_on_error_cnt++;
+    /* Normalize to the first packet's mode so downstream metadata remains
+       consistent even for malformed mixed batches. */
+    packet_revert_on_error = state->revert_on_error;
   }
   state->revert_on_error = packet_revert_on_error;
 
@@ -243,37 +252,43 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   }
 
   if( FD_UNLIKELY( (!state->revert_on_error) && state->packet_cnt>1U ) ) {
-    /* For now, revert_on_error=0 batches are assumed to contain exactly one
-       packet so we can return one result per seq_id without BAM-node changes. */
-    fd_bam_bundle_result_t res = {
-      .seq_id            = batch->seq_id,
-      .slot              = batch->max_schedule_slot,
-      .bundle_txn_cnt    = state->packet_cnt,
-      .execution_success = 0,
-      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
-      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
-      .deser_reason      = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE,
-      .deser_index       = 0
-    };
-    fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
-    return 0;
+    if( FD_UNLIKELY( !ctx->no_drop_mode ) ) {
+      /* For now, revert_on_error=0 batches are assumed to contain exactly one
+         packet so we can return one result per seq_id without BAM-node changes. */
+      fd_bam_bundle_result_t res = {
+        .seq_id            = batch->seq_id,
+        .slot              = batch->max_schedule_slot,
+        .bundle_txn_cnt    = state->packet_cnt,
+        .execution_success = 0,
+        .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+        .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+        .deser_reason      = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE,
+        .deser_index       = 0
+      };
+      fd_bam_enqueue_result( ctx, &res );
+      ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+      return 0;
+    }
+    ctx->metrics.would_have_dropped_non_revert_multi_packet_cnt++;
   }
 
   if( FD_UNLIKELY( state->revert_on_error && !ctx->builder_info_valid_until ) ) {
-    fd_bam_bundle_result_t res = {
-      .seq_id                 = batch->seq_id,
-      .slot                   = batch->max_schedule_slot,
-      .bundle_txn_cnt         = state->packet_cnt,
-      .execution_success      = 0,
-      .scheduling_error       = FD_BAM_SCHED_ERR_NONE,
-      .bundle_err             = FD_BAM_BUNDLE_ERR_GENERIC_INVALID,
-      .generic_invalid_reason = FD_BAM_ERR_GENERIC_INVALID_BUILDER_INFO_UNAVAILABLE,
-      .generic_invalid_index  = 0,
-    };
-    fd_bam_enqueue_result( ctx, &res );
-    ctx->metrics.missing_builder_info_fail_cnt++;
-    return 0;
+    if( FD_UNLIKELY( !ctx->no_drop_mode ) ) {
+      fd_bam_bundle_result_t res = {
+        .seq_id                 = batch->seq_id,
+        .slot                   = batch->max_schedule_slot,
+        .bundle_txn_cnt         = state->packet_cnt,
+        .execution_success      = 0,
+        .scheduling_error       = FD_BAM_SCHED_ERR_NONE,
+        .bundle_err             = FD_BAM_BUNDLE_ERR_GENERIC_INVALID,
+        .generic_invalid_reason = FD_BAM_ERR_GENERIC_INVALID_BUILDER_INFO_UNAVAILABLE,
+        .generic_invalid_index  = 0,
+      };
+      fd_bam_enqueue_result( ctx, &res );
+      ctx->metrics.missing_builder_info_fail_cnt++;
+      return 0;
+    }
+    ctx->metrics.would_have_dropped_missing_builder_info_cnt++;
   }
 
   return 1;

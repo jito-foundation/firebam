@@ -59,6 +59,10 @@ struct fd_bam_metrics {
   ulong transport_fail_cnt;
   ulong timeout_fail_cnt;
   ulong missing_builder_info_fail_cnt;
+  ulong would_have_dropped_mixed_revert_on_error_cnt;
+  ulong would_have_dropped_non_revert_multi_packet_cnt;
+  ulong would_have_dropped_simple_vote_cnt;
+  ulong would_have_dropped_missing_builder_info_cnt;
 
   ulong result_sent_cnt;
   ulong leader_state_sent_cnt;
@@ -138,6 +142,7 @@ struct fd_bam_tile {
   fd_bam_ctrl_t * ctrl;                  /* Runtime control shared object (NULL when tile launched without admin support) */
   uchar  enabled;                        /* Whether BAM runtime is enabled by the operator */
   uchar  dump_txns;                      /* Whether to dump inbound BAM bundles/txns for debugging */
+  uchar  no_drop_mode;                   /* If set, bypass BAM-specific semantic pre-bank rejects */
   char   server_fqdn[ FD_FQDN_BUF_MAX ]; /* cstr; hostname configured for BAM endpoint */
   ushort server_fqdn_len;                /* Length of server_fqdn (no terminator) */
   char   server_sni[ FD_SNI_BUF_MAX ];   /* cstr; optional override for TLS SNI */

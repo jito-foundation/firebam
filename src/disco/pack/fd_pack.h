@@ -276,6 +276,11 @@ FD_FN_PURE ulong fd_pack_bank_tile_cnt( fd_pack_t const * pack );
    but the call is valid. */
 void fd_pack_set_block_limits( fd_pack_t * pack, fd_pack_limits_t const * limits );
 
+/* Enables/disables BAM no-drop admission behavior. When enabled,
+   BAM-sourced transactions/bundles bypass several pre-bank reject paths
+   in pack insertion and are force-admitted via eviction when full. */
+void fd_pack_set_bam_no_drop_mode( fd_pack_t * pack, int enabled );
+
 /* fd_pack_get_block_limits: Copies the currently active pack limits
    into opt_limits, if opt_limits is not NULL.  Copies the current limit
    utilization in opt_limits_usage, if opt_limits_usage is not NULL.

@@ -47,6 +47,7 @@ typedef struct {
   ulong       out_chunk;
 
   ulong       hashmap_seed;
+  uchar       bam_no_drop_mode;
 
   struct {
     ulong parse_fail_cnt;
@@ -54,6 +55,8 @@ typedef struct {
     ulong dedup_fail_cnt;
     ulong bundle_peer_fail_cnt;
     ulong gossiped_votes_cnt;
+    ulong bam_would_have_dropped_verify_fail_cnt;
+    ulong bam_would_have_dropped_dedup_fail_cnt;
   } metrics;
 } fd_verify_ctx_t;
 

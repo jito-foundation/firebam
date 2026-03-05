@@ -547,14 +547,18 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
       tile->bam.tls_cert_verify = !!config->tiles.bam.tls_cert_verify;
       tile->bam.enabled = !!config->tiles.bam.enabled;
       tile->bam.dump_txns = !!config->tiles.bam.dump_txns;
+      tile->bam.no_drop_mode = !!config->tiles.bam.no_drop_mode;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "verify" ) ) ) {
     tile->verify.tcache_depth = config->tiles.verify.signature_cache_size;
+    tile->verify.bam_no_drop_mode = !!config->tiles.bam.no_drop_mode;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "dedup" ) ) ) {
     tile->dedup.tcache_depth = config->tiles.dedup.signature_cache_size;
+    tile->dedup.bam_no_drop_mode = !!config->tiles.bam.no_drop_mode;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "resolv" ) ) ) {
+    tile->resolv.bam_no_drop_mode = !!config->tiles.bam.no_drop_mode;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "pack" ) ) ) {
     tile->pack.max_pending_transactions      = config->tiles.pack.max_pending_transactions;
@@ -563,6 +567,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->pack.larger_shred_limits_per_block = config->development.bench.larger_shred_limits_per_block;
     tile->pack.use_consumed_cus              = config->tiles.pack.use_consumed_cus;
     tile->pack.schedule_strategy             = config->tiles.pack.schedule_strategy_enum;
+    tile->pack.bam_no_drop_mode              = !!config->tiles.bam.no_drop_mode;
 
     if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
 #define PARSE_PUBKEY( _tile, f ) \

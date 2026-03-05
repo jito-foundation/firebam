@@ -249,10 +249,12 @@ struct fd_topo_tile {
 
     struct {
       ulong tcache_depth;
+      uchar bam_no_drop_mode : 1;
     } verify;
 
     struct {
       ulong tcache_depth;
+      uchar bam_no_drop_mode : 1;
     } dedup;
 
     struct {
@@ -282,6 +284,7 @@ struct fd_topo_tile {
       uchar tls_cert_verify : 1;
       uchar enabled         : 1;
       uchar dump_txns       : 1;
+      uchar no_drop_mode    : 1;
     } bam;
 
     struct {
@@ -291,6 +294,7 @@ struct fd_topo_tile {
       int   larger_shred_limits_per_block;
       int   use_consumed_cus;
       int   schedule_strategy;
+      uchar bam_no_drop_mode : 1;
       struct {
         int   enabled;
         uchar tip_distribution_program_addr[ 32 ];
@@ -595,6 +599,7 @@ struct fd_topo_tile {
 
     struct {
       ulong funk_obj_id;
+      uchar bam_no_drop_mode : 1;
     } resolv;
 
     struct {

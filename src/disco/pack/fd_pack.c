@@ -645,6 +645,7 @@ struct fd_pack_private {
      bundle meta, it's located at bundle_meta[j] for j in
      [i*bundle_meta_sz, (i+1)*bundle_meta_sz). */
   void * bundle_meta;
+  uchar  bam_no_drop_mode;
 };
 
 typedef struct fd_pack_private fd_pack_t;
@@ -759,6 +760,7 @@ fd_pack_new( void                   * mem,
   pack->pack_depth                  = pack_depth;
   pack->bundle_meta_sz              = bundle_meta_sz;
   pack->bank_tile_cnt               = bank_tile_cnt;
+  pack->bam_no_drop_mode            = 0U;
   pack->lim[0]                      = *limits;
   pack->pending_txn_cnt             = 0UL;
   pack->microblock_cnt              = 0UL;
@@ -1277,6 +1279,7 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
 
   fd_txn_t * txn   = TXN(txne->txnp);
   uchar * payload  = txne->txnp->payload;
+  int is_bam_no_drop = pack->bam_no_drop_mode && txne->txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
 
   fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, payload );
   /* alt_adj is the pointer to the ALT expansion, adjusted so that if
@@ -1287,23 +1290,40 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
   ord->expires_at = expires_at;
 
   int est_result = fd_pack_estimate_rewards_and_compute( txne, ord );
-  if( FD_UNLIKELY( !est_result ) ) REJECT( ESTIMATION_FAIL );
-  int is_vote          = est_result==1;
+  int is_vote = 0;
+  if( FD_UNLIKELY( !est_result ) ) {
+    if( FD_UNLIKELY( !is_bam_no_drop ) ) REJECT( ESTIMATION_FAIL );
+
+    /* In BAM no-drop mode, use conservative fallback values when
+       compute/reward estimation fails so the transaction can still be
+       admitted and executed (or rejected) by bank. */
+    ulong sig_rewards = FD_PACK_FEE_PER_SIGNATURE * (ulong)txn->signature_cnt;
+    sig_rewards = sig_rewards * FD_PACK_TXN_FEE_BURN_PCT / 100UL;
+    ord->rewards = (uint)fd_ulong_min( sig_rewards, (ulong)UINT_MAX );
+    ord->compute_est = (uint)fd_ulong_min( FD_PACK_MIN_TXN_COST, (ulong)UINT_MAX );
+    ord->txn->pack_cu.requested_exec_plus_acct_data_cus = 0U;
+    ord->txn->pack_cu.non_execution_cus = ord->compute_est;
+  } else {
+    is_vote = est_result==1;
+  }
 
   int nonce_result = fd_pack_validate_durable_nonce( txne );
-  if( FD_UNLIKELY( !nonce_result ) ) REJECT( INVALID_NONCE );
+  if( FD_UNLIKELY( !nonce_result ) ) {
+    if( FD_UNLIKELY( !is_bam_no_drop ) ) REJECT( INVALID_NONCE );
+    nonce_result = 1;
+  }
   int is_durable_nonce = nonce_result==2;
   ord->txn->flags &= ~FD_TXN_P_FLAGS_DURABLE_NONCE;
   ord->txn->flags |= fd_uint_if( is_durable_nonce, FD_TXN_P_FLAGS_DURABLE_NONCE, 0U );
 
   int validation_result = validate_transaction( pack, ord, txn, accts, alt_adj, !!pack->bundle_meta_sz );
-  if( FD_UNLIKELY( validation_result ) ) {
+  if( FD_UNLIKELY( validation_result && !is_bam_no_drop ) ) {
     trp_pool_ele_release( pack->pool, ord );
     return validation_result;
   }
 
   /* Reject any transactions that have already expired */
-  if( FD_UNLIKELY( expires_at<pack->expire_before                          ) ) REJECT( EXPIRED          );
+  if( FD_UNLIKELY( !is_bam_no_drop && expires_at<pack->expire_before ) ) REJECT( EXPIRED );
 
   int replaces = 0;
   /* If it's a durable nonce and we already have one, delete one or the
@@ -1311,15 +1331,17 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
   if( FD_UNLIKELY( is_durable_nonce ) ) {
     fd_pack_ord_txn_t * same_nonce = noncemap_ele_query( pack->noncemap, txne, NULL, pack->pool );
     if( FD_LIKELY( same_nonce ) ) { /* Seems like most nonce transactions are effectively duplicates */
-      if( FD_LIKELY( same_nonce->root == FD_ORD_TXN_ROOT_PENDING_BUNDLE || COMPARE_WORSE( ord, same_nonce ) ) ) REJECT( NONCE_PRIORITY );
-      ulong _delete_cnt = delete_transaction( pack, same_nonce, 0, 0 ); /* Not a bundle, so delete_full_bundle is 0 */
+      if( FD_LIKELY( same_nonce->root == FD_ORD_TXN_ROOT_PENDING_BUNDLE || COMPARE_WORSE( ord, same_nonce ) ) ) {
+        if( FD_UNLIKELY( !is_bam_no_drop ) ) REJECT( NONCE_PRIORITY );
+      }
+      ulong _delete_cnt = delete_transaction( pack, same_nonce, fd_int_if( is_bam_no_drop, 1, 0 ), 0 );
       *delete_cnt += _delete_cnt;
       replaces = 1;
     }
   }
 
   if( FD_UNLIKELY( pack->pending_txn_cnt == pack->pack_depth ) ) {
-    float threshold_score = (float)ord->rewards/(float)ord->compute_est;
+    float threshold_score = fd_float_if( is_bam_no_drop, FLT_MAX, (float)ord->rewards/(float)ord->compute_est );
     ulong _delete_cnt = delete_worst( pack, threshold_score, is_vote );
     *delete_cnt += _delete_cnt;
     if( FD_UNLIKELY( !_delete_cnt ) ) REJECT( PRIORITY );
@@ -1513,6 +1535,9 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
 
   int err = 0;
   *delete_cnt = 0UL;
+  int is_bam_no_drop = pack->bam_no_drop_mode &&
+                       txn_cnt &&
+                       bundle[ 0 ]->txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
 
   ulong pending_b_txn_cnt = treap_ele_cnt( pack->pending_bundles );
     /* We want to prevent bundles from consuming the whole treap, but in
@@ -1521,9 +1546,9 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
        bundles are coming in a pre-prioritized order, so it doesn't make
        sense to drop an earlier bundle for this one.  That means that
        really, the best thing to do is drop this one. */
-  if( FD_UNLIKELY( (!initializer_bundle)&(pending_b_txn_cnt+txn_cnt>pack->pack_depth/2UL) ) ) err = FD_PACK_INSERT_REJECT_PRIORITY;
+  if( FD_UNLIKELY( (!initializer_bundle)&(pending_b_txn_cnt+txn_cnt>pack->pack_depth/2UL) && !is_bam_no_drop ) ) err = FD_PACK_INSERT_REJECT_PRIORITY;
 
-  if( FD_UNLIKELY( expires_at<pack->expire_before                                         ) ) err = FD_PACK_INSERT_REJECT_EXPIRED;
+  if( FD_UNLIKELY( expires_at<pack->expire_before && !is_bam_no_drop ) ) err = FD_PACK_INSERT_REJECT_EXPIRED;
 
 
   int   replaces      = 0;
@@ -1548,9 +1573,21 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     fd_acct_addr_t const * alt_adj = ord->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
 
     int est_result = fd_pack_estimate_rewards_and_compute( bundle[ i ], ord );
-    if( FD_UNLIKELY( !est_result   ) ) { err = FD_PACK_INSERT_REJECT_ESTIMATION_FAIL; break; }
+    if( FD_UNLIKELY( !est_result ) ) {
+      if( FD_UNLIKELY( !is_bam_no_drop ) ) { err = FD_PACK_INSERT_REJECT_ESTIMATION_FAIL; break; }
+
+      ulong sig_rewards = FD_PACK_FEE_PER_SIGNATURE * (ulong)txn->signature_cnt;
+      sig_rewards = sig_rewards * FD_PACK_TXN_FEE_BURN_PCT / 100UL;
+      ord->rewards = (uint)fd_ulong_min( sig_rewards, (ulong)UINT_MAX );
+      ord->compute_est = (uint)fd_ulong_min( FD_PACK_MIN_TXN_COST, (ulong)UINT_MAX );
+      ord->txn->pack_cu.requested_exec_plus_acct_data_cus = 0U;
+      ord->txn->pack_cu.non_execution_cus = ord->compute_est;
+    }
     int nonce_result = fd_pack_validate_durable_nonce( ord->txn_e );
-    if( FD_UNLIKELY( !nonce_result ) ) { err = FD_PACK_INSERT_REJECT_INVALID_NONCE;   break; }
+    if( FD_UNLIKELY( !nonce_result ) ) {
+      if( FD_UNLIKELY( !is_bam_no_drop ) ) { err = FD_PACK_INSERT_REJECT_INVALID_NONCE; break; }
+      nonce_result = 1;
+    }
     int is_durable_nonce = nonce_result==2;
     nonce_txn_cnt += !!is_durable_nonce;
 
@@ -1568,8 +1605,13 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
         /* bundles take priority over non-bundles, and earlier bundles
            take priority over later bundles. */
         if( FD_UNLIKELY( same_nonce->txn->flags & FD_TXN_P_FLAGS_BUNDLE ) ) {
-          err = FD_PACK_INSERT_REJECT_NONCE_PRIORITY;
-          break;
+          if( FD_UNLIKELY( !is_bam_no_drop ) ) {
+            err = FD_PACK_INSERT_REJECT_NONCE_PRIORITY;
+            break;
+          }
+          ulong _delete_cnt = delete_transaction( pack, same_nonce, 1, 0 );
+          *delete_cnt += _delete_cnt;
+          replaces = 1;
         } else {
           ulong _delete_cnt = delete_transaction( pack, same_nonce, 0, 0 );
           *delete_cnt += _delete_cnt;
@@ -1579,7 +1621,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     }
 
     int validation_result = validate_transaction( pack, ord, txn, accts, alt_adj, !initializer_bundle );
-    if( FD_UNLIKELY( validation_result ) ) { err = validation_result; break; }
+    if( FD_UNLIKELY( validation_result && !is_bam_no_drop ) ) { err = validation_result; break; }
   }
 
   if( FD_UNLIKELY( err ) ) {
@@ -1630,8 +1672,10 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
       }
     }
     if( FD_UNLIKELY( conflict_detected ) ) {
-      fd_pack_insert_bundle_cancel( pack, bundle, txn_cnt );
-      return FD_PACK_INSERT_REJECT_NONCE_CONFLICT;
+      if( FD_UNLIKELY( !is_bam_no_drop ) ) {
+        fd_pack_insert_bundle_cancel( pack, bundle, txn_cnt );
+        return FD_PACK_INSERT_REJECT_NONCE_CONFLICT;
+      }
     }
   }
 
@@ -2720,6 +2764,12 @@ fd_pack_set_block_limits( fd_pack_t * pack, fd_pack_limits_t const * limits ) {
   pack->lim->max_cost_per_block        = limits->max_cost_per_block;
   pack->lim->max_vote_cost_per_block   = limits->max_vote_cost_per_block;
   pack->lim->max_write_cost_per_acct   = limits->max_write_cost_per_acct;
+}
+
+void
+fd_pack_set_bam_no_drop_mode( fd_pack_t * pack,
+                              int         enabled ) {
+  pack->bam_no_drop_mode = (uchar)!!enabled;
 }
 
 void

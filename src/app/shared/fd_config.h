@@ -406,6 +406,7 @@ struct fd_config {
       ulong keepalive_interval_millis;
       int   tls_cert_verify;
       int   dump_txns;
+      int   no_drop_mode;
     } bam;
 
     struct {

@@ -901,6 +901,7 @@ privileged_init( fd_topo_t *      topo,
 
   ctx->enabled = !!tile->bam.enabled;
   ctx->dump_txns = !!tile->bam.dump_txns;
+  ctx->no_drop_mode = !!tile->bam.no_drop_mode;
   ctx->fee_cfg_version = 0U;
   ctx->commission_bps = 0U;
   ctx->prio_fee_recipient_set   = 0U;

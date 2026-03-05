@@ -50,10 +50,13 @@ typedef struct {
   ulong       out_chunk;
 
   ulong       hashmap_seed;
+  uchar       bam_no_drop_mode;
 
   struct {
     ulong bundle_peer_failure_cnt;
     ulong dedup_fail_cnt;
+    ulong bam_would_have_dropped_bundle_peer_failure_cnt;
+    ulong bam_would_have_dropped_dedup_fail_cnt;
   } metrics;
 } fd_dedup_ctx_t;
 
@@ -157,6 +160,7 @@ after_frag( fd_dedup_ctx_t *    ctx,
   fd_txn_m_t * txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
   FD_TEST( txnm->payload_sz<=FD_TPU_MTU );
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
+  _Bool is_bam_no_drop = ctx->bam_no_drop_mode && txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
 
   if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
@@ -166,7 +170,8 @@ after_frag( fd_dedup_ctx_t *    ctx,
 
   if( FD_UNLIKELY( txnm->block_engine.bundle_id && ctx->bundle_failed ) ) {
     ctx->metrics.bundle_peer_failure_cnt++;
-    return;
+    if( FD_UNLIKELY( is_bam_no_drop ) ) ctx->metrics.bam_would_have_dropped_bundle_peer_failure_cnt++;
+    if( FD_LIKELY( !is_bam_no_drop ) ) return;
   }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_GOSSIP ) ) {
@@ -205,15 +210,16 @@ after_frag( fd_dedup_ctx_t *    ctx,
   }
 
   if( FD_LIKELY( is_dup ) ) {
-    if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-
+    if( FD_UNLIKELY( txnm->block_engine.bundle_id && !is_bam_no_drop ) ) ctx->bundle_failed = 1;
     ctx->metrics.dedup_fail_cnt++;
-  } else {
-    ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 0 );
-    ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
-    fd_stem_publish( stem, 0UL, 0, ctx->out_chunk, realized_sz, 0UL, tsorig, tspub );
-    ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, realized_sz, ctx->out_chunk0, ctx->out_wmark );
+    if( FD_UNLIKELY( is_bam_no_drop ) ) ctx->metrics.bam_would_have_dropped_dedup_fail_cnt++;
+    if( FD_LIKELY( !is_bam_no_drop ) ) return;
   }
+
+  ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 0 );
+  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
+  fd_stem_publish( stem, 0UL, 0, ctx->out_chunk, realized_sz, 0UL, tsorig, tspub );
+  ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, realized_sz, ctx->out_chunk0, ctx->out_wmark );
 }
 
 static void
@@ -239,6 +245,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bundle_failed = 0;
   ctx->bundle_id     = 0UL;
   ctx->bundle_idx    = 0UL;
+  ctx->bam_no_drop_mode = !!tile->dedup.bam_no_drop_mode;
 
   memset( &ctx->metrics, 0, sizeof( ctx->metrics ) );
 

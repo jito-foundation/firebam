@@ -149,12 +149,19 @@ after_frag( fd_verify_ctx_t *   ctx,
   ulong _txn_sig;
   int res = fd_txn_verify( ctx, fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, !is_bundle, &_txn_sig );
   if( FD_UNLIKELY( res!=FD_TXN_VERIFY_SUCCESS ) ) {
-    if( FD_UNLIKELY( is_bundle ) ) ctx->bundle_failed = 1;
+    _Bool is_bam_no_drop = ctx->bam_no_drop_mode && txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+    if( FD_LIKELY( res==FD_TXN_VERIFY_DEDUP ) ) {
+      ctx->metrics.dedup_fail_cnt++;
+      if( FD_UNLIKELY( is_bam_no_drop ) ) ctx->metrics.bam_would_have_dropped_dedup_fail_cnt++;
+    } else {
+      ctx->metrics.verify_fail_cnt++;
+      if( FD_UNLIKELY( is_bam_no_drop ) ) ctx->metrics.bam_would_have_dropped_verify_fail_cnt++;
+    }
 
-    if( FD_LIKELY( res==FD_TXN_VERIFY_DEDUP ) ) ctx->metrics.dedup_fail_cnt++;
-    else                                        ctx->metrics.verify_fail_cnt++;
-
-    return;
+    if( FD_UNLIKELY( !is_bam_no_drop ) ) {
+      if( FD_UNLIKELY( is_bundle ) ) ctx->bundle_failed = 1;
+      return;
+    }
   }
 
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 0 );
@@ -194,6 +201,7 @@ unprivileged_init( fd_topo_t *      topo,
 
   ctx->bundle_failed = 0;
   ctx->bundle_id     = 0UL;
+  ctx->bam_no_drop_mode = !!tile->verify.bam_no_drop_mode;
 
   memset( &ctx->metrics, 0, sizeof( ctx->metrics ) );
 
