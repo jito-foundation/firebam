@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
@@ -109,6 +110,12 @@ def parse_args() -> argparse.Namespace:
         args.metrics_url = f"http://{args.host}:7999/metrics"
     if args.websocket_url is None:
         args.websocket_url = f"ws://{args.host}:80/websocket"
+    args.websocket_url = args.websocket_url.strip()
+    parsed_websocket_url = urllib.parse.urlparse(args.websocket_url)
+    if parsed_websocket_url.scheme not in {"ws", "wss"} or not parsed_websocket_url.netloc:
+        p.error(
+            f"invalid websocket URL '{args.websocket_url}'; expected ws://<host>[/path] or wss://<host>[/path]"
+        )
     if shutil.which("websocat") is None:
         p.error("websocket scrape requires `websocat` in PATH")
     return args
@@ -581,66 +588,61 @@ def scrape_websocket_slots(
     query_wait_secs: int,
     detail_timeout_secs: int,
 ) -> list[dict[str, Any]]:
-    websocket_urls = (
-        [websocket_url]
-        if websocket_url.startswith(("ws://", "wss://"))
-        else [f"ws://{websocket_url}:80/websocket", f"wss://{websocket_url}/websocket"]
-    )
-    last_error = RuntimeError(
-        "timed out waiting for required websocket snapshot data; "
-        "try increasing --websocket-snapshot-secs"
-    )
-
-    for websocket_url in websocket_urls:
-        snapshot = capture_snapshot_until_ready(websocket_url, snapshot_secs)
-        if snapshot is None:
-            continue
-
-        startup_time_nanos, produced_slots = build_snapshot_metadata(snapshot)
-        query_slots = produced_slots
-        if mode == "recent" and recent_count > 0:
-            query_slots = query_slots[-max(recent_count * 4, recent_count + 8):]
-
-        query_payloads = [
-            {
-                "topic": "slot",
-                "key": "query_detailed",
-                "id": 1000 + i,
-                "params": {"slot": slot},
-            }
-            for i, slot in enumerate(query_slots)
-        ]
-
-        seen_query_results = False
-        for wait_secs, timeout_secs in (
-            (query_wait_secs, detail_timeout_secs),
-            (query_wait_secs + 4, detail_timeout_secs + 40),
-        ):
-            details = collect_query_details(
-                websocket_url,
-                query_payloads,
-                wait_secs,
-                timeout_secs,
-            )
-            seen_query_results = seen_query_results or any(
-                row.get("topic") == "slot"
-                and row.get("key") in {"query", "query_detailed"}
-                and row.get("value") is not None
-                for row in details
-            )
-
-            parsed_rows = parse_slot_results(details, mode, startup_time_nanos, recent_count)
-            if parsed_rows:
-                return parsed_rows
-
-        if seen_query_results:
-            return []
-        last_error = RuntimeError(
-            "no slot query results returned; "
-            "try increasing --websocket-query-wait-secs/--websocket-detail-timeout-secs",
+    parsed_websocket_url = urllib.parse.urlparse(websocket_url)
+    if parsed_websocket_url.scheme not in {"ws", "wss"} or not parsed_websocket_url.netloc:
+        raise RuntimeError(
+            f"invalid websocket URL '{websocket_url}'; expected ws://<host>[/path] or wss://<host>[/path]"
+        )
+    snapshot = capture_snapshot_until_ready(websocket_url, snapshot_secs)
+    if snapshot is None:
+        raise RuntimeError(
+            "timed out waiting for required websocket snapshot data; "
+            "try increasing --websocket-snapshot-secs"
         )
 
-    raise last_error
+    startup_time_nanos, produced_slots = build_snapshot_metadata(snapshot)
+    query_slots = produced_slots
+    if mode == "recent" and recent_count > 0:
+        query_slots = query_slots[-max(recent_count * 4, recent_count + 8):]
+
+    query_payloads = [
+        {
+            "topic": "slot",
+            "key": "query_detailed",
+            "id": 1000 + i,
+            "params": {"slot": slot},
+        }
+        for i, slot in enumerate(query_slots)
+    ]
+
+    seen_query_results = False
+    for wait_secs, timeout_secs in (
+        (query_wait_secs, detail_timeout_secs),
+        (query_wait_secs + 4, detail_timeout_secs + 40),
+    ):
+        details = collect_query_details(
+            websocket_url,
+            query_payloads,
+            wait_secs,
+            timeout_secs,
+        )
+        seen_query_results = seen_query_results or any(
+            row.get("topic") == "slot"
+            and row.get("key") in {"query", "query_detailed"}
+            and row.get("value") is not None
+            for row in details
+        )
+
+        parsed_rows = parse_slot_results(details, mode, startup_time_nanos, recent_count)
+        if parsed_rows:
+            return parsed_rows
+
+    if seen_query_results:
+        return []
+    raise RuntimeError(
+        "no slot query results returned; "
+        "try increasing --websocket-query-wait-secs/--websocket-detail-timeout-secs",
+    )
 
 def main() -> int:
     args = parse_args()
@@ -654,7 +656,7 @@ def main() -> int:
     print(f"validator identity: {identity}")
     print(f"current slot: {current_slot}")
     print(f"next leader slot: {next_leader_slot}")
-    print(f"estimated slot length (sec): {slot_seconds:.2f}")
+    print(f"estimated slot duration: {slot_seconds:.2f}s")
     print(f"starting capture at slot >= {start_slot} (~{args.capture_lead_time_sec}s before leader slot)")
 
     while True:
@@ -671,7 +673,7 @@ def main() -> int:
             sleep_for = max(0.1, min(2.0, secs_remaining / 2.0))
         time.sleep(sleep_for)
 
-    run_dir = (Path(args.output_root) / f"slot_{next_leader_slot}_{dt.datetime.now(dt.timezone.utc)}")
+    run_dir = Path(args.output_root) / f"slot_{next_leader_slot}_{dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")}"
     run_dir.mkdir(parents=True, exist_ok=True)
     pcap_cmd = ["timeout", str(args.capture_time_sec), "sudo", "tcpdump", "-nn", "-w", f"dump_{next_leader_slot}.pcap"]
 
@@ -702,7 +704,7 @@ def main() -> int:
         f"url={args.websocket_url} mode={args.websocket_mode}"
     )
     websocket_rows = scrape_websocket_slots(
-        websocket_url=args.websocket_url,
+        websocket_url=args.websocket_url.strip(),
         mode=args.websocket_mode,
         recent_count=args.websocket_recent_count,
         snapshot_secs=args.websocket_snapshot_secs,
