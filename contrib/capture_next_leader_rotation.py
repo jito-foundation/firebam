@@ -5,6 +5,8 @@ import datetime as dt
 import json
 import math
 import os
+import select
+import shutil
 import subprocess
 import sys
 import time
@@ -17,23 +19,59 @@ from typing import Any, Optional
 PROCESSED_COMMITMENT = "processed"
 FAST_POLL_WINDOW_SEC = 10.0
 FAST_POLL_INTERVAL_SEC = 1.0
+WEBSOCAT_BUFFER_BYTES = "12000000"
+
+
+def non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid integer: {value}") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return parsed
+
+
+def non_negative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid number: {value}") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return parsed
+
+
+def non_empty_string(value: str) -> str:
+    parsed = value.strip()
+    if not parsed:
+        raise argparse.ArgumentTypeError("must be non-empty")
+    return parsed
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Capture tcpdump + metrics around the next leader slot."
     )
-    p.add_argument("--rpc-url", default=os.getenv("RPC_URL", "http://127.0.0.1:8899"))
-    p.add_argument("--metrics-url", default=os.getenv("METRICS_URL", "http://127.0.0.1:7999/metrics"))
+    p.add_argument("--rpc-url", type=non_empty_string, default=os.getenv("RPC_URL", "http://127.0.0.1:8899"))
+    p.add_argument("--metrics-url", type=non_empty_string, default=os.getenv("METRICS_URL", "http://127.0.0.1:7999/metrics"))
     p.add_argument("--output-root", default=os.getenv("OUTPUT_ROOT", "leader_rotations"))
     p.add_argument(
         "--capture-lead-time-sec",
-        type=float,
-        default=float(os.getenv("CAPTURE_LEAD_TIME_SEC", "5")),
+        type=non_negative_float,
+        default=non_negative_float(os.getenv("CAPTURE_LEAD_TIME_SEC", "5")),
     )
-    p.add_argument("--capture-time-sec", type=float, default=float(os.getenv("CAPTURE_TIME_SEC", "10")))
-    p.add_argument("--metrics-interval", type=float, default=float(os.getenv("METRICS_INTERVAL", "0.2")))
-    p.add_argument("--websocket-host", default=os.getenv("WEBSOCKET_HOST"))
+    p.add_argument(
+        "--capture-time-sec",
+        type=non_negative_float,
+        default=non_negative_float(os.getenv("CAPTURE_TIME_SEC", "10")),
+    )
+    p.add_argument(
+        "--metrics-interval",
+        type=non_negative_float,
+        default=non_negative_float(os.getenv("METRICS_INTERVAL", "0.2")),
+    )
+    p.add_argument("--websocket-host", type=non_empty_string, default=os.getenv("WEBSOCKET_HOST"))
     p.add_argument(
         "--websocket-mode",
         choices=("recent", "since-startup"),
@@ -41,10 +79,29 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--websocket-recent-count",
-        type=int,
-        default=int(os.getenv("WEBSOCKET_RECENT_COUNT", "16")),
+        type=non_negative_int,
+        default=non_negative_int(os.getenv("WEBSOCKET_RECENT_COUNT", "16")),
     )
-    return p.parse_args()
+    p.add_argument(
+        "--websocket-snapshot-secs",
+        type=non_negative_int,
+        default=non_negative_int(os.getenv("WEBSOCKET_SNAPSHOT_SECS", "2")),
+    )
+    p.add_argument(
+        "--websocket-query-wait-secs",
+        type=non_negative_int,
+        default=non_negative_int(os.getenv("WEBSOCKET_QUERY_WAIT_SECS", "8")),
+    )
+    p.add_argument(
+        "--websocket-detail-timeout-secs",
+        type=non_negative_int,
+        default=non_negative_int(os.getenv("WEBSOCKET_DETAIL_TIMEOUT_SECS", "60")),
+    )
+    args = p.parse_args()
+    if shutil.which("websocat") is None:
+        p.error("websocket scrape requires `websocat` in PATH")
+    args.websocket_host = resolve_websocket_host(args.websocket_host, args.rpc_url)
+    return args
 
 
 def rpc_call(rpc_url: str, method: str, params=None) -> Any:
@@ -125,6 +182,487 @@ def resolve_websocket_host(websocket_host: Optional[str], rpc_url: str) -> str:
     return "127.0.0.1"
 
 
+def parse_int(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
+
+class WebsocketJsonSession:
+    def __init__(self, websocket_url: str) -> None:
+        self.websocket_url = websocket_url
+        self.proc: Optional[subprocess.Popen[str]] = None
+
+    def __enter__(self) -> "WebsocketJsonSession":
+        self.proc = subprocess.Popen(
+            ["websocat", "-B", WEBSOCAT_BUFFER_BYTES, self.websocket_url],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self.proc is None:
+            return
+
+        if self.proc.stdin is not None and not self.proc.stdin.closed:
+            self.proc.stdin.close()
+        if self.proc.stdout is not None and not self.proc.stdout.closed:
+            self.proc.stdout.close()
+
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+
+    def send_json(self, payload: dict[str, Any]) -> None:
+        if self.proc is None or self.proc.stdin is None:
+            raise RuntimeError("websocket process is not available")
+        self.proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        self.proc.stdin.flush()
+
+    def read_json(self, timeout_sec: float) -> Optional[dict[str, Any]]:
+        if self.proc is None or self.proc.stdout is None:
+            return None
+
+        timeout = max(0.0, timeout_sec)
+        ready, _, _ = select.select([self.proc.stdout], [], [], timeout)
+        if not ready:
+            return None
+
+        line = self.proc.stdout.readline()
+        if not line:
+            return None
+
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+
+        return payload if isinstance(payload, dict) else None
+
+
+def capture_snapshot_until_ready(websocket_url: str, max_wait_secs: int) -> Optional[list[dict[str, Any]]]:
+    snapshot: list[dict[str, Any]] = []
+    got_identity = False
+    got_startup = False
+    got_completed = False
+    got_epoch = False
+    deadline = time.monotonic() + max_wait_secs
+
+    with WebsocketJsonSession(websocket_url) as ws:
+        while time.monotonic() <= deadline:
+            row = ws.read_json(1.0)
+            if row is None:
+                continue
+
+            snapshot.append(row)
+            topic = row.get("topic")
+            key = row.get("key")
+            value = row.get("value")
+            if topic == "summary" and key == "identity_key" and value is not None:
+                got_identity = True
+            elif topic == "summary" and key == "startup_time_nanos" and value is not None:
+                got_startup = True
+            elif topic == "summary" and key == "completed_slot" and value is not None:
+                got_completed = True
+            elif topic == "epoch" and key == "new":
+                got_epoch = True
+
+            if got_identity and got_startup and got_completed and got_epoch:
+                return snapshot
+
+    return None
+
+
+def compute_produced_slots(snapshot: list[dict[str, Any]], identity: str, completed_slot: int) -> list[int]:
+    produced: set[int] = set()
+    for row in snapshot:
+        if row.get("topic") != "epoch" or row.get("key") != "new":
+            continue
+
+        epoch_value = row.get("value")
+        if not isinstance(epoch_value, dict):
+            continue
+
+        staked_pubkeys = epoch_value.get("staked_pubkeys")
+        if not isinstance(staked_pubkeys, list):
+            continue
+
+        try:
+            validator_idx = staked_pubkeys.index(identity)
+        except ValueError:
+            continue
+
+        start_slot = parse_int(epoch_value.get("start_slot"))
+        leader_slots = epoch_value.get("leader_slots")
+        if isinstance(leader_slots, dict):
+            leader_entries = leader_slots.items()
+        elif isinstance(leader_slots, list):
+            leader_entries = enumerate(leader_slots)
+        else:
+            continue
+
+        for slot_group, leader_idx in leader_entries:
+            if parse_int(leader_idx) != validator_idx:
+                continue
+            slot_group_idx = parse_int(slot_group)
+
+            base_slot = start_slot + (slot_group_idx * 4)
+            for slot in range(base_slot, base_slot + 4):
+                if slot <= completed_slot:
+                    produced.add(slot)
+
+    return sorted(produced)
+
+
+def build_snapshot_metadata(snapshot: list[dict[str, Any]]) -> tuple[str, list[int]]:
+    identity: Optional[str] = None
+    startup_time_nanos: Optional[str] = None
+    completed_slot: Optional[int] = None
+    for row in snapshot:
+        topic = row.get("topic")
+        key = row.get("key")
+        value = row.get("value")
+        if topic == "summary" and key == "identity_key" and value is not None and identity is None:
+            identity = str(value)
+        elif topic == "summary" and key == "startup_time_nanos" and value is not None and startup_time_nanos is None:
+            startup_time_nanos = str(value)
+        elif topic == "summary" and key == "completed_slot" and value is not None and completed_slot is None:
+            completed_slot = parse_int(value)
+
+    if identity is None or startup_time_nanos is None or completed_slot is None:
+        raise RuntimeError("missing required summary fields in websocket snapshot")
+
+    produced_slots = compute_produced_slots(snapshot, identity, completed_slot)
+    if not produced_slots:
+        raise RuntimeError("no produced slots discovered from epoch schedules")
+
+    return startup_time_nanos, produced_slots
+
+
+def collect_query_details(
+    websocket_url: str,
+    requests: list[dict[str, Any]],
+    idle_wait_secs: int,
+    max_wait_secs: int,
+) -> tuple[bool, list[dict[str, Any]]]:
+    pending_ids = {
+        str(req.get("id"))
+        for req in requests
+        if isinstance(req, dict) and req.get("id") is not None
+    }
+    expected_count = len(pending_ids)
+    details: list[dict[str, Any]] = []
+
+    seen_ids: set[str] = set()
+    deadline = time.monotonic() + max_wait_secs
+    idle_deadline = time.monotonic() + idle_wait_secs
+
+    with WebsocketJsonSession(websocket_url) as ws:
+        try:
+            for req in requests:
+                ws.send_json(req)
+        except (OSError, RuntimeError):
+            return False, details
+
+        while time.monotonic() <= deadline:
+            if len(seen_ids) >= expected_count:
+                break
+
+            row = ws.read_json(1.0)
+            if row is None:
+                if time.monotonic() > idle_deadline and len(seen_ids) < expected_count:
+                    break
+                continue
+
+            details.append(row)
+            if (
+                row.get("topic") == "slot"
+                and row.get("key") in {"query", "query_detailed"}
+                and row.get("id") is not None
+            ):
+                response_id = str(row.get("id"))
+                if response_id in pending_ids and response_id not in seen_ids:
+                    seen_ids.add(response_id)
+                    idle_deadline = time.monotonic() + idle_wait_secs
+
+            if time.monotonic() > idle_deadline and len(seen_ids) < expected_count:
+                break
+
+    return len(seen_ids) >= expected_count, details
+
+
+def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
+    if row.get("topic") != "slot" or row.get("key") not in {"query", "query_detailed"}:
+        return None
+
+    value = row.get("value")
+    if not isinstance(value, dict):
+        return None
+
+    publish = value.get("publish")
+    if not isinstance(publish, dict):
+        return None
+
+    waterfall = value.get("waterfall")
+    waterfall_in: dict[str, Any] = {}
+    waterfall_drops: dict[str, Any] = {}
+    if isinstance(waterfall, dict):
+        if isinstance(waterfall.get("in"), dict):
+            waterfall_in = waterfall["in"]
+        if isinstance(waterfall.get("out"), dict):
+            waterfall_drops = waterfall["out"]
+
+    in_quic = parse_int(waterfall_in.get("quic"))
+    in_udp = parse_int(waterfall_in.get("udp"))
+    in_gossip = parse_int(waterfall_in.get("gossip"))
+    in_block_engine = (
+        parse_int(waterfall_in.get("block_engine"))
+        if "block_engine" in waterfall_in
+        else parse_int(waterfall_in.get("bam"))
+    )
+    in_pack_cranked = parse_int(waterfall_in.get("pack_cranked"))
+    in_pack_retained = parse_int(waterfall_in.get("pack_retained"))
+    in_resolv_retained = parse_int(waterfall_in.get("resolv_retained"))
+
+    drop_malformed = (
+        parse_int(waterfall_drops.get("tpu_quic_invalid"))
+        + parse_int(waterfall_drops.get("tpu_udp_invalid"))
+        + parse_int(waterfall_drops.get("quic_frag_drop"))
+    )
+    drop_abandoned = parse_int(waterfall_drops.get("quic_abandoned"))
+    drop_net_overrun = parse_int(waterfall_drops.get("net_overrun"))
+    drop_quic_overrun = parse_int(waterfall_drops.get("quic_overrun"))
+    drop_verify_overrun = parse_int(waterfall_drops.get("verify_overrun"))
+    drop_unparseable = parse_int(waterfall_drops.get("verify_parse"))
+    drop_bad_signature = parse_int(waterfall_drops.get("verify_failed"))
+    drop_verify_duplicate = parse_int(waterfall_drops.get("verify_duplicate"))
+    drop_dedup_duplicate = parse_int(waterfall_drops.get("dedup_duplicate"))
+    drop_resolv_lut_failed = parse_int(waterfall_drops.get("resolv_lut_failed"))
+    drop_resolv_expired = parse_int(waterfall_drops.get("resolv_expired"))
+    drop_resolv_ancient = parse_int(waterfall_drops.get("resolv_ancient"))
+    drop_resolv_no_ledger = parse_int(waterfall_drops.get("resolv_no_ledger"))
+    drop_pack_retained = parse_int(waterfall_drops.get("pack_retained"))
+    drop_pack_invalid = parse_int(waterfall_drops.get("pack_invalid"))
+    drop_pack_expired = parse_int(waterfall_drops.get("pack_expired"))
+    drop_pack_already_executed = parse_int(waterfall_drops.get("pack_already_executed"))
+    drop_bank_invalid = parse_int(waterfall_drops.get("bank_invalid"))
+    drop_block_success = parse_int(waterfall_drops.get("block_success"))
+    drop_block_fail = parse_int(waterfall_drops.get("block_fail"))
+    unresolved = max(0, parse_int(waterfall_drops.get("resolv_retained")) - in_resolv_retained)
+
+    received = in_quic + in_udp
+    verify = (
+        received
+        + in_gossip
+        + in_block_engine
+        - drop_malformed
+        - drop_abandoned
+        - drop_net_overrun
+        - drop_quic_overrun
+        - drop_verify_overrun
+    )
+    dedup = verify - drop_unparseable - drop_bad_signature - drop_verify_duplicate
+    resolv = dedup - drop_dedup_duplicate
+    pack = (
+        resolv
+        + in_pack_cranked
+        + in_pack_retained
+        - unresolved
+        - drop_resolv_lut_failed
+        - drop_resolv_expired
+        - drop_resolv_ancient
+        - drop_resolv_no_ledger
+    )
+    bank = (
+        pack
+        - drop_pack_retained
+        - drop_pack_invalid
+        - drop_pack_expired
+        - drop_pack_already_executed
+    )
+    packed = bank - drop_bank_invalid
+
+    return {
+        "slot": parse_int(publish.get("slot")),
+        "sankey_nodes": {
+            "quic": in_quic,
+            "udp": in_udp,
+            "received": received,
+            "gossip": in_gossip,
+            "block_engine": in_block_engine,
+            "verify": verify,
+            "dedup": dedup,
+            "resolv": resolv,
+            "crank": in_pack_cranked,
+            "buffered_in": in_pack_retained,
+            "pack": pack,
+            "bank": bank,
+            "packed": packed,
+        },
+        "sankey_drops": {
+            "malformed": drop_malformed,
+            "abandoned": drop_abandoned,
+            "unparseable": drop_unparseable,
+            "bad_signature": drop_bad_signature,
+            "verify_duplicate": drop_verify_duplicate,
+            "dedup_duplicate": drop_dedup_duplicate,
+            "unresolved": unresolved,
+            "bad_lut": drop_resolv_lut_failed,
+            "resolv_expired": drop_resolv_expired,
+            "buffered": drop_pack_retained,
+            "unpackable": drop_pack_invalid,
+            "pack_expired": drop_pack_expired,
+            "already_executed": drop_pack_already_executed,
+            "unexecutable": drop_bank_invalid,
+            "block_success": drop_block_success,
+            "block_fail": drop_block_fail,
+        },
+        "slot_metrics": {
+            "votes": (
+                (
+                    parse_int(publish.get("success_vote_transaction_cnt"))
+                    if "success_vote_transaction_cnt" in publish
+                    else parse_int(publish.get("success_vote_transactions"))
+                )
+                + (
+                    parse_int(publish.get("failed_vote_transaction_cnt"))
+                    if "failed_vote_transaction_cnt" in publish
+                    else parse_int(publish.get("failed_vote_transactions"))
+                )
+            ),
+            "non_vote_failure": (
+                parse_int(publish.get("failed_nonvote_transaction_cnt"))
+                if "failed_nonvote_transaction_cnt" in publish
+                else parse_int(publish.get("failed_nonvote_transactions"))
+            ),
+            "non_vote_success": (
+                parse_int(publish.get("success_nonvote_transaction_cnt"))
+                if "success_nonvote_transaction_cnt" in publish
+                else parse_int(publish.get("success_nonvote_transactions"))
+            ),
+            "compute_units": parse_int(publish.get("compute_units")),
+            "priority_fees_sol": round((parse_int(publish.get("priority_fee")) / 1_000_000_000) * 10000) / 10000,
+            "transaction_fees_sol": round((parse_int(publish.get("transaction_fee")) / 1_000_000_000) * 10000) / 10000,
+            "tips_sol": round((parse_int(publish.get("tips")) / 1_000_000_000) * 10000) / 10000,
+        },
+        "publish": publish,
+    }
+
+
+def parse_slot_results(
+    details: list[dict[str, Any]],
+    mode: str,
+    startup_time_nanos: str,
+    recent_count: int,
+) -> list[dict[str, Any]]:
+    slots_by_id: dict[int, dict[str, Any]] = {}
+    for row in details:
+        parsed = parse_slot_result_row(row)
+        if parsed is not None:
+            slots_by_id[int(parsed["slot"])] = parsed
+
+    parsed_rows = [slots_by_id[slot] for slot in sorted(slots_by_id.keys())]
+    if mode == "since-startup":
+        parsed_rows = [
+            row
+            for row in parsed_rows
+            if parse_int((row.get("publish") or {}).get("completed_time_nanos")) >= parse_int(startup_time_nanos)
+        ]
+    elif mode == "recent" and recent_count > 0 and len(parsed_rows) > recent_count:
+        parsed_rows = parsed_rows[-recent_count:]
+
+    return parsed_rows
+
+
+def scrape_websocket_slots(
+    host: str,
+    mode: str,
+    recent_count: int,
+    snapshot_secs: int,
+    query_wait_secs: int,
+    detail_timeout_secs: int,
+) -> list[dict[str, Any]]:
+    websocket_urls = (
+        [host]
+        if host.startswith(("ws://", "wss://"))
+        else [f"ws://{host}:80/websocket", f"wss://{host}/websocket"]
+    )
+    last_error = RuntimeError(
+        "timed out waiting for required websocket snapshot data; "
+        "try increasing --websocket-snapshot-secs"
+    )
+
+    for websocket_url in websocket_urls:
+        snapshot = capture_snapshot_until_ready(websocket_url, snapshot_secs)
+        if snapshot is None:
+            continue
+
+        startup_time_nanos, produced_slots = build_snapshot_metadata(snapshot)
+        query_slots = produced_slots
+        if mode == "recent" and recent_count > 0:
+            recent_candidate_count = recent_count * 4
+            if recent_candidate_count < (recent_count + 8):
+                recent_candidate_count = recent_count + 8
+            if len(query_slots) > recent_candidate_count:
+                query_slots = query_slots[-recent_candidate_count:]
+
+        query_payloads = [
+            {
+                "topic": "slot",
+                "key": "query_detailed",
+                "id": 1000 + i,
+                "params": {"slot": slot},
+            }
+            for i, slot in enumerate(query_slots)
+        ]
+
+        seen_query_results = False
+        for attempt in (1, 2):
+            wait_secs = query_wait_secs + (4 if attempt == 2 else 0)
+            timeout_secs = detail_timeout_secs + (40 if attempt == 2 else 0)
+            _, details = collect_query_details(
+                websocket_url,
+                query_payloads,
+                wait_secs,
+                timeout_secs,
+            )
+            if any(
+                row.get("topic") == "slot"
+                and row.get("key") in {"query", "query_detailed"}
+                and row.get("value") is not None
+                for row in details
+            ):
+                seen_query_results = True
+
+            parsed_rows = parse_slot_results(details, mode, startup_time_nanos, recent_count)
+            if parsed_rows:
+                return parsed_rows
+
+        if seen_query_results:
+            return []
+        last_error = RuntimeError(
+            "no slot query results returned; "
+            "try increasing --websocket-query-wait-secs/--websocket-detail-timeout-secs",
+        )
+
+    raise last_error
+
 def main() -> int:
     args = parse_args()
 
@@ -187,44 +725,27 @@ def main() -> int:
         print(f"error: tcpdump failed with exit code {rc}", file=sys.stderr)
         return rc
 
-    scrape_script = Path(__file__).resolve().with_name("scrape_websocket.sh")
     websocket_output_path = run_dir / "websocket_slots.ndjson"
-    websocket_stderr_path = run_dir / "websocket_scrape.stderr.log"
-
-    if scrape_script.is_file():
-        websocket_host = resolve_websocket_host(args.websocket_host, args.rpc_url)
-        scrape_cmd = [
-            str(scrape_script),
-            "--host",
-            websocket_host,
-            "--mode",
-            args.websocket_mode,
-            "--output-file",
-            str(websocket_output_path),
-        ]
-        if args.websocket_mode == "recent":
-            scrape_cmd.extend(["--recent-count", str(args.websocket_recent_count)])
-
-        print(f"running websocket scrape at end of capture: {' '.join(scrape_cmd)}")
-        with websocket_stderr_path.open("wb") as websocket_stderr:
-            scrape_rc = subprocess.run(
-                scrape_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=websocket_stderr,
-                cwd=run_dir,
-                check=False,
-            ).returncode
-
-        if scrape_rc == 0:
-            print(f"websocket scrape written to {websocket_output_path}")
-        else:
-            print(
-                f"warning: websocket scrape failed with exit code {scrape_rc}; "
-                f"see {websocket_stderr_path}",
-                file=sys.stderr,
-            )
+    print(
+        "running websocket scrape at end of capture: "
+        f"host={args.websocket_host} mode={args.websocket_mode}"
+    )
+    websocket_rows = scrape_websocket_slots(
+        host=args.websocket_host,
+        mode=args.websocket_mode,
+        recent_count=args.websocket_recent_count,
+        snapshot_secs=args.websocket_snapshot_secs,
+        query_wait_secs=args.websocket_query_wait_secs,
+        detail_timeout_secs=args.websocket_detail_timeout_secs,
+    )
+    if websocket_rows:
+        with websocket_output_path.open("w", encoding="utf-8") as out:
+            for row in websocket_rows:
+                out.write(json.dumps(row, separators=(",", ":")))
+                out.write("\n")
+        print(f"websocket scrape written to {websocket_output_path}")
     else:
-        print(f"warning: websocket scrape script not found at {scrape_script}", file=sys.stderr)
+        print(f"warning: no produced slots matched mode='{args.websocket_mode}'", file=sys.stderr)
 
     print(f"done: files written under {run_dir}")
     return 0
