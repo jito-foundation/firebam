@@ -47,6 +47,7 @@ Environment overrides (defaults shown):
   DUMMY_KEY_OWNER=      # optional owner for newly generated dummy key
   CLUSTER_RPC_URL=https://api.mainnet.solana.com
   SKIP_CLUSTER_CHECK=0  # set to 1 to skip checking target identity + interface is already in use
+  DELINQUENT_SLOT_DISTANCE=15 # allow staked promote when slot lag is greater than this value
 USAGE
 }
 
@@ -149,6 +150,7 @@ SET_IDENTITY_FORCE="${SET_IDENTITY_FORCE:-0}"
 ALLOW_NON_SYMLINK="${ALLOW_NON_SYMLINK:-0}"
 CLUSTER_RPC_URL="${CLUSTER_RPC_URL:-https://api.mainnet.solana.com}"
 SKIP_CLUSTER_CHECK="${SKIP_CLUSTER_CHECK:-0}"
+DELINQUENT_SLOT_DISTANCE="${DELINQUENT_SLOT_DISTANCE:-15}"
 
 DEFAULT_OWNER="$(id -un)"
 [[ "$DEFAULT_OWNER" == "root" && -n "${SUDO_USER:-}" ]] && DEFAULT_OWNER="$SUDO_USER"
@@ -226,7 +228,7 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
   TARGET_PUBKEY=$([[ "$TARGET_MODE" == "staked" ]] && echo "$STAKED_PUBKEY" || echo "$DUMMY_PUBKEY")
   # Match scope from getClusterNodes gossip address:
   # "our" = target pubkey on this host IP, "other" = target pubkey on a different IP, "none" = target pubkey absent.
-  TARGET_MATCH_SCOPE="$(echo "$CLUSTER_JSON" | jq -r --arg pubkey "$TARGET_PUBKEY" --arg iface "$INTERFACE_IP" '
+  TARGET_MATCH_SCOPE="$(echo "$CLUSTER_JSON" | jq --raw-output --exit-status --arg pubkey "$TARGET_PUBKEY" --arg iface "$INTERFACE_IP" '
     .result
     | map(select(.pubkey == $pubkey))
     | if length == 0 then
@@ -249,14 +251,70 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
     exit 1
   }
 
+  # If promoting to staked identity, allow hotswap when the staked identity
+  # is present in gossip but has fallen behind by DELINQUENT_SLOT_DISTANCE slots.
+  # This keeps duplicate-identity protection for active validators.
+  ALLOW_DELINQUENT_STAKED_PROMOTE=0
+  if [[ "$TARGET_MODE" == "staked" && "$TARGET_MATCH_SCOPE" != "none" ]]; then
+    CURRENT_SLOT_JSON="$(curl -s --fail --max-time 10 \
+      -X POST -H "Content-Type: application/json" \
+      -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' \
+      "$CLUSTER_RPC_URL")" || {
+        echo "error: failed to query current slot from $CLUSTER_RPC_URL"
+        exit 1
+      }
+    CURRENT_SLOT="$(echo "$CURRENT_SLOT_JSON" | jq --raw-output --exit-status '.result | tonumber')" || {
+      echo "error: failed to parse current slot from $CLUSTER_RPC_URL"
+      exit 1
+    }
+
+    VOTE_ACCOUNTS_JSON="$(curl -s --fail --max-time 10 \
+      -X POST -H "Content-Type: application/json" \
+      -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts","params":[{"keepUnstakedDelinquents":true}]}' \
+      "$CLUSTER_RPC_URL")" || {
+        echo "error: failed to query vote accounts from $CLUSTER_RPC_URL"
+        exit 1
+      }
+    STAKED_LAST_VOTE="$(echo "$VOTE_ACCOUNTS_JSON" | jq --raw-output --exit-status --arg pubkey "$STAKED_PUBKEY" '
+      .result as $r
+      | [($r.current // []), ($r.delinquent // [])]
+      | add
+      | map(select(.nodePubkey == $pubkey))
+      | map(.lastVote | tonumber?)
+      | max // -1
+    ')" || {
+      echo "error: failed to parse vote accounts from $CLUSTER_RPC_URL"
+      exit 1
+    }
+
+    if (( STAKED_LAST_VOTE >= 0 )); then
+      SLOT_LAG=0
+      if (( CURRENT_SLOT > STAKED_LAST_VOTE )); then
+        SLOT_LAG=$((CURRENT_SLOT - STAKED_LAST_VOTE))
+      fi
+      if (( SLOT_LAG > DELINQUENT_SLOT_DISTANCE )); then
+        ALLOW_DELINQUENT_STAKED_PROMOTE=1
+        echo "warning: staked identity $STAKED_PUBKEY has slot lag $SLOT_LAG (> $DELINQUENT_SLOT_DISTANCE); allowing hotswap"
+      fi
+    fi
+  fi
+
   case "$TARGET_MATCH_SCOPE" in
     our)
-      echo "error: target identity $TARGET_PUBKEY already advertised on interface $INTERFACE_IP ($CLUSTER_RPC_URL)"
-      exit 1
+      if [[ "$TARGET_MODE" == "staked" && "$ALLOW_DELINQUENT_STAKED_PROMOTE" -eq 1 ]]; then
+        :
+      else
+        echo "error: target identity $TARGET_PUBKEY already advertised on interface $INTERFACE_IP ($CLUSTER_RPC_URL)"
+        exit 1
+      fi
       ;;
     other)
-      echo "error: target identity $TARGET_PUBKEY already present in cluster on another interface ($CLUSTER_RPC_URL)"
-      exit 1
+      if [[ "$TARGET_MODE" == "staked" && "$ALLOW_DELINQUENT_STAKED_PROMOTE" -eq 1 ]]; then
+        :
+      else
+        echo "error: target identity $TARGET_PUBKEY already present in cluster on another interface ($CLUSTER_RPC_URL)"
+        exit 1
+      fi
       ;;
   esac
 fi

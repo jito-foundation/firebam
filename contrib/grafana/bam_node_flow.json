@@ -2189,7 +2189,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 12,
         "x": 0,
         "y": 68
       },
@@ -2236,7 +2236,7 @@
           "refId": "B"
         }
       ],
-      "title": "BAM Ingress V0 Message Mix",
+      "title": "BAM Ingress Message Mix",
       "type": "timeseries"
     },
     {
@@ -2244,7 +2244,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of multi-message structure issues. Empty messages have zero AtomicTxnBatch entries; overflow messages exceed local max batch count.",
+      "description": "Rate (events/sec) of multi-message guardrail hits. Empty messages have zero AtomicTxnBatch entries; overflow messages exceed local max batch count.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2270,8 +2270,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
+        "w": 12,
+        "x": 12,
         "y": 68
       },
       "id": 32,
@@ -2317,7 +2317,7 @@
           "refId": "B"
         }
       ],
-      "title": "BAM Ingress Multi Message Health",
+      "title": "BAM Ingress Multi Message Guardrails",
       "type": "timeseries"
     },
     {
@@ -2325,7 +2325,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) through BAM ingress batch lifecycle: staged entries, commit attempts, published entries, and rejected entries.",
+      "description": "Rate (events/sec) through BAM ingress batch lifecycle: staged entries, commit attempts, published entries, and total rejected entries.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2351,9 +2351,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 68
+        "w": 12,
+        "x": 0,
+        "y": 76
       },
       "id": 30,
       "options": {
@@ -2430,7 +2430,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM ingress batch rejects by root cause. Splits deserialization/inconsistent-bundle, empty payload, non-revert multi-packet, and missing-builder-info rejects.",
+      "description": "Rate (events/sec) of BAM ingress rejects by root cause: deserialization/inconsistent-bundle, empty payload, non-revert multi-packet, and missing builder info.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2456,8 +2456,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
-        "x": 0,
+        "w": 12,
+        "x": 12,
         "y": 76
       },
       "id": 31,
