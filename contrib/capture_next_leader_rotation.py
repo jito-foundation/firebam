@@ -11,7 +11,6 @@ import subprocess
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
@@ -53,8 +52,15 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Capture tcpdump + metrics around the next leader slot."
     )
-    p.add_argument("--rpc-url", type=non_empty_string, default=os.getenv("RPC_URL", "http://127.0.0.1:8899"))
-    p.add_argument("--metrics-url", type=non_empty_string, default=os.getenv("METRICS_URL", "http://127.0.0.1:7999/metrics"))
+    p.add_argument("--host", type=non_empty_string, default=os.getenv("HOST", "127.0.0.1"))
+    p.add_argument("--rpc-url", type=non_empty_string, default=os.getenv("RPC_URL"))
+    p.add_argument("--metrics-url", type=non_empty_string, default=os.getenv("METRICS_URL"))
+    p.add_argument(
+        "--websocket-url",
+        type=non_empty_string,
+        default=os.getenv("WEBSOCKET_URL", os.getenv("WEBSOCKET_HOST")),
+        help="websocket URL (default: ws://<host>:80/websocket)",
+    )
     p.add_argument("--output-root", default=os.getenv("OUTPUT_ROOT", "leader_rotations"))
     p.add_argument(
         "--capture-lead-time-sec",
@@ -71,7 +77,6 @@ def parse_args() -> argparse.Namespace:
         type=non_negative_float,
         default=non_negative_float(os.getenv("METRICS_INTERVAL", "0.2")),
     )
-    p.add_argument("--websocket-host", type=non_empty_string, default=os.getenv("WEBSOCKET_HOST"))
     p.add_argument(
         "--websocket-mode",
         choices=("recent", "since-startup"),
@@ -98,9 +103,14 @@ def parse_args() -> argparse.Namespace:
         default=non_negative_int(os.getenv("WEBSOCKET_DETAIL_TIMEOUT_SECS", "60")),
     )
     args = p.parse_args()
+    if args.rpc_url is None:
+        args.rpc_url = f"http://{args.host}:8899"
+    if args.metrics_url is None:
+        args.metrics_url = f"http://{args.host}:7999/metrics"
+    if args.websocket_url is None:
+        args.websocket_url = f"ws://{args.host}:80/websocket"
     if shutil.which("websocat") is None:
         p.error("websocket scrape requires `websocat` in PATH")
-    args.websocket_host = resolve_websocket_host(args.websocket_host, args.rpc_url)
     return args
 
 
@@ -171,22 +181,9 @@ def get_slot_seconds(rpc_url: str) -> float:
     return sample_period / num_slots
 
 
-def resolve_websocket_host(websocket_host: Optional[str], rpc_url: str) -> str:
-    if websocket_host:
-        return websocket_host
-
-    parsed = urllib.parse.urlparse(rpc_url)
-    if parsed.hostname:
-        return parsed.hostname
-
-    return "127.0.0.1"
-
-
 def parse_int(value: Any) -> int:
     if value is None:
         return 0
-    if isinstance(value, bool):
-        return int(value)
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -258,10 +255,7 @@ class WebsocketJsonSession:
 
 def capture_snapshot_until_ready(websocket_url: str, max_wait_secs: int) -> Optional[list[dict[str, Any]]]:
     snapshot: list[dict[str, Any]] = []
-    got_identity = False
-    got_startup = False
-    got_completed = False
-    got_epoch = False
+    ready_fields: set[tuple[str, str]] = set()
     deadline = time.monotonic() + max_wait_secs
 
     with WebsocketJsonSession(websocket_url) as ws:
@@ -273,17 +267,12 @@ def capture_snapshot_until_ready(websocket_url: str, max_wait_secs: int) -> Opti
             snapshot.append(row)
             topic = row.get("topic")
             key = row.get("key")
-            value = row.get("value")
-            if topic == "summary" and key == "identity_key" and value is not None:
-                got_identity = True
-            elif topic == "summary" and key == "startup_time_nanos" and value is not None:
-                got_startup = True
-            elif topic == "summary" and key == "completed_slot" and value is not None:
-                got_completed = True
+            if topic == "summary" and key in {"identity_key", "startup_time_nanos", "completed_slot"} and row.get("value") is not None:
+                ready_fields.add((topic, key))
             elif topic == "epoch" and key == "new":
-                got_epoch = True
+                ready_fields.add((topic, key))
 
-            if got_identity and got_startup and got_completed and got_epoch:
+            if len(ready_fields) == 4:
                 return snapshot
 
     return None
@@ -360,13 +349,12 @@ def collect_query_details(
     requests: list[dict[str, Any]],
     idle_wait_secs: int,
     max_wait_secs: int,
-) -> tuple[bool, list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     pending_ids = {
         str(req.get("id"))
         for req in requests
-        if isinstance(req, dict) and req.get("id") is not None
+        if req.get("id") is not None
     }
-    expected_count = len(pending_ids)
     details: list[dict[str, Any]] = []
 
     seen_ids: set[str] = set()
@@ -374,19 +362,13 @@ def collect_query_details(
     idle_deadline = time.monotonic() + idle_wait_secs
 
     with WebsocketJsonSession(websocket_url) as ws:
-        try:
-            for req in requests:
-                ws.send_json(req)
-        except (OSError, RuntimeError):
-            return False, details
+        for req in requests:
+            ws.send_json(req)
 
-        while time.monotonic() <= deadline:
-            if len(seen_ids) >= expected_count:
-                break
-
+        while time.monotonic() <= deadline and len(seen_ids) < len(pending_ids):
             row = ws.read_json(1.0)
             if row is None:
-                if time.monotonic() > idle_deadline and len(seen_ids) < expected_count:
+                if time.monotonic() > idle_deadline:
                     break
                 continue
 
@@ -401,10 +383,10 @@ def collect_query_details(
                     seen_ids.add(response_id)
                     idle_deadline = time.monotonic() + idle_wait_secs
 
-            if time.monotonic() > idle_deadline and len(seen_ids) < expected_count:
+            if time.monotonic() > idle_deadline:
                 break
 
-    return len(seen_ids) >= expected_count, details
+    return details
 
 
 def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -579,19 +561,20 @@ def parse_slot_results(
 
     parsed_rows = [slots_by_id[slot] for slot in sorted(slots_by_id.keys())]
     if mode == "since-startup":
+        startup_nanos = parse_int(startup_time_nanos)
         parsed_rows = [
             row
             for row in parsed_rows
-            if parse_int((row.get("publish") or {}).get("completed_time_nanos")) >= parse_int(startup_time_nanos)
+            if parse_int((row.get("publish") or {}).get("completed_time_nanos")) >= startup_nanos
         ]
-    elif mode == "recent" and recent_count > 0 and len(parsed_rows) > recent_count:
+    elif mode == "recent" and recent_count > 0:
         parsed_rows = parsed_rows[-recent_count:]
 
     return parsed_rows
 
 
 def scrape_websocket_slots(
-    host: str,
+    websocket_url: str,
     mode: str,
     recent_count: int,
     snapshot_secs: int,
@@ -599,9 +582,9 @@ def scrape_websocket_slots(
     detail_timeout_secs: int,
 ) -> list[dict[str, Any]]:
     websocket_urls = (
-        [host]
-        if host.startswith(("ws://", "wss://"))
-        else [f"ws://{host}:80/websocket", f"wss://{host}/websocket"]
+        [websocket_url]
+        if websocket_url.startswith(("ws://", "wss://"))
+        else [f"ws://{websocket_url}:80/websocket", f"wss://{websocket_url}/websocket"]
     )
     last_error = RuntimeError(
         "timed out waiting for required websocket snapshot data; "
@@ -616,11 +599,7 @@ def scrape_websocket_slots(
         startup_time_nanos, produced_slots = build_snapshot_metadata(snapshot)
         query_slots = produced_slots
         if mode == "recent" and recent_count > 0:
-            recent_candidate_count = recent_count * 4
-            if recent_candidate_count < (recent_count + 8):
-                recent_candidate_count = recent_count + 8
-            if len(query_slots) > recent_candidate_count:
-                query_slots = query_slots[-recent_candidate_count:]
+            query_slots = query_slots[-max(recent_count * 4, recent_count + 8):]
 
         query_payloads = [
             {
@@ -633,22 +612,22 @@ def scrape_websocket_slots(
         ]
 
         seen_query_results = False
-        for attempt in (1, 2):
-            wait_secs = query_wait_secs + (4 if attempt == 2 else 0)
-            timeout_secs = detail_timeout_secs + (40 if attempt == 2 else 0)
-            _, details = collect_query_details(
+        for wait_secs, timeout_secs in (
+            (query_wait_secs, detail_timeout_secs),
+            (query_wait_secs + 4, detail_timeout_secs + 40),
+        ):
+            details = collect_query_details(
                 websocket_url,
                 query_payloads,
                 wait_secs,
                 timeout_secs,
             )
-            if any(
+            seen_query_results = seen_query_results or any(
                 row.get("topic") == "slot"
                 and row.get("key") in {"query", "query_detailed"}
                 and row.get("value") is not None
                 for row in details
-            ):
-                seen_query_results = True
+            )
 
             parsed_rows = parse_slot_results(details, mode, startup_time_nanos, recent_count)
             if parsed_rows:
@@ -705,19 +684,14 @@ def main() -> int:
 
     i = 0
     try:
-        while True:
-            remaining = capture_deadline - time.monotonic()
-            if remaining <= 0:
-                break
-
-            with urllib.request.urlopen(args.metrics_url, timeout=(max(0.1, min(10.0, remaining)))) as resp:
-                log_path = run_dir / f"log_{i}.txt"
-                log_path.write_bytes(resp.read())
+        while (remaining := capture_deadline - time.monotonic()) > 0:
+            with urllib.request.urlopen(args.metrics_url, timeout=max(0.1, min(10.0, remaining))) as resp:
+                (run_dir / f"log_{i}.txt").write_bytes(resp.read())
             i += 1
 
-            remaining = capture_deadline - time.monotonic()
-            if remaining > 0:
-                time.sleep(min(args.metrics_interval, remaining))
+            sleep_for = min(args.metrics_interval, capture_deadline - time.monotonic())
+            if sleep_for > 0:
+                time.sleep(sleep_for)
     finally:
         rc = tcpdump_proc.wait()
 
@@ -728,10 +702,10 @@ def main() -> int:
     websocket_output_path = run_dir / "websocket_slots.ndjson"
     print(
         "running websocket scrape at end of capture: "
-        f"host={args.websocket_host} mode={args.websocket_mode}"
+        f"url={args.websocket_url} mode={args.websocket_mode}"
     )
     websocket_rows = scrape_websocket_slots(
-        host=args.websocket_host,
+        websocket_url=args.websocket_url,
         mode=args.websocket_mode,
         recent_count=args.websocket_recent_count,
         snapshot_secs=args.websocket_snapshot_secs,
