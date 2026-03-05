@@ -9,9 +9,14 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+
+PROCESSED_COMMITMENT = "processed"
+FAST_POLL_WINDOW_SEC = 10.0
+FAST_POLL_INTERVAL_SEC = 1.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,15 +33,33 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--capture-time-sec", type=float, default=float(os.getenv("CAPTURE_TIME_SEC", "10")))
     p.add_argument("--metrics-interval", type=float, default=float(os.getenv("METRICS_INTERVAL", "0.2")))
+    p.add_argument("--websocket-host", default=os.getenv("WEBSOCKET_HOST"))
+    p.add_argument(
+        "--websocket-mode",
+        choices=("recent", "since-startup"),
+        default=os.getenv("WEBSOCKET_MODE", "recent"),
+    )
+    p.add_argument(
+        "--websocket-recent-count",
+        type=int,
+        default=int(os.getenv("WEBSOCKET_RECENT_COUNT", "16")),
+    )
     return p.parse_args()
 
 
 def rpc_call(rpc_url: str, method: str, params=None) -> Any:
+    rpc_params = [] if params is None else list(params)
+    if method in {"getEpochInfo", "getSlot"}:
+        if rpc_params and isinstance(rpc_params[-1], dict):
+            rpc_params[-1] = {**rpc_params[-1], "commitment": PROCESSED_COMMITMENT}
+        else:
+            rpc_params.append({"commitment": PROCESSED_COMMITMENT})
+
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": method,
-        "params": [] if params is None else params,
+        "params": rpc_params,
     }
     req = urllib.request.Request(
         rpc_url,
@@ -91,6 +114,17 @@ def get_slot_seconds(rpc_url: str) -> float:
     return sample_period / num_slots
 
 
+def resolve_websocket_host(websocket_host: Optional[str], rpc_url: str) -> str:
+    if websocket_host:
+        return websocket_host
+
+    parsed = urllib.parse.urlparse(rpc_url)
+    if parsed.hostname:
+        return parsed.hostname
+
+    return "127.0.0.1"
+
+
 def main() -> int:
     args = parse_args()
 
@@ -117,7 +151,10 @@ def main() -> int:
             f"waiting: slot {now_slot}, start_slot {start_slot} "
             f"(est {secs_remaining:.2f}s remaining)"
         )
-        sleep_for = max(0.1, min(2.0, secs_remaining / 2.0))
+        if secs_remaining <= FAST_POLL_WINDOW_SEC:
+            sleep_for = min(FAST_POLL_INTERVAL_SEC, max(0.1, secs_remaining))
+        else:
+            sleep_for = max(0.1, min(2.0, secs_remaining / 2.0))
         time.sleep(sleep_for)
 
     run_dir = (Path(args.output_root) / f"slot_{next_leader_slot}_{dt.datetime.now(dt.timezone.utc)}")
@@ -149,6 +186,45 @@ def main() -> int:
     if rc not in (0, 124):
         print(f"error: tcpdump failed with exit code {rc}", file=sys.stderr)
         return rc
+
+    scrape_script = Path(__file__).resolve().with_name("scrape_websocket.sh")
+    websocket_output_path = run_dir / "websocket_slots.ndjson"
+    websocket_stderr_path = run_dir / "websocket_scrape.stderr.log"
+
+    if scrape_script.is_file():
+        websocket_host = resolve_websocket_host(args.websocket_host, args.rpc_url)
+        scrape_cmd = [
+            str(scrape_script),
+            "--host",
+            websocket_host,
+            "--mode",
+            args.websocket_mode,
+            "--output-file",
+            str(websocket_output_path),
+        ]
+        if args.websocket_mode == "recent":
+            scrape_cmd.extend(["--recent-count", str(args.websocket_recent_count)])
+
+        print(f"running websocket scrape at end of capture: {' '.join(scrape_cmd)}")
+        with websocket_stderr_path.open("wb") as websocket_stderr:
+            scrape_rc = subprocess.run(
+                scrape_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=websocket_stderr,
+                cwd=run_dir,
+                check=False,
+            ).returncode
+
+        if scrape_rc == 0:
+            print(f"websocket scrape written to {websocket_output_path}")
+        else:
+            print(
+                f"warning: websocket scrape failed with exit code {scrape_rc}; "
+                f"see {websocket_stderr_path}",
+                file=sys.stderr,
+            )
+    else:
+        print(f"warning: websocket scrape script not found at {scrape_script}", file=sys.stderr)
 
     print(f"done: files written under {run_dir}")
     return 0
