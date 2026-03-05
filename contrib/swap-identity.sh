@@ -255,16 +255,19 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
   # is present in gossip but has fallen behind by DELINQUENT_SLOT_DISTANCE slots.
   # This keeps duplicate-identity protection for active validators.
   ALLOW_DELINQUENT_STAKED_PROMOTE=0
+  CURRENT_SLOT=-1
+  STAKED_LAST_VOTE=-1
+  SLOT_LAG=-1
   if [[ "$TARGET_MODE" == "staked" && "$TARGET_MATCH_SCOPE" != "none" ]]; then
     CURRENT_SLOT_JSON="$(curl -s --fail --max-time 10 \
       -X POST -H "Content-Type: application/json" \
       -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' \
       "$CLUSTER_RPC_URL")" || {
-        echo "error: failed to query current slot from $CLUSTER_RPC_URL"
+        echo "error: failed to query current slot from $CLUSTER_RPC_URL while evaluating delinquent-promote criterion"
         exit 1
       }
     CURRENT_SLOT="$(echo "$CURRENT_SLOT_JSON" | jq --raw-output --exit-status '.result | tonumber')" || {
-      echo "error: failed to parse current slot from $CLUSTER_RPC_URL"
+      echo "error: failed to parse current slot from $CLUSTER_RPC_URL while evaluating delinquent-promote criterion"
       exit 1
     }
 
@@ -272,7 +275,7 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
       -X POST -H "Content-Type: application/json" \
       -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts","params":[{"keepUnstakedDelinquents":true}]}' \
       "$CLUSTER_RPC_URL")" || {
-        echo "error: failed to query vote accounts from $CLUSTER_RPC_URL"
+        echo "error: failed to query vote accounts from $CLUSTER_RPC_URL while evaluating delinquent-promote criterion"
         exit 1
       }
     STAKED_LAST_VOTE="$(echo "$VOTE_ACCOUNTS_JSON" | jq --raw-output --exit-status --arg pubkey "$STAKED_PUBKEY" '
@@ -283,15 +286,12 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
       | map(.lastVote | tonumber?)
       | max // -1
     ')" || {
-      echo "error: failed to parse vote accounts from $CLUSTER_RPC_URL"
+      echo "error: failed to parse vote accounts from $CLUSTER_RPC_URL while evaluating delinquent-promote criterion"
       exit 1
     }
 
     if (( STAKED_LAST_VOTE >= 0 )); then
-      SLOT_LAG=0
-      if (( CURRENT_SLOT > STAKED_LAST_VOTE )); then
-        SLOT_LAG=$((CURRENT_SLOT - STAKED_LAST_VOTE))
-      fi
+      SLOT_LAG=$(( CURRENT_SLOT > STAKED_LAST_VOTE ? CURRENT_SLOT - STAKED_LAST_VOTE : 0 ))
       if (( SLOT_LAG > DELINQUENT_SLOT_DISTANCE )); then
         ALLOW_DELINQUENT_STAKED_PROMOTE=1
         echo "warning: staked identity $STAKED_PUBKEY has slot lag $SLOT_LAG (> $DELINQUENT_SLOT_DISTANCE); allowing hotswap"
@@ -299,24 +299,19 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
     fi
   fi
 
-  case "$TARGET_MATCH_SCOPE" in
-    our)
-      if [[ "$TARGET_MODE" == "staked" && "$ALLOW_DELINQUENT_STAKED_PROMOTE" -eq 1 ]]; then
-        :
+  if [[ "$TARGET_MATCH_SCOPE" != "none" && ! ( "$TARGET_MODE" == "staked" && "$ALLOW_DELINQUENT_STAKED_PROMOTE" -eq 1 ) ]]; then
+    SCOPE_DESC=$([[ "$TARGET_MATCH_SCOPE" == "our" ]] && echo "local interface $INTERFACE_IP" || echo "another interface")
+    if [[ "$TARGET_MODE" == "staked" ]]; then
+      if (( STAKED_LAST_VOTE < 0 )); then
+        echo "error: hotswap denied: criteria failed for staked promote: target identity $TARGET_PUBKEY is present in getClusterNodes on $SCOPE_DESC, and no matching nodePubkey was found in getVoteAccounts; allow requires either absence from getClusterNodes or slot_lag > DELINQUENT_SLOT_DISTANCE=$DELINQUENT_SLOT_DISTANCE"
       else
-        echo "error: target identity $TARGET_PUBKEY already advertised on interface $INTERFACE_IP ($CLUSTER_RPC_URL)"
-        exit 1
+        echo "error: hotswap denied: criteria failed for staked promote: target identity $TARGET_PUBKEY is present in getClusterNodes on $SCOPE_DESC, and slot_lag=$SLOT_LAG (current_slot=$CURRENT_SLOT, last_vote=$STAKED_LAST_VOTE) is not greater than DELINQUENT_SLOT_DISTANCE=$DELINQUENT_SLOT_DISTANCE"
       fi
-      ;;
-    other)
-      if [[ "$TARGET_MODE" == "staked" && "$ALLOW_DELINQUENT_STAKED_PROMOTE" -eq 1 ]]; then
-        :
-      else
-        echo "error: target identity $TARGET_PUBKEY already present in cluster on another interface ($CLUSTER_RPC_URL)"
-        exit 1
-      fi
-      ;;
-  esac
+    else
+      echo "error: hotswap denied: criterion failed: target identity $TARGET_PUBKEY is already present in getClusterNodes on $SCOPE_DESC; swap requires target identity to be absent from getClusterNodes ($CLUSTER_RPC_URL)"
+    fi
+    exit 1
+  fi
 fi
 
 case "$MODE" in
