@@ -369,7 +369,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 20
       },
       "id": 4,
       "options": {
@@ -484,7 +484,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 20
       },
       "id": 5,
       "options": {
@@ -587,7 +587,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 12
+        "y": 28
       },
       "id": 6,
       "options": {
@@ -678,7 +678,7 @@
               },
               {
                 "color": "red",
-                "value": 80
+                "value": 0.000001
               }
             ]
           },
@@ -689,8 +689,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 12
+        "x": 0,
+        "y": 44
       },
       "id": 7,
       "options": {
@@ -793,7 +793,7 @@
               },
               {
                 "color": "red",
-                "value": 80
+                "value": 0.000001
               }
             ]
           },
@@ -804,8 +804,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 20
+        "x": 12,
+        "y": 44
       },
       "id": 8,
       "options": {
@@ -907,8 +907,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 20
+        "x": 0,
+        "y": 4
       },
       "id": 9,
       "options": {
@@ -1034,8 +1034,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 28
+        "x": 12,
+        "y": 4
       },
       "id": 10,
       "options": {
@@ -1149,8 +1149,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 28
+        "x": 0,
+        "y": 12
       },
       "id": 11,
       "options": {
@@ -1276,7 +1276,7 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
+        "x": 12,
         "y": 36
       },
       "id": 12,
@@ -1404,7 +1404,7 @@
               },
               {
                 "color": "red",
-                "value": 80
+                "value": 0.000001
               }
             ]
           },
@@ -1415,8 +1415,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 36
+        "x": 0,
+        "y": 52
       },
       "id": 13,
       "options": {
@@ -1554,8 +1554,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 44
+        "x": 12,
+        "y": 28
       },
       "id": 14,
       "options": {
@@ -1658,7 +1658,7 @@
               },
               {
                 "color": "red",
-                "value": 80
+                "value": 0.000001
               }
             ]
           },
@@ -1670,7 +1670,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 44
+        "y": 52
       },
       "id": 15,
       "options": {
@@ -1773,7 +1773,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 36
       },
       "id": 16,
       "options": {
@@ -1900,7 +1900,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 12
       },
       "id": 17,
       "options": {
@@ -2157,6 +2157,523 @@
       ],
       "title": "PoH Bundle Init Delay",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "id": 21,
+      "panels": [],
+      "title": "BAM Reliability",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of BAM outbound send-attempt outcomes, grouped by bam_send_attempt. Success buckets should track bam_leader_state_sent and bam_results_sent; no_stream/send_fail indicate dropped or failed sends.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 77
+      },
+      "id": 22,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (bam_send_attempt) (rate(bam_send_attempt{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{bam_send_attempt}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Send Attempts (by outcome)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of BAM client-step skip iterations for stall_backoff only. This is an iteration counter, so sustained reconnect backoff can produce large values.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 77
+      },
+      "id": 23,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(bam_client_step_skip{instance=~\"$instance\",bam_client_step_skip_reason=\"stall_backoff\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "stall_backoff",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Client Step Skip: Stall Backoff",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of BAM client-step skip iterations for non-stall reasons. Split out from stall_backoff so smaller signals remain visible.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 77
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (bam_client_step_skip_reason) (rate(bam_client_step_skip{instance=~\"$instance\",bam_client_step_skip_reason!=\"stall_backoff\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{bam_client_step_skip_reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Client Step Skip: Other Reasons",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Total scheduler-stream live-state transitions over the selected time range, grouped by bam_stream_transition. down_to_live and live_to_down should usually remain close.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.000001
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 69
+      },
+      "id": 24,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (bam_stream_transition) (increase(bam_stream_state_transition{instance=~\"$instance\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "{{bam_stream_transition}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Stream State Transitions (Range Count)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Total pending leader-state updates dropped before send over the selected time range, grouped by bam_leader_pending_drop_reason. Healthy steady state is typically near zero.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.000001
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 69
+      },
+      "id": 25,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (bam_leader_pending_drop_reason) (increase(bam_leader_pending_dropped{instance=~\"$instance\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "{{bam_leader_pending_drop_reason}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Leader Pending Drops (Range Count)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of active BAM bundle abandon events in pack, grouped by pack_bam_bundle_abandon_reason (new sequence preemption, slot-end transitions, outside-leader-slot, or PoH timeout).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.000001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 85
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pack_bam_bundle_abandon_reason) (rate(pack_bam_bundle_abandon{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{pack_bam_bundle_abandon_reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pack BAM Bundle Abandon (by reason)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Parity check over selected time range. Both values should be zero: bam_send_attempt success buckets should match the corresponding bam_*_sent counters.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.000001
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 69
+      },
+      "id": 28,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "abs(sum(increase(bam_send_attempt{instance=~\"$instance\",bam_send_attempt=\"leader_state_sent\"}[$__range])) - sum(increase(bam_leader_state_sent{instance=~\"$instance\"}[$__range])))",
+          "instant": true,
+          "legendFormat": "|leader_state_sent delta|",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "abs(sum(increase(bam_send_attempt{instance=~\"$instance\",bam_send_attempt=\"result_sent\"}[$__range])) - sum(increase(bam_results_sent{instance=~\"$instance\"}[$__range])))",
+          "instant": true,
+          "legendFormat": "|result_sent delta|",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "BAM Send Attempt Parity (Range |Delta|)",
+      "type": "stat"
     }
   ],
   "preload": false,
@@ -2212,6 +2729,6 @@
   "timezone": "America/Chicago",
   "title": "Firedancer BAM Node Flow",
   "uid": "bamnodeflow",
-  "version": 7,
+  "version": 12,
   "weekStart": ""
 }
