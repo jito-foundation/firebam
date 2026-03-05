@@ -1057,7 +1057,7 @@ test_bam_multiple_batches_reject_excess_batch_count( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
-  zero_meta_ts( env->out_mcache, 4UL );
+  zero_meta_ts( env->out_mcache, TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
 
   bam_types_Packet packets[ TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL ];
   test_bam_packet_encode_ctx_t packet_ctx[ TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL ];
@@ -1090,9 +1090,17 @@ test_bam_multiple_batches_reject_excess_batch_count( fd_wksp_t * wksp ) {
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.txn_received_cnt == 0UL );
+  FD_TEST( state->metrics.txn_received_cnt == TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
   FD_TEST( state->metrics.bundle_received_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 1UL );
+
+  fd_frag_meta_t * meta = env->out_mcache;
+  FD_TEST( meta[0].seq == 0UL );
+  FD_TEST( meta[TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET-1UL].seq == TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET-1UL );
+  fd_txn_m_t * first = fd_chunk_to_laddr( state->verify_out.mem, meta[0].chunk );
+  fd_txn_m_t * last  = fd_chunk_to_laddr( state->verify_out.mem, meta[TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET-1UL].chunk );
+  FD_TEST( first->bam.seq_id == 800U );
+  FD_TEST( last->bam.seq_id == 800U + TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET - 1U );
 
   test_bam_prepare_scheduler_stream( state );
   g_clock = (long)22e9;

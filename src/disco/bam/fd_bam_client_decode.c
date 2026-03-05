@@ -418,6 +418,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       FD_LOG_WARNING(( "MultipleAtomicTxnBatch exceeded max batch count (%u>%u)",
                        seen_batch_count + 1U,
                        FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ));
+      decoded_multi->batch_cnt = seen_batch_count;
       decoded_multi->has_err_result = 1;
       decoded_multi->err_result = (fd_bam_bundle_result_t){
         .seq_id            = overflow_batch.batch.seq_id,
@@ -462,15 +463,6 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 static void
 fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ctx,
                                          fd_bam_decoded_multi_batch_t *       decoded_multi ) {
-  /* Decoding is all-or-nothing at the protobuf layer, but once the payload is
-     decoded, each AtomicTxnBatch is handled independently so one invalid batch
-     cannot silently drop other valid batches from the same message. */
-  if( FD_UNLIKELY( decoded_multi->has_err_result ) ) {
-    fd_bam_enqueue_result( ctx, &decoded_multi->err_result );
-    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
-    return;
-  }
-
   for( uint i=0U; i<decoded_multi->batch_cnt; i++ ) {
     if( FD_UNLIKELY( !fd_bam_validate_batch( ctx,
                                              &decoded_multi->batches[ i ].state,
@@ -478,6 +470,11 @@ fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ct
     fd_bam_publish_batch( ctx,
                           &decoded_multi->batches[ i ].state,
                           &decoded_multi->batches[ i ].batch );
+  }
+
+  if( FD_UNLIKELY( decoded_multi->has_err_result ) ) {
+    fd_bam_enqueue_result( ctx, &decoded_multi->err_result );
+    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
   }
 }
 

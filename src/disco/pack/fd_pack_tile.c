@@ -158,9 +158,10 @@ typedef struct {
 #define PACK_BUNDLE_META_KIND_BAM          (2)
 
 typedef struct {
-  fd_ed25519_sig_t sig[1];
+  fd_ed25519_sig_t sig[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   ulong            slot;
   uint             seq_id;
+  uchar            txn_cnt;
 } pack_bam_pending_work_t;
 
 typedef struct {
@@ -621,9 +622,10 @@ pack_tile_remove_pending_bam_work_seq( fd_pack_ctx_t * ctx,
 
 static inline void
 pack_tile_track_pending_bam_work( fd_pack_ctx_t *          ctx,
-                                  void const *             sig,
+                                  void const *             sigs,
                                   uint                     seq_id,
-                                  ulong                    slot ) {
+                                  ulong                    slot,
+                                  uchar                    txn_cnt ) {
   pack_tile_remove_pending_bam_work_seq( ctx, seq_id );
   if( FD_UNLIKELY( ctx->bam_pending_work_cnt >= ctx->max_pending_transactions ) ) {
     FD_LOG_WARNING(( "BAM pending-work tracker full (%lu), seq_id=%u will not flush on leader transition",
@@ -631,7 +633,9 @@ pack_tile_track_pending_bam_work( fd_pack_ctx_t *          ctx,
     return;
   }
   pack_bam_pending_work_t * item = &ctx->bam_pending_work[ ctx->bam_pending_work_cnt++ ];
-  fd_memcpy( item->sig, sig, sizeof(fd_ed25519_sig_t) );
+  item->txn_cnt = txn_cnt ? txn_cnt : (uchar)1U;
+  fd_memset( item->sig, 0, sizeof(item->sig) );
+  fd_memcpy( item->sig, sigs, (ulong)item->txn_cnt * sizeof(fd_ed25519_sig_t) );
   item->seq_id = seq_id;
   item->slot   = slot;
 }
@@ -786,7 +790,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
     fd_bam_bundle_result_t res = {0};
     res.seq_id            = item->seq_id;
     res.slot              = item->slot;
-    res.bundle_txn_cnt    = (uchar)fd_ulong_min( deleted, FD_PACK_MAX_TXN_PER_BUNDLE );
+    res.bundle_txn_cnt    = item->txn_cnt ? item->txn_cnt : (uchar)1U;
     res.execution_success = 0;
     res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
     res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
@@ -1565,8 +1569,12 @@ after_frag( fd_pack_ctx_t *     ctx,
           ctx->bundle_meta->builder->commission = (ulong)fd_uint_min( FD_VOLATILE_CONST( ctx->bam_fee_cfg->commission_bps )/100U, 100U );
         }
 
-        fd_ed25519_sig_t bam_sig[1];
-        fd_memcpy( bam_sig, ctx->current_bam_bundle->bundle[ 0 ]->txnp->payload + 1UL, sizeof(fd_ed25519_sig_t) );
+        fd_ed25519_sig_t bam_sig[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+        for( uchar i=0U; i<ctx->current_bam_bundle->txn_cnt; i++ ) {
+          fd_memcpy( &bam_sig[ i ],
+                     ctx->current_bam_bundle->bundle[ i ]->txnp->payload + 1UL,
+                     sizeof(fd_ed25519_sig_t) );
+        }
 
         ulong deleted;
         long insert_duration = -fd_tickcount();
@@ -1606,7 +1614,8 @@ after_frag( fd_pack_ctx_t *     ctx,
           pack_tile_track_pending_bam_work( ctx,
                                             bam_sig,
                                             ctx->current_bam_bundle->seq_id,
-                                            max_schedule_slot );
+                                            max_schedule_slot,
+                                            ctx->current_bam_bundle->txn_cnt );
         }
 
         ctx->current_bam_bundle->bundle = NULL;
@@ -1673,7 +1682,7 @@ after_frag( fd_pack_ctx_t *     ctx,
         if( FD_LIKELY( result>=0 ) ) {
           ctx->last_successful_insert = now;
           if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
-            pack_tile_track_pending_bam_work( ctx, bam_sig, bam_seq_id, bam_slot );
+            pack_tile_track_pending_bam_work( ctx, bam_sig, bam_seq_id, bam_slot, 1U );
           }
         }
 #if FD_PACK_USE_EXTRA_STORAGE
@@ -1691,12 +1700,37 @@ after_frag( fd_pack_ctx_t *     ctx,
     FD_MCNT_INC( PACK, TRANSACTION_ALREADY_EXECUTED, deleted );
     if( FD_UNLIKELY( deleted ) ) {
       for( ulong i=0UL; i<ctx->bam_pending_work_cnt; i++ ) {
-        if( FD_UNLIKELY( !memcmp( ctx->bam_pending_work[ i ].sig, ctx->executed_txn_sig, sizeof(fd_ed25519_sig_t) ) ) ) {
+        _Bool matched = 0;
+        uchar matched_idx = 0U;
+        for( uchar j=0U; j<ctx->bam_pending_work[ i ].txn_cnt; j++ ) {
+          if( FD_UNLIKELY( !memcmp( ctx->bam_pending_work[ i ].sig[ j ], ctx->executed_txn_sig, sizeof(fd_ed25519_sig_t) ) ) ) {
+            matched = 1;
+            matched_idx = j;
+            break;
+          }
+        }
+        if( FD_UNLIKELY( matched ) ) {
+          pack_bam_pending_work_t item = ctx->bam_pending_work[ i ];
           ulong last_idx = ctx->bam_pending_work_cnt - 1UL;
           if( FD_LIKELY( i < last_idx ) ) {
             ctx->bam_pending_work[ i ] = ctx->bam_pending_work[ last_idx ];
           }
           ctx->bam_pending_work_cnt = last_idx;
+
+          fd_bam_bundle_result_t res = {0};
+          res.seq_id            = item.seq_id;
+          res.slot              = item.slot;
+          res.bundle_txn_cnt    = item.txn_cnt ? item.txn_cnt : (uchar)1U;
+          res.execution_success = 0;
+          res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+          res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+          res.transaction_err_count = res.bundle_txn_cnt;
+          for( uchar j=0U; j<res.bundle_txn_cnt; j++ ) {
+            res.sanitize_success[ j ] = 1U;
+            res.transaction_err[ j ]  = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+          }
+          res.transaction_err[ matched_idx ] = pack_tile_bam_txn_err_from_pack_insert( FD_PACK_INSERT_REJECT_DUPLICATE );
+          pack_tile_publish_bam_result( ctx, stem, &res );
           break;
         }
       }
