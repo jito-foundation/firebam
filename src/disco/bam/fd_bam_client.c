@@ -428,15 +428,27 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
     return;
   case FD_BAM_BUNDLE_ERR_GENERIC_INVALID:
     out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
-    if( FD_UNLIKELY( res->generic_invalid_reason >= FD_BAM_ERR_GENERIC_INVALID_CNT ) ) {
-      FD_LOG_ERR(( "Invalid FD_BAM_ERR_GENERIC_INVALID %u, value out of range.", res->generic_invalid_reason ));
+    if( FD_UNLIKELY( res->generic_invalid_reason==FD_BAM_ERR_GENERIC_INVALID_NONE ||
+                     res->generic_invalid_reason>=FD_BAM_ERR_GENERIC_INVALID_CNT ||
+                     !FD_BAM_ERR_GENERIC_INVALID_STRINGS[ res->generic_invalid_reason ] ) ) {
+      snprintf( out->reason.generic_invalid.message,
+                sizeof(out->reason.generic_invalid.message),
+                "invalid generic-invalid reason %u",
+                res->generic_invalid_reason );
+      return;
     }
     strlcpy( out->reason.generic_invalid.message,
              FD_BAM_ERR_GENERIC_INVALID_STRINGS[ res->generic_invalid_reason ],
              sizeof(out->reason.generic_invalid.message) );
     return;
   default:
-    FD_LOG_ERR(( "Invalid error type %u, value out of range.", res->bundle_err));
+    FD_LOG_WARNING(( "Invalid error type %u, value out of range.", res->bundle_err ));
+    out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+    snprintf( out->reason.generic_invalid.message,
+              sizeof(out->reason.generic_invalid.message),
+              "invalid bundle error %u",
+              res->bundle_err );
+    return;
   }
 
   if( FD_UNLIKELY( res->scheduling_error != FD_BAM_SCHED_ERR_NONE ) ) {

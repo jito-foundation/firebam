@@ -115,20 +115,20 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
                                     fd_txn_p_t const *  txn,
                                     ulong               slot,
                                     int                 transaction_err_idx,
-                                    int                 sanitize_success ) {
+                                    _Bool               sanitize_success ) {
   if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
   if( FD_UNLIKELY( txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM || txn->bam.revert_on_error ) ) return;
 
-  int committed = !!( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
+  _Bool committed = !!( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
   fd_bam_bundle_result_t res = {0};
   res.seq_id            = txn->bam.seq_id;
   res.slot              = slot;
   res.bundle_txn_cnt    = 1U;
-  res.execution_success = (uchar)committed;
+  res.execution_success = committed;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
   res.consumed_cus[ 0 ] = txn->bank_cu.actual_consumed_cus;
-  res.sanitize_success[ 0 ] = (uchar)!!sanitize_success;
+  res.sanitize_success[ 0 ] = sanitize_success;
 
   if( FD_UNLIKELY( !sanitize_success ) ) {
     res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_SANITIZE_FAILURE;
@@ -421,7 +421,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
 
   fd_acct_addr_t const * writable_alt[ MAX_TXN_PER_MICROBLOCK ] = { NULL };
 
-  int execution_success = 1;
+  _Bool execution_success = 1;
 
   ulong sidecar_footprint_bytes = 0UL;
   for( ulong i=0UL; i<txn_cnt; i++ ) {
@@ -454,7 +454,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   ulong out_timestamps      [ 4*MAX_TXN_PER_MICROBLOCK ] = { 0U };
   ulong tips                [   MAX_TXN_PER_MICROBLOCK ] = { 0U };
   if( FD_LIKELY( execution_success ) ) {
-    execution_success = fd_ext_bank_execute_and_commit_bundle( ctx->_bank, ctx->txn_abi_mem, txn_cnt, transaction_err, actual_execution_cus, actual_acct_data_cus, out_timestamps, tips );
+    execution_success = !!fd_ext_bank_execute_and_commit_bundle( ctx->_bank, ctx->txn_abi_mem, txn_cnt, transaction_err, actual_execution_cus, actual_acct_data_cus, out_timestamps, tips );
   }
 
   if( FD_LIKELY( execution_success ) ) {
@@ -529,20 +529,20 @@ handle_bundle( fd_bank_ctx_t *     ctx,
       res.seq_id            = first->bam.seq_id;
       res.slot              = slot;
       res.bundle_txn_cnt    = (uchar)txn_cnt;
-      res.execution_success = (uchar)execution_success;
+      res.execution_success = execution_success;
       res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
       res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
 
       for( ulong i=0UL; i<txn_cnt; i++ ) {
-        int sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
-        res.sanitize_success[ i ] = (uchar)sanitize_success;
+        _Bool sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+        res.sanitize_success[ i ] = sanitize_success;
         res.consumed_cus[ i ]     = txns[ i ].bank_cu.actual_consumed_cus;
       }
 
       if( FD_UNLIKELY( !execution_success ) ) {
         res.transaction_err_count = (uchar)txn_cnt;
         for( ulong i=0UL; i<txn_cnt; i++ ) {
-          int sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+          _Bool sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
           if( FD_UNLIKELY( !sanitize_success ) ) {
             res.transaction_err[ i ] = bam_types_TransactionErrorReason_SANITIZE_FAILURE;
             continue;

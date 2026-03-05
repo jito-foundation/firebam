@@ -40,14 +40,14 @@ typedef struct {
   uint  seq_id;            /* Uniquely assigned for a single leader rotation. 0 is valid seq_id. UINT_MAX is never produced. */
   ulong slot;              /* Slot associated with the batch. Executed bundles use the bank/Poh slot. 0 means the scheduler supplied no slot hint. */
   uchar bundle_txn_cnt;    /* Declared transaction count from the scheduler, capped to FD_PACK_MAX_TXN_PER_BUNDLE. Also the number of per-transaction result entries populated below; consumers must only examine indices [0,bundle_txn_cnt). */
-  uchar execution_success; /* Batch committed flag. Set to 1 only when the whole batch is committed. Note: individual committed transactions can still have execution_success=false (fees-only / instruction error), encoded via TransactionCommittedResult.execution_success. */
+  _Bool execution_success; /* Batch committed flag. Set to true only when the whole batch is committed. Note: individual committed transactions can still have execution_success=false (fees-only / instruction error), encoded via TransactionCommittedResult.execution_success. */
   ushort scheduling_error; /* bam_types_SchedulingError reason code when the batch never scheduled; FD_BAM_SCHED_ERR_NONE when scheduling succeeded or the bundle executed. */
   bam_types_TransactionErrorReason transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Per-transaction bam_types_TransactionErrorReason for indices <bundle_txn_cnt. */
   uchar transaction_err_count; /* Number of transaction errors. 0 denotes success. */
   uint  consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Actual compute units consumed per transaction (exec+account data), even when the bundle later reverts. 0 when the txn never executed. */
   ulong feepayer_balance_lamports[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Fee payer post-balance per transaction. Only meaningful for committed results. */
   uint  loaded_accounts_data_size[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Loaded accounts data size (bytes) per transaction. Only meaningful for committed results. */
-  uchar sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];  /* Boolean sanitize outcome per transaction (1=passed bank sanitize, 0=failed). When 0, transaction_err typically reports SANITIZE_FAILURE. */
+  _Bool sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];  /* Boolean sanitize outcome per transaction (true=passed bank sanitize, false=failed). When false, transaction_err typically reports SANITIZE_FAILURE. */
   uchar bundle_err;        /* FD_BAM_BUNDLE_ERR_* selector for bundle-level rejection prior to execution. */
   uchar deser_index;       /* Zero-based transaction index tied to the deserialization error; only valid when bundle_err==FD_BAM_BUNDLE_ERR_DESER. */
   uchar deser_reason;      /* bam_types_DeserializationErrorReason enumerator for the failure reported by deser_index; only meaningful when bundle_err==FD_BAM_BUNDLE_ERR_DESER. */

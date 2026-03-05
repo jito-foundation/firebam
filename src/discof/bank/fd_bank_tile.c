@@ -141,12 +141,12 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
 
   /* revert_on_error=0 batches are assumed to be single-packet, so emit one
      result per seq_id without aggregating multiple transactions. */
-  int committed = !!( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
+  _Bool committed = !!( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
   fd_bam_bundle_result_t res = {0};
   res.seq_id            = txn->bam.seq_id;
   res.slot              = slot;
   res.bundle_txn_cnt    = 1U;
-  res.execution_success = (uchar)committed;
+  res.execution_success = committed;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
   res.consumed_cus[ 0 ] = txn->bank_cu.actual_consumed_cus;
@@ -154,7 +154,7 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
     res.feepayer_balance_lamports[ 0 ] = fd_txn_account_get_lamports( &txn_ctx->accounts[ FD_FEE_PAYER_TXN_IDX ] );
     res.loaded_accounts_data_size[ 0 ] = (uint)txn_ctx->loaded_accounts_data_size;
   }
-  res.sanitize_success[ 0 ] = (uchar)!!( txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+  res.sanitize_success[ 0 ] = !!( txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
   if( FD_UNLIKELY( !res.sanitize_success[ 0 ] ) ) {
     res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_SANITIZE_FAILURE;
     res.transaction_err_count = 1U;
@@ -430,7 +430,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   fd_acct_addr_t const * writable_alt[ MAX_TXN_PER_MICROBLOCK ] = { NULL };
   ulong                  tips        [ MAX_TXN_PER_MICROBLOCK ] = { 0U };
 
-  int execution_success = 1;
+  _Bool execution_success = 1;
   ulong fail_idx        = ULONG_MAX;
   int   fail_exec_err   = FD_RUNTIME_EXECUTE_SUCCESS;
 
@@ -444,14 +444,15 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     txn->flags &= ~FD_TXN_P_FLAGS_SANITIZE_SUCCESS;
     txn->flags &= ~FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
 
-    if( execution_success==0 ) {
+    if( FD_UNLIKELY( !execution_success ) ) {
       txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-FD_RUNTIME_TXN_ERR_BUNDLE_PEER)<<24);
       continue;
     }
 
     txn_ctx->exec_err = fd_runtime_prepare_and_execute_txn( ctx->banks, ctx->_bank_idx, txn_ctx, txn, NULL, &ctx->exec_stack, &ctx->exec_accounts[ i ], NULL, NULL );
     txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-txn_ctx->exec_err)<<24);
-    if( FD_UNLIKELY( !(txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS ) || txn_ctx->exec_err ) ) {
+    _Bool sanitize_success = !!( txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+    if( FD_UNLIKELY( !sanitize_success || txn_ctx->exec_err ) ) {
       if( FD_UNLIKELY( fail_idx==ULONG_MAX ) ) {
         fail_idx      = i;
         fail_exec_err = txn_ctx->exec_err;
@@ -524,7 +525,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     res.seq_id         = txns[ 0 ].bam.seq_id;
     res.slot           = slot;
     res.bundle_txn_cnt = (uchar)txn_cnt;
-    res.execution_success = (uchar)execution_success;
+    res.execution_success = execution_success;
     res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
     res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
 
@@ -535,7 +536,11 @@ handle_bundle( fd_bank_ctx_t *     ctx,
         res.feepayer_balance_lamports[ i ] = fd_txn_account_get_lamports( &txn_ctx->accounts[ FD_FEE_PAYER_TXN_IDX ] );
         res.loaded_accounts_data_size[ i ] = (uint)txn_ctx->loaded_accounts_data_size;
       }
-      res.sanitize_success[ i ] = (uchar)!!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+      _Bool sanitize_success = 1;
+      if( FD_UNLIKELY( !execution_success && i==fail_idx ) ) {
+        sanitize_success = !!( ctx->txn_ctx[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+      }
+      res.sanitize_success[ i ] = sanitize_success;
     }
 
     if( FD_UNLIKELY( !execution_success ) ) {

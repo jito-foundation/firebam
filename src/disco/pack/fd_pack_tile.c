@@ -786,7 +786,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
     fd_bam_bundle_result_t res = {0};
     res.seq_id            = item->seq_id;
     res.slot              = item->slot;
-    res.bundle_txn_cnt    = (uchar)fd_ulong_min( deleted, UCHAR_MAX );
+    res.bundle_txn_cnt    = (uchar)fd_ulong_min( deleted, FD_PACK_MAX_TXN_PER_BUNDLE );
     res.execution_success = 0;
     res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
     res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
@@ -1565,6 +1565,9 @@ after_frag( fd_pack_ctx_t *     ctx,
           ctx->bundle_meta->builder->commission = (ulong)fd_uint_min( FD_VOLATILE_CONST( ctx->bam_fee_cfg->commission_bps )/100U, 100U );
         }
 
+        fd_ed25519_sig_t bam_sig[1];
+        fd_memcpy( bam_sig, ctx->current_bam_bundle->bundle[ 0 ]->txnp->payload + 1UL, sizeof(fd_ed25519_sig_t) );
+
         ulong deleted;
         long insert_duration = -fd_tickcount();
         int result = fd_pack_insert_bundle_fini( ctx->pack,
@@ -1601,7 +1604,7 @@ after_frag( fd_pack_ctx_t *     ctx,
           pack_tile_publish_bam_result( ctx, stem, &res );
         } else {
           pack_tile_track_pending_bam_work( ctx,
-                                            ctx->current_bam_bundle->bundle[ 0 ]->txnp->payload + 1UL,
+                                            bam_sig,
                                             ctx->current_bam_bundle->seq_id,
                                             max_schedule_slot );
         }
@@ -1616,6 +1619,10 @@ after_frag( fd_pack_ctx_t *     ctx,
       uchar source_tpu        = txnp->source_tpu;
       uint  bam_seq_id        = txnp->bam.seq_id;
       ulong bam_slot          = ctx->bam_txn_max_schedule_slot;
+      fd_ed25519_sig_t bam_sig[1] = {0};
+      if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+        fd_memcpy( bam_sig, txnp->payload + 1UL, sizeof(fd_ed25519_sig_t) );
+      }
 
       if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
                        ( ctx->leader_slot==ULONG_MAX ||
@@ -1666,7 +1673,7 @@ after_frag( fd_pack_ctx_t *     ctx,
         if( FD_LIKELY( result>=0 ) ) {
           ctx->last_successful_insert = now;
           if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
-            pack_tile_track_pending_bam_work( ctx, txnp->payload + 1UL, bam_seq_id, bam_slot );
+            pack_tile_track_pending_bam_work( ctx, bam_sig, bam_seq_id, bam_slot );
           }
         }
 #if FD_PACK_USE_EXTRA_STORAGE

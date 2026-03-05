@@ -156,8 +156,8 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   if( FD_UNLIKELY( state->packet_cnt >= FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ) ) {
     FD_LOG_WARNING(( "Received AtomicTxnBatch exceeding max bundle size, already have %u txns", state->packet_cnt ));
     state->has_deser_err   = true;
-    state->deser_reason    = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
-    state->deser_index     = state->packet_cnt;
+    state->deser_reason    = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+    state->deser_index     = 0U;
     return false;
   }
 
@@ -462,11 +462,9 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 static void
 fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ctx,
                                          fd_bam_decoded_multi_batch_t *       decoded_multi ) {
-  /* Commit phase for MultipleAtomicTxnBatch is all-or-nothing:
-     - If a staged message-level error exists, emit only that not-committed result.
-     - Validate every staged batch first.
-     - Publish only after all staged batches validate.
-     This prevents partial publish when a later batch is malformed/invalid. */
+  /* Decoding is all-or-nothing at the protobuf layer, but once the payload is
+     decoded, each AtomicTxnBatch is handled independently so one invalid batch
+     cannot silently drop other valid batches from the same message. */
   if( FD_UNLIKELY( decoded_multi->has_err_result ) ) {
     fd_bam_enqueue_result( ctx, &decoded_multi->err_result );
     ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
@@ -476,10 +474,7 @@ fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ct
   for( uint i=0U; i<decoded_multi->batch_cnt; i++ ) {
     if( FD_UNLIKELY( !fd_bam_validate_batch( ctx,
                                              &decoded_multi->batches[ i ].state,
-                                             &decoded_multi->batches[ i ].batch ) ) ) return;
-  }
-
-  for( uint i=0U; i<decoded_multi->batch_cnt; i++ ) {
+                                             &decoded_multi->batches[ i ].batch ) ) ) continue;
     fd_bam_publish_batch( ctx,
                           &decoded_multi->batches[ i ].state,
                           &decoded_multi->batches[ i ].batch );

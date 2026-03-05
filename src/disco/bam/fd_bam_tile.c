@@ -263,6 +263,23 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
 
 static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
 
+/* Two-phase fragment staging kind.
+   - bam_during_frag validates size/range and stores chunk + kind.
+   - bam_after_frag consumes that staged chunk based on kind.
+   Edge cases / invariants:
+   - NONE: fail-closed state used for unknown sizes, bad chunks, or unexpected
+     in_idx. after_frag must no-op.
+   - RESULT: staged chunk points to fd_bam_bundle_result_t. This can originate
+     from either bank->bam or pack->bam links, so after_frag must still branch
+     on in_idx to choose the right dcache base.
+   - LEADER: staged chunk points to fd_bam_leader_state_t and is only valid
+     from pack->bam. Any other in_idx is malformed and dropped. */
+enum {
+  FD_BAM_FRAG_STAGED_NONE   = 0U, /* No staged payload (or staged payload was rejected). */
+  FD_BAM_FRAG_STAGED_RESULT = 1U, /* fd_bam_bundle_result_t staged for enqueue_result. */
+  FD_BAM_FRAG_STAGED_LEADER = 2U  /* fd_bam_leader_state_t staged for bam_leader_state update. */
+};
+
 void
 fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   fd_bam_tile_handle_ctrl( ctx );
@@ -321,6 +338,9 @@ bam_during_frag( fd_bam_tile_t * ctx,
   (void)sig;
   (void)ctl;
 
+  ctx->frag_staged_kind = FD_BAM_FRAG_STAGED_NONE;
+  ctx->frag_staged_chunk = 0UL;
+
   if( FD_LIKELY( in_idx == ctx->bank_bam_in_idx ) ) {
     if( FD_UNLIKELY( sz != sizeof(fd_bam_bundle_result_t) ) ) {
       FD_LOG_WARNING(( "Unexpected BAM bundle result size %lu", sz ));
@@ -330,34 +350,72 @@ bam_during_frag( fd_bam_tile_t * ctx,
       FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->bank_in.chunk0, ctx->bank_in.wmark ));
       return;
     }
-    fd_bam_enqueue_result( ctx, fd_chunk_to_laddr( ctx->bank_in.mem, chunk ) );
+    ctx->frag_staged_chunk = chunk;
+    ctx->frag_staged_kind = FD_BAM_FRAG_STAGED_RESULT;
     return;
   }
 
   if( FD_UNLIKELY( in_idx != ctx->pack_leader_in_idx ) ) return;
 
-  _Bool is_leader_state = sz == sizeof(fd_bam_leader_state_t);
-  _Bool is_bundle_result = sz == sizeof(fd_bam_bundle_result_t);
-  if( FD_UNLIKELY( !is_leader_state && !is_bundle_result ) ) {
-    FD_LOG_WARNING(( "Unexpected pack->bam fragment size %lu", sz ));
-    return;
-  }
-
-  if( FD_UNLIKELY( ( chunk < ctx->leader_in.chunk0 ) | ( chunk > ctx->leader_in.wmark ) ) ) {
-    if( FD_UNLIKELY( is_leader_state ) )
+  if( FD_LIKELY( sz == sizeof(fd_bam_leader_state_t) ) ) {
+    if( FD_UNLIKELY( ( chunk < ctx->leader_in.chunk0 ) | ( chunk > ctx->leader_in.wmark ) ) ) {
       FD_LOG_WARNING(( "BAM leader state chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
-    else
-      FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
+      return;
+    }
+    ctx->frag_staged_chunk = chunk;
+    ctx->frag_staged_kind = FD_BAM_FRAG_STAGED_LEADER;
     return;
   }
-
-  void const * payload = fd_chunk_to_laddr( ctx->leader_in.mem, chunk );
-  if( is_leader_state ) {
-    ctx->bam_leader_state  = *(fd_bam_leader_state_t const *)payload;
-    ctx->bam_leader_pending = 1U;
-  } else {
-    fd_bam_enqueue_result( ctx, (fd_bam_bundle_result_t const *)payload );
+  if( FD_LIKELY( sz == sizeof(fd_bam_bundle_result_t) ) ) {
+    if( FD_UNLIKELY( ( chunk < ctx->leader_in.chunk0 ) | ( chunk > ctx->leader_in.wmark ) ) ) {
+      FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
+      return;
+    }
+    ctx->frag_staged_chunk = chunk;
+    ctx->frag_staged_kind = FD_BAM_FRAG_STAGED_RESULT;
+    return;
   }
+  FD_LOG_WARNING(( "Unexpected pack->bam fragment size %lu", sz ));
+}
+
+static void
+bam_after_frag( fd_bam_tile_t *     ctx,
+                ulong               in_idx,
+                ulong               seq    FD_PARAM_UNUSED,
+                ulong               sig    FD_PARAM_UNUSED,
+                ulong               sz     FD_PARAM_UNUSED,
+                ulong               tsorig FD_PARAM_UNUSED,
+                ulong               tspub  FD_PARAM_UNUSED,
+                fd_stem_context_t * stem   FD_PARAM_UNUSED ) {
+  switch( ctx->frag_staged_kind ) {
+  case FD_BAM_FRAG_STAGED_RESULT: {
+    fd_bam_bundle_result_t const * res = NULL;
+    if( FD_LIKELY( in_idx==ctx->bank_bam_in_idx ) ) {
+      res = (fd_bam_bundle_result_t const *)fd_chunk_to_laddr( ctx->bank_in.mem, ctx->frag_staged_chunk );
+    } else if( FD_LIKELY( in_idx==ctx->pack_leader_in_idx ) ) {
+      res = (fd_bam_bundle_result_t const *)fd_chunk_to_laddr( ctx->leader_in.mem, ctx->frag_staged_chunk );
+    } else {
+      FD_LOG_WARNING(( "Unexpected in_idx=%lu for staged BAM bundle result", in_idx ));
+      break;
+    }
+    fd_bam_enqueue_result( ctx, res );
+    break;
+  }
+  case FD_BAM_FRAG_STAGED_LEADER:
+    if( FD_UNLIKELY( in_idx!=ctx->pack_leader_in_idx ) ) {
+      FD_LOG_WARNING(( "Unexpected in_idx=%lu for staged BAM leader state", in_idx ));
+      break;
+    }
+    ctx->bam_leader_state = *(fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->leader_in.mem, ctx->frag_staged_chunk );
+    ctx->bam_leader_pending = 1U;
+    break;
+  default:
+    /* Unknown staged kind (e.g. memory corruption) is ignored to avoid
+       dereferencing an unvalidated chunk pointer. */
+    break;
+  }
+  ctx->frag_staged_kind = FD_BAM_FRAG_STAGED_NONE;
+  ctx->frag_staged_chunk = 0UL;
 }
 
 static void
@@ -1046,6 +1104,7 @@ populate_allowed_fds( fd_topo_t const *      topo,
 #define STEM_CALLBACK_METRICS_WRITE       metrics_write
 #define STEM_CALLBACK_AFTER_CREDIT        after_credit
 #define STEM_CALLBACK_DURING_FRAG         bam_during_frag
+#define STEM_CALLBACK_AFTER_FRAG          bam_after_frag
 
 #include "../stem/fd_stem.c"
 
