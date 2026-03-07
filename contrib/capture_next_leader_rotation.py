@@ -778,17 +778,33 @@ def main() -> int:
 
     run_dir = Path(args.output_root) / f"slot_{next_leader_slot}_{dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    pcap_cmd = ["timeout", str(args.capture_time_sec), "sudo", "tcpdump", "-nn", "-w", f"dump_{next_leader_slot}.pcap"]
+    tcpdump_filter = "not (net 127.0.0.0/8 or host ::1)"
     if args.bam_only:
         firedancer_log_path, bam_ip, bam_port = read_bam_endpoint_from_firedancer_log(args.firedancer_log_path)
-        pcap_cmd.extend(["host", bam_ip])
+        tcpdump_filter = f"host {bam_ip} and {tcpdump_filter}"
         print(
             "bam-only capture enabled: "
             f"parsed BAM endpoint {bam_ip}:{bam_port} from {firedancer_log_path}; "
-            f"tcpdump filter='host {bam_ip}'"
+            f"tcpdump filter='{tcpdump_filter}'"
         )
+    pcap_cmd = [
+        "timeout",
+        str(args.capture_time_sec),
+        "sudo",
+        "tcpdump",
+        "-i",
+        "any",
+        "-nn",
+        "-w",
+        f"dump_{next_leader_slot}.pcap",
+        tcpdump_filter,
+    ]
 
-    print(f"capture directory: {run_dir}; starting tcpdump and metrics capture now for ~{args.capture_time_sec}s")
+    print(
+        "capture directory: "
+        f"{run_dir}; starting tcpdump and metrics capture now for ~{args.capture_time_sec}s "
+        f"with filter '{tcpdump_filter}'"
+    )
     tcpdump_proc = subprocess.Popen(pcap_cmd, cwd=run_dir)
     capture_deadline = time.monotonic() + args.capture_time_sec
 
