@@ -2,15 +2,15 @@
 
 This document specifies the on-the-wire protocol and observed behavioral contract between:
 
-- The validator-side BAM client in this repo (`/home/eric/dev/jito-solana`).
-- The BAM Node service in `/home/eric/dev/bam` (the "bam-node").
+- The validator-side BAM client in this repo (`jito-solana`).
+- The BAM Node service in `bam` (the "bam-node").
 
 It is written so an engineer can reimplement BAM support clean-room, without reading either codebase.
 
 Observed from:
 
-- jito-solana git commit `9a566139dade105211e144555192460add9f56cc`
-- bam git commit `fbd2f5d8c3bb1cb5e4d850ae32079e80d46a4794`
+- jito-solana git commit `5f2900c3a531a70a2424f0254ba0b6b268db60ad`
+- bam git commit `f2c02f511a44a0190a9550504758d2228dfc79ac`
 
 ## Terminology
 
@@ -37,8 +37,11 @@ Observed from:
    leader state updates while it is leader, receives `AtomicTxnBatch` messages from Node, validates and schedules them
    with account-aware conflict tracking, executes them against the active leader bank, and sends an
    `AtomicTxnBatchResult` per received batch back to Node.
-3. When BAM is connected, the validator disables/bypasses normal transaction ingestion paths and executes only
-   Node-supplied batches.
+3. When BAM is connected, the validator switches non-vote scheduling to BAM-supplied batches. Block Engine
+   streaming is suppressed only in the `Connected` state, and TPU packet forwarding is suppressed only when the
+   validator has also accepted BAM TPU config and switched fetch-stage TPU gossip to BAM addresses.
+4. Node handles validator execution results by correlating them with forwarded batches by `seq_id` and applying
+   retry/non-retry policy based on the returned outcome.
 
 ## Protobuf and gRPC API
 
@@ -58,13 +61,13 @@ Validator -> Node (`SchedulerMessageV0.msg`):
 - `ValidatorHeartBeat { time_sent_microseconds }`
 - `LeaderState { slot, tick, slot_cu_budget_remaining }`
 - `MultipleAtomicTxnBatchResult { results: [AtomicTxnBatchResult] }`
-- `Pong { id }` (gRPC RTT telemetry; current validator does not send because it ignores `Ping`)
+- `Pong { id }` (gRPC RTT telemetry)
 
 Node -> Validator (`SchedulerResponseV0.resp`):
 
 - `BuilderHeartBeat { time_sent_microseconds }`
 - `MultipleAtomicTxnBatch { batches: [AtomicTxnBatch] }`
-- `Ping { id }` (gRPC RTT telemetry; current validator client ignores it)
+- `Ping { id }` (gRPC RTT telemetry)
 
 ## Authentication
 
@@ -80,7 +83,7 @@ Signing/verification input:
 2. Validator forms `labeled_bytes = AUTH_LABEL || challenge_to_sign.as_bytes()`.
 3. Validator signs `labeled_bytes` with the validator identity keypair (ed25519).
 4. Validator sends `AuthProof` with `validator_pubkey` as a base58 pubkey string and `signature` as a base58 signature
-   string (`Signature::to_string()` equivalent).
+   string
 
 ### Validator Requirements
 
@@ -150,10 +153,6 @@ Node side:
   heartbeats).
 - Observed node behavior: ping `id` is an incrementing, wrapping `u32`, and the node tracks at most one pending ping at
   a time per connection.
-- The current validator implementation ignores/drops `Ping` in its gRPC inbound handler and therefore never sends
-  `Pong` (despite `Ping`/`Pong` being defined in the proto).
-- The node does not require `Pong` for correctness: if a `Pong` is not received within a timeout, the node records a
-  timeout RTT datapoint and continues.
 - Observed ping timeout: `ping_timeout = max(1us, 2 * max_ping_rtt_us)`. With defaults (`max_ping_rtt_us = 30ms`),
   `ping_timeout = 60ms`.
 - If a `Pong` arrives with no pending ping or with a mismatched `id`, the node records telemetry and continues (it does
@@ -190,15 +189,15 @@ reasons, including:
 Validator applies config live:
 
 1. TPU sockets:
-   If `bam_config.tpu_sock` is present, update the validator's advertised TPU address in gossip (ClusterInfo). If
-   `bam_config.tpu_fwd_sock` is present, update the validator's advertised TPU-forward address in gossip.
-   Observed parsing behavior: the current validator parses `Socket.ip` as an IPv4 literal (`Ipv4Addr::from_str`);
-   non-IPv4 values (including hostnames and IPv6 literals) are ignored.
+   The current validator only applies BAM TPU config if both `bam_config.tpu_sock` and
+   `bam_config.tpu_fwd_sock` parse successfully as IPv4 socket addresses. If either socket is missing or fails to
+   parse, BAM TPU config is left unchanged. When BAM TPU info is later advertised through fetch-stage gossip, the
+   validator adds `+6` to both BAM TPU / TPU-forward ports before gossiping the QUIC addresses.
 2. Builder identity/commission:
    Parse `builder_pubkey` and store it. `builder_commission` is a percent (0-100); values > 100 are rejected. Stored
    builder info is used by tip-program maintenance.
 3. Priority fee recipient:
-   Parse and store `prio_fee_recipient_pubkey`. (Current validator stores it but does not otherwise use it.)
+   Parse and store `prio_fee_recipient_pubkey`. Parse failure preserves the prior stored value.
 4. `commission_bps`:
    Currently ignored by the validator.
 
@@ -207,8 +206,8 @@ The validator only reports itself as fully "Connected" when it is both heartbeat
 
 Implementation notes:
 
-- If `builder_pubkey` fails to parse, the validator logs an error and resets the stored builder pubkey to
-  `Pubkey::default()`.
+- If `builder_pubkey` fails to parse, the validator logs an error and preserves the previously stored builder
+  pubkey.
 - If `builder_commission > 100`, the validator logs an error and ignores that commission value (leaving the prior value
   unchanged).
 
@@ -271,14 +270,16 @@ On receiving `LeaderState`, the Node validates that `leader_state.slot` is withi
 
 ## BAM Overrides Inside the Validator
 
-When `bam_enabled == Connected`, the validator bypasses normal transaction intake and block-engine intake:
+When `bam_enabled == Connected`, validator-side non-vote scheduling switches to BAM-supplied batches:
 
-- TPU packet forwarding from the network is disabled and drained/dropped.
+- TPU packet forwarding from the network is disabled and drained/dropped only when fetch-stage has switched away
+  from `Original` TPU state to BAM TPU state. This requires usable BAM TPU info; `Connected` alone is not
+  sufficient.
 - Block Engine streaming is suppressed/terminated when `bam_enabled == Connected` (the Block Engine stage exits its
-  consume loop and idles). During `Connecting`, the Block Engine stage can still run normally; however, Block Engine
-  stage errors are mapped to a `BamEnabled` sentinel error and suppressed when `bam_enabled != Disconnected`.
+  consume loop and idles). During `Connecting`, the Block Engine stage can still run normally.
 - The normal non-vote scheduler stops scheduling.
 - A dedicated BAM scheduler/controller becomes the only active non-vote scheduler.
+- Vote processing and validator-internal maintenance work (for example tip-program upkeep bundles) still continue.
 
 Net effect: when BAM is connected, non-vote transaction execution is driven by Node-supplied `AtomicTxnBatch` messages (
 plus validator-internal maintenance work such as tip-program bundles, and independent vote processing).
@@ -289,10 +290,14 @@ plus validator-internal maintenance work such as tip-program bundles, and indepe
 
 - `Disconnected` (0): BAM is inactive; the normal non-vote scheduler is enabled.
 - `Connecting` (1): BAM connection is being established and/or config has not yet been received. The normal non-vote
-  scheduler is still enabled and the BAM scheduler is disabled; successfully parsed BAM batches may be dropped without
-  producing results. Block Engine ingestion is not actively suppressed until `Connected` (see override notes above).
+  scheduler is still enabled and the BAM scheduler is disabled. Successfully parsed BAM batches received during
+  `Consume` / `Hold` may be dropped without producing results while BAM is not yet `Connected`; during
+  `Forward` / `ForwardAndHold` they are responded to as `OUTSIDE_LEADER_SLOT`. Block Engine ingestion is not
+  actively suppressed until `Connected`.
 - `Connected` (2): BAM connection is heartbeat-healthy and at least one `ConfigResponse` has been received. The BAM
-  scheduler is enabled, the normal non-vote scheduler is disabled, and TPU packet forwarding is drained/dropped.
+  scheduler is enabled and the normal non-vote scheduler is disabled. TPU packet forwarding is drained/dropped only
+  if fetch-stage is actually using BAM TPU addresses; if BAM TPU info is absent or invalid, fetch-stage can remain
+  on relayer/original TPU state.
 
 Observed transitions:
 
@@ -309,10 +314,8 @@ Node sends:
 
 Each `AtomicTxnBatch` contains:
 
-- `seq_id: u32` (Node-generated identifier used for both ordering and correlation of results. In the current node
-  implementation it is a single monotonically increasing counter over the node process lifetime (not per slot/leader
-  rotation) and must be globally unique across all in-flight batches because the node correlates results by `seq_id`
-  alone.)
+- `seq_id: u32` (Node-generated identifier used for both ordering and correlation of results. This should reset per
+   leader rotation).
 - `max_schedule_slot: u64` (slot for which the batch is valid)
 - `packets: repeated Packet`
 
@@ -447,12 +450,12 @@ For each `AtomicTxnBatch`, validator enforces:
    `revert_on_error = false`. If not consistent, reject with `DeserializationErrorReason::INCONSISTENT_BUNDLE` at index
    0.
 
-### Signature Verification (CPU)
+### Signature Verification
 
-Validator signature-verifies all packets in the received batches using CPU sigverify:
+Validator signature-verifies all packets in the received batches:
 
 1. Convert each proto `Packet` to a `solana_packet::Packet` buffer.
-2. Run `ed25519_verify_cpu` over packet batches.
+2. Run `ed25519` verify over packet batches.
 3. For any packet flagged discard by sigverify:
    Reject the batch with `DeserializationErrorReason::SANITIZE_ERROR` for the failing packet index.
 
@@ -486,9 +489,16 @@ Any failure rejects the entire batch, with the failing transaction index in the 
    Extract and sanitize compute budget limits using the working bank feature set. Failure maps to
    `TransactionErrorReason` as above.
 7. Bank `check_transactions`:
-   Run `working_bank.check_transactions(..., MAX_PROCESSING_AGE, ...)`, which (in this codebase) re-checks compute
-   budget limits, validates blockhash age / nonce validity, and checks the status cache (`AlreadyProcessed`). Failure
-   maps to `TransactionErrorReason`.
+   Run `working_bank.check_transactions(..., MAX_PROCESSING_AGE, ...)`.
+   In this codebase, `check_transactions` performs per-transaction checks including:
+   - Compute-budget instruction validation and conversion to execution/fee limits
+     (`sanitize_and_convert_to_compute_budget_limits`).
+   - Fee-details derivation from bank fee configuration plus prioritization fee while building those limits
+     (`calculate_fee_details`).
+   - Age path validation: recent blockhash must be valid in the blockhash queue for `max_age`, or transaction must pass
+     durable-nonce fallback validation.
+   - Status-cache duplicate detection (`AlreadyProcessed`).
+   Failure maps to `TransactionErrorReason`.
 8. Fee payer solvency:
    Verify the fee payer can pay fee and required rent. Failure maps to `TransactionErrorReason`.
 9. Blacklisted accounts:
@@ -594,8 +604,10 @@ Scheduling is performed as two phases on each pass.
 2. If `batch.max_schedule_slot < current_slot`, respond `NotCommitted(SchedulingError::OUTSIDE_LEADER_SLOT)` for that
    batch and remove it from the container.
 3. Extra bank checks (enabled by default): run `BankForks.working_bank.check_transactions` over the batch transactions
-   with `MAX_PROCESSING_AGE`. If any transaction fails, respond `NotCommitted(TransactionError { index, reason })` using
-   the first failing index, then remove the batch from the container.
+   with `MAX_PROCESSING_AGE` (same `check_transactions` path described above: compute-budget+fee-limit derivation,
+   blockhash/nonce age validation, and status-cache duplicate checks). If any transaction fails, respond
+   `NotCommitted(TransactionError { index, reason })` using the first failing index, then remove the batch from the
+   container.
 4. Insert the batch into the prio-graph as one node, with its account access set computed as the union of read/write
    accesses across all transactions in the batch.
 
@@ -606,7 +618,8 @@ Scheduling is performed as two phases on each pass.
    `prio_graph.unblock(batch_node)`, and remove it from the container.
 3. Extra bank checks (enabled by default): re-run `BankForks.working_bank.check_transactions` on the batch. If any
    transaction fails, respond `NotCommitted(TransactionError { index, reason })`, `prio_graph.unblock(batch_node)`, and
-   remove it from the container.
+   remove it from the container (same as in phase 1: compute-budget+fee-limit derivation, blockhash/nonce age,
+   and status-cache duplicate checks).
 4. Create and send a `ConsumeWork` to a worker, with `transactions[]` equal to the batch transactions (moved out of the
    container for scheduling), `max_ages[]` equal to the per-transaction `MaxAge` values computed at parse time,
    `revert_on_error` copied from the batch, `respond_with_extra_info = true`, and
@@ -915,29 +928,33 @@ To implement validator-side BAM support compatible with current bam-node behavio
    Use AUTH_LABEL with trailing NUL and sign AUTH_LABEL || challenge_bytes with validator identity keypair.
 3. Maintain connection health based on Node BuilderHeartBeat.
 4. Refresh config and apply it:
-   Advertise Node-provided TPU sockets and store builder pubkey and commission.
-5. When connected, disable non-BAM transaction ingestion and block-engine ingestion.
+   Store builder pubkey and commission, store `prio_fee_recipient_pubkey` if parseable, and only apply BAM TPU
+   config if both BAM sockets parse as IPv4. When gossiping BAM TPU addresses, add `+6` to both BAM TPU /
+   TPU-forward ports.
+5. When connected, switch non-vote scheduling to BAM and suppress the legacy intake paths under the current validator's
+   exact gating: suppress Block Engine only in `Connected`, and suppress TPU forwarding only once BAM TPU state is
+   actually selected.
 6. Receive AtomicTxnBatch and enforce:
    Slot window and batch constraints, CPU signature verification, and sanitize + LUT resolution + bank checks +
    blacklist filter.
 7. Derive batch priority from seq_id (u64::MAX - seq_id) and buffer batches atomically.
 8. Schedule with account-aware conflict tracking (prio-graph or equivalent).
 9. Execute against the active leader bank (from shared leader state) with revert_on_error atomic semantics.
-10. Emit exactly one AtomicTxnBatchResult per batch and send it back (optionally coalesced).
+10. Attempt to emit one `AtomicTxnBatchResult` per batch and send it back (optionally coalesced), but tolerate
+    missing results if reproducing current best-effort drop behavior.
 11. Send LeaderState while leader and send ValidatorHeartBeat periodically.
 
 ## Compatibility Notes
 
-- `Ping`/`Pong` are defined in the protos on both sides, but the current validator client ignores inbound `Ping` and
-  never sends `Pong`. Implementing `Pong` in a clean-room client is safe and may improve telemetry; the node does not
-  require `Pong` for correctness.
 - Protocol permits non-revert batches with multiple packets, but current Node sends single-packet non-revert batches.
   Validator result mapping assumes that invariant.
-- Node seq_id generation must avoid reuse while a previous seq_id could still produce a result.
+- Node `seq_id` generation must avoid reuse while a previous `seq_id` could still produce a result. The current node
+  uses a single saturating process-lifetime `u32` counter and correlates pending results by `seq_id` alone.
 
 ## Appendix: Traceability (Non-Normative)
 
-This spec was derived by tracing behavior in these sources.
+Relevant implementation sources consulted for this spec include the files below. This list is informational rather
+than a normative provenance claim.
 
 jito-solana:
 
@@ -954,9 +971,12 @@ jito-solana:
 - `core/src/banking_stage/transaction_scheduler/bam_receive_and_buffer.rs`
 - `core/src/banking_stage/transaction_scheduler/bam_scheduler.rs`
 - `core/src/banking_stage/transaction_scheduler/bam_utils.rs`
+- `core/src/banking_stage/transaction_scheduler/receive_and_buffer.rs`
 - `core/src/banking_stage/transaction_scheduler/transaction_state_container.rs`
 - `core/src/banking_stage/consumer.rs`
 - `core/src/banking_stage/consume_worker.rs`
+- `runtime/src/bank.rs`
+- `runtime/src/bank/check_transactions.rs`
 - `jito-protos/bam-protos/bam_api.proto`
 - `jito-protos/bam-protos/bam_types.proto`
 
