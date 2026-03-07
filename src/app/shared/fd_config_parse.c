@@ -212,7 +212,6 @@ fd_config_extract_pod( uchar *       pod,
   CFG_POP      ( cstr,   tiles.bam.tls_domain_name                        );
   CFG_POP      ( ulong,  tiles.bam.keepalive_interval_millis              );
   CFG_POP      ( bool,   tiles.bam.tls_cert_verify                        );
-  CFG_POP1     ( bool,   tiles.bam.dump_txns,                             tiles.bam.dump_bam_txns );
   CFG_POP      ( bool,   tiles.bam.dump_bam_txns                          );
   CFG_POP      ( bool,   tiles.bam.dump_bam_first_slot_txn                );
 
