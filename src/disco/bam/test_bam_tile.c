@@ -8,6 +8,8 @@
 
 static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL, 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
 
+FD_IMPORT_BINARY( bam_dump_txn_fixture, "src/ballet/txn/fixtures/transaction2.bin" );
+
 #define TEST_BAM_MAX_TXN_PER_ATOMIC_BATCH       5UL
 #define TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET  8UL
 
@@ -597,6 +599,76 @@ test_bam_bundle_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( first->bam.revert_on_error == 1U );
   FD_TEST( first->bam.txn_cnt >= 1U );
   FD_TEST( first->bam.batch_idx == 0U );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_dump_bam_txns_smoke( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+  state->dump_bam_txns = 1U;
+
+  int level_stderr  = fd_log_level_stderr();
+  int level_logfile = fd_log_level_logfile();
+  fd_log_level_stderr_set ( 3 );
+  fd_log_level_logfile_set( 3 );
+
+  bam_types_Packet packets[1];
+  fd_memset( packets, 0, sizeof(packets) );
+  packets[0].data.size = (pb_size_t)bam_dump_txn_fixture_sz;
+  fd_memcpy( packets[0].data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
+
+  uchar protobuf[ 4096 ];
+  size_t protobuf_sz = test_bam_encode_scheduler_response( packets, 1UL, 42U, protobuf, sizeof(protobuf) );
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.txn_received_cnt == 1UL );
+  FD_TEST( state->metrics.bundle_received_cnt == 0UL );
+
+  fd_txn_m_t * tx0 = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
+  FD_TEST( tx0->payload_sz == bam_dump_txn_fixture_sz );
+  FD_TEST( 0==memcmp( fd_txn_m_payload( tx0 ), bam_dump_txn_fixture, bam_dump_txn_fixture_sz ) );
+
+  fd_log_level_stderr_set ( level_stderr  );
+  fd_log_level_logfile_set( level_logfile );
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_dump_bam_first_slot_txn_gate( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+  state->dump_bam_first_slot_txn = 1U;
+
+  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
+
+  state->bam_leader_state.slot = 100UL;
+  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 1 );
+  FD_TEST( state->dump_bam_last_slot_valid == 1U );
+  FD_TEST( state->dump_bam_last_slot == 100UL );
+  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 0 );
+
+  state->bam_leader_state.slot = 101UL;
+  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 1 );
+  FD_TEST( state->dump_bam_last_slot == 101UL );
+  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 0 );
+
+  batch.max_schedule_slot = 222UL;
+  state->bam_leader_state.slot = 102UL;
+  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 1 );
+  FD_TEST( state->dump_bam_last_slot == 222UL );
+  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 0 );
+
+  state->dump_bam_txns = 1U;
+  batch.max_schedule_slot = 223UL;
+  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 1 );
 
   test_bam_env_destroy( env );
 }
@@ -3652,6 +3724,8 @@ main( int     argc,
   /* Scheduler ingestion/validation */
   test_bam_packets_forwarded( wksp );
   test_bam_bundle_forwarded( wksp );
+  test_bam_dump_bam_txns_smoke( wksp );
+  test_bam_dump_bam_first_slot_txn_gate( wksp );
   test_bam_multiple_batches_forwarded( wksp );
   test_bam_multiple_batches_publish_valid_when_later_batch_rejected( wksp );
   test_bam_multiple_batches_accept_limit_counts( wksp );

@@ -155,7 +155,8 @@ struct fd_bam_tile {
   /* Currently running config, values loaded via TOML and updated by set_bam admin control */
   fd_bam_ctrl_t * ctrl;                  /* Runtime control shared object (NULL when tile launched without admin support) */
   uchar  enabled;                        /* Whether BAM runtime is enabled by the operator */
-  uchar  dump_txns;                      /* Whether to dump inbound BAM bundles/txns for debugging */
+  uchar  dump_bam_txns;                  /* Whether to dump every inbound BAM bundle/txn for debugging */
+  uchar  dump_bam_first_slot_txn;        /* Whether to dump only the first inbound BAM bundle seen for each scheduled slot */
   char   server_fqdn[ FD_FQDN_BUF_MAX ]; /* cstr; hostname configured for BAM endpoint */
   ushort server_fqdn_len;                /* Length of server_fqdn (no terminator) */
   char   server_sni[ FD_SNI_BUF_MAX ];   /* cstr; optional override for TLS SNI */
@@ -210,6 +211,8 @@ struct fd_bam_tile {
                                                      block_engine.bundle_id. */
   uchar bundle_txn_cnt;                           /* Number of txns in current bundle */
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
+  ulong dump_bam_last_slot;                       /* Most recent resolved slot dumped under dump_bam_first_slot_txn */
+  uchar dump_bam_last_slot_valid;                 /* Whether dump_bam_last_slot has been initialized */
 
   /* BAM specific */
   fd_grpc_h2_stream_t * bam_stream;                      /* Current scheduler stream; NULL while unsubscribed or reconnecting */
@@ -438,6 +441,10 @@ void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch );
+
+int
+fd_bam_should_dump_batch( fd_bam_tile_t *             ctx,
+                          bam_types_AtomicTxnBatch const * batch );
 
 void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,

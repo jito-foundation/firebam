@@ -405,7 +405,8 @@ struct fd_config {
       char tls_domain_name[ FD_SNI_BUF_MAX ];
       ulong keepalive_interval_millis;
       int   tls_cert_verify;
-      int   dump_txns;
+      int   dump_bam_txns;
+      int   dump_bam_first_slot_txn;
     } bam;
 
     struct {

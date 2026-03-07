@@ -1274,9 +1274,25 @@ dynamic_port_range = "8900-9000"
         # this option to 'false'.
         tls_cert_verify = false
 
-        # Log inbound BAM bundles and transactions for debugging. This
-        # is very verbose and should remain disabled in production.
-        dump_txns = false
+        # Log every inbound BAM batch as one multiline NOTICE record.
+        # Each record contains a bundle header plus decoded transaction
+        # summaries, LUTs, instructions, and short data previews, so
+        # unrelated log lines do not interleave mid-dump.
+        # Example:
+        #   BAM rx bundle: seq_id=42 max_schedule_slot=123456 txns=2 mode=atomic dispatch=bundle
+        #     txn[1/2]: batch_idx=0 payload_sz=312 version=v0 sig=... fee_payer=... recent_blockhash=...
+        #     ix[0]: program_id_index=3 program=... [compute_budget] acct_cnt=0 ...
+        # This is very verbose and should remain disabled in production.
+        dump_bam_txns = false
+
+        # Emit the same multiline dump format as dump_bam_txns, but only
+        # for the first inbound BAM batch observed in each resolved slot.
+        # Slot resolution uses max_schedule_slot when the batch provides
+        # a concrete slot, otherwise it falls back to the current BAM
+        # leader-state slot.
+        # Example: if seq_id=42, 43, and 44 all arrive for slot 123456,
+        # only the first one prints the "BAM rx bundle: ..." record.
+        dump_bam_first_slot_txn = false
 
     # The pack tile takes incoming transactions that have been verified
     # by the verify tile and then deduplicated, and attempts to order

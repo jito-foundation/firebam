@@ -546,7 +546,8 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
       tile->bam.keepalive_interval_nanos = config->tiles.bam.keepalive_interval_millis * (ulong)1e6;
       tile->bam.tls_cert_verify = !!config->tiles.bam.tls_cert_verify;
       tile->bam.enabled = !!config->tiles.bam.enabled;
-      tile->bam.dump_txns = !!config->tiles.bam.dump_txns;
+      tile->bam.dump_bam_txns = !!config->tiles.bam.dump_bam_txns;
+      tile->bam.dump_bam_first_slot_txn = !!config->tiles.bam.dump_bam_first_slot_txn;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "verify" ) ) ) {
     tile->verify.tcache_depth = config->tiles.verify.signature_cache_size;
