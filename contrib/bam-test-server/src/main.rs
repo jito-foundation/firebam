@@ -1,9 +1,7 @@
 use std::{
+    collections::HashSet,
     net::{IpAddr, SocketAddr},
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -18,7 +16,7 @@ use crate::proto::{
     },
     bam_types::{
         AtomicTxnBatch, BamConfig, BlockEngineBuilderConfig, BuilderHeartBeat, Meta,
-        MultipleAtomicTxnBatch, Packet, PacketFlags, Socket,
+        MultipleAtomicTxnBatch, Packet, PacketFlags, Ping, Socket,
     },
 };
 use anyhow::Result;
@@ -89,16 +87,19 @@ struct Args {
     /// Bundle interval in seconds
     #[arg(long, default_value_t = 1)]
     bundle_interval_secs: u8,
+
+    /// Scheduler ping interval in seconds; 0 disables BAM proto ping emission
+    #[arg(long, default_value_t = 0)]
+    ping_interval_secs: u8,
 }
 
-#[derive(Clone)]
 struct MockBamNode {
     challenge: String,
-    config: Arc<ConfigResponse>,
-    bundle_packets: Arc<Vec<Packet>>,
-    next_seq_id: Arc<AtomicU32>,
+    config: ConfigResponse,
+    bundle_packets: Vec<Packet>,
     heartbeat_interval: Duration,
     bundle_interval: Duration,
+    ping_interval: Option<Duration>,
 }
 
 #[tonic::async_trait]
@@ -118,7 +119,7 @@ impl BamNodeApi for MockBamNode {
         &self,
         _request: Request<ConfigRequest>,
     ) -> Result<Response<ConfigResponse>, Status> {
-        Ok(Response::new((*self.config).clone()))
+        Ok(Response::new(self.config.clone()))
     }
 
     async fn init_scheduler_stream(
@@ -127,21 +128,35 @@ impl BamNodeApi for MockBamNode {
     ) -> Result<Response<Self::InitSchedulerStreamStream>, Status> {
         let mut inbound = request.into_inner();
         let (tx, rx) = mpsc::channel(1024);
+        let outstanding_pings = Arc::new(Mutex::new(HashSet::new()));
 
-        // Drain inbound messages; accept anything.
+        // Drain inbound messages and validate scheduler Pong replies when ping
+        // emission is enabled.
+        let outstanding_pings_rx = Arc::clone(&outstanding_pings);
         tokio::spawn(async move {
             while let Ok(Some(msg)) = inbound.message().await {
-                let _ = msg.versioned_msg.as_ref().and_then(|v| match v {
-                    crate::proto::bam_api::scheduler_message::VersionedMsg::V0(v0) => {
-                        v0.msg.as_ref().map(|m| match m {
-                            SchedulerMsg::AuthProof(_) => (),
-                            SchedulerMsg::HeartBeat(_) => (),
-                            SchedulerMsg::LeaderState(_) => (),
-                            SchedulerMsg::MultipleAtomicTxnBatchResult(_) => (),
-                            SchedulerMsg::Pong(_) => (),
-                        })
+                if let Some(crate::proto::bam_api::scheduler_message::VersionedMsg::V0(v0)) =
+                    msg.versioned_msg
+                {
+                    if let Some(msg) = v0.msg {
+                        match msg {
+                            SchedulerMsg::AuthProof(_)
+                            | SchedulerMsg::HeartBeat(_)
+                            | SchedulerMsg::LeaderState(_)
+                            | SchedulerMsg::MultipleAtomicTxnBatchResult(_) => (),
+                            SchedulerMsg::Pong(pong) => {
+                                let mut pending = outstanding_pings_rx
+                                    .lock()
+                                    .expect("scheduler ping state mutex poisoned");
+                                if pending.remove(&pong.id) {
+                                    println!("validated scheduler pong id={}", pong.id);
+                                } else {
+                                    eprintln!("unexpected scheduler pong id={}", pong.id);
+                                }
+                            }
+                        }
                     }
-                });
+                }
             }
         });
 
@@ -157,14 +172,17 @@ impl BamNodeApi for MockBamNode {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_micros() as u64;
-                let resp = SchedulerResponse {
-                    versioned_msg: Some(SchedulerRespVersioned::V0(SchedulerResponseV0 {
-                        resp: Some(SchedulerResp::HeartBeat(BuilderHeartBeat {
-                            time_sent_microseconds: now_us,
+                if heartbeat_tx
+                    .send(Ok(SchedulerResponse {
+                        versioned_msg: Some(SchedulerRespVersioned::V0(SchedulerResponseV0 {
+                            resp: Some(SchedulerResp::HeartBeat(BuilderHeartBeat {
+                                time_sent_microseconds: now_us,
+                            })),
                         })),
-                    })),
-                };
-                if heartbeat_tx.send(Ok(resp)).await.is_err() {
+                    }))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -173,33 +191,73 @@ impl BamNodeApi for MockBamNode {
         // Bundle sender
         let bundle_tx = tx.clone();
         let packets = self.bundle_packets.clone();
-        let next_seq_id = self.next_seq_id.clone();
         let bundle_interval = self.bundle_interval;
         tokio::spawn(async move {
+            let mut next_seq_id = 1_u32;
             let mut interval = tokio::time::interval(bundle_interval);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                let seq_id = next_seq_id.fetch_add(1, Ordering::Relaxed);
-                let batch = AtomicTxnBatch {
-                    seq_id,
-                    max_schedule_slot: u64::MAX,
-                    packets: packets.as_ref().clone(),
-                };
-                let resp = SchedulerResponse {
-                    versioned_msg: Some(SchedulerRespVersioned::V0(SchedulerResponseV0 {
-                        resp: Some(SchedulerResp::MultipleAtomicTxnBatch(
-                            MultipleAtomicTxnBatch {
-                                batches: vec![batch],
-                            },
-                        )),
-                    })),
-                };
-                if bundle_tx.send(Ok(resp)).await.is_err() {
+                let seq_id = next_seq_id;
+                next_seq_id = next_seq_id.wrapping_add(1);
+                if bundle_tx
+                    .send(Ok(SchedulerResponse {
+                        versioned_msg: Some(SchedulerRespVersioned::V0(SchedulerResponseV0 {
+                            resp: Some(SchedulerResp::MultipleAtomicTxnBatch(
+                                MultipleAtomicTxnBatch {
+                                    batches: vec![AtomicTxnBatch {
+                                        seq_id,
+                                        max_schedule_slot: u64::MAX,
+                                        packets: packets.clone(),
+                                    }],
+                                },
+                            )),
+                        })),
+                    }))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
         });
+
+        if let Some(ping_interval) = self.ping_interval {
+            let ping_tx = tx.clone();
+            let outstanding_pings_tx = Arc::clone(&outstanding_pings);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(ping_interval);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut next_ping_id = 1_u32;
+                loop {
+                    interval.tick().await;
+                    let ping_id = next_ping_id;
+                    next_ping_id = next_ping_id.wrapping_add(1);
+                    {
+                        let mut pending = outstanding_pings_tx
+                            .lock()
+                            .expect("scheduler ping state mutex poisoned");
+                        pending.insert(ping_id);
+                    }
+                    if ping_tx
+                        .send(Ok(SchedulerResponse {
+                            versioned_msg: Some(SchedulerRespVersioned::V0(SchedulerResponseV0 {
+                                resp: Some(SchedulerResp::Ping(Ping { id: ping_id })),
+                            })),
+                        }))
+                        .await
+                        .is_err()
+                    {
+                        let mut pending = outstanding_pings_tx
+                            .lock()
+                            .expect("scheduler ping state mutex poisoned");
+                        pending.remove(&ping_id);
+                        break;
+                    }
+                    println!("sent scheduler ping id={ping_id}");
+                }
+            });
+        }
 
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -277,11 +335,12 @@ async fn main() -> Result<()> {
 
     let svc = MockBamNode {
         challenge: "test-challenge".to_string(),
-        config: Arc::new(config),
-        bundle_packets: Arc::new(bundle_packets),
-        next_seq_id: Arc::new(AtomicU32::new(1)),
+        config,
+        bundle_packets,
         heartbeat_interval: Duration::from_secs(u64::from(args.heartbeat_secs)),
         bundle_interval: Duration::from_secs(u64::from(args.bundle_interval_secs)),
+        ping_interval: (args.ping_interval_secs != 0)
+            .then(|| Duration::from_secs(u64::from(args.ping_interval_secs))),
     };
 
     let addr = args.bind;
@@ -290,6 +349,11 @@ async fn main() -> Result<()> {
         "Bundles: target_cus={}, cu_per_tx={}",
         args.target_cus, args.cu_per_tx
     );
+    if args.ping_interval_secs == 0 {
+        println!("Scheduler proto ping: disabled");
+    } else {
+        println!("Scheduler proto ping: every {}s", args.ping_interval_secs);
+    }
 
     tonic::transport::Server::builder()
         .add_service(BamNodeApiServer::new(svc))

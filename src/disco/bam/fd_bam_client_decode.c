@@ -37,12 +37,14 @@ typedef struct {
 typedef enum {
   FD_BAM_V0_STAGED_NONE      = 0,
   FD_BAM_V0_STAGED_HEARTBEAT = 1,
-  FD_BAM_V0_STAGED_MULTI     = 2
+  FD_BAM_V0_STAGED_MULTI     = 2,
+  FD_BAM_V0_STAGED_PING      = 3
 } fd_bam_v0_staged_kind_t;
 
 typedef struct {
   fd_bam_v0_staged_kind_t kind;
   uint64_t                heartbeat_time_sent_microseconds;
+  uint32_t                ping_id;
   fd_bam_decoded_multi_batch_t multi;
 } fd_bam_decoded_v0_t;
 
@@ -648,9 +650,10 @@ fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ct
   }
 }
 
-/* Decodes the v0 scheduler response payload (heartbeats and nested batches)
-   into staged state. Returns 1 once the message was consumed; returns 0 on
-   protobuf failures so the caller can reject the message before commit. */
+/* Decodes the v0 scheduler response payload (heartbeats, nested batches, and
+   ping probes) into staged state. Returns 1 once the message was consumed;
+   returns 0 on protobuf failures so the caller can reject the message before
+   commit. */
 static int
 fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
                                      pb_istream_t *   stream,
@@ -696,6 +699,24 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
       ctx->metrics.ingress_multi_batch_total_cnt += decoded_multi.batch_cnt;
       decoded_v0->kind  = FD_BAM_V0_STAGED_MULTI;
       decoded_v0->multi = decoded_multi;
+      break;
+    }
+    case bam_api_SchedulerResponseV0_ping_tag: {
+      if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
+        if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
+        break;
+      }
+      pb_istream_t ping_stream;
+      if( FD_UNLIKELY( !pb_make_string_substream( stream, &ping_stream ) ) ) return 0;
+      bam_types_Ping ping = bam_types_Ping_init_default;
+      int ok = pb_decode( &ping_stream, &bam_types_Ping_msg, &ping );
+      pb_close_string_substream( stream, &ping_stream );
+      if( FD_UNLIKELY( !ok ) ) {
+        FD_LOG_WARNING(( "Ping decode failed: %s", PB_GET_ERROR( &ping_stream ) ));
+        return 0;
+      }
+      decoded_v0->kind    = FD_BAM_V0_STAGED_PING;
+      decoded_v0->ping_id = ping.id;
       break;
     }
     default:
@@ -767,6 +788,23 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   case FD_BAM_V0_STAGED_MULTI:
     fd_bam_commit_multiple_atomic_txn_batch( ctx, &decoded_v0.multi );
     ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
+    break;
+  case FD_BAM_V0_STAGED_PING:
+    /* Scheduler proto Ping is only a latency probe. It must be answered on
+       the protobuf stream, but it does not refresh the builder-heartbeat
+       watchdog or HTTP/2 keepalive state. */
+    if( FD_LIKELY( ctx->bam_stream && ctx->bam_stream_live ) ) {
+      long ping_start_ns = fd_bam_now();
+      bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
+      msg.which_versioned_msg        = bam_api_SchedulerMessage_v0_tag;
+      msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_pong_tag;
+      msg.versioned_msg.v0.msg.pong.id = decoded_v0.ping_id;
+      if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
+        FD_LOG_WARNING(( "Failed to send BAM scheduler pong (id=%u)", decoded_v0.ping_id ));
+      } else {
+        fd_bam_client_sample_scheduler_ping_response( ctx, ping_start_ns );
+      }
+    }
     break;
   default:
     break;

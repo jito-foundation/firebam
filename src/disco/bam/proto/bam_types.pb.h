@@ -90,6 +90,14 @@ typedef struct _bam_types_ValidatorHeartBeat {
     uint64_t time_sent_microseconds; /* unix-timestamp */
 } bam_types_ValidatorHeartBeat;
 
+typedef struct _bam_types_Ping {
+    uint32_t id;
+} bam_types_Ping;
+
+typedef struct _bam_types_Pong {
+    uint32_t id;
+} bam_types_Pong;
+
 typedef struct _bam_types_Socket {
     char ip[64];
     uint32_t port;
@@ -255,6 +263,8 @@ extern "C" {
 #define bam_types_AuthProof_init_default         {"", "", ""}
 #define bam_types_BuilderHeartBeat_init_default  {0}
 #define bam_types_ValidatorHeartBeat_init_default {0}
+#define bam_types_Ping_init_default              {0}
+#define bam_types_Pong_init_default              {0}
 #define bam_types_Socket_init_default            {"", 0}
 #define bam_types_LeaderState_init_default       {0, 0, 0}
 #define bam_types_AtomicTxnBatch_init_default    {0, 0, {{NULL}, NULL}}
@@ -276,6 +286,8 @@ extern "C" {
 #define bam_types_AuthProof_init_zero            {"", "", ""}
 #define bam_types_BuilderHeartBeat_init_zero     {0}
 #define bam_types_ValidatorHeartBeat_init_zero   {0}
+#define bam_types_Ping_init_zero                 {0}
+#define bam_types_Pong_init_zero                 {0}
 #define bam_types_Socket_init_zero               {"", 0}
 #define bam_types_LeaderState_init_zero          {0, 0, 0}
 #define bam_types_AtomicTxnBatch_init_zero       {0, 0, {{NULL}, NULL}}
@@ -301,6 +313,8 @@ extern "C" {
 #define bam_types_AuthProof_signature_tag        3
 #define bam_types_BuilderHeartBeat_time_sent_microseconds_tag 1
 #define bam_types_ValidatorHeartBeat_time_sent_microseconds_tag 1
+#define bam_types_Ping_id_tag                    1
+#define bam_types_Pong_id_tag                    1
 #define bam_types_Socket_ip_tag                  1
 #define bam_types_Socket_port_tag                2
 #define bam_types_LeaderState_slot_tag           1
@@ -358,6 +372,16 @@ X(a, STATIC,   SINGULAR, UINT64,   time_sent_microseconds,   1)
 X(a, STATIC,   SINGULAR, UINT64,   time_sent_microseconds,   1)
 #define bam_types_ValidatorHeartBeat_CALLBACK NULL
 #define bam_types_ValidatorHeartBeat_DEFAULT NULL
+
+#define bam_types_Ping_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   id,                1)
+#define bam_types_Ping_CALLBACK NULL
+#define bam_types_Ping_DEFAULT NULL
+
+#define bam_types_Pong_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   id,                1)
+#define bam_types_Pong_CALLBACK NULL
+#define bam_types_Pong_DEFAULT NULL
 
 #define bam_types_Socket_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   ip,                1) \
@@ -487,6 +511,8 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  tpu_fwd_sock,      4)
 extern const pb_msgdesc_t bam_types_AuthProof_msg;
 extern const pb_msgdesc_t bam_types_BuilderHeartBeat_msg;
 extern const pb_msgdesc_t bam_types_ValidatorHeartBeat_msg;
+extern const pb_msgdesc_t bam_types_Ping_msg;
+extern const pb_msgdesc_t bam_types_Pong_msg;
 extern const pb_msgdesc_t bam_types_Socket_msg;
 extern const pb_msgdesc_t bam_types_LeaderState_msg;
 extern const pb_msgdesc_t bam_types_AtomicTxnBatch_msg;
@@ -510,6 +536,8 @@ extern const pb_msgdesc_t bam_types_BamConfig_msg;
 #define bam_types_AuthProof_fields &bam_types_AuthProof_msg
 #define bam_types_BuilderHeartBeat_fields &bam_types_BuilderHeartBeat_msg
 #define bam_types_ValidatorHeartBeat_fields &bam_types_ValidatorHeartBeat_msg
+#define bam_types_Ping_fields &bam_types_Ping_msg
+#define bam_types_Pong_fields &bam_types_Pong_msg
 #define bam_types_Socket_fields &bam_types_Socket_msg
 #define bam_types_LeaderState_fields &bam_types_LeaderState_msg
 #define bam_types_AtomicTxnBatch_fields &bam_types_AtomicTxnBatch_msg
@@ -547,7 +575,9 @@ extern const pb_msgdesc_t bam_types_BamConfig_msg;
 #define bam_types_NotCommitted_size              261
 #define bam_types_PacketFlags_size               4
 #define bam_types_Packet_size                    1254
+#define bam_types_Ping_size                      6
 #define bam_types_PohTimeout_size                0
+#define bam_types_Pong_size                      6
 #define bam_types_Socket_size                    71
 #define bam_types_TransactionCommittedResult_size 25
 #define bam_types_TransactionError_size          8

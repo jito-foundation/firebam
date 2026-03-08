@@ -56,6 +56,13 @@ fd_bam_now( void ) {
   return g_clock;
 }
 
+static ulong
+test_hist_total_cnt( fd_histf_t const * hist ) {
+  ulong total = 0UL;
+  for( ulong i=0UL; i<FD_HISTF_BUCKET_CNT; i++ ) total += fd_histf_cnt( hist, i );
+  return total;
+}
+
 static fd_bam_contact_update_t
 test_bam_read_gossip_update( fd_wksp_t * mem,
                              ulong       chunk ) {
@@ -471,6 +478,17 @@ test_bam_decode_scheduler_message_v0( pb_istream_t * stream,
       out->msg.versioned_msg.v0.msg.auth_proof = (bam_types_AuthProof)bam_types_AuthProof_init_default;
       FD_TEST( pb_decode( &substream, bam_types_AuthProof_fields,
                           &out->msg.versioned_msg.v0.msg.auth_proof ) );
+      pb_close_string_substream( stream, &substream );
+      break;
+    }
+    case bam_api_SchedulerMessageV0_pong_tag: {
+      FD_TEST( wire_type == PB_WT_STRING );
+      pb_istream_t substream;
+      FD_TEST( pb_make_string_substream( stream, &substream ) );
+      out->msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_pong_tag;
+      out->msg.versioned_msg.v0.msg.pong = (bam_types_Pong)bam_types_Pong_init_default;
+      FD_TEST( pb_decode( &substream, bam_types_Pong_fields,
+                          &out->msg.versioned_msg.v0.msg.pong ) );
       pb_close_string_substream( stream, &substream );
       break;
     }
@@ -2302,6 +2320,99 @@ test_bam_scheduler_heartbeat_publishes_message( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
+  /* BAM proto Ping is a scheduler-stream latency probe. Firedancer must answer
+     with Pong, but this must not touch heartbeat/watchdog or HTTP/2 keepalive
+     accounting. */
+
+  {
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    test_bam_env_mock_conn( env );
+    fd_bam_tile_t * state = env->state;
+
+    test_bam_prepare_scheduler_stream( state );
+
+    g_clock = (long)9e9;
+    long builder_ts = g_clock - (long)1e8;
+    state->bam_last_builder_heartbeat_ns = builder_ts;
+    state->metrics.heartbeat_recv_cnt = 0UL;
+    state->metrics.ping_ack_cnt       = 0UL;
+    state->metrics.decode_fail_cnt    = 0UL;
+    state->defer_reset                = 0U;
+    ulong ping_samples_before         = test_hist_total_cnt( state->metrics.scheduler_ping_response_nanos );
+
+    uint32_t ping_id = 0x00c0ffeeU;
+    uchar protobuf[64];
+    bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
+    resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
+    resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_ping_tag;
+    resp.versioned_msg.v0.resp.ping.id = ping_id;
+
+    pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, sizeof(protobuf) );
+    FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
+    fd_bam_client_grpc_rx_msg( state,
+                               protobuf,
+                               ostream.bytes_written,
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+    FD_TEST( state->defer_reset == 0U );
+    FD_TEST( state->metrics.decode_fail_cnt == 0UL );
+    FD_TEST( state->metrics.heartbeat_recv_cnt == 0UL );
+    FD_TEST( state->metrics.ping_ack_cnt == 0UL );
+    FD_TEST( state->bam_last_builder_heartbeat_ns == builder_ts );
+    FD_TEST( test_hist_total_cnt( state->metrics.scheduler_ping_response_nanos ) == ping_samples_before + 1UL );
+    FD_TEST( fd_histf_sum( state->metrics.scheduler_ping_response_nanos ) == 0UL );
+
+    test_bam_decoded_message_t decoded;
+    test_bam_decode_last_message( state, &decoded );
+    FD_TEST( decoded.msg.which_versioned_msg == bam_api_SchedulerMessage_v0_tag );
+    FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_pong_tag );
+    FD_TEST( decoded.msg.versioned_msg.v0.msg.pong.id == ping_id );
+
+    test_bam_env_destroy( env );
+  }
+
+  {
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    test_bam_env_mock_conn( env );
+    fd_bam_tile_t * state = env->state;
+
+    test_bam_prepare_scheduler_stream( state );
+
+    g_clock = (long)10e9;
+    state->bam_last_builder_heartbeat_ns = g_clock - FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8;
+    test_bam_keepalive_sync( state, g_clock );
+    FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
+
+    uchar protobuf[64];
+    bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
+    resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
+    resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_ping_tag;
+    resp.versioned_msg.v0.resp.ping.id = 7U;
+
+    pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, sizeof(protobuf) );
+    FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
+    fd_bam_client_grpc_rx_msg( state,
+                               protobuf,
+                               ostream.bytes_written,
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+    FD_TEST( state->bam_last_builder_heartbeat_ns == g_clock - FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8 );
+    FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
+    FD_TEST( test_hist_total_cnt( state->metrics.scheduler_ping_response_nanos ) == 1UL );
+
+    int charge_busy = 0;
+    fd_bam_client_step( state, &charge_busy );
+    FD_TEST( state->tcp_sock == -1 );
+    FD_TEST( charge_busy == 1 );
+
+    test_bam_env_destroy( env );
+  }
+}
+
+static void
 test_bam_scheduler_leader_state_publishes_message( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -3755,6 +3866,7 @@ main( int     argc,
   test_bam_auth_challenge_response_sets_signature( wksp );
   test_bam_scheduler_auth_proof_publishes_message( wksp );
   test_bam_scheduler_heartbeat_publishes_message( wksp );
+  test_bam_scheduler_ping_publishes_message( wksp );
   test_bam_scheduler_leader_state_publishes_message( wksp );
   test_bam_scheduler_result_publishes_message( wksp );
   test_bam_scheduler_result_committed_with_execution_error_publishes_message( wksp );

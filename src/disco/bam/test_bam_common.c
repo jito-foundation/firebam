@@ -139,6 +139,9 @@ test_bam_env_create( test_bam_env_t * env,
   fd_histf_new( state->metrics.msg_rx_delay,
       FD_MHIST_MIN( BAM, MESSAGE_RX_DELAY_NANOS ),
       FD_MHIST_MAX( BAM, MESSAGE_RX_DELAY_NANOS ) );
+  fd_histf_new( state->metrics.scheduler_ping_response_nanos,
+      FD_MHIST_MIN( BAM, SCHEDULER_PING_RESPONSE_NANOS ),
+      FD_MHIST_MAX( BAM, SCHEDULER_PING_RESPONSE_NANOS ) );
   state->cached_ts = now;
 
   return env;

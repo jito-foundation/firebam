@@ -88,6 +88,7 @@ struct fd_bam_metrics {
   ulong leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
 
   fd_histf_t msg_rx_delay[1];
+  fd_histf_t scheduler_ping_response_nanos[1];
 };
 
 typedef struct fd_bam_metrics fd_bam_metrics_t;
@@ -216,7 +217,7 @@ struct fd_bam_tile {
 
   /* BAM specific */
   fd_grpc_h2_stream_t * bam_stream;                      /* Current scheduler stream; NULL while unsubscribed or reconnecting */
-  long                  bam_last_builder_heartbeat_ns;   /* fd_bam_now() timestamp of last builder heartbeat (0 if none received) */
+  long                  bam_last_builder_heartbeat_ns;   /* fd_bam_now() timestamp of last builder liveness refresh from BuilderHeartBeat or bundle work; scheduler proto Ping is intentionally excluded (0 if none received) */
   long                  bam_last_validator_heartbeat_ns; /* fd_bam_now() timestamp of last validator heartbeat (0 if never sent) */
   long                  bam_last_config_poll_ns;         /* fd_bam_now() timestamp of last config poll attempt (0 if never polled) */
   ushort                bam_pending_results;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
@@ -438,6 +439,10 @@ fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
                                       uint64_t        time_sent_microseconds );
 
 void
+fd_bam_client_sample_scheduler_ping_response( fd_bam_tile_t * ctx,
+                                              long            ping_start_ns );
+
+void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch );
@@ -470,8 +475,9 @@ fd_bam_request_ctx_cstr( ulong request_ctx );
 void
 fd_bam_client_reset( fd_bam_tile_t * ctx );
 
-/* fd_bam_client_ping_tx enqueues a PING frame for sending.  Returns
-   1 on success and 0 on failure (occurs when frame_tx buf is full). */
+/* fd_bam_client_ping_tx enqueues an HTTP/2 keepalive PING frame for
+   sending.  This is transport-level keepalive, not BAM scheduler proto
+   Ping/Pong. */
 
 void
 fd_bam_client_send_ping( fd_bam_tile_t * ctx );

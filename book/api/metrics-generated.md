@@ -1182,5 +1182,6 @@
 | <span class="metrics-name">bam_&#8203;rtt_&#8203;var</span> | gauge | Smoothed variance of the BAM round-trip time estimator (nanoseconds) |
 | <span class="metrics-name">bam_&#8203;results_&#8203;queue_&#8203;depth</span> | gauge | Current number of bundle execution results buffered for BAM feedback |
 | <span class="metrics-name">bam_&#8203;message_&#8203;rx_&#8203;delay_&#8203;nanos</span> | histogram | Distribution of builder-heartbeat receive delays from the BAM node to the BAM client (nanoseconds) |
+| <span class="metrics-name">bam_&#8203;scheduler_&#8203;ping_&#8203;response_&#8203;nanos</span> | histogram | Distribution of BAM scheduler Ping response latencies from Ping receipt to Pong enqueue (nanoseconds) |
 
 </div>

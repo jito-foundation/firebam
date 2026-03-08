@@ -15,6 +15,12 @@ PB_BIND(bam_types_BuilderHeartBeat, bam_types_BuilderHeartBeat, AUTO)
 PB_BIND(bam_types_ValidatorHeartBeat, bam_types_ValidatorHeartBeat, AUTO)
 
 
+PB_BIND(bam_types_Ping, bam_types_Ping, AUTO)
+
+
+PB_BIND(bam_types_Pong, bam_types_Pong, AUTO)
+
+
 PB_BIND(bam_types_Socket, bam_types_Socket, AUTO)
 
 
@@ -67,7 +73,6 @@ PB_BIND(bam_types_BlockEngineBuilderConfig, bam_types_BlockEngineBuilderConfig, 
 
 
 PB_BIND(bam_types_BamConfig, bam_types_BamConfig, AUTO)
-
 
 
 

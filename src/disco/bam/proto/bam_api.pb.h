@@ -41,6 +41,7 @@ typedef struct _bam_api_SchedulerMessageV0 {
         bam_types_LeaderState leader_state;
         bam_types_MultipleAtomicTxnBatchResult multiple_atomic_txn_batch_result;
         bam_types_AuthProof auth_proof;
+        bam_types_Pong pong;
     } msg;
 } bam_api_SchedulerMessageV0;
 
@@ -57,6 +58,7 @@ typedef struct _bam_api_SchedulerResponseV0 {
     union {
         bam_types_BuilderHeartBeat heart_beat;
         bam_types_MultipleAtomicTxnBatch multiple_atomic_txn_batch;
+        bam_types_Ping ping;
     } resp;
 } bam_api_SchedulerResponseV0;
 
@@ -99,9 +101,11 @@ extern "C" {
 #define bam_api_SchedulerMessageV0_leader_state_tag 2
 #define bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag 3
 #define bam_api_SchedulerMessageV0_auth_proof_tag 4
+#define bam_api_SchedulerMessageV0_pong_tag    5
 #define bam_api_SchedulerMessage_v0_tag          1
 #define bam_api_SchedulerResponseV0_heart_beat_tag 1
 #define bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag 2
+#define bam_api_SchedulerResponseV0_ping_tag    3
 #define bam_api_SchedulerResponse_v0_tag         1
 
 /* Struct field encoding specification for nanopb */
@@ -138,13 +142,15 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (versioned_msg,v0,versioned_msg.v0),   1)
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,heart_beat,msg.heart_beat),   1) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,leader_state,msg.leader_state),   2) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,multiple_atomic_txn_batch_result,msg.multiple_atomic_txn_batch_result),   3) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (msg,auth_proof,msg.auth_proof),   4)
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,auth_proof,msg.auth_proof),   4) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,pong,msg.pong),   5)
 #define bam_api_SchedulerMessageV0_CALLBACK NULL
 #define bam_api_SchedulerMessageV0_DEFAULT NULL
 #define bam_api_SchedulerMessageV0_msg_heart_beat_MSGTYPE bam_types_ValidatorHeartBeat
 #define bam_api_SchedulerMessageV0_msg_leader_state_MSGTYPE bam_types_LeaderState
 #define bam_api_SchedulerMessageV0_msg_multiple_atomic_txn_batch_result_MSGTYPE bam_types_MultipleAtomicTxnBatchResult
 #define bam_api_SchedulerMessageV0_msg_auth_proof_MSGTYPE bam_types_AuthProof
+#define bam_api_SchedulerMessageV0_msg_pong_MSGTYPE bam_types_Pong
 
 #define bam_api_SchedulerResponse_FIELDLIST(X, a) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (versioned_msg,v0,versioned_msg.v0),   1)
@@ -154,11 +160,13 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (versioned_msg,v0,versioned_msg.v0),   1)
 
 #define bam_api_SchedulerResponseV0_FIELDLIST(X, a) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (resp,heart_beat,resp.heart_beat),   1) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (resp,multiple_atomic_txn_batch,resp.multiple_atomic_txn_batch),   2)
+X(a, STATIC,   ONEOF,    MESSAGE,  (resp,multiple_atomic_txn_batch,resp.multiple_atomic_txn_batch),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (resp,ping,resp.ping),   3)
 #define bam_api_SchedulerResponseV0_CALLBACK NULL
 #define bam_api_SchedulerResponseV0_DEFAULT NULL
 #define bam_api_SchedulerResponseV0_resp_heart_beat_MSGTYPE bam_types_BuilderHeartBeat
 #define bam_api_SchedulerResponseV0_resp_multiple_atomic_txn_batch_MSGTYPE bam_types_MultipleAtomicTxnBatch
+#define bam_api_SchedulerResponseV0_resp_ping_MSGTYPE bam_types_Ping
 
 extern const pb_msgdesc_t bam_api_AuthChallengeRequest_msg;
 extern const pb_msgdesc_t bam_api_AuthChallengeResponse_msg;
@@ -180,17 +188,17 @@ extern const pb_msgdesc_t bam_api_SchedulerResponseV0_msg;
 #define bam_api_SchedulerResponseV0_fields &bam_api_SchedulerResponseV0_msg
 
 /* Maximum encoded size of messages (where known) */
-#if defined(bam_types_MultipleAtomicTxnBatchResult_size) && defined(bam_types_AuthProof_size)
-union bam_api_SchedulerMessageV0_msg_size_union {char f3[(6 + bam_types_MultipleAtomicTxnBatchResult_size)]; char f4[(6 + bam_types_AuthProof_size)]; char f0[25];};
+#if defined(bam_types_MultipleAtomicTxnBatchResult_size) && defined(bam_types_AuthProof_size) && defined(bam_types_Pong_size)
+union bam_api_SchedulerMessageV0_msg_size_union {char f3[(6 + bam_types_MultipleAtomicTxnBatchResult_size)]; char f4[(6 + bam_types_AuthProof_size)]; char f5[(6 + bam_types_Pong_size)]; char f0[25];};
 #endif
-#if defined(bam_types_MultipleAtomicTxnBatchResult_size) && defined(bam_types_AuthProof_size)
-union bam_api_SchedulerMessageV0_msg_size_union {char f3[(6 + bam_types_MultipleAtomicTxnBatchResult_size)]; char f4[(6 + bam_types_AuthProof_size)]; char f0[25];};
+#if defined(bam_types_MultipleAtomicTxnBatchResult_size) && defined(bam_types_AuthProof_size) && defined(bam_types_Pong_size)
+union bam_api_SchedulerMessageV0_msg_size_union {char f3[(6 + bam_types_MultipleAtomicTxnBatchResult_size)]; char f4[(6 + bam_types_AuthProof_size)]; char f5[(6 + bam_types_Pong_size)]; char f0[25];};
 #endif
-#if defined(bam_types_MultipleAtomicTxnBatch_size)
-union bam_api_SchedulerResponseV0_resp_size_union {char f2[(6 + bam_types_MultipleAtomicTxnBatch_size)]; char f0[13];};
+#if defined(bam_types_MultipleAtomicTxnBatch_size) && defined(bam_types_Ping_size)
+union bam_api_SchedulerResponseV0_resp_size_union {char f2[(6 + bam_types_MultipleAtomicTxnBatch_size)]; char f3[(6 + bam_types_Ping_size)]; char f0[13];};
 #endif
-#if defined(bam_types_MultipleAtomicTxnBatch_size)
-union bam_api_SchedulerResponseV0_resp_size_union {char f2[(6 + bam_types_MultipleAtomicTxnBatch_size)]; char f0[13];};
+#if defined(bam_types_MultipleAtomicTxnBatch_size) && defined(bam_types_Ping_size)
+union bam_api_SchedulerResponseV0_resp_size_union {char f2[(6 + bam_types_MultipleAtomicTxnBatch_size)]; char f3[(6 + bam_types_Ping_size)]; char f0[13];};
 #endif
 #define BAM_API_BAM_API_PB_H_MAX_SIZE            bam_api_AuthChallengeResponse_size
 #define bam_api_AuthChallengeRequest_size        0
@@ -199,11 +207,11 @@ union bam_api_SchedulerResponseV0_resp_size_union {char f2[(6 + bam_types_Multip
 #if defined(bam_types_BlockEngineBuilderConfig_size) && defined(bam_types_BamConfig_size)
 #define bam_api_ConfigResponse_size              (12 + bam_types_BlockEngineBuilderConfig_size + bam_types_BamConfig_size)
 #endif
-#if defined(bam_types_MultipleAtomicTxnBatchResult_size) && defined(bam_types_AuthProof_size)
+#if defined(bam_types_MultipleAtomicTxnBatchResult_size) && defined(bam_types_AuthProof_size) && defined(bam_types_Pong_size)
 #define bam_api_SchedulerMessageV0_size          (0 + sizeof(union bam_api_SchedulerMessageV0_msg_size_union))
 #define bam_api_SchedulerMessage_size            (6 + sizeof(union bam_api_SchedulerMessageV0_msg_size_union))
 #endif
-#if defined(bam_types_MultipleAtomicTxnBatch_size)
+#if defined(bam_types_MultipleAtomicTxnBatch_size) && defined(bam_types_Ping_size)
 #define bam_api_SchedulerResponseV0_size         (0 + sizeof(union bam_api_SchedulerResponseV0_resp_size_union))
 #define bam_api_SchedulerResponse_size           (6 + sizeof(union bam_api_SchedulerResponseV0_resp_size_union))
 #endif

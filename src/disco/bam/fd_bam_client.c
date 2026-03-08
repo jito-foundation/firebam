@@ -526,6 +526,15 @@ fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
   fd_histf_sample( ctx->metrics.msg_rx_delay, fd_ulong_sat_sub( now_u, tsorig_ns ) );
 }
 
+void
+fd_bam_client_sample_scheduler_ping_response( fd_bam_tile_t * ctx,
+                                              long            ping_start_ns ) {
+  ulong ping_start_u = fd_ulong_if( ping_start_ns >= 0L, (ulong)ping_start_ns, 0UL );
+  long  now_ns       = fd_bam_now();
+  ulong now_u        = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
+  fd_histf_sample( ctx->metrics.scheduler_ping_response_nanos, fd_ulong_sat_sub( now_u, ping_start_u ) );
+}
+
 static void
 fd_bam_request_auth_challenge( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
