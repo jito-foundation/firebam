@@ -169,7 +169,7 @@ capture_snapshot_until_ready() {
   local got_identity=0
   local got_startup=0
   local got_completed=0
-  local got_epoch=0
+  local got_covering_epoch=0
 
   : > "${out_file}"
 
@@ -187,6 +187,7 @@ capture_snapshot_until_ready() {
   local line=""
   local json_line=""
   local msg_kind=""
+  local completed_slot=""
 
   while (( SECONDS <= deadline )); do
     if IFS= read -r -u "${ws_out_fd}" -t 1 line 2>/dev/null; then
@@ -206,11 +207,33 @@ capture_snapshot_until_ready() {
       case "${msg_kind}" in
         identity) got_identity=1 ;;
         startup) got_startup=1 ;;
-        completed) got_completed=1 ;;
-        epoch) got_epoch=1 ;;
+        completed)
+          got_completed=1
+          completed_slot="$(jq -r '
+            if .topic=="summary" and .key=="completed_slot" and .value!=null
+            then (.value | tostring)
+            else empty
+            end
+          ' <<< "${json_line}" 2>/dev/null || true)"
+          ;;
       esac
 
-      if (( got_identity && got_startup && got_completed && got_epoch )); then
+      if (( got_identity && got_startup && got_completed && got_covering_epoch == 0 )) && [[ -n "${completed_slot}" ]]; then
+        if jq -e -s --argjson completed "${completed_slot}" '
+          any(
+            .[];
+            .topic=="epoch"
+            and .key=="new"
+            and (.value | type)=="object"
+            and ((.value.start_slot // 0) <= $completed)
+            and ((.value.end_slot // -1) >= $completed)
+          )
+        ' "${out_file}" >/dev/null 2>&1; then
+          got_covering_epoch=1
+        fi
+      fi
+
+      if (( got_identity && got_startup && got_completed && got_covering_epoch )); then
         break
       fi
     fi
@@ -223,7 +246,7 @@ capture_snapshot_until_ready() {
     wait "${ws_pid}" 2>/dev/null || true
   fi
 
-  (( got_identity && got_startup && got_completed && got_epoch ))
+  (( got_identity && got_startup && got_completed && got_covering_epoch ))
 }
 
 collect_query_details() {
@@ -311,7 +334,7 @@ collect_query_details() {
 }
 
 if ! capture_snapshot_until_ready "${snapshot_file}" "${SNAPSHOT_SECS}"; then
-  echo "error: timed out waiting for required websocket snapshot data; try increasing SNAPSHOT_SECS" >&2
+  echo "error: timed out waiting for required websocket summary data and an epoch schedule covering completed_slot; try increasing SNAPSHOT_SECS" >&2
   exit 1
 fi
 [[ -s "${snapshot_file}" ]] || { echo "error: websocket snapshot is empty" >&2; exit 1; }
@@ -339,17 +362,34 @@ if ! jq -sc '
   (first(.[] | select(.topic=="summary" and .key=="identity_key" and .value!=null) | .value)) as $identity
   | (first(.[] | select(.topic=="summary" and .key=="startup_time_nanos" and .value!=null) | .value)) as $startup_ns
   | (first(.[] | select(.topic=="summary" and .key=="completed_slot" and .value!=null) | .value)) as $completed
+  | [ .[]
+      | select(.topic=="epoch" and .key=="new" and (.value | type) == "object")
+      | {
+          start_slot: (.value.start_slot // 0),
+          end_slot: (.value.end_slot // -1)
+        }
+    ] as $epoch_ranges
   | if ($identity == null or $startup_ns == null or $completed == null)
     then error("missing required summary fields in websocket snapshot")
+    elif ([ $epoch_ranges[] | select(.start_slot <= $completed and .end_slot >= $completed) ] | length) == 0
+    then error("missing websocket epoch schedule covering completed_slot")
     else {
       identity_key: $identity,
       startup_time_nanos: ($startup_ns | tostring),
       completed_slot: $completed,
+      epoch_ranges: $epoch_ranges,
       produced_slots: produced_slots($identity; $completed)
     }
     end
 ' "${snapshot_file}" > "${snapshot_meta_file}"; then
-  echo "error: missing required summary fields in websocket snapshot" >&2
+  epoch_ranges="$(jq -sc '
+    [ .[]
+      | select(.topic=="epoch" and .key=="new" and (.value | type) == "object")
+      | "\(.value.start_slot // 0)-\(.value.end_slot // -1)"
+    ] | join(", ")
+  ' "${snapshot_file}" 2>/dev/null || true)"
+  [[ -n "${epoch_ranges}" && "${epoch_ranges}" != '""' ]] || epoch_ranges="none"
+  echo "error: websocket snapshot missing required summary fields or an epoch schedule covering completed_slot; captured epoch ranges: ${epoch_ranges}" >&2
   exit 1
 fi
 
