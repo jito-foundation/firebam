@@ -6,6 +6,7 @@ PROM_VERSION="${PROM_VERSION:-3.9.1}"
 PROM_CACHE_DIR="${PROM_CACHE_DIR:-${SCRIPT_DIR}/../opt/prometheus}" # from git root, ./opt/prometheus
 PROM_DATA_DIR="${PROM_DATA_DIR:-${HOME}/.firedancer/prometheus/data}"
 PROM_PASSWORD_FILE="${PROM_PASSWORD_FILE:-${SCRIPT_DIR}/../opt/prometheus_remote_write_password.txt}"
+PROM_SCRAPE_INTERVAL="${PROM_SCRAPE_INTERVAL:-1s}"
 PROM_SYSTEMD_SERVICE="${PROM_SYSTEMD_SERVICE:-firedancer-prometheus.service}"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -29,6 +30,7 @@ Options (install only):
 
 run_prometheus() {
   shift
+  export PROM_SCRAPE_INTERVAL
   mkdir -p "${PROM_CACHE_DIR}" "${PROM_DATA_DIR}" "$(dirname "${PROM_PASSWORD_FILE}")"
   if [[ ! -f "${PROM_PASSWORD_FILE}" ]]; then
     read -r -s -p "Prometheus remote_write password: " PROMETHEUS_METRICS_PASSWORD
@@ -98,6 +100,7 @@ Environment="PROM_VERSION=${PROM_VERSION}"
 Environment="PROM_CACHE_DIR=${PROM_CACHE_DIR}"
 Environment="PROM_DATA_DIR=${PROM_DATA_DIR}"
 Environment="PROM_PASSWORD_FILE=${PROM_PASSWORD_FILE}"
+Environment="PROM_SCRAPE_INTERVAL=${PROM_SCRAPE_INTERVAL}"
 
 [Install]
 WantedBy=${install_target}
