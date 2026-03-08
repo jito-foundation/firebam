@@ -235,6 +235,7 @@ struct fd_bam_tile {
   uint                  bam_auth_ready         : 1;      /* set when bam_auth_challenge/_len contain a fresh challenge to sign */
   uint                  bam_auth_inflight      : 1;      /* true while GetAuthChallenge GRPC call is pending */
   uint                  bam_config_inflight    : 1;      /* true while GetBuilderConfig GRPC call is pending */
+  uint                  bam_config_received    : 1;      /* set after a valid ConfigResponse lands on the current connection */
   uint                  bam_leader_pending     : 1;      /* set when awaiting a scheduler leader-state response */
 
   /* Error backoff */

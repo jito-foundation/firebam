@@ -1832,7 +1832,7 @@ test_bam_bundle_seq_conflict_order_and_bypass( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
-/* Conflicting BAM bundles are ordered by insertion.
+/* Conflicting BAM bundles resolve by seq_id priority first.
    Non-conflicting bundles may still bypass blocked conflicting work. */
 static void
 test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
@@ -1851,7 +1851,7 @@ test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
   mark_bundle_as_bam( bundle, 1UL, 20U, 1U );
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted )>=0 );
 
-  /* Insert lower seq later (same contention key). Earlier insertion still wins. */
+  /* Insert lower seq later (same contention key). Lower seq should win. */
   bundle = fd_pack_insert_bundle_init( pack, _bundle, 2UL );
   make_transaction1( bundle[0]->txnp, 201UL, 2000U, 32U, 10.0, "x", "", NULL, NULL );
   make_transaction1( bundle[1]->txnp, 202UL, 2000U, 32U, 10.0, "q", "", NULL, NULL );
@@ -1865,11 +1865,14 @@ test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted )>=0 );
 
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
-  FD_TEST( txn_cnt==1UL );
-  FD_TEST( test_txn_id( &outcome.results[0] )==200UL );
-  FD_TEST( outcome.results[0].bam.seq_id==20U );
-  FD_TEST( outcome.results[0].bam.batch_idx==0U );
-  FD_TEST( outcome.results[0].bam.batch_cnt==1U );
+  FD_TEST( txn_cnt==2UL );
+  FD_TEST( test_txn_id( &outcome.results[0] )==201UL );
+  FD_TEST( test_txn_id( &outcome.results[1] )==202UL );
+  for( ulong i=0UL; i<txn_cnt; i++ ) {
+    FD_TEST( outcome.results[i].bam.seq_id==10U );
+    FD_TEST( outcome.results[i].bam.batch_idx==(uchar)i );
+    FD_TEST( outcome.results[i].bam.batch_cnt==2U );
+  }
 
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==1UL );
@@ -1879,20 +1882,17 @@ test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
   FD_TEST( outcome.results[0].bam.batch_cnt==1U );
   fd_pack_microblock_complete( pack, 1UL );
 
-  /* seq=10 still conflicts with outstanding seq=20. */
+  /* seq=20 still conflicts with outstanding seq=10. */
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==0UL );
 
   fd_pack_microblock_complete( pack, 0UL );
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
-  FD_TEST( txn_cnt==2UL );
-  FD_TEST( test_txn_id( &outcome.results[0] )==201UL );
-  FD_TEST( test_txn_id( &outcome.results[1] )==202UL );
-  for( ulong i=0UL; i<txn_cnt; i++ ) {
-    FD_TEST( outcome.results[i].bam.seq_id==10U );
-    FD_TEST( outcome.results[i].bam.batch_idx==(uchar)i );
-    FD_TEST( outcome.results[i].bam.batch_cnt==2U );
-  }
+  FD_TEST( txn_cnt==1UL );
+  FD_TEST( test_txn_id( &outcome.results[0] )==200UL );
+  FD_TEST( outcome.results[0].bam.seq_id==20U );
+  FD_TEST( outcome.results[0].bam.batch_idx==0U );
+  FD_TEST( outcome.results[0].bam.batch_cnt==1U );
   fd_pack_microblock_complete( pack, 0UL );
 
   FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );

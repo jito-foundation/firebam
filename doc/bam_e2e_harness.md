@@ -1,8 +1,8 @@
-# BAM End-to-End Harness and Stateful Fuzz
+# BAM Integration, Model, and Stateful Fuzz
 
 ## Scope
 
-This harness validates BAM cleanroom contract behavior end-to-end across the Firedancer BAM ingest/scheduler boundary and a deterministic downstream pipeline model (`verify -> dedup -> resolv -> pack -> bank -> bam`).
+The BAM test surface is split between a small real integration suite and a deterministic downstream model (`verify -> dedup -> resolv -> pack -> bank -> bam`).
 
 The contract source is:
 
@@ -11,7 +11,13 @@ The contract source is:
 
 ## What is covered
 
-Deterministic matrix (`src/disco/bam/test_bam_e2e.c`):
+Real queue/wire integration (`src/disco/bam/test_bam_e2e.c`):
+
+1. Flush committed bundle results through the real BAM result queue and decode the outbound wire message.
+2. Inject inbound scheduler protobufs that stage real not-committed results, flush them, and decode the outbound wire message.
+3. Exercise real vote-payload rejection on the BAM ingress path and verify the encoded outbound reason.
+
+Deterministic model matrix (`src/disco/bam/test_bam_model.c`):
 
 1. Atomic all-success bundle.
 2. Atomic failure at verify/sig stage.
@@ -46,7 +52,7 @@ Stateful fuzz (`src/disco/bam/fuzz_bam_e2e_stateful.c`):
   - `RECONNECT`
   - `FILL_QUEUE`
   - `DRAIN_QUEUE`
-- Differential mode: compares SUT vs oracle fee/CU/result/drop state after every event.
+- Model-check mode: compares the synthetic model state vs oracle fee/CU/result/drop state after every event.
 - Deterministic seed from input bytes.
 - Failure path writes repro artifact to `/tmp/bam_stateful_repro_<seed>.txt` including shrunk event prefix and first invariant failure snapshot.
 
@@ -66,6 +72,8 @@ From repo root:
 ```bash
 make -j4 build/native/gcc/unit-test/test_bam_e2e
 build/native/gcc/unit-test/test_bam_e2e
+make -j4 build/native/gcc/unit-test/test_bam_model
+build/native/gcc/unit-test/test_bam_model
 make -j4 build/native/gcc/fuzz-test/fuzz_bam_e2e_stateful
 ```
 

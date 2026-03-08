@@ -2571,6 +2571,8 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   for( treap_rev_iter_t _txn0=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _txn0 ); _txn0=fd_pack_bundle_next( _txn0, pool ) ) {
     fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
     ulong bundle_idx = fd_pack_bundle_idx( txn0 );
+    _Bool const cand_is_bam = txn0->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+    uint  const cand_seq    = cand_is_bam ? txn0->txn->bam.seq_id : 0U;
 
     if( FD_UNLIKELY( txn0->skip==pack->compressed_slot_number ) ) {
       for( treap_rev_iter_t _cur=_txn0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
@@ -2584,12 +2586,22 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_NOT_INITIALIZED) & !is_ib ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
 
     int blocked_by_prior = 0;
-    /* Enforce insertion-order conflict semantics: among conflicting bundles,
-       earlier insertion wins. */
-    for( treap_rev_iter_t _prior=treap_rev_iter_init( bundles, pool ); _prior!=_txn0; _prior=fd_pack_bundle_next( _prior, pool ) ) {
-      fd_pack_ord_txn_t * prior = treap_rev_iter_ele( _prior, pool );
-      if( FD_UNLIKELY( prior->skip==pack->compressed_slot_number ) ) continue;
-      if( FD_LIKELY( !fd_pack_bundle_conflicts( pack, _prior, _txn0 ) ) ) continue;
+    /* Conflicting BAM bundles resolve by lower seq_id first; insertion order is
+       only the tie-breaker after that priority. */
+    for( treap_rev_iter_t _other=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _other ); _other=fd_pack_bundle_next( _other, pool ) ) {
+      if( FD_UNLIKELY( _other==_txn0 ) ) continue;
+      fd_pack_ord_txn_t * other = treap_rev_iter_ele( _other, pool );
+      ulong const other_bundle_idx = fd_pack_bundle_idx( other );
+      if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) continue;
+      if( FD_LIKELY( !fd_pack_bundle_conflicts( pack, _other, _txn0 ) ) ) continue;
+
+      if( FD_UNLIKELY( cand_is_bam && other->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+        uint const other_seq = other->txn->bam.seq_id;
+        if( FD_UNLIKELY( other_seq != cand_seq ) ) {
+          if( FD_LIKELY( other_seq > cand_seq ) ) continue;
+        } else if( FD_LIKELY( other_bundle_idx > bundle_idx ) ) continue;
+      } else if( FD_LIKELY( other_bundle_idx > bundle_idx ) ) continue;
+
       blocked_by_prior = 1;
       break;
     }

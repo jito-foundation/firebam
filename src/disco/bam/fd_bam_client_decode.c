@@ -320,12 +320,6 @@ fd_bam_collect_packet( pb_istream_t *         stream,
 
   uchar packet_revert_on_error = 0U;
   if( packet.has_meta && packet.meta.has_flags ) {
-    if( FD_UNLIKELY( packet.meta.flags.simple_vote_tx ) ) {
-      state->has_deser_err = true;
-      state->deser_reason = bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE;
-      state->deser_index  = state->packet_cnt;
-      return false;
-    }
     packet_revert_on_error = packet.meta.flags.revert_on_error;
   }
 
@@ -412,20 +406,30 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
     return 0;
   }
 
-  if( FD_UNLIKELY( state->revert_on_error && !ctx->builder_info_valid_until ) ) {
-    ctx->metrics.ingress_reject_missing_builder_info_cnt++;
+  int simple_vote_idx = -1;
+  uchar txn_buf[ FD_TXN_MAX_SZ ];
+  for( uchar i=0U; i<state->packet_cnt; i++ ) {
+    bam_types_Packet const * packet = &state->packets[ i ];
+    if( FD_UNLIKELY( !fd_txn_parse( packet->data.bytes, packet->data.size, txn_buf, NULL ) ) ) continue;
+    if( FD_UNLIKELY( fd_txn_is_simple_vote_transaction( (fd_txn_t const *)txn_buf, packet->data.bytes ) ) ) {
+      simple_vote_idx = (int)i;
+      break;
+    }
+  }
+  if( FD_UNLIKELY( simple_vote_idx >= 0 ) ) {
+    ctx->metrics.ingress_reject_deser_cnt++;
     fd_bam_bundle_result_t res = {
-      .seq_id                 = batch->seq_id,
-      .slot                   = batch->max_schedule_slot,
-      .bundle_txn_cnt         = state->packet_cnt,
-      .execution_success      = 0,
-      .scheduling_error       = FD_BAM_SCHED_ERR_NONE,
-      .bundle_err             = FD_BAM_BUNDLE_ERR_GENERIC_INVALID,
-      .generic_invalid_reason = FD_BAM_ERR_GENERIC_INVALID_BUILDER_INFO_UNAVAILABLE,
-      .generic_invalid_index  = 0,
+      .seq_id            = batch->seq_id,
+      .slot              = batch->max_schedule_slot,
+      .bundle_txn_cnt    = state->packet_cnt,
+      .execution_success = 0,
+      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+      .deser_reason      = bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE,
+      .deser_index       = (uchar)simple_vote_idx,
     };
     fd_bam_enqueue_result( ctx, &res );
-    ctx->metrics.missing_builder_info_fail_cnt++;
+    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
     return 0;
   }
 

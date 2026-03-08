@@ -8,6 +8,8 @@ $(call make-unit-test,test_bam_tile,test_bam_tile,fd_disco fd_waltz fd_flamenco 
 $(call run-unit-test,test_bam_tile)
 $(call make-unit-test,test_bam_e2e,test_bam_e2e,fd_disco fd_waltz fd_flamenco fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))
 $(call run-unit-test,test_bam_e2e)
+$(call make-unit-test,test_bam_model,test_bam_model,fd_disco fd_waltz fd_flamenco fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))
+$(call run-unit-test,test_bam_model)
 endif
 ifdef FD_HAS_HOSTED
 $(call make-fuzz-test,fuzz_bam_client,fuzz_bam_client,fd_disco fd_waltz fd_flamenco fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))

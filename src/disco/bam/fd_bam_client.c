@@ -151,6 +151,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_auth_ready             = 0;
   ctx->bam_auth_inflight          = 0;
   ctx->bam_config_inflight        = 0;
+  ctx->bam_config_received        = 0;
   ctx->bam_challenge_to_sign_len     = 0U;
   ctx->bam_last_builder_heartbeat_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
@@ -300,11 +301,6 @@ fd_bam_tile_publish_bundle_txn(
     uchar              batch_idx,
     uint               source_ipv4
 ) {
-  if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) {
-    ctx->metrics.missing_builder_info_fail_cnt++; /* unreachable */
-    return;
-  }
-
   fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
   *txnm = (fd_txn_m_t) {
     .reference_slot = 0UL,
@@ -661,6 +657,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     FD_LOG_WARNING(( "Missing BAM config in ConfigResponse" ));
     return;
   }
+  ctx->bam_config_received = 1U;
 
   bam_types_BamConfig const * cfg = &resp.bam_config;
   fd_ip4_port_t prev_tpu     = ctx->bam_tpu;
@@ -704,9 +701,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     _Bool tpu_changed = ( prev_tpu.l != ctx->bam_tpu.l || prev_tpu_fwd.l != ctx->bam_tpu_fwd.l );
     if( FD_UNLIKELY( tpu_changed ) ) ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
   } else {
-    ctx->bam_tpu     = (fd_ip4_port_t){0};
-    ctx->bam_tpu_fwd = (fd_ip4_port_t){0};
-    FD_LOG_WARNING(( "Received invalid TPU config, reverting BAM TPU config to defaults" )); // todo: print out default ip+port
+    FD_LOG_WARNING(( "Received incomplete or invalid TPU config; preserving prior BAM TPU config" ));
   }
 
   ctx->gui_dirty = 1U;
@@ -760,7 +755,6 @@ static void
 fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->bam_auth_ready ) ) return;
   if( FD_UNLIKELY( ctx->bam_stream || ctx->bam_stream_connecting ) ) return;
-  if( FD_UNLIKELY( !ctx->builder_info_valid_until ) ) return;
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
 
   bam_types_AuthProof proof = bam_types_AuthProof_init_default;
@@ -1434,6 +1428,10 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
 
   if( FD_UNLIKELY( !fd_grpc_client_is_connected( ctx->grpc_client ) ) ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING;
+  }
+
+  if( FD_UNLIKELY( !ctx->bam_config_received ) ) {
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
   }
 
   if( FD_UNLIKELY(
