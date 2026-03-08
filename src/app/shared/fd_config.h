@@ -329,6 +329,13 @@ struct fd_config {
     } bundle;
 
     struct {
+      char ssl_key_log_file[ PATH_MAX ];
+      uint buffer_size_kib;
+      int  dump_bam_txns;
+      int  dump_bam_first_slot_txn;
+    } bam;
+
+    struct {
       char affinity[ AFFINITY_SZ ];
       char fake_dst_ip[ 16 ];
     } pktgen;
@@ -405,8 +412,6 @@ struct fd_config {
       char tls_domain_name[ FD_SNI_BUF_MAX ];
       ulong keepalive_interval_millis;
       int   tls_cert_verify;
-      int   dump_bam_txns;
-      int   dump_bam_first_slot_txn;
     } bam;
 
     struct {

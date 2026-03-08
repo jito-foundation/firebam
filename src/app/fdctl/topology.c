@@ -540,14 +540,14 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
       strncpy( tile->bam.sni, config->tiles.bam.tls_domain_name, sizeof(tile->bam.sni) );
       tile->bam.sni_len = strnlen( tile->bam.sni, 255 );
       strncpy( tile->bam.identity_key_path, config->paths.identity_key, sizeof(tile->bam.identity_key_path) );
-      strncpy( tile->bam.key_log_path, config->development.bundle.ssl_key_log_file, sizeof(tile->bam.key_log_path) ); //fixme bundle -> bam
-      tile->bam.buf_sz = config->development.bundle.buffer_size_kib<<10; //fixme bundle -> bam
-      tile->bam.ssl_heap_sz = config->development.bundle.ssl_heap_size_mib<<20;//fixme bundle -> bam
+      strncpy( tile->bam.key_log_path, config->development.bam.ssl_key_log_file, sizeof(tile->bam.key_log_path) );
+      tile->bam.buf_sz = config->development.bam.buffer_size_kib<<10;
+      tile->bam.ssl_heap_sz = 0UL; /* Currently unused by the BAM tile. */
       tile->bam.keepalive_interval_nanos = config->tiles.bam.keepalive_interval_millis * (ulong)1e6;
       tile->bam.tls_cert_verify = !!config->tiles.bam.tls_cert_verify;
       tile->bam.enabled = !!config->tiles.bam.enabled;
-      tile->bam.dump_bam_txns = !!config->tiles.bam.dump_bam_txns;
-      tile->bam.dump_bam_first_slot_txn = !!config->tiles.bam.dump_bam_first_slot_txn;
+      tile->bam.dump_bam_txns = !!config->development.bam.dump_bam_txns;
+      tile->bam.dump_bam_first_slot_txn = !!config->development.bam.dump_bam_first_slot_txn;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "verify" ) ) ) {
     tile->verify.tcache_depth = config->tiles.verify.signature_cache_size;
