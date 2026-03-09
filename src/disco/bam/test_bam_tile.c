@@ -2874,6 +2874,49 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+FD_FN_UNUSED static void
+test_bam_ctrl_blank_url_clears_and_disables( fd_wksp_t * wksp ) {
+  /* Runtime setBamUrl("") semantics: blank/whitespace clears the URL and
+     forces BAM off instead of being treated as a parse error. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * ctx = env->state;
+
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_defaults( ctx, &ctrl );
+
+  static fd_keyswitch_t keyswitch = {0};
+  keyswitch.magic = FD_KEYSWITCH_MAGIC;
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  keyswitch.param = 0UL;
+  ctx->keyswitch = &keyswitch;
+
+  ctrl.command = FD_BAM_CTRL_CMD_URL;
+  ctrl.enable  = 1U;
+  strlcpy( ctrl.url, "   \t\n", FD_URL_MAX );
+  ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( ctrl.enable == 0U );
+  FD_TEST( !strcmp( ctrl.url, "" ) );
+  FD_TEST( !strcmp( ctrl.sni, "" ) );
+  FD_TEST( ctx->enabled == 0 );
+  FD_TEST( !strcmp( ctx->server_fqdn, "" ) );
+  FD_TEST( ctx->server_fqdn_len == 0U );
+  FD_TEST( !strcmp( ctx->server_sni, "" ) );
+  FD_TEST( ctx->server_sni_len == 0U );
+  FD_TEST( ctx->server_tcp_port == 0U );
+  FD_TEST( ctx->is_ssl == 0U );
+  FD_TEST( !strcmp( ctx->grpc_client->host, "" ) );
+  FD_TEST( ctx->grpc_client->port == 0U );
+  FD_TEST( !strcmp( ctx->ctrl->error, "" ) );
+
+  ctx->keyswitch = NULL;
+  test_bam_env_destroy( env );
+}
+
 /* --- Gossip advertisement ------------------------------------------------------------ */
 
 static void
@@ -3634,6 +3677,7 @@ main( int     argc,
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_enable_from_disabled_start( wksp );
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
+  test_bam_ctrl_blank_url_clears_and_disables( wksp );
 
   /* Gossip advertisement */
   test_bam_gossip_publishes_bam_config_contact( wksp );

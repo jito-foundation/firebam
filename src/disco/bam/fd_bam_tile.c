@@ -11,13 +11,13 @@
 #include "../../util/net/fd_ip4.h"
 
 #include <errno.h>
+#include <ctype.h> /* isspace */
 #include <dirent.h> /* opendir */
 #include <stdio.h> /* snprintf */
 #include <fcntl.h> /* F_SETFL */
 #include <unistd.h> /* close */
 #include <sys/mman.h> /* PROT_READ (seccomp) */
 #include <sys/uio.h> /* writev */
-#include <limits.h>
 #include <netinet/in.h> /* AF_INET */
 #include <netinet/tcp.h> /* TCP_FASTOPEN_CONNECT (seccomp) */
 #include "../../waltz/resolv/fd_netdb.h"
@@ -442,12 +442,14 @@ fd_bam_tile_publish_gui_update(
 
   strlcpy( update->name, "bam", sizeof( update->name ));
 
-  /* Deliberately silently truncates */
-  snprintf( update->url, sizeof( update->url ), "%s://%.*s:%u",
-            ctx->is_ssl ? "https" : "http",
-            (int)ctx->server_fqdn_len,
-            ctx->server_fqdn,
-            ctx->server_tcp_port );
+  if( FD_LIKELY( ctx->server_fqdn_len && ctx->server_tcp_port ) ) {
+    /* Deliberately silently truncates */
+    snprintf( update->url, sizeof( update->url ), "%s://%.*s:%u",
+              ctx->is_ssl ? "https" : "http",
+              (int)ctx->server_fqdn_len,
+              ctx->server_fqdn,
+              ctx->server_tcp_port );
+  }
 
   strlcpy( update->sni, ctx->server_sni, sizeof( update->sni ) );
 
@@ -536,6 +538,13 @@ after_credit( fd_bam_tile_t *  ctx,
 static int
 fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->ctrl ) ) return -1;
+  /* Surface an unset URL/SNI when BAM has no configured runtime endpoint. */
+  ctx->ctrl->url[0] = '\0';
+  ctx->ctrl->sni[0] = '\0';
+  ctx->ctrl->enable = ctx->enabled;
+  if( FD_UNLIKELY( !ctx->server_fqdn_len || !ctx->server_tcp_port ) ) {
+    return 0;
+  }
   char buf[FD_URL_MAX];
   // FIXME: check if `http` already in server_fqdn, if so, dont prepend
   int n = snprintf( buf, FD_URL_MAX, "%s://%.*s:%u",
@@ -549,7 +558,6 @@ fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
   }
   strlcpy(ctx->ctrl->url, buf, (size_t)n+1);
   strlcpy( ctx->ctrl->sni, ctx->server_sni, FD_SNI_BUF_MAX );
-  ctx->ctrl->enable = ctx->enabled;
   return 0;
 }
 
@@ -567,14 +575,27 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   uchar  new_ssl  = ctx->is_ssl;
   char   new_host[ FD_FQDN_BUF_MAX ];
   ushort new_host_len;
+  _Bool  need_reset = 0;
 
   if( command & FD_BAM_CTRL_CMD_URL ) {
-    ulong url_len = strlen( ctx->ctrl->url );
-    if( FD_UNLIKELY( !url_len ) ) {
-      fd_cstr_printf( err, err_sz, NULL, "BAM URL must be non-empty" );
-      return -1;
+    char const * p = ctx->ctrl->url;
+    while( *p && fd_isspace( (int)*p ) ) p++;
+
+    if( FD_UNLIKELY( !*p ) ) {
+      /* Runtime blank URL means "clear BAM URL" and disable the client. */
+      need_reset = !!ctx->server_fqdn_len || !!ctx->server_sni_len || !!ctx->server_tcp_port || !!ctx->is_ssl || !!ctx->enabled;
+      ctx->server_fqdn[0]   = '\0';
+      ctx->server_fqdn_len  = 0U;
+      ctx->server_sni[0]    = '\0';
+      ctx->server_sni_len   = 0U;
+      ctx->server_tcp_port  = 0U;
+      ctx->is_ssl           = 0U;
+      ctx->enabled          = 0U;
+      fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
+      goto finalize;
     }
 
+    ulong url_len = strlen( ctx->ctrl->url );
     fd_url_t runtime_url;
     ushort parse_port = new_port;
     _Bool  parse_ssl  = new_ssl;
@@ -621,8 +642,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     strlcpy( new_sni, ctx->server_sni, sizeof(new_sni) );
   }
 
-  uchar new_enable = ( command & FD_BAM_CTRL_CMD_ENABLE ) ? !!ctx->ctrl->enable : ctx->enabled;
-  int need_reset = 0;
+  uchar new_enable = (uchar)( ( command & FD_BAM_CTRL_CMD_ENABLE ) ? !!ctx->ctrl->enable : ctx->enabled );
   if( command & FD_BAM_CTRL_CMD_URL ) {
     strlcpy( ctx->server_fqdn, new_host, sizeof(ctx->server_fqdn) );
     ctx->server_fqdn_len = (ushort)fd_ulong_min( new_host_len, (ulong)USHORT_MAX );
@@ -638,11 +658,12 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     need_reset = 1;
   }
 
-  if( (command & FD_BAM_CTRL_CMD_ENABLE) && (new_enable != ctx->enabled) ) {
+  if( ( command & FD_BAM_CTRL_CMD_ENABLE ) && ( new_enable != ctx->enabled ) ) {
     ctx->enabled = new_enable;
     need_reset = 1;
   }
 
+finalize:
   if( need_reset ) {
     fd_bam_client_reset( ctx );
     ctx->backoff_until = 0; /* Clear any backoff so admin-triggered changes take effect immediately. */
