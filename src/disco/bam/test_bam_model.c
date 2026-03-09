@@ -595,6 +595,12 @@ bam_model_ready_push( bam_model_harness_t * h,
   h->ready[ h->ready_cnt++ ] = *b;
 }
 
+static inline int
+bam_model_has_slot_hint( ulong max_schedule_slot ) {
+  return max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT &&
+         max_schedule_slot!=0UL;
+}
+
 static int
 bam_model_batch_precheck_fail( bam_model_batch_t const * b,
                              ulong                   current_slot,
@@ -627,7 +633,8 @@ bam_model_batch_precheck_fail( bam_model_batch_t const * b,
     return 1;
   }
 
-  if( FD_UNLIKELY( b->max_schedule_slot<current_slot ) ) {
+  if( FD_UNLIKELY( bam_model_has_slot_hint( b->max_schedule_slot ) &&
+                   b->max_schedule_slot<current_slot ) ) {
     *out = (fd_bam_bundle_result_t){
       .seq_id            = b->seq_id,
       .slot              = b->max_schedule_slot,
@@ -832,12 +839,15 @@ static void
 bam_model_process_ready( bam_model_harness_t * h ) {
   if( FD_UNLIKELY( !h->ready_cnt ) ) return;
   bam_model_sort_ready_by_priority( h );
+  ulong current_slot = bam_model_current_slot( h );
+  ulong ready_out = 0UL;
 
   for( ulong i=0UL; i<h->ready_cnt; i++ ) {
     bam_model_batch_t const * b = &h->ready[ i ];
     fd_bam_bundle_result_t res;
 
-    if( FD_UNLIKELY( !h->leader_on ) ) {
+    if( FD_UNLIKELY( bam_model_has_slot_hint( b->max_schedule_slot ) &&
+                     b->max_schedule_slot<current_slot ) ) {
       res = (fd_bam_bundle_result_t){
         .seq_id            = b->seq_id,
         .slot              = b->max_schedule_slot,
@@ -851,19 +861,8 @@ bam_model_process_ready( bam_model_harness_t * h ) {
       continue;
     }
 
-    if( FD_UNLIKELY( b->max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT &&
-                     b->max_schedule_slot!=0UL &&
-                     b->max_schedule_slot<bam_model_current_slot( h ) ) ) {
-      res = (fd_bam_bundle_result_t){
-        .seq_id            = b->seq_id,
-        .slot              = b->max_schedule_slot,
-        .bundle_txn_cnt    = b->txn_cnt,
-        .execution_success = 0U,
-        .scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT,
-        .bundle_err        = FD_BAM_BUNDLE_ERR_NONE,
-      };
-      bam_model_emit_model_result( h, &res );
-      bam_model_emit_oracle_result( h, &res );
+    if( FD_UNLIKELY( !h->leader_on ) ) {
+      h->ready[ ready_out++ ] = *b;
       continue;
     }
 
@@ -872,7 +871,7 @@ bam_model_process_ready( bam_model_harness_t * h ) {
     bam_model_emit_oracle_result( h, &res );
   }
 
-  h->ready_cnt = 0UL;
+  h->ready_cnt = ready_out;
 }
 
 static void
@@ -1323,20 +1322,48 @@ bam_model_run_scenario_non_leader_phase( bam_model_harness_t * h ) {
   bam_model_absorb_verify_output( h );
   FD_TEST( h->ready_cnt==1UL );
 
-  /* Buffered work should flush as OUTSIDE_SLOT when not leader. */
+  /* Buffered work should remain queued while not leader. */
   h->leader_on = 0U;
+  bam_model_process_ready( h );
+  FD_TEST( h->model_result_cnt==0UL );
+  FD_TEST( h->ready_cnt==1UL );
+
+  /* Once leader mode starts, the buffered work can execute normally. */
+  h->leader_on = 1U;
   bam_model_process_ready( h );
   FD_TEST( h->model_result_cnt==1UL );
   FD_TEST( h->model_results[0].seq_id==905U );
-  FD_TEST( h->model_results[0].scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+  FD_TEST( h->model_results[0].scheduling_error==FD_BAM_SCHED_ERR_NONE );
 
-  /* Newly received work while non-leader should also map to OUTSIDE_SLOT. */
+  /* Newly received work while non-leader should also remain queued. */
+  h->leader_on = 0U;
   bam_model_batch_def_t fresh = bam_model_make_batch( 906U, 100UL, 1U, 1U );
   bam_model_node_deliver_batches( h, &fresh, 1UL, 0U );
   bam_model_apply_pipeline( h );
+  FD_TEST( h->model_result_cnt==1UL );
+  FD_TEST( h->ready_cnt==1UL );
+
+  h->leader_on = 1U;
+  bam_model_process_ready( h );
   FD_TEST( h->model_result_cnt==2UL );
   FD_TEST( h->model_results[1].seq_id==906U );
-  FD_TEST( h->model_results[1].scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+  FD_TEST( h->model_results[1].scheduling_error==FD_BAM_SCHED_ERR_NONE );
+}
+
+static void
+bam_model_run_scenario_no_hint_non_leader_phase( bam_model_harness_t * h ) {
+  h->leader_on = 0U;
+  bam_model_batch_def_t buffered = bam_model_make_batch( 908U, 0UL, 1U, 1U );
+  bam_model_node_deliver_batches( h, &buffered, 1UL, 0U );
+  bam_model_apply_pipeline( h );
+  FD_TEST( h->model_result_cnt==0UL );
+  FD_TEST( h->ready_cnt==1UL );
+
+  h->leader_on = 1U;
+  bam_model_process_ready( h );
+  FD_TEST( h->model_result_cnt==1UL );
+  FD_TEST( h->model_results[0].seq_id==908U );
+  FD_TEST( h->model_results[0].scheduling_error==FD_BAM_SCHED_ERR_NONE );
 }
 
 static void
@@ -1649,6 +1676,11 @@ bam_model_run_scenarios( fd_wksp_t * wksp ) {
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_non_leader_phase( h );
+  bam_model_assert_matches_oracle( h );
+  bam_model_fini( h );
+
+  bam_model_init( h, wksp );
+  bam_model_run_scenario_no_hint_non_leader_phase( h );
   bam_model_assert_matches_oracle( h );
   bam_model_fini( h );
 
