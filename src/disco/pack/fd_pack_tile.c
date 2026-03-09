@@ -157,16 +157,7 @@ typedef struct {
    this as a block_builder_info_t view. */
 typedef struct {
   block_builder_info_t builder[1];
-  /* TODO(bam): These fields are currently written by pack but not
-     consumed in-tree yet. Keep them for downstream metadata consumers,
-     and either wire up a local reader or remove when no longer needed. */
-  ulong                bam_max_schedule_slot;
-  uint                 bam_seq_id;
-  uchar                kind; /* PACK_BUNDLE_META_KIND_* */
 } pack_bundle_meta_t;
-
-#define PACK_BUNDLE_META_KIND_BLOCK_ENGINE (1)
-#define PACK_BUNDLE_META_KIND_BAM          (2)
 
 typedef struct {
   fd_ed25519_sig_t sig[ FD_PACK_MAX_TXN_PER_BUNDLE ];
@@ -191,7 +182,6 @@ typedef struct {
   fd_pack_t *  pack;
   fd_txn_e_t * cur_spot;
   uchar        bundle_kind; /* PACK_TILE_BUNDLE_KIND_* (none/BE/BAM) */
-  uchar        bam_batch_idx; /* current BAM bundle txn idx */
   ulong        bam_txn_max_schedule_slot; /* current BAM non-revert txn window hint */
 
   uchar executed_txn_sig[ 64UL ];
@@ -462,10 +452,11 @@ typedef struct {
   fd_bam_fee_cfg_t const * bam_fee_cfg;
 
   /* Last leader-state message published to pack_bam. Used to avoid spamming
-     identical updates; pack publishes only when the computed state differs.
-     last_bam_leader_state_valid is 0 until the first publish. */
+     identical updates.
+
+     Sentinel: slot==ULONG_MAX means "no cached publish yet", which is safe
+     because leader-state publishes only happen while leader_slot is live. */
   fd_bam_leader_state_t last_bam_leader_state;
-  _Bool                  last_bam_leader_state_valid;
 
   struct {
     int                   enabled;
@@ -490,8 +481,12 @@ typedef struct {
   ulong pending_rebate_sz;
   union{ fd_pack_rebate_t rebate[1]; uchar footprint[USHORT_MAX]; } rebate[1];
 
+  /* Single queued BAM result used when a partial bundle must be abandoned
+     from during_frag, where we cannot publish immediately.
+
+     Sentinel: bundle_txn_cnt==0 means "no queued result". This is safe
+     because only non-empty BAM batches are ever queued here. */
   fd_bam_bundle_result_t pending_bam_result[1];
-  _Bool                  pending_bam_result_valid;
 
   /* BAM batches accepted into fd_pack but not yet handed off to bank.
      Used to clean up buffered BAM work when slot or blockhash validity changes. */
@@ -500,7 +495,7 @@ typedef struct {
 } fd_pack_ctx_t;
 
 /* Bundle metadata must fit both block engine and BAM uses. */
-#define BUNDLE_META_SZ 56U
+#define BUNDLE_META_SZ 40U
 FD_STATIC_ASSERT( sizeof(pack_bundle_meta_t)==BUNDLE_META_SZ, pack_bundle_meta );
 
 #define PACK_TILE_BUNDLE_KIND_NONE         (0)
@@ -558,10 +553,10 @@ pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
     .slot_cu_budget_remaining = (uint)fd_ulong_sat_sub( ctx->limits.slot_max_cost, fd_pack_current_block_cost( ctx->pack ) )
   };
 
-  /* Avoid publishing duplicate leader-state frags. */
-  if( FD_LIKELY( ctx->last_bam_leader_state_valid && !memcmp( &state, &ctx->last_bam_leader_state, sizeof(state) ) ) ) return;
-  ctx->last_bam_leader_state       = state;
-  ctx->last_bam_leader_state_valid = true;
+  /* slot==ULONG_MAX marks the cache empty until the first successful publish. */
+  if( FD_LIKELY( ctx->last_bam_leader_state.slot!=ULONG_MAX &&
+                 !memcmp( &state, &ctx->last_bam_leader_state, sizeof(state) ) ) ) return;
+  ctx->last_bam_leader_state = state;
 
   fd_bam_leader_state_t * out = fd_chunk_to_laddr( ctx->bam_out_mem, ctx->bam_out_chunk );
   *out = state;
@@ -841,8 +836,9 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *     ctx,
       }
     }
     if( FD_UNLIKELY( queue_missing_result ) ) {
+      /* Only partially received BAM bundles queue here, so bundle_txn_cnt is
+         guaranteed non-zero and remains a reliable empty/non-empty sentinel. */
       ctx->pending_bam_result[0] = res;
-      ctx->pending_bam_result_valid = true;
     } else {
       pack_tile_publish_bam_result( ctx, stem, &res );
     }
@@ -858,9 +854,10 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               long                now,
                               char const *        reason,
                               pack_tile_bam_bundle_abandon_reason_t bam_abandon_reason ) {
-  if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
+  /* bundle_txn_cnt==0 means there is no deferred BAM result to flush. */
+  if( FD_UNLIKELY( ctx->pending_bam_result->bundle_txn_cnt ) ) {
     pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
-    ctx->pending_bam_result_valid = false;
+    ctx->pending_bam_result->bundle_txn_cnt = 0U;
   }
   pack_tile_evict_invalid_pending_bam_work( ctx, stem, fd_ulong_sat_add( ctx->leader_slot, 1UL ) );
   pack_tile_abandon_current_bam_bundle( ctx, stem, 0, bam_abandon_reason );
@@ -1402,7 +1399,6 @@ during_frag( fd_pack_ctx_t * ctx,
       FD_TEST( txnm->bam.batch_idx<txnm->bam.txn_cnt );
 
       ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_BAM;
-      ctx->bam_batch_idx = txnm->bam.batch_idx;
 
       _Bool new_bam_bundle = !ctx->current_bam_bundle->bundle ||
                              ctx->current_bam_bundle->seq_id != txnm->bam.seq_id;
@@ -1444,9 +1440,6 @@ during_frag( fd_pack_ctx_t * ctx,
         }
         ctx->bundle_meta->builder->commission = txnm->block_engine.commission;
         memcpy( ctx->bundle_meta->builder->commission_pubkey->b, txnm->block_engine.commission_pubkey, 32UL );
-        ctx->bundle_meta->kind                  = PACK_BUNDLE_META_KIND_BLOCK_ENGINE;
-        ctx->bundle_meta->bam_seq_id            = 0U;
-        ctx->bundle_meta->bam_max_schedule_slot = 0UL;
 
         ctx->current_bundle->bundle = fd_pack_insert_bundle_init( ctx->pack, ctx->current_bundle->_txn, ctx->current_bundle->txn_cnt );
       }
@@ -1633,9 +1626,10 @@ after_frag( fd_pack_ctx_t *     ctx,
       pack_tile_evict_invalid_pending_bam_work( ctx, stem, ctx->bam_pending_check_slot );
       ctx->bam_pending_check_slot = 0UL;
     }
-    if( FD_UNLIKELY( ctx->pending_bam_result_valid ) ) {
+    /* bundle_txn_cnt==0 means there is no deferred BAM result to flush. */
+    if( FD_UNLIKELY( ctx->pending_bam_result->bundle_txn_cnt ) ) {
       pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
-      ctx->pending_bam_result_valid = false;
+      ctx->pending_bam_result->bundle_txn_cnt = 0U;
     }
 
     switch( ctx->bundle_kind ) {
@@ -1654,7 +1648,7 @@ after_frag( fd_pack_ctx_t *     ctx,
       break;
     }
     case PACK_TILE_BUNDLE_KIND_BAM: {
-      uchar idx = ctx->bam_batch_idx;
+      uchar idx = ctx->cur_spot->txnp->bam.batch_idx;
       if( FD_LIKELY( !ctx->current_bam_bundle->received[ idx ] ) ) {
         ctx->current_bam_bundle->received[ idx ] = 1U;
         ctx->current_bam_bundle->txn_received++;
@@ -1684,9 +1678,6 @@ after_frag( fd_pack_ctx_t *     ctx,
         }
 
         fd_memset( ctx->bundle_meta, 0, sizeof(pack_bundle_meta_t) );
-        ctx->bundle_meta->kind                  = PACK_BUNDLE_META_KIND_BAM;
-        ctx->bundle_meta->bam_seq_id            = ctx->current_bam_bundle->seq_id;
-        ctx->bundle_meta->bam_max_schedule_slot = max_schedule_slot;
         if( FD_LIKELY( ctx->bam_fee_cfg && FD_VOLATILE_CONST( ctx->bam_fee_cfg->has_prio_fee_recipient ) ) ) {
           fd_memcpy( ctx->bundle_meta->builder->commission_pubkey->b,
                      ctx->bam_fee_cfg->prio_fee_recipient,
@@ -2003,7 +1994,6 @@ unprivileged_init( fd_topo_t *      topo,
 
   ctx->cur_spot                      = NULL;
   ctx->bundle_kind                   = PACK_TILE_BUNDLE_KIND_NONE;
-  ctx->bam_batch_idx                 = 0U;
   ctx->bam_txn_max_schedule_slot     = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
   ctx->bam_pending_work_cnt          = 0UL;
   ctx->strategy                      = tile->pack.schedule_strategy;
@@ -2113,10 +2103,9 @@ unprivileged_init( fd_topo_t *      topo,
   memset( ctx->current_bam_bundle,        '\0', sizeof(ctx->current_bam_bundle)        );
   memset( ctx->bundle_meta,               '\0', sizeof(ctx->bundle_meta)               );
   memset( ctx->pending_bam_result,        '\0', sizeof(ctx->pending_bam_result)        );
-  ctx->pending_bam_result_valid = false;
   ctx->bam_pending_work_cnt     = 0UL;
   ctx->bam_pending_check_slot   = 0UL;
-  ctx->last_bam_leader_state_valid = false;
+  ctx->last_bam_leader_state.slot = ULONG_MAX;
   memset( ctx->last_sched_metrics,        '\0', sizeof(ctx->last_sched_metrics)        );
   memset( ctx->start_block_sched_metrics, '\0', sizeof(ctx->start_block_sched_metrics) );
   memset( ctx->crank->metrics,            '\0', sizeof(ctx->crank->metrics)            );
