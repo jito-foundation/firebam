@@ -729,12 +729,12 @@ resolve_df_check( fd_tile_test_ctx_t * test_ctx,
       FD_LOG_WARNING(( "bundle txn signature unmatched: %lu, %lu", ctx->current_bundle->min_blockhash_slot, locals->in_sig ));
       return -1;
     }
-    if( ctx->bundle_meta->builder->commission!=(ulong)block_engine_commission_pct ) {
-      FD_LOG_WARNING(( "bundle txn commission percentage unmatched: %lu, %d", ctx->bundle_meta->builder->commission, block_engine_commission_pct ));
+    if( ctx->bundle_meta->commission!=(ulong)block_engine_commission_pct ) {
+      FD_LOG_WARNING(( "bundle txn commission percentage unmatched: %lu, %d", ctx->bundle_meta->commission, block_engine_commission_pct ));
       return -1;
     }
-    if( !fd_memeq( ctx->bundle_meta->builder->commission_pubkey->b, block_engine_commission_pk, 32 ) ) {
-      FD_LOG_HEXDUMP_WARNING(( "identity key in pack_ctx", ctx->bundle_meta->builder->commission_pubkey->b, 32 ));
+    if( !fd_memeq( ctx->bundle_meta->commission_pubkey->b, block_engine_commission_pk, 32 ) ) {
+      FD_LOG_HEXDUMP_WARNING(( "identity key in pack_ctx", ctx->bundle_meta->commission_pubkey->b, 32 ));
       FD_LOG_HEXDUMP_WARNING(( "reference identity key",   block_engine_commission_pk,                32 ));
       FD_LOG_WARNING(("commission public key unmatched" ));
       return -1;

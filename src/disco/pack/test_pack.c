@@ -271,7 +271,6 @@ mark_bundle_as_bam( fd_txn_e_t * const * bundle,
     bundle[i]->txnp->source_tpu          = FD_TXN_M_TPU_SOURCE_BAM;
     bundle[i]->txnp->bam.seq_id          = seq_id;
     bundle[i]->txnp->bam.batch_idx       = (uchar)i;
-    bundle[i]->txnp->bam.batch_cnt       = (uchar)txn_cnt;
     bundle[i]->txnp->bam.revert_on_error = revert_on_error;
   }
 }
@@ -1799,7 +1798,6 @@ test_bam_bundle_seq_conflict_order_and_bypass( void ) {
   FD_TEST( test_txn_id( &outcome.results[0] )==100UL );
   FD_TEST( outcome.results[0].bam.seq_id==10U );
   FD_TEST( outcome.results[0].bam.batch_idx==0U );
-  FD_TEST( outcome.results[0].bam.batch_cnt==1U );
 
   /* seq=11 is blocked by outstanding seq=10, so seq=12 should bypass. */
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
@@ -1809,7 +1807,6 @@ test_bam_bundle_seq_conflict_order_and_bypass( void ) {
   for( ulong i=0UL; i<txn_cnt; i++ ) {
     FD_TEST( outcome.results[i].bam.seq_id==12U );
     FD_TEST( outcome.results[i].bam.batch_idx==(uchar)i );
-    FD_TEST( outcome.results[i].bam.batch_cnt==2U );
     FD_TEST( outcome.results[i].bam.revert_on_error==1U );
   }
   fd_pack_microblock_complete( pack, 1UL );
@@ -1825,7 +1822,6 @@ test_bam_bundle_seq_conflict_order_and_bypass( void ) {
   FD_TEST( test_txn_id( &outcome.results[0] )==101UL );
   FD_TEST( outcome.results[0].bam.seq_id==11U );
   FD_TEST( outcome.results[0].bam.batch_idx==0U );
-  FD_TEST( outcome.results[0].bam.batch_cnt==1U );
   fd_pack_microblock_complete( pack, 0UL );
 
   FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
@@ -1871,7 +1867,6 @@ test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
   for( ulong i=0UL; i<txn_cnt; i++ ) {
     FD_TEST( outcome.results[i].bam.seq_id==10U );
     FD_TEST( outcome.results[i].bam.batch_idx==(uchar)i );
-    FD_TEST( outcome.results[i].bam.batch_cnt==2U );
   }
 
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
@@ -1879,7 +1874,6 @@ test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
   FD_TEST( test_txn_id( &outcome.results[0] )==203UL );
   FD_TEST( outcome.results[0].bam.seq_id==30U );
   FD_TEST( outcome.results[0].bam.batch_idx==0U );
-  FD_TEST( outcome.results[0].bam.batch_cnt==1U );
   fd_pack_microblock_complete( pack, 1UL );
 
   /* seq=20 still conflicts with outstanding seq=10. */
@@ -1892,7 +1886,6 @@ test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
   FD_TEST( test_txn_id( &outcome.results[0] )==200UL );
   FD_TEST( outcome.results[0].bam.seq_id==20U );
   FD_TEST( outcome.results[0].bam.batch_idx==0U );
-  FD_TEST( outcome.results[0].bam.batch_cnt==1U );
   fd_pack_microblock_complete( pack, 0UL );
 
   FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );

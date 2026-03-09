@@ -152,13 +152,6 @@ typedef struct {
   ulong          commission;
 } block_builder_info_t;
 
-/* Bundle metadata stored inside fd_pack. The prefix layout matches
-   block_builder_info_t so existing bundle crank logic can keep treating
-   this as a block_builder_info_t view. */
-typedef struct {
-  block_builder_info_t builder[1];
-} pack_bundle_meta_t;
-
 typedef struct {
   fd_ed25519_sig_t sig[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   ulong            max_schedule_slot;
@@ -429,7 +422,7 @@ typedef struct {
 
   /* Scratch bundle metadata passed into fd_pack_insert_bundle_fini().
      Stored by fd_pack alongside the bundle head txn and later consumed
-     by the bundle crank logic via the block_builder_info_t prefix.
+     by the bundle crank logic.
 
      pack fills this for:
        - Block engine bundles (builder commission from txnm->block_engine)
@@ -438,11 +431,11 @@ typedef struct {
      Defaults: overwritten before each bundle insertion; contents are only
      meaningful for the immediate fd_pack_insert_bundle_fini() call that
      consumes it. */
-  pack_bundle_meta_t bundle_meta[1];
+  block_builder_info_t bundle_meta[1];
 
   /* Optional shared-memory BAM fee configuration (populated by the BAM
      tile via gRPC config). When present and has_prio_fee_recipient!=0,
-     pack uses it to populate bundle_meta.builder for BAM bundles so the
+     pack uses it to populate bundle_meta for BAM bundles so the
      bundle crank can direct priority-fee commission correctly.
 
      Defaults / edge cases:
@@ -496,7 +489,7 @@ typedef struct {
 
 /* Bundle metadata must fit both block engine and BAM uses. */
 #define BUNDLE_META_SZ 40U
-FD_STATIC_ASSERT( sizeof(pack_bundle_meta_t)==BUNDLE_META_SZ, pack_bundle_meta );
+FD_STATIC_ASSERT( sizeof(block_builder_info_t)==BUNDLE_META_SZ, block_builder_info_t );
 
 #define PACK_TILE_BUNDLE_KIND_NONE         (0)
 #define PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE (1)
@@ -537,7 +530,7 @@ static inline void
 pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
                                     fd_stem_context_t * stem ) {
   if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) return;
-  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX || !ctx->bam_out_mem ) ) return;
+  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
   long now_ticks = fd_tickcount();
   long now_ns = ctx->approx_wallclock_ns + (long)((double)(now_ticks - ctx->approx_tickcount) / ctx->ticks_per_ns);
 
@@ -576,7 +569,7 @@ static inline void
 pack_tile_publish_bam_result( fd_pack_ctx_t *             ctx,
                               fd_stem_context_t *         stem,
                               fd_bam_bundle_result_t const * res ) {
-  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX || !ctx->bam_out_mem ) ) return;
+  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
   fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->bam_out_mem, ctx->bam_out_chunk );
   *out = *res;
   fd_stem_publish( stem,
@@ -600,7 +593,7 @@ pack_tile_publish_bam_invalid_result( fd_pack_ctx_t *                ctx,
   fd_bam_bundle_result_t res = {0};
   res.seq_id            = seq_id;
   res.slot              = max_schedule_slot;
-  res.bundle_txn_cnt    = txn_cnt ? txn_cnt : (uchar)1U;
+  res.bundle_txn_cnt    = txn_cnt;
   res.execution_success = 0;
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
@@ -677,7 +670,7 @@ pack_tile_track_pending_bam_work( fd_pack_ctx_t *          ctx,
     return;
   }
   pack_bam_pending_work_t * item = &ctx->bam_pending_work[ ctx->bam_pending_work_cnt++ ];
-  item->txn_cnt = txn_cnt ? txn_cnt : (uchar)1U;
+  item->txn_cnt = txn_cnt;
   fd_memset( item->sig, 0, sizeof(item->sig) );
   fd_memcpy( item->sig, sigs, (ulong)item->txn_cnt * sizeof(fd_ed25519_sig_t) );
   item->seq_id            = seq_id;
@@ -819,29 +812,29 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *     ctx,
   if( FD_UNLIKELY( !ctx->current_bam_bundle->bundle ) ) return;
   pack_tile_record_bam_bundle_abandon( ctx->bam_bundle_abandon_cnt, reason );
 
-  if( FD_UNLIKELY( ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt ) ) {
-    fd_bam_bundle_result_t res = {0};
-    res.seq_id            = ctx->current_bam_bundle->seq_id;
-    res.slot              = ctx->current_bam_bundle->max_schedule_slot;
-    res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
-    res.execution_success = 0;
-    res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-    res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-    res.transaction_err_count = 0U;
-    for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
-      res.sanitize_success[ i ] = 1U;
-      if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
-        res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
-        res.transaction_err_count++;
-      }
+  FD_TEST( ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt );
+
+  fd_bam_bundle_result_t res = {0};
+  res.seq_id            = ctx->current_bam_bundle->seq_id;
+  res.slot              = ctx->current_bam_bundle->max_schedule_slot;
+  res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
+  res.execution_success = 0;
+  res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+  res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+  res.transaction_err_count = 0U;
+  for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
+    res.sanitize_success[ i ] = 1U;
+    if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
+      res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+      res.transaction_err_count++;
     }
-    if( FD_UNLIKELY( queue_missing_result ) ) {
-      /* Only partially received BAM bundles queue here, so bundle_txn_cnt is
-         guaranteed non-zero and remains a reliable empty/non-empty sentinel. */
-      ctx->pending_bam_result[0] = res;
-    } else {
-      pack_tile_publish_bam_result( ctx, stem, &res );
-    }
+  }
+  if( FD_UNLIKELY( queue_missing_result ) ) {
+    /* Only partially received BAM bundles queue here, so bundle_txn_cnt is
+       guaranteed non-zero and remains a reliable empty/non-empty sentinel. */
+    ctx->pending_bam_result[0] = res;
+  } else {
+    pack_tile_publish_bam_result( ctx, stem, &res );
   }
 
   fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bam_bundle->bundle, ctx->current_bam_bundle->txn_cnt );
@@ -1438,8 +1431,8 @@ during_frag( fd_pack_ctx_t * ctx,
           ctx->current_bundle->id = 0UL;
           return;
         }
-        ctx->bundle_meta->builder->commission = txnm->block_engine.commission;
-        memcpy( ctx->bundle_meta->builder->commission_pubkey->b, txnm->block_engine.commission_pubkey, 32UL );
+        ctx->bundle_meta->commission = txnm->block_engine.commission;
+        memcpy( ctx->bundle_meta->commission_pubkey->b, txnm->block_engine.commission_pubkey, 32UL );
 
         ctx->current_bundle->bundle = fd_pack_insert_bundle_init( ctx->pack, ctx->current_bundle->_txn, ctx->current_bundle->txn_cnt );
       }
@@ -1479,13 +1472,11 @@ during_frag( fd_pack_ctx_t * ctx,
     if( FD_LIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
       ctx->cur_spot->txnp->bam.seq_id          = txnm->bam.seq_id;
       ctx->cur_spot->txnp->bam.batch_idx       = txnm->bam.batch_idx;
-      ctx->cur_spot->txnp->bam.batch_cnt       = txnm->bam.txn_cnt;
       ctx->cur_spot->txnp->bam.revert_on_error = txnm->bam.revert_on_error;
       ctx->bam_txn_max_schedule_slot           = txnm->bam.max_schedule_slot;
     } else {
       ctx->cur_spot->txnp->bam.seq_id          = 0U;
       ctx->cur_spot->txnp->bam.batch_idx       = 0U;
-      ctx->cur_spot->txnp->bam.batch_cnt       = 0U;
       ctx->cur_spot->txnp->bam.revert_on_error = 0U;
     }
 #if FD_PACK_USE_EXTRA_STORAGE
@@ -1677,12 +1668,12 @@ after_frag( fd_pack_ctx_t *     ctx,
           break;
         }
 
-        fd_memset( ctx->bundle_meta, 0, sizeof(pack_bundle_meta_t) );
+        fd_memset( ctx->bundle_meta, 0, sizeof(block_builder_info_t) );
         if( FD_LIKELY( ctx->bam_fee_cfg && FD_VOLATILE_CONST( ctx->bam_fee_cfg->has_prio_fee_recipient ) ) ) {
-          fd_memcpy( ctx->bundle_meta->builder->commission_pubkey->b,
+          fd_memcpy( ctx->bundle_meta->commission_pubkey->b,
                      ctx->bam_fee_cfg->prio_fee_recipient,
                      32UL );
-          ctx->bundle_meta->builder->commission = (ulong)fd_uint_min( FD_VOLATILE_CONST( ctx->bam_fee_cfg->commission_bps )/100U, 100U );
+          ctx->bundle_meta->commission = (ulong)fd_uint_min( FD_VOLATILE_CONST( ctx->bam_fee_cfg->commission_bps )/100U, 100U );
         }
 
         fd_ed25519_sig_t bam_sig[ FD_PACK_MAX_TXN_PER_BUNDLE ];
@@ -1825,7 +1816,7 @@ after_frag( fd_pack_ctx_t *     ctx,
           fd_bam_bundle_result_t res = {0};
           res.seq_id            = item.seq_id;
           res.slot              = item.max_schedule_slot;
-          res.bundle_txn_cnt    = item.txn_cnt ? item.txn_cnt : (uchar)1U;
+          res.bundle_txn_cnt    = item.txn_cnt;
           res.execution_success = 0;
           res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
           res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;

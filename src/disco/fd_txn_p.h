@@ -33,7 +33,6 @@ struct __attribute__((aligned(64))) fd_txn_p {
   struct {
     uint  seq_id;
     uchar batch_idx;
-    uchar batch_cnt;
     uchar revert_on_error;
   } bam;
   /* union {
