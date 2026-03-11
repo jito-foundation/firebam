@@ -136,32 +136,32 @@ typedef struct {
   fd_plugin_bam_update_status_t status_code;           /* FD_PLUGIN_MSG_BAM_UPDATE_STATUS_* */
   uchar enabled;          /* Non-zero when operator enabled BAM */
 
-  // TODO: these fields should be moved to fd_gui.c, like line 303 for example
-  float rtt_sample;       /* Latest RTT sample (ns) */
-  float rtt_smoothed;     /* Smoothed RTT estimate (ns) */
-  float rtt_var;          /* Smoothed RTT variation (ns) */
-  ushort bam_pending_results; /* Pending results queued to BAM */
-  ulong heartbeat_sent;   /* Validator heartbeats sent */
-  ulong heartbeat_recv;   /* Builder heartbeats received */
-  ulong txn_received;     /* Transactions accepted from BAM */
-  ulong bundle_received;  /* Bundles accepted from BAM */
-  ulong packet_drop;      /* Network packet drops before TPU */
-  ulong err_protobuf;     /* Protobuf decode failures */
-  ulong err_transport;    /* Transport-layer failures */
-  ulong err_timeout;      /* Timeout failures */
-
-  /* BAM ingress diagnostics (mirrors bam_ingress_* metrics counters). */
-  ulong ingress_v0_heartbeat_msg;
-  ulong ingress_v0_multi_msg;
-  ulong ingress_multi_batch_total;
-  ulong ingress_multi_empty_msg;
-  ulong ingress_multi_overflow_msg;
-  ulong ingress_batch_commit_attempt;
-  ulong ingress_batch_publish;
-  ulong ingress_batch_reject;
-  ulong ingress_reject_deser;
-  ulong ingress_reject_empty;
-  ulong ingress_reject_non_revert_multi_packet;
+  /* BAM operator diagnostics mirrored from the BAM tile metrics. */
+  float  rtt_sample;                   /* Latest RTT sample (ns) */
+  float  rtt_smoothed;                 /* Smoothed RTT estimate (ns) */
+  float  rtt_deviation;                /* Smoothed RTT variation estimate (ns) */
+  ushort feedback_queue_depth;         /* Pending BAM feedback results */
+  ulong  heartbeat_sent;               /* Validator heartbeats sent */
+  ulong  heartbeat_recv;               /* Builder heartbeats received */
+  ulong  txn_published;                /* Transactions published from BAM to verify */
+  ulong  bundle_published;             /* Revert-on-error bundles published to verify */
+  ulong  ingress_packet_oversize;      /* BAM packets over local MTU */
+  ulong  failure_decode;               /* Local protobuf/envelope decode failures */
+  ulong  failure_request_failed;       /* HTTP/gRPC request failures */
+  ulong  failure_transport;            /* DNS/socket/connect/I/O failures */
+  ulong  failure_protocol;             /* Unsupported BAM protocol messages */
+  ulong  failure_timeout;              /* Request/keepalive/heartbeat timeouts */
+  ulong  ingress_multi_message_received;
+  ulong  ingress_multi_message_empty;
+  ulong  ingress_multi_message_overflow;
+  ulong  ingress_batch_commit_attempt;
+  ulong  ingress_batch_published;
+  ulong  ingress_batch_rejected_invalid_batch;
+  ulong  ingress_batch_rejected_empty_batch;
+  ulong  ingress_batch_rejected_vote_transaction;
+  ulong  ingress_batch_rejected_non_revert_multi_packet;
+  ulong  ingress_batch_rejected_empty_message;
+  ulong  ingress_batch_rejected_overflow_message;
 } fd_plugin_msg_bam_update_t;
 
 #endif /* HEADER_fd_src_disco_plugin_fd_plugin_h */

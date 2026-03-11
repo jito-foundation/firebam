@@ -341,8 +341,7 @@ fd_bam_collect_packet( pb_istream_t *         stream,
 
   ulong declared_sz = fd_ulong_max( packet.data.size, packet.meta.size );
   if( FD_UNLIKELY( declared_sz > FD_TXN_MTU ) ) {
-    state->ctx->metrics.packet_drop_cnt++;
-    FD_MCNT_INC( BAM, PACKETS_DROPPED, 1UL );
+    state->ctx->metrics.ingress_packet_oversize_cnt++;
     FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding MTU (%lu>%lu); dropping batch",
                      declared_sz, FD_TXN_MTU ));
     state->has_deser_err = true;
@@ -361,7 +360,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
                        fd_bam_batch_ctx_t const *       state,
                        bam_types_AtomicTxnBatch const * batch ) {
   if( FD_UNLIKELY( state->has_deser_err ) ) {
-    ctx->metrics.ingress_reject_deser_cnt++;
+    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
       .slot              = batch->max_schedule_slot,
@@ -378,7 +377,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   }
 
   if( FD_UNLIKELY( state->packet_cnt == 0U ) ) {
-    ctx->metrics.ingress_reject_empty_cnt++;
+    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_BATCH_IDX ]++;
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
       .slot              = batch->max_schedule_slot,
@@ -395,7 +394,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   }
 
   if( FD_UNLIKELY( (!state->revert_on_error) && state->packet_cnt>1U ) ) {
-    ctx->metrics.ingress_reject_non_revert_multi_packet_cnt++;
+    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ]++;
     /* For now, revert_on_error=0 batches are assumed to contain exactly one
        packet so we can return one result per seq_id without BAM-node changes. */
     fd_bam_bundle_result_t res = {
@@ -424,7 +423,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
     }
   }
   if( FD_UNLIKELY( simple_vote_idx >= 0 ) ) {
-    ctx->metrics.ingress_reject_deser_cnt++;
+    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_VOTE_TRANSACTION_IDX ]++;
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
       .slot              = batch->max_schedule_slot,
@@ -509,7 +508,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                       i,
                                       0 );
     }
-    ctx->metrics.bundle_received_cnt++;
+    ctx->metrics.bundle_published_cnt++;
   } else {
     for( uchar i=0; i<state->packet_cnt; i++ ) {
       fd_bam_tile_publish_txn( ctx,
@@ -551,12 +550,8 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
     uchar deser_index  = decoded->state.has_deser_err
                        ? decoded->state.deser_index
                        : decoded->state.packet_cnt;
-    ctx->metrics.decode_fail_cnt++;
-    FD_MCNT_INC( BAM, ERRORS_PROTOBUF, 1UL );
-    /* Decode failure still produces a not-committed result, so count this as
-       a BAM ingress reject in addition to the protobuf error bucket. */
-    ctx->metrics.ingress_batch_reject_cnt++;
-    ctx->metrics.ingress_reject_deser_cnt++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
+    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
     char const * err = PB_GET_ERROR( stream );
     FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)", err ));
     fd_bam_bundle_result_t res = {
@@ -613,9 +608,8 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       FD_LOG_WARNING(( "MultipleAtomicTxnBatch exceeded max batch count (%u>%u)",
                        seen_batch_count + 1U,
                        FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ));
-      ctx->metrics.ingress_multi_overflow_msg_cnt++;
-      ctx->metrics.ingress_batch_reject_cnt++;
-      ctx->metrics.ingress_reject_deser_cnt++;
+      ctx->metrics.ingress_multi_msg_overflow_cnt++;
+      ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
       decoded_multi->batch_cnt = seen_batch_count;
       decoded_multi->has_err_result = 1;
       decoded_multi->err_result = (fd_bam_bundle_result_t){
@@ -642,9 +636,8 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 
   if( FD_UNLIKELY( seen_batch_count == 0U ) ) {
     FD_LOG_WARNING(( "MultipleAtomicTxnBatch contained no AtomicTxnBatch entries" ));
-    ctx->metrics.ingress_multi_empty_msg_cnt++;
-    ctx->metrics.ingress_batch_reject_cnt++;
-    ctx->metrics.ingress_reject_empty_cnt++;
+    ctx->metrics.ingress_multi_msg_empty_cnt++;
+    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_MESSAGE_IDX ]++;
     bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
     decoded_multi->has_err_result = 1;
     decoded_multi->err_result = (fd_bam_bundle_result_t){
@@ -670,13 +663,12 @@ fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ct
     if( FD_UNLIKELY( !fd_bam_validate_batch( ctx,
                                              &decoded_multi->batches[ i ].state,
                                              &decoded_multi->batches[ i ].batch ) ) ) {
-      ctx->metrics.ingress_batch_reject_cnt++;
       continue;
     }
     fd_bam_publish_batch( ctx,
                           &decoded_multi->batches[ i ].state,
                           &decoded_multi->batches[ i ].batch );
-    ctx->metrics.ingress_batch_publish_cnt++;
+    ctx->metrics.ingress_batch_published_cnt++;
   }
 
   if( FD_UNLIKELY( decoded_multi->has_err_result ) ) {
@@ -716,7 +708,6 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
         FD_LOG_WARNING(( "BuilderHeartBeat decode failed: %s", PB_GET_ERROR( &hb_stream ) ));
         return 0;
       }
-      ctx->metrics.ingress_v0_heartbeat_msg_cnt++;
       decoded_v0->kind = FD_BAM_V0_STAGED_HEARTBEAT;
       decoded_v0->heartbeat_time_sent_microseconds = hb.time_sent_microseconds;
       break;
@@ -732,8 +723,7 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
       int ok = fd_bam_decode_multiple_atomic_txn_batch( ctx, &substream, &decoded_multi );
       pb_close_string_substream( stream, &substream );
       if( FD_UNLIKELY( !ok ) ) return 0;
-      ctx->metrics.ingress_v0_multi_msg_cnt++;
-      ctx->metrics.ingress_multi_batch_total_cnt += decoded_multi.batch_cnt;
+      ctx->metrics.ingress_multi_msg_received_cnt++;
       decoded_v0->kind  = FD_BAM_V0_STAGED_MULTI;
       decoded_v0->multi = decoded_multi;
       break;
@@ -808,10 +798,10 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !seen_v0 ) ) {
     if( version_tag && version_tag != bam_api_SchedulerResponse_v0_tag ) {
       FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", version_tag ));
-      ctx->metrics.transport_fail_cnt++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_PROTOCOL_IDX ]++;
       ctx->defer_reset = 1;
     } else {
-      ctx->metrics.decode_fail_cnt++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
       FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) missing version" ));
     }
     return;
@@ -823,7 +813,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
     if( FD_LIKELY( decoded_v0.heartbeat_time_sent_microseconds ) ) {
       ulong tsorig_ns = decoded_v0.heartbeat_time_sent_microseconds * 1000UL;
       ulong rx_ts_u   = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
-      fd_histf_sample( ctx->metrics.node_hearbeat_network_latency_nanos, fd_ulong_sat_sub( rx_ts_u, tsorig_ns ) );
+      fd_histf_sample( ctx->metrics.node_heartbeat_network_latency_nanos, fd_ulong_sat_sub( rx_ts_u, tsorig_ns ) );
     }
     ctx->metrics.heartbeat_recv_cnt++;
     break;
@@ -853,6 +843,6 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   return;
 
 fail:
-  ctx->metrics.decode_fail_cnt++;
+  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
   FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed (%s)", PB_GET_ERROR( &istream ) ));
 }

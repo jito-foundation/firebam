@@ -410,7 +410,7 @@ fd_gui_txn_waterfall_snap( fd_gui_t *               gui,
   if( FD_LIKELY( bam_tile_idx!=ULONG_MAX ) ) {
     fd_topo_tile_t const * bam = &topo->tiles[ bam_tile_idx ];
     volatile ulong const * bam_metrics = fd_metrics_tile( bam->metrics );
-    cur->in.bam = bam_metrics[ MIDX( COUNTER, BAM, TRANSACTION_RECEIVED ) ];
+    cur->in.bam = bam_metrics[ MIDX( COUNTER, BAM, TRANSACTION_PUBLISHED ) ];
   }
 
   fd_topo_tile_t const * pack = &topo->tiles[ fd_topo_find_tile( topo, "pack", 0UL ) ];
@@ -2236,27 +2236,29 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
 
   gui->bam.rtt_sample    = update->rtt_sample;
   gui->bam.rtt_smoothed  = update->rtt_smoothed;
-  gui->bam.rtt_var       = update->rtt_var;
-  gui->bam.bam_pending_results = update->bam_pending_results;
+  gui->bam.rtt_deviation = update->rtt_deviation;
+  gui->bam.feedback_queue_depth = update->feedback_queue_depth;
   gui->bam.heartbeat_sent = update->heartbeat_sent;
   gui->bam.heartbeat_recv = update->heartbeat_recv;
-  gui->bam.txn_received   = update->txn_received;
-  gui->bam.bundle_received= update->bundle_received;
-  gui->bam.packet_drop    = update->packet_drop;
-  gui->bam.err_protobuf   = update->err_protobuf;
-  gui->bam.err_transport  = update->err_transport;
-  gui->bam.err_timeout    = update->err_timeout;
-  gui->bam.ingress_v0_heartbeat_msg = update->ingress_v0_heartbeat_msg;
-  gui->bam.ingress_v0_multi_msg = update->ingress_v0_multi_msg;
-  gui->bam.ingress_multi_batch_total = update->ingress_multi_batch_total;
-  gui->bam.ingress_multi_empty_msg = update->ingress_multi_empty_msg;
-  gui->bam.ingress_multi_overflow_msg = update->ingress_multi_overflow_msg;
+  gui->bam.txn_published  = update->txn_published;
+  gui->bam.bundle_published = update->bundle_published;
+  gui->bam.ingress_packet_oversize = update->ingress_packet_oversize;
+  gui->bam.failure_decode = update->failure_decode;
+  gui->bam.failure_request_failed = update->failure_request_failed;
+  gui->bam.failure_transport = update->failure_transport;
+  gui->bam.failure_protocol = update->failure_protocol;
+  gui->bam.failure_timeout = update->failure_timeout;
+  gui->bam.ingress_multi_message_received = update->ingress_multi_message_received;
+  gui->bam.ingress_multi_message_empty = update->ingress_multi_message_empty;
+  gui->bam.ingress_multi_message_overflow = update->ingress_multi_message_overflow;
   gui->bam.ingress_batch_commit_attempt = update->ingress_batch_commit_attempt;
-  gui->bam.ingress_batch_publish = update->ingress_batch_publish;
-  gui->bam.ingress_batch_reject = update->ingress_batch_reject;
-  gui->bam.ingress_reject_deser = update->ingress_reject_deser;
-  gui->bam.ingress_reject_empty = update->ingress_reject_empty;
-  gui->bam.ingress_reject_non_revert_multi_packet = update->ingress_reject_non_revert_multi_packet;
+  gui->bam.ingress_batch_published = update->ingress_batch_published;
+  gui->bam.ingress_batch_rejected_invalid_batch = update->ingress_batch_rejected_invalid_batch;
+  gui->bam.ingress_batch_rejected_empty_batch = update->ingress_batch_rejected_empty_batch;
+  gui->bam.ingress_batch_rejected_vote_transaction = update->ingress_batch_rejected_vote_transaction;
+  gui->bam.ingress_batch_rejected_non_revert_multi_packet = update->ingress_batch_rejected_non_revert_multi_packet;
+  gui->bam.ingress_batch_rejected_empty_message = update->ingress_batch_rejected_empty_message;
+  gui->bam.ingress_batch_rejected_overflow_message = update->ingress_batch_rejected_overflow_message;
 
   fd_gui_printf_bam( gui );
   fd_http_server_ws_broadcast( gui->http );

@@ -377,10 +377,21 @@ metric introduced.
     <int value="5" name="SslAlloc" label="OpenSSL alloc fail" />
 </enum>
 
-<enum name="BamError">
-    <int value="1" name="Protobuf" label="Protobuf decode/encode error" />
-    <int value="2" name="Transport" label="Transport error" />
-    <int value="3" name="Timeout" label="I/O timeout" />
+<enum name="BamFailure">
+    <int value="0" name="Decode" label="Local protobuf or scheduler-envelope decode failure" />
+    <int value="1" name="RequestFailed" label="HTTP or gRPC request completed with a non-OK status" />
+    <int value="2" name="Transport" label="DNS, socket, connect, or stream I/O failure" />
+    <int value="3" name="Protocol" label="Unsupported BAM protocol version or message shape from the peer" />
+    <int value="4" name="Timeout" label="Request, keepalive, or heartbeat timeout" />
+</enum>
+
+<enum name="BamIngressBatchRejectReason">
+    <int value="0" name="InvalidBatch" label="Batch rejected because packet decode or batch structure was invalid" />
+    <int value="1" name="EmptyBatch" label="Batch rejected because it contained zero packets" />
+    <int value="2" name="VoteTransaction" label="Batch rejected because it contained a simple vote transaction" />
+    <int value="3" name="NonRevertMultiPacket" label="Batch rejected because a non-revert batch contained multiple packets" />
+    <int value="4" name="EmptyMessage" label="Reject staged because a multiple_atomic_txn_batch message contained zero batches" />
+    <int value="5" name="OverflowMessage" label="Reject staged because a multiple_atomic_txn_batch message exceeded the local max batch count" />
 </enum>
 
 <enum name="BamSendAttempt">
@@ -413,38 +424,33 @@ metric introduced.
 
 <tile name="bam">
     <gauge name="Enabled" summary="Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled" />
-    <gauge name="Healthy" summary="Boolean gauge: 1 when the BAM client is connected to the BAM node and connection is healthy, otherwise 0" />
-    <counter name="TransactionReceived" summary="Cumulative number of transactions accepted from the BAM node, including transactions unpacked from bundles" />
-    <counter name="BundleReceived" summary="Cumulative number of revert-on-error AtomicTxnBatch entries accepted and published to verify as BAM bundles" />
-    <counter name="BundleResultsDropped" summary="Cumulative number of BAM bundle execution results discarded before publication" />
-    <counter name="PacketsDropped" summary="Cumulative number of BAM AtomicTxnBatch packets rejected during decode because their declared payload exceeded the local MTU" />
+    <gauge name="Healthy" summary="Boolean gauge: 1 when the BAM client is fully connected, authenticated, configured, and heartbeat healthy; otherwise 0" />
+    <counter name="TransactionPublished" summary="Cumulative number of transactions published from BAM to verify, including transactions unpacked from bundles" />
+    <counter name="BundlePublished" summary="Cumulative number of revert-on-error AtomicTxnBatch entries published to verify as BAM bundles" />
+    <counter name="FeedbackResultsDropped" summary="Cumulative number of BAM feedback results dropped because the local result queue was full" />
+    <counter name="IngressPacketOversize" summary="Cumulative number of BAM packets rejected because their declared payload exceeded the local MTU" />
     <counter name="HeartbeatsSent" summary="Cumulative number of validator heartbeat messages sent to the BAM node" />
     <counter name="HeartbeatsReceived" summary="Cumulative number of builder heartbeat messages received from the BAM node" />
-    <counter name="Errors" enum="BamError" summary="Cumulative number of BAM client errors encountered, bucketed by BamError" />
+    <counter name="Failure" enum="BamFailure" summary="Cumulative number of BAM client failures by class" />
     <gauge name="HeapSize" summary="Total workspace capacity reserved for the BAM tile (bytes)" />
     <gauge name="HeapFreeBytes" summary="Estimated free capacity in the BAM tile workspace heap (bytes)" />
-    <counter name="Keepalives" summary="Cumulative number of HTTP/2 keepalive PINGs acknowledged by the BAM node" />
+    <counter name="KeepaliveAcks" summary="Cumulative number of HTTP/2 keepalive PING acknowledgments received from the BAM node" />
     <counter name="Connections" summary="Cumulative number of transitions into BAM CONNECTED_HEALTHY state" />
     <counter name="Disconnects" summary="Cumulative number of transitions out of BAM CONNECTED_HEALTHY state" />
-    <counter name="IngressV0HeartbeatMsg" summary="Cumulative number of SchedulerResponseV0 heartbeat messages decoded from BAM ingress" />
-    <counter name="IngressV0MultiMsg" summary="Cumulative number of SchedulerResponseV0 multiple_atomic_txn_batch messages decoded from BAM ingress" />
-    <counter name="IngressMultiBatchTotal" summary="Cumulative number of AtomicTxnBatch entries staged from multiple_atomic_txn_batch messages (capped by local per-message max)" />
-    <counter name="IngressMultiEmptyMsg" summary="Cumulative number of multiple_atomic_txn_batch messages that contained zero AtomicTxnBatch entries" />
-    <counter name="IngressMultiOverflowMsg" summary="Cumulative number of multiple_atomic_txn_batch messages exceeding local max batch count" />
-    <counter name="IngressBatchCommitAttempt" summary="Cumulative number of decoded AtomicTxnBatch entries entering validate/commit" />
-    <counter name="IngressBatchPublish" summary="Cumulative number of AtomicTxnBatch entries successfully published to verify" />
-    <counter name="IngressBatchReject" summary="Cumulative number of BAM ingress batch outcomes rejected before publish (includes decode-time not-committed results)" />
-    <counter name="IngressRejectDeser" summary="Cumulative number of BAM ingress rejects caused by deserialization/inconsistent-bundle conditions" />
-    <counter name="IngressRejectEmpty" summary="Cumulative number of BAM ingress rejects caused by empty batch payloads (including empty wrapper messages)" />
-    <counter name="IngressRejectNonRevertMultiPacket" summary="Cumulative number of batch rejects caused by non-revert multi-packet batches" />
-    <counter name="SendAttempt" enum="BamSendAttempt" summary="Cumulative number of BAM outbound message send attempts by message kind and outcome" />
-    <counter name="ClientStepSkip" enum="BamClientStepSkipReason" summary="Cumulative number of BAM client-step skips by reason" />
-    <counter name="StreamStateTransition" enum="BamStreamTransition" summary="Cumulative number of scheduler stream live-state transitions" />
+    <counter name="IngressMultiMessageReceived" summary="Cumulative number of multiple_atomic_txn_batch messages decoded from BAM ingress" />
+    <counter name="IngressMultiMessageEmpty" summary="Cumulative number of multiple_atomic_txn_batch messages that contained zero AtomicTxnBatch entries" />
+    <counter name="IngressMultiMessageOverflow" summary="Cumulative number of multiple_atomic_txn_batch messages that exceeded the local max batch count" />
+    <counter name="IngressBatchCommitAttempt" summary="Cumulative number of AtomicTxnBatch entries that entered BAM validate/commit" />
+    <counter name="IngressBatchPublished" summary="Cumulative number of AtomicTxnBatch entries successfully published to verify" />
+    <counter name="IngressBatchRejected" enum="BamIngressBatchRejectReason" summary="Cumulative number of BAM AtomicTxnBatch rejects by reason" />
+    <counter name="OutboundSendAttempt" enum="BamSendAttempt" summary="Cumulative number of BAM outbound leader-state/result send attempts by message kind and outcome" />
+    <counter name="StepSkip" enum="BamClientStepSkipReason" summary="Cumulative number of BAM client-step skips by reason" />
+    <counter name="StreamTransition" enum="BamStreamTransition" summary="Cumulative number of scheduler stream live-state transitions" />
     <counter name="LeaderPendingDropped" enum="BamLeaderPendingDropReason" summary="Cumulative number of pending leader-state updates dropped before send, by reason" />
     <gauge name="RttSample" summary="Latest BAM round-trip time sample captured at scrape time (nanoseconds)" />
     <gauge name="RttSmoothed" summary="Exponentially smoothed BAM round-trip time estimate (nanoseconds)" />
-    <gauge name="RttVar" summary="Smoothed variance of the BAM round-trip time estimator (nanoseconds)" />
-    <gauge name="ResultsQueueDepth" summary="Current number of bundle execution results buffered for BAM feedback" />
+    <gauge name="RttDeviation" summary="Smoothed RTT variation estimate (nanoseconds)" />
+    <gauge name="FeedbackQueueDepth" summary="Current number of BAM feedback results buffered for send" />
     <histogram name="NodeHeartbeatNetworkLatencyNanos" min="10000" max="100000000">
         <summary>Distribution of BAM node heartbeat timestamp to Frankendancer scheduler-stream receive callback time (nanoseconds); intended for relative trend analysis</summary>
     </histogram>

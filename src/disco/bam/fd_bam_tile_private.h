@@ -47,42 +47,34 @@ typedef struct fd_bam_in_ctx fd_bam_in_ctx_t;
    by reconnects (fd_bam_client_reset). */
 
 struct fd_bam_metrics {
-  ulong txn_received_cnt;
-  ulong bundle_received_cnt;
-  ulong bundle_result_drop_cnt;
-  ulong packet_drop_cnt;
-  ulong ping_ack_cnt;
+  ulong txn_published_cnt;
+  ulong bundle_published_cnt;
+  ulong feedback_result_drop_cnt;
+  ulong ingress_packet_oversize_cnt;
+  ulong keepalive_ack_cnt;
   ulong heartbeat_sent_cnt;
   ulong heartbeat_recv_cnt;
   ulong connection_cnt;
   ulong disconnect_cnt;
 
-  ulong decode_fail_cnt;
-  ulong transport_fail_cnt;
-  ulong timeout_fail_cnt;
+  ulong failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_CNT ];
 
   /* Ingress diagnostics for BAM scheduler responses. */
-  ulong ingress_v0_heartbeat_msg_cnt;
-  ulong ingress_v0_multi_msg_cnt;
-  ulong ingress_multi_batch_total_cnt;
-  ulong ingress_multi_empty_msg_cnt;
-  ulong ingress_multi_overflow_msg_cnt;
+  ulong ingress_multi_msg_received_cnt;
+  ulong ingress_multi_msg_empty_cnt;
+  ulong ingress_multi_msg_overflow_cnt;
 
   ulong ingress_batch_commit_attempt_cnt;
-  ulong ingress_batch_publish_cnt;
-  ulong ingress_batch_reject_cnt;
-
-  ulong ingress_reject_deser_cnt;
-  ulong ingress_reject_empty_cnt;
-  ulong ingress_reject_non_revert_multi_packet_cnt;
+  ulong ingress_batch_published_cnt;
+  ulong ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_CNT ];
 
   /* Enum counters staged locally and flushed during housekeeping. */
-  ulong send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_CNT ];
-  ulong client_step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_CNT ];
+  ulong outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_CNT ];
+  ulong step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_CNT ];
   ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
   ulong leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
 
-  fd_histf_t node_hearbeat_network_latency_nanos[1];
+  fd_histf_t node_heartbeat_network_latency_nanos[1];
   fd_histf_t scheduler_ping_response_nanos[1];
 };
 
@@ -296,8 +288,7 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
   if( FD_UNLIKELY( ctx->bam_pending_results>=FD_BAM_MAX_PENDING_RESULTS ) ) {
     FD_LOG_WARNING(( "Dropping BAM bundle result (bam tile queue full): seq_id=%u slot=%lu bundle_txn_cnt=%u exec_success=%u sched_err=%u",
                      res->seq_id, res->slot, res->bundle_txn_cnt, (uint)res->execution_success, res->scheduling_error ));
-    ctx->metrics.bundle_result_drop_cnt++;
-    FD_MCNT_INC( BAM, BUNDLE_RESULTS_DROPPED, 1UL );
+    ctx->metrics.feedback_result_drop_cnt++;
     return;
   }
   ctx->bam_results[ ctx->bam_results_tail ] = *res;

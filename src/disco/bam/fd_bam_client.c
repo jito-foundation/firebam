@@ -195,7 +195,7 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
   int err = fd_getaddrinfo( ctx->server_fqdn, &hints, &res, &pscratch, sizeof(scratch) );
   if( FD_UNLIKELY( err ) ) {
     fd_bam_client_reset( ctx );
-    ctx->metrics.transport_fail_cnt++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
     FD_LOG_WARNING(( "fd_getaddrinfo `%s` failed (%d-%s); backing off for %.3f ms",
                      ctx->server_fqdn, err, fd_gai_strerror( err ), fd_bam_client_retry_ms( ctx ) ));
     return;
@@ -236,7 +236,7 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
   if( FD_LIKELY( connect_err ) ) {
     if( FD_UNLIKELY( connect_err != EINPROGRESS ) ) {
       fd_bam_client_reset( ctx );
-      ctx->metrics.transport_fail_cnt++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
       FD_LOG_WARNING(( "connect(tcp_sock," FD_IP4_ADDR_FMT ":%u) failed (%i-%s) (fqdn=%s sni=%.*s); retrying in %.3f ms",
                        FD_IP4_ADDR_FMT_ARGS( ip4_addr ), ctx->server_tcp_port,
                        connect_err, fd_io_strerror( connect_err ),
@@ -327,7 +327,7 @@ fd_bam_tile_publish_bundle_txn(
 
   fd_stem_publish( ctx->stem, ctx->verify_out.idx, 1, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
   ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
-  ctx->metrics.txn_received_cnt++;
+  ctx->metrics.txn_published_cnt++;
 }
 
 /* Forwards a regular transaction to the tango message bus. */
@@ -369,7 +369,7 @@ fd_bam_tile_publish_txn(
 
   fd_stem_publish( ctx->stem, ctx->verify_out.idx, 0, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
   ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
-  ctx->metrics.txn_received_cnt++;
+  ctx->metrics.txn_published_cnt++;
 }
 
 static bool
@@ -615,7 +615,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   pb_istream_t istream = pb_istream_from_buffer( protobuf, protobuf_sz );
   if( FD_UNLIKELY( !pb_decode( &istream, &bam_api_ConfigResponse_msg, &resp ) ) ) {
-    ctx->metrics.decode_fail_cnt++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
     FD_LOG_WARNING(( "Protobuf decode of (bam_api.ConfigResponse) failed" ));
     return;
   }
@@ -803,7 +803,7 @@ static int
 fd_bam_send_result( fd_bam_tile_t *               ctx,
                     fd_bam_bundle_result_t const * res ) {
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) {
-    ctx->metrics.send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_NO_STREAM_IDX ]++;
+    ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_NO_STREAM_IDX ]++;
     return 0;
   }
 
@@ -832,10 +832,10 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
   msg.versioned_msg.v0.msg.multiple_atomic_txn_batch_result = multi;
 
   if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
-    ctx->metrics.send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_SEND_FAIL_IDX ]++;
+    ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_SEND_FAIL_IDX ]++;
     return 0;
   }
-  ctx->metrics.send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_SENT_IDX ]++;
+  ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_SENT_IDX ]++;
   return 1;
 }
 
@@ -843,7 +843,7 @@ static int
 fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
                           fd_bam_leader_state_t const *  state ) {
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) {
-    ctx->metrics.send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_NO_STREAM_IDX ]++;
+    ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_NO_STREAM_IDX ]++;
     return 0;
   }
 
@@ -859,9 +859,9 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
 
   const int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
   if( FD_UNLIKELY( !send_res ) ) {
-    ctx->metrics.send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_SEND_FAIL_IDX ]++;
+    ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_SEND_FAIL_IDX ]++;
   } else {
-    ctx->metrics.send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_SENT_IDX ]++;
+    ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_SENT_IDX ]++;
   }
 
   return send_res;
@@ -986,7 +986,6 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
       ctx->server_tcp_port,
       fd_bam_client_retry_ms( ctx ) ));
     fd_bam_client_reset( ctx );
-    ctx->metrics.transport_fail_cnt++;
     *charge_busy = 1;
     return;
   }
@@ -1003,7 +1002,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
       FD_LOG_ERR(( "fd_syscall_poll(tcp_sock) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
     }
     if( poll_res == 0 ) {
-      ctx->metrics.client_step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_NOT_CONNECTED_IDX ]++;
+      ctx->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_NOT_CONNECTED_IDX ]++;
       return;
     }
 
@@ -1015,7 +1014,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
         FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
         ctx->server_tcp_port,
         fd_bam_client_retry_ms( ctx ) ));
-      ctx->metrics.transport_fail_cnt++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
       fd_bam_client_reset( ctx );
       *charge_busy = 1;
       return;
@@ -1023,7 +1022,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     if( pfds[0].revents & POLLOUT ) {
       int connect_err = fd_bam_client_do_connect( ctx, 0U );
       if( connect_err==EINPROGRESS || connect_err==EALREADY ) {
-        ctx->metrics.client_step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_NOT_CONNECTED_IDX ]++;
+        ctx->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_NOT_CONNECTED_IDX ]++;
         return;
       }
       if( FD_UNLIKELY( connect_err ) ) {
@@ -1034,7 +1033,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
           ctx->server_tcp_port,
           fd_bam_client_retry_ms( ctx ) ));
         fd_bam_client_reset( ctx );
-        ctx->metrics.transport_fail_cnt++;
+        ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
         *charge_busy = 1;
         return;
       }
@@ -1043,7 +1042,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
       *charge_busy = 1;
       return;
     }
-    ctx->metrics.client_step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_NOT_CONNECTED_IDX ]++;
+    ctx->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_NOT_CONNECTED_IDX ]++;
     return;
   }
 
@@ -1055,7 +1054,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     if( FD_UNLIKELY( fd_bam_tile_should_stall( ctx, sleep_start ) ) ) {
       long wait_dur = ctx->backoff_until - sleep_start;
       fd_log_sleep( fd_long_min( wait_dur, 1e6 ) );
-      ctx->metrics.client_step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_STALL_BACKOFF_IDX ]++;
+      ctx->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_STALL_BACKOFF_IDX ]++;
       return;
     }
     fd_bam_client_create_conn( ctx );
@@ -1074,7 +1073,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
                      fd_bam_client_retry_ms( ctx ) ));
     ctx->keepalive->inflight = 0;
     fd_bam_client_reset( ctx );
-    ctx->metrics.transport_fail_cnt++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TIMEOUT_IDX ]++;
     *charge_busy = 1;
     return;
   }
@@ -1091,34 +1090,43 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
       fd_bam_client_retry_ms( ctx ) ));
     ctx->keepalive->inflight = 0;
     fd_bam_client_reset( ctx );
-    ctx->metrics.transport_fail_cnt++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TIMEOUT_IDX ]++;
     *charge_busy = 1;
     return;
   }
 
   /* Drive I/O, SSL handshake, and any inflight requests */
-  if( FD_UNLIKELY( !fd_bam_client_drive_io( ctx, charge_busy ) ||
-                   ctx->defer_reset /* new error? */ ) ) {
+  if( FD_UNLIKELY( !fd_bam_client_drive_io( ctx, charge_busy ) ) ) {
     FD_LOG_WARNING(( "BAM client reset; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
                      ctx->server_fqdn,
                      FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
                      ctx->server_tcp_port,
                      fd_bam_client_retry_ms( ctx ) ));
     fd_bam_client_reset( ctx );
-    ctx->metrics.transport_fail_cnt++;
-    ctx->metrics.client_step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_DRIVE_IO_FAIL_IDX ]++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
+    ctx->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_DRIVE_IO_FAIL_IDX ]++;
+    *charge_busy = 1;
+    return;
+  }
+  if( FD_UNLIKELY( ctx->defer_reset ) ) {
+    FD_LOG_WARNING(( "BAM client reset; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
+                     ctx->server_fqdn,
+                     FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                     ctx->server_tcp_port,
+                     fd_bam_client_retry_ms( ctx ) ));
+    fd_bam_client_reset( ctx );
     *charge_busy = 1;
     return;
   }
 
   /* Are we ready to issue a new request? */
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) {
-    ctx->metrics.client_step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_REQUEST_BLOCKED_IDX ]++;
+    ctx->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_REQUEST_BLOCKED_IDX ]++;
     return;
   }
   long io_ts = fd_bam_now();
   if( FD_UNLIKELY( fd_bam_tile_should_stall( ctx, io_ts ) ) ) {
-    ctx->metrics.client_step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_STALL_BACKOFF_IDX ]++;
+    ctx->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_STALL_BACKOFF_IDX ]++;
     return;
   }
 
@@ -1147,11 +1155,9 @@ fd_bam_client_log_status( fd_bam_tile_t * ctx ) {
                         FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
                         ctx->server_tcp_port ));
         ctx->metrics.connection_cnt++;
-        FD_MCNT_INC( BAM, CONNECTIONS, 1UL );
       } else {
         FD_LOG_WARNING(( "Disconnected from BAM node" ));
         ctx->metrics.disconnect_cnt++;
-        FD_MCNT_INC( BAM, DISCONNECTS, 1UL );
       }
       ctx->last_bundle_status_log_nanos = ts;
       ctx->bundle_status_logged = status;
@@ -1184,6 +1190,7 @@ fd_bam_client_grpc_conn_dead( void * app_ctx,
                 ctx->server_fqdn,
                 FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
                 ctx->server_tcp_port ));
+  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
   ctx->defer_reset = 1;
 }
 
@@ -1225,7 +1232,7 @@ fd_bam_client_grpc_rx_msg(
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     if( FD_UNLIKELY( !fd_bam_handle_auth_challenge( ctx, protobuf, protobuf_sz ) ) ) {
-      ctx->metrics.decode_fail_cnt++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
       fd_bam_tile_backoff( ctx, fd_bam_now() );
     }
     break;
@@ -1244,6 +1251,7 @@ fd_bam_client_grpc_rx_msg(
 static void
 fd_bam_client_request_failed( fd_bam_tile_t * ctx,
                                  ulong              request_ctx ) {
+  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ]++;
   fd_bam_tile_backoff( ctx, fd_bam_now() );
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
@@ -1325,8 +1333,7 @@ fd_bam_client_grpc_rx_timeout(
   (void)deadline_kind;
   FD_LOG_WARNING(( "Request timed out: %s", fd_bam_request_ctx_cstr( request_ctx ) ));
   fd_bam_tile_t * ctx = app_ctx;
-  ctx->metrics.timeout_fail_cnt++;
-  FD_MCNT_INC( BAM, ERRORS_TIMEOUT, 1UL );
+  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TIMEOUT_IDX ]++;
   ctx->defer_reset = 1;
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
@@ -1356,7 +1363,7 @@ fd_bam_client_grpc_ping_ack( void * app_ctx ) {
     fd_rtt_sample( ctx->rtt, (float)rtt_sample, 0 );
     FD_LOG_DEBUG(( "Keepalive ACK" ));
   }
-  ctx->metrics.ping_ack_cnt++;
+  ctx->metrics.keepalive_ack_cnt++;
 }
 
 fd_grpc_client_callbacks_t fd_bam_client_grpc_callbacks = {
