@@ -146,6 +146,13 @@ pack_tile_record_bam_bundle_abandon( ulong *                                 bam
   }
 }
 
+static inline void
+pack_tile_record_bam_single_txn_invalid( ulong *                         bam_single_txn_invalid_cnt,
+                                         pack_tile_bam_invalid_reason_t  reason ) {
+  FD_TEST( reason==PACK_TILE_BAM_INVALID_OUTSIDE_SLOT || reason==PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED );
+  bam_single_txn_invalid_cnt[ (ulong)reason - 1UL ]++;
+}
+
 
 typedef struct {
   fd_acct_addr_t commission_pubkey[1];
@@ -316,6 +323,7 @@ typedef struct {
 
   ulong      insert_result[ FD_PACK_INSERT_RETVAL_CNT ];
   ulong      bam_bundle_abandon_cnt[ FD_METRICS_ENUM_PACK_BAM_BUNDLE_ABANDON_REASON_CNT ];
+  ulong      bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_CNT ];
   fd_histf_t schedule_duration[ 1 ];
   fd_histf_t no_sched_duration[ 1 ];
   fd_histf_t insert_duration  [ 1 ];
@@ -623,7 +631,6 @@ pack_tile_bam_invalid_reason( ulong current_slot,
      hint must both be rechecked against that slot. */
   if( FD_UNLIKELY( current_slot==ULONG_MAX ) ) {
     if( FD_UNLIKELY( max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT &&
-                     max_schedule_slot!=0UL &&
                      max_schedule_slot<blockhash_slot ) ) {
       return PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
     }
@@ -633,7 +640,6 @@ pack_tile_bam_invalid_reason( ulong current_slot,
   ulong oldest_live_slot = fd_ulong_max( current_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS;
   if( FD_UNLIKELY( blockhash_slot<oldest_live_slot ) ) return PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED;
   if( FD_UNLIKELY( max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT &&
-                   max_schedule_slot!=0UL &&
                    max_schedule_slot<fd_ulong_max( current_slot, blockhash_slot ) ) ) {
     return PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
   }
@@ -696,6 +702,10 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t *     ctx,
     ulong last_idx = ctx->bam_pending_work_cnt - 1UL;
     if( FD_LIKELY( i < last_idx ) ) ctx->bam_pending_work[ i ] = ctx->bam_pending_work[ last_idx ];
     ctx->bam_pending_work_cnt = last_idx;
+
+    if( FD_UNLIKELY( item.txn_cnt==1U ) ) {
+      pack_tile_record_bam_single_txn_invalid( ctx->bam_single_txn_invalid_cnt, invalid_reason );
+    }
 
     ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)(void const *)&item.sig[ 0 ] );
     FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
@@ -879,6 +889,7 @@ static inline void
 metrics_write( fd_pack_ctx_t * ctx ) {
   FD_MCNT_ENUM_COPY( PACK, TRANSACTION_INSERTED,          ctx->insert_result  );
   FD_MCNT_ENUM_COPY( PACK, BAM_BUNDLE_ABANDON,            ctx->bam_bundle_abandon_cnt );
+  FD_MCNT_ENUM_COPY( PACK, BAM_SINGLE_TXN_INVALID,        ctx->bam_single_txn_invalid_cnt );
   FD_MCNT_ENUM_COPY( PACK, METRIC_TIMING,        ((ulong*)ctx->metric_timing) );
   FD_MCNT_ENUM_COPY( PACK, BUNDLE_CRANK_STATUS,           ctx->crank->metrics );
   FD_MHIST_COPY( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS, ctx->schedule_duration );
@@ -1750,6 +1761,7 @@ after_frag( fd_pack_ctx_t *     ctx,
 #else
         fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
 #endif
+        pack_tile_record_bam_single_txn_invalid( ctx->bam_single_txn_invalid_cnt, invalid_reason );
         pack_tile_publish_bam_invalid_result( ctx, stem, bam_seq_id, bam_slot, 1U, invalid_reason );
         ctx->cur_spot = NULL;
         break;
@@ -2079,6 +2091,7 @@ unprivileged_init( fd_topo_t *      topo,
   /* Initialize metrics storage */
   memset( ctx->insert_result, '\0', FD_PACK_INSERT_RETVAL_CNT * sizeof(ulong) );
   memset( ctx->bam_bundle_abandon_cnt, '\0', sizeof(ctx->bam_bundle_abandon_cnt) );
+  memset( ctx->bam_single_txn_invalid_cnt, '\0', sizeof(ctx->bam_single_txn_invalid_cnt) );
   fd_histf_join( fd_histf_new( ctx->schedule_duration, FD_MHIST_SECONDS_MIN( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS ),
                                                        FD_MHIST_SECONDS_MAX( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS ) ) );
   fd_histf_join( fd_histf_new( ctx->no_sched_duration, FD_MHIST_SECONDS_MIN( PACK, NO_SCHED_MICROBLOCK_DURATION_SECONDS ),

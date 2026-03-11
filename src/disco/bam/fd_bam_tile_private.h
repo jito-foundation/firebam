@@ -93,6 +93,17 @@ struct fd_bam_metrics {
 
 typedef struct fd_bam_metrics fd_bam_metrics_t;
 
+#define FD_BAM_SLOT_INGRESS_TIMING_CNT 32UL
+
+typedef struct {
+  ulong slot;
+  long  first_rx_ts_ns;
+  ulong txn_before_slot_end;
+  ulong txn_after_slot_end;
+  uchar first_rx_after_slot_end;
+  uchar valid;
+} fd_bam_slot_ingress_timing_t;
+
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
   bam_types_Packet    packets[ FD_PACK_MAX_TXN_PER_BUNDLE ];   /* decoded packet cache; indices [0,packet_cnt) valid */
@@ -212,6 +223,7 @@ struct fd_bam_tile {
                                                      block_engine.bundle_id. */
   uchar bundle_txn_cnt;                           /* Number of txns in current bundle */
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
+  fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by resolved slot for debug captures. */
   ulong dump_bam_last_slot;                       /* Most recent resolved slot dumped under dump_bam_first_slot_txn */
   uchar dump_bam_last_slot_valid;                 /* Whether dump_bam_last_slot has been initialized */
 

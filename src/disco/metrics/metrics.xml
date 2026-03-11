@@ -599,6 +599,11 @@ metric introduced.
   <int value="3" name="PohTimeout" label="Active BAM bundle abandoned because the PoH leader-slot wallclock deadline elapsed" />
 </enum>
 
+<enum name="PackBamSingleTxnInvalidReason">
+  <int value="0" name="OutsideSlot" label="Independent BAM transaction rejected because packing moved outside its allowed slot window" />
+  <int value="1" name="BlockhashExpired" label="Independent BAM transaction rejected because its blockhash expired" />
+</enum>
+
 <tile name="pack">
     <histogram name="ScheduleMicroblockDurationSeconds" min="0.00000001" max="0.1" converter="seconds">
         <summary>Duration of scheduling one microblock</summary>
@@ -641,6 +646,7 @@ metric introduced.
 
     <counter name="BundleCrankStatus" enum="BundleCrankResult" summary="Result of considering whether bundle cranks are needed" />
     <counter name="BamBundleAbandon" enum="PackBamBundleAbandonReason" summary="Cumulative number of active BAM bundles abandoned before bundle insertion/execution, by reason" />
+    <counter name="BamSingleTxnInvalid" enum="PackBamSingleTxnInvalidReason" summary="Cumulative number of independent BAM transactions rejected after slot/blockhash revalidation, by reason" />
 
     <gauge name="CusConsumedInBlock" summary="The number of cost units consumed in the current block, or 0 if pack is not currently packing a block" />
     <histogram name="CusScheduled" min="1000000" max="240000000">

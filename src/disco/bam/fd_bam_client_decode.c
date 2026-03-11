@@ -272,6 +272,16 @@ fd_bam_dump_append_inbound_txn( char *                   msg,
   return off;
 }
 
+static inline ulong
+fd_bam_resolve_batch_slot( fd_bam_tile_t const *             ctx,
+                           bam_types_AtomicTxnBatch const *  batch ) {
+  ulong resolved_slot = batch->max_schedule_slot;
+  if( FD_UNLIKELY( resolved_slot==FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ) ) {
+    resolved_slot = ctx->bam_leader_state.slot;
+  }
+  return resolved_slot;
+}
+
 int
 fd_bam_should_dump_batch( fd_bam_tile_t *               ctx,
                           bam_types_AtomicTxnBatch const * batch ) {
@@ -281,10 +291,7 @@ fd_bam_should_dump_batch( fd_bam_tile_t *               ctx,
   /* Scheduler batches often leave max_schedule_slot at the default sentinel.
      Fall back to the current leader-state slot so "first per slot" groups by
      the actual slot boundary instead of collapsing into one lifetime bucket. */
-  ulong resolved_slot = batch->max_schedule_slot;
-  if( FD_UNLIKELY( resolved_slot==FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT || resolved_slot==0UL ) ) {
-    resolved_slot = ctx->bam_leader_state.slot;
-  }
+  ulong resolved_slot = fd_bam_resolve_batch_slot( ctx, batch );
 
   if( FD_LIKELY( ctx->dump_bam_last_slot_valid && ctx->dump_bam_last_slot==resolved_slot ) ) return 0;
 
@@ -440,6 +447,23 @@ void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch ) {
+  ulong resolved_slot = fd_bam_resolve_batch_slot( ctx, batch );
+  fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ resolved_slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL ) ];
+  if( FD_UNLIKELY( !entry->valid || entry->slot!=resolved_slot ) ) {
+    fd_memset( entry, 0, sizeof(fd_bam_slot_ingress_timing_t) );
+    entry->slot  = resolved_slot;
+    entry->valid = 1U;
+  }
+
+  _Bool after_slot_end = !!ctx->bam_leader_state.slot && !!resolved_slot && resolved_slot < ctx->bam_leader_state.slot;
+  if( FD_UNLIKELY( !entry->txn_before_slot_end && !entry->txn_after_slot_end ) ) {
+    entry->first_rx_ts_ns          = fd_bam_now();
+    entry->first_rx_after_slot_end = (uchar)after_slot_end;
+  }
+
+  if( FD_LIKELY( !after_slot_end ) ) entry->txn_before_slot_end += state->packet_cnt;
+  else                               entry->txn_after_slot_end  += state->packet_cnt;
+
   if( FD_UNLIKELY( fd_bam_should_dump_batch( ctx, batch ) ) ) {
     char * msg = fd_bam_dump_log_buf;
     ulong  off = 0UL;
@@ -461,6 +485,14 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                             state->packet_cnt,
                                             &state->packets[ i ] );
     }
+    off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
+                               "\nslot_timing: slot=%lu first_rx_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
+                               resolved_slot,
+                               entry->first_rx_ts_ns,
+                               (uint)entry->first_rx_after_slot_end,
+                               entry->txn_before_slot_end,
+                               entry->txn_after_slot_end,
+                               ctx->bam_leader_state.slot );
     FD_LOG_NOTICE(( "%s", msg ));
   }
 

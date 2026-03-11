@@ -1055,6 +1055,17 @@ main( int     argc,
   FD_TEST( pack_tile );
   fd_metrics_register( fd_metrics_new( metrics_scratch, 10, 10 ) );
 
+  FD_TEST( pack_tile_bam_invalid_reason( 100UL,  99UL, 100UL ) == PACK_TILE_BAM_INVALID_OUTSIDE_SLOT );
+  FD_TEST( pack_tile_bam_invalid_reason( 100UL,   0UL, 100UL ) == PACK_TILE_BAM_INVALID_OUTSIDE_SLOT );
+  FD_TEST( pack_tile_bam_invalid_reason( 200UL, 200UL,  39UL ) == PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED );
+  FD_TEST( pack_tile_bam_invalid_reason( 200UL, 200UL,  40UL ) == PACK_TILE_BAM_INVALID_NONE );
+
+  ulong bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_CNT ] = {0};
+  pack_tile_record_bam_single_txn_invalid( bam_single_txn_invalid_cnt, PACK_TILE_BAM_INVALID_OUTSIDE_SLOT );
+  pack_tile_record_bam_single_txn_invalid( bam_single_txn_invalid_cnt, PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED );
+  FD_TEST( bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_V_OUTSIDE_SLOT_IDX ] == 1UL );
+  FD_TEST( bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_V_BLOCKHASH_EXPIRED_IDX ] == 1UL );
+
   fd_pack_ctx_t * ctx = fd_topo_obj_laddr( &config->topo, pack_tile->tile_obj_id );
   FD_TEST( ctx );
 
