@@ -306,7 +306,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Connection lifecycle and keepalive acknowledgment activity. bam_connections and bam_disconnects count transitions into and out of CONNECTED_HEALTHY; bam_keepalive_acks counts HTTP/2 keepalive PING acknowledgments received from the BAM node.",
+      "description": "Healthy connection lifecycle and keepalive acknowledgment activity. bam_healthy_connects and bam_healthy_disconnects count transitions into and out of CONNECTED_HEALTHY; bam_keepalive_acks counts HTTP/2 keepalive PING acknowledgments received from the BAM node.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -394,9 +394,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_connections{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_healthy_connects{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "Connections",
+          "legendFormat": "Healthy Connects",
           "range": true,
           "refId": "A"
         },
@@ -406,9 +406,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_disconnects{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_healthy_disconnects{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "Disconnects",
+          "legendFormat": "Healthy Disconnects",
           "range": true,
           "refId": "B"
         },
@@ -425,7 +425,7 @@
           "refId": "C"
         }
       ],
-      "title": "BAM Connections and Keepalive ACKs",
+      "title": "BAM Healthy Connects and Keepalive ACKs",
       "type": "timeseries"
     },
     {
@@ -433,7 +433,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Heartbeat exchange with the BAM node. bam_heartbeats_sent counts validator heartbeat messages sent; bam_heartbeats_received counts builder heartbeats received, shown as rates.",
+      "description": "Heartbeat exchange with the BAM node. bam_validator_heartbeats_enqueued counts validator heartbeat messages accepted by gRPC stream_send; bam_builder_heartbeats_decoded counts builder heartbeat messages successfully decoded, shown as rates.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -521,9 +521,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_heartbeats_sent{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_validator_heartbeats_enqueued{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "Heartbeats Sent",
+          "legendFormat": "Validator Heartbeats Enqueued",
           "range": true,
           "refId": "A"
         },
@@ -533,9 +533,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_heartbeats_received{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_builder_heartbeats_decoded{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "Heartbeats Received",
+          "legendFormat": "Builder Heartbeats Decoded",
           "range": true,
           "refId": "B"
         }
@@ -675,7 +675,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second rate of leader-state update messages sent to the BAM node, using the successful `leader_state_sent` bucket of bam_outbound_send_outcome.",
+      "description": "Per-second rate of leader-state update messages accepted by gRPC stream_send, using the successful `leader_state_enqueued` bucket of bam_outbound_enqueue_outcome.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -763,14 +763,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_outbound_send_outcome{instance=~\"$instance\",bam_send_outcome=\"leader_state_sent\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_outbound_enqueue_outcome{instance=~\"$instance\",bam_enqueue_outcome=\"leader_state_enqueued\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Leader Updates",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "BAM Leader Updates",
+      "title": "BAM Leader Update Enqueue Rate",
       "type": "timeseries"
     },
     {
@@ -893,7 +893,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second rate of bundle execution result messages forwarded back to the BAM node, using the successful `result_sent` bucket of bam_outbound_send_outcome.",
+      "description": "Per-second rate of bundle execution result messages accepted by gRPC stream_send, using the successful `result_enqueued` bucket of bam_outbound_enqueue_outcome.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -981,14 +981,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_outbound_send_outcome{instance=~\"$instance\",bam_send_outcome=\"result_sent\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_outbound_enqueue_outcome{instance=~\"$instance\",bam_enqueue_outcome=\"result_enqueued\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "Results Sent",
+          "legendFormat": "Results Enqueued",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "BAM Results Rate",
+      "title": "BAM Results Enqueue Rate",
       "type": "timeseries"
     },
     {
@@ -2301,7 +2301,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM ingress message classes. bam_heartbeats_received reflects committed BuilderHeartBeat messages; bam_ingress_multi_message_received reflects decoded multiple_atomic_txn_batch scheduler payloads.",
+      "description": "Rate (events/sec) of BAM ingress message classes. bam_builder_heartbeats_decoded reflects successfully decoded BuilderHeartBeat messages; bam_ingress_multi_message_received reflects decoded multiple_atomic_txn_batch scheduler payloads.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2355,7 +2355,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_heartbeats_received{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_builder_heartbeats_decoded{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Heartbeat Messages",
           "range": true,
@@ -2382,7 +2382,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of multi-message guardrail hits. Empty messages have zero AtomicTxnBatch entries; overflow messages exceed the local max batch count.",
+      "description": "Rate (events/sec) of wrapper-level multiple_atomic_txn_batch rejects, sourced from the empty_message and overflow_message buckets of bam_ingress_batch_rejected.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2436,9 +2436,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_ingress_multi_message_empty{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_ingress_batch_rejected{instance=~\"$instance\",bam_ingress_batch_reject_reason=\"empty_message\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "Multi Empty Msg",
+          "legendFormat": "Empty Wrapper Msg",
           "range": true,
           "refId": "A"
         },
@@ -2448,14 +2448,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_ingress_multi_message_overflow{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_ingress_batch_rejected{instance=~\"$instance\",bam_ingress_batch_reject_reason=\"overflow_message\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "Multi Overflow Msg",
+          "legendFormat": "Overflow Wrapper Msg",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "BAM Ingress Multi Message Guardrails",
+      "title": "BAM Ingress Wrapper Rejects",
       "type": "timeseries"
     },
     {
@@ -2839,9 +2839,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(bam_outbound_send_outcome{instance=~\"$instance\",bam_send_outcome=\"leader_state_sent\"}[$__range]))",
+          "expr": "sum(increase(bam_outbound_enqueue_outcome{instance=~\"$instance\",bam_enqueue_outcome=\"leader_state_enqueued\"}[$__range]))",
           "instant": true,
-          "legendFormat": "leader_state_sent",
+          "legendFormat": "leader_state_enqueued",
           "range": false,
           "refId": "A"
         },
@@ -2851,14 +2851,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(bam_outbound_send_outcome{instance=~\"$instance\",bam_send_outcome=\"result_sent\"}[$__range]))",
+          "expr": "sum(increase(bam_outbound_enqueue_outcome{instance=~\"$instance\",bam_enqueue_outcome=\"result_enqueued\"}[$__range]))",
           "instant": true,
-          "legendFormat": "result_sent",
+          "legendFormat": "result_enqueued",
           "range": false,
           "refId": "B"
         }
       ],
-      "title": "BAM Successful Sends (Range Count)",
+      "title": "BAM Successful Enqueues (Range Count)",
       "type": "stat"
     },
     {
@@ -2866,7 +2866,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM outbound send outcomes, grouped by bam_send_outcome on bam_outbound_send_outcome. The `leader_state_sent` and `result_sent` buckets are the canonical successful-send counters; no_stream/send_fail indicate skipped or failed sends.",
+      "description": "Rate (events/sec) of BAM outbound enqueue outcomes, grouped by bam_enqueue_outcome on bam_outbound_enqueue_outcome. The `leader_state_enqueued` and `result_enqueued` buckets are the successful gRPC stream_send accepts; no_stream/enqueue_fail indicate skipped or failed enqueue attempts.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2920,14 +2920,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (bam_send_outcome) (rate(bam_outbound_send_outcome{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (bam_enqueue_outcome) (rate(bam_outbound_enqueue_outcome{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "{{bam_send_outcome}}",
+          "legendFormat": "{{bam_enqueue_outcome}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "BAM Send Outcomes",
+      "title": "BAM Enqueue Outcomes",
       "type": "timeseries"
     },
     {
@@ -3073,7 +3073,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of active BAM bundle abandon events in pack, grouped by pack_bam_bundle_abandon_reason (new sequence preemption, slot-end transitions, outside-leader-slot, or PoH timeout).",
+      "description": "Rate (events/sec) of in-progress BAM bundle assembly abandonment in pack, grouped by pack_bam_bundle_assembly_abandon_reason (new sequence preemption, slot-end transitions, or PoH timeout).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3099,7 +3099,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 101
       },
@@ -3127,14 +3127,83 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (pack_bam_bundle_abandon_reason) (rate(pack_bam_bundle_abandon{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (pack_bam_bundle_assembly_abandon_reason) (rate(pack_bam_bundle_assembly_abandon{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "{{pack_bam_bundle_abandon_reason}}",
+          "legendFormat": "{{pack_bam_bundle_assembly_abandon_reason}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Pack BAM Bundle Abandon (by reason)",
+      "title": "Pack BAM Bundle Assembly Abandon (by reason)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of BAM work invalidated by slot/blockhash revalidation in pack, grouped by pack_bam_work_invalid_reason across single transactions and fully assembled bundles.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.000001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 101
+      },
+      "id": 33,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pack_bam_work_invalid_reason) (rate(pack_bam_work_invalidated{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{pack_bam_work_invalid_reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pack BAM Work Invalidated (by reason)",
       "type": "timeseries"
     }
   ],

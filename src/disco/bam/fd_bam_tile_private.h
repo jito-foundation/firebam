@@ -54,8 +54,8 @@ struct fd_bam_metrics {
   ulong keepalive_ack_cnt;
   ulong heartbeat_sent_cnt;
   ulong heartbeat_recv_cnt;
-  ulong connection_cnt;
-  ulong disconnect_cnt;
+  ulong healthy_connect_cnt;
+  ulong healthy_disconnect_cnt;
 
   ulong failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_CNT ];
 
@@ -67,7 +67,7 @@ struct fd_bam_metrics {
   ulong ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_CNT ];
 
   /* Enum counters staged locally and flushed during housekeeping. */
-  ulong outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SEND_OUTCOME_CNT ];
+  ulong outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_CNT ];
   ulong step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_CNT ];
   ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
   ulong leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
@@ -254,6 +254,7 @@ struct fd_bam_tile {
   /* Check engine light */
   fd_plugin_bam_update_status_t bundle_status_recent;  /* most recently observed 'check engine light' */ //TODO: update this for bam
   fd_plugin_bam_update_status_t bundle_status_plugin;  /* last 'plugin' update written */
+  fd_plugin_bam_update_status_t bundle_status_counted; /* last status used for healthy-edge counters */
   fd_plugin_bam_update_status_t bundle_status_logged;  /* last logged bundle status */
   long  last_bundle_status_log_nanos;
   long  last_gui_publish_nanos;

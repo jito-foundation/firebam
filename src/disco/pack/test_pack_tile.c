@@ -1060,11 +1060,11 @@ main( int     argc,
   FD_TEST( pack_tile_bam_invalid_reason( 200UL, 200UL,  39UL ) == PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED );
   FD_TEST( pack_tile_bam_invalid_reason( 200UL, 200UL,  40UL ) == PACK_TILE_BAM_INVALID_NONE );
 
-  ulong bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_CNT ] = {0};
-  pack_tile_record_bam_single_txn_invalid( bam_single_txn_invalid_cnt, PACK_TILE_BAM_INVALID_OUTSIDE_SLOT );
-  pack_tile_record_bam_single_txn_invalid( bam_single_txn_invalid_cnt, PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED );
-  FD_TEST( bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_V_OUTSIDE_SLOT_IDX ] == 1UL );
-  FD_TEST( bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_V_BLOCKHASH_EXPIRED_IDX ] == 1UL );
+  ulong bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_CNT ] = {0};
+  pack_tile_record_bam_work_invalidated( bam_work_invalidated_cnt, PACK_TILE_BAM_INVALID_OUTSIDE_SLOT, 1U );
+  pack_tile_record_bam_work_invalidated( bam_work_invalidated_cnt, PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED, 1U );
+  FD_TEST( bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX ] == 1UL );
+  FD_TEST( bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_BLOCKHASH_EXPIRED_IDX ] == 1UL );
 
   fd_pack_ctx_t * ctx = fd_topo_obj_laddr( &config->topo, pack_tile->tile_obj_id );
   FD_TEST( ctx );
@@ -1077,8 +1077,8 @@ main( int     argc,
 
 #if FD_PACK_USE_EXTRA_STORAGE
   FD_TEST( extra_txn_deq_empty( ctx->extra_txn_deq ) );
-  ulong saved_bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_CNT ];
-  fd_memcpy( saved_bam_single_txn_invalid_cnt, ctx->bam_single_txn_invalid_cnt, sizeof(saved_bam_single_txn_invalid_cnt) );
+  ulong saved_bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_CNT ];
+  fd_memcpy( saved_bam_work_invalidated_cnt, ctx->bam_work_invalidated_cnt, sizeof(saved_bam_work_invalidated_cnt) );
   ulong saved_highest_observed_slot = ctx->highest_observed_slot;
   ulong saved_leader_slot           = ctx->leader_slot;
   ulong saved_bam_out_idx           = ctx->bam_out_idx;
@@ -1096,10 +1096,10 @@ main( int     argc,
 
   FD_TEST( insert_from_extra( ctx, NULL ) == -1 );
   FD_TEST( extra_txn_deq_empty( ctx->extra_txn_deq ) );
-  FD_TEST( ctx->bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_V_BLOCKHASH_EXPIRED_IDX ] ==
-           saved_bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_V_BLOCKHASH_EXPIRED_IDX ] + 1UL );
+  FD_TEST( ctx->bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_BLOCKHASH_EXPIRED_IDX ] ==
+           saved_bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_BLOCKHASH_EXPIRED_IDX ] + 1UL );
 
-  fd_memcpy( ctx->bam_single_txn_invalid_cnt, saved_bam_single_txn_invalid_cnt, sizeof(saved_bam_single_txn_invalid_cnt) );
+  fd_memcpy( ctx->bam_work_invalidated_cnt, saved_bam_work_invalidated_cnt, sizeof(saved_bam_work_invalidated_cnt) );
   ctx->highest_observed_slot = saved_highest_observed_slot;
   ctx->leader_slot           = saved_leader_slot;
   ctx->bam_out_idx           = saved_bam_out_idx;

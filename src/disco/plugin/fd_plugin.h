@@ -141,8 +141,8 @@ typedef struct {
   float  rtt_smoothed;                 /* Smoothed HTTP/2 keepalive RTT estimate (ns) */
   float  rtt_deviation;                /* Smoothed HTTP/2 keepalive RTT variation estimate (ns) */
   ushort feedback_queue_depth;         /* Pending BAM feedback results */
-  ulong  heartbeat_sent;               /* Validator heartbeats sent */
-  ulong  heartbeat_recv;               /* Builder heartbeats received */
+  ulong  heartbeat_sent;               /* Validator heartbeats accepted by gRPC stream_send */
+  ulong  heartbeat_recv;               /* Builder heartbeat messages successfully decoded */
   ulong  txn_published;                /* Transactions published from BAM to verify */
   ulong  bundle_published;             /* Revert-on-error bundles published to verify */
   ulong  ingress_packet_oversize;      /* BAM packets over local MTU */

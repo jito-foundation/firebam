@@ -100,16 +100,16 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_result_drop_cnt   );
   FD_MCNT_SET( BAM, INGRESS_PACKET_OVERSIZE, ctx->metrics.ingress_packet_oversize_cnt );
   FD_MCNT_SET( BAM, KEEPALIVE_ACKS,          ctx->metrics.keepalive_ack_cnt           );
-  FD_MCNT_SET( BAM, VALIDATOR_HEARTBEATS_SENT,   ctx->metrics.heartbeat_sent_cnt   );
-  FD_MCNT_SET( BAM, BUILDER_HEARTBEATS_RECEIVED, ctx->metrics.heartbeat_recv_cnt   );
-  FD_MCNT_SET( BAM, CONNECTIONS,            ctx->metrics.connection_cnt            );
-  FD_MCNT_SET( BAM, DISCONNECTS,            ctx->metrics.disconnect_cnt            );
+  FD_MCNT_SET( BAM, VALIDATOR_HEARTBEATS_ENQUEUED, ctx->metrics.heartbeat_sent_cnt       );
+  FD_MCNT_SET( BAM, BUILDER_HEARTBEATS_DECODED,    ctx->metrics.heartbeat_recv_cnt       );
+  FD_MCNT_SET( BAM, HEALTHY_CONNECTS,              ctx->metrics.healthy_connect_cnt      );
+  FD_MCNT_SET( BAM, HEALTHY_DISCONNECTS,           ctx->metrics.healthy_disconnect_cnt   );
   FD_MCNT_ENUM_COPY( BAM, FAILURE,          ctx->metrics.failure_cnt               );
   FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_RECEIVED,         ctx->metrics.ingress_multi_msg_received_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_PUBLISHED,                ctx->metrics.ingress_batch_published_cnt );
   FD_MCNT_ENUM_COPY( BAM, INGRESS_BATCH_REJECTED, ctx->metrics.ingress_batch_reject_cnt );
-  FD_MCNT_ENUM_COPY( BAM, OUTBOUND_SEND_OUTCOME,  ctx->metrics.outbound_send_outcome_cnt );
+  FD_MCNT_ENUM_COPY( BAM, OUTBOUND_ENQUEUE_OUTCOME,  ctx->metrics.outbound_send_outcome_cnt );
   FD_MCNT_ENUM_COPY( BAM, STEP_SKIP,              ctx->metrics.step_skip_cnt             );
   FD_MCNT_ENUM_COPY( BAM, STREAM_TRANSITION,      ctx->metrics.stream_transition_cnt     );
   FD_MCNT_ENUM_COPY( BAM, LEADER_PENDING_DROPPED, ctx->metrics.leader_pending_drop_cnt );
@@ -1055,6 +1055,7 @@ unprivileged_init( fd_topo_t *      topo,
       ? FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED
       : FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
   ctx->bundle_status_plugin = ctx->bundle_status_recent;
+  ctx->bundle_status_counted = ctx->bundle_status_recent;
   ctx->bundle_status_logged = ctx->bundle_status_recent;
   ctx->last_bundle_status_log_nanos = fd_log_wallclock();
   ctx->gui_dirty = 1U;
