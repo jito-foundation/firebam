@@ -963,6 +963,7 @@ insert_from_extra( fd_pack_ctx_t *     ctx,
     if( FD_UNLIKELY( invalid_reason!=PACK_TILE_BAM_INVALID_NONE ) ) {
       fd_pack_insert_txn_cancel( ctx->pack, spot );
       extra_txn_deq_remove_head( ctx->extra_txn_deq );
+      pack_tile_record_bam_single_txn_invalid( ctx->bam_single_txn_invalid_cnt, invalid_reason );
       pack_tile_publish_bam_invalid_result( ctx, stem, bam_seq_id, bam_slot, 1U, invalid_reason );
       return -1;
     }

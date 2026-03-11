@@ -1075,6 +1075,36 @@ main( int     argc,
   mock_privileged_init( &config->topo, pack_tile );
   unprivileged_init(    &config->topo, pack_tile );
 
+#if FD_PACK_USE_EXTRA_STORAGE
+  FD_TEST( extra_txn_deq_empty( ctx->extra_txn_deq ) );
+  ulong saved_bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_CNT ];
+  fd_memcpy( saved_bam_single_txn_invalid_cnt, ctx->bam_single_txn_invalid_cnt, sizeof(saved_bam_single_txn_invalid_cnt) );
+  ulong saved_highest_observed_slot = ctx->highest_observed_slot;
+  ulong saved_leader_slot           = ctx->leader_slot;
+  ulong saved_bam_out_idx           = ctx->bam_out_idx;
+
+  ctx->highest_observed_slot = 200UL;
+  ctx->leader_slot           = ULONG_MAX;
+  ctx->bam_out_idx           = ULONG_MAX;
+
+  fd_pack_extra_txn_t * extra = extra_txn_deq_peek_tail( extra_txn_deq_insert_tail( ctx->extra_txn_deq ) );
+  fd_memset( extra, 0, sizeof(*extra) );
+  extra->txn.txnp->source_tpu    = FD_TXN_M_TPU_SOURCE_BAM;
+  extra->txn.txnp->bam.seq_id    = 77U;
+  extra->txn.txnp->blockhash_slot = 39UL;
+  extra->bam_max_schedule_slot   = 200UL;
+
+  FD_TEST( insert_from_extra( ctx, NULL ) == -1 );
+  FD_TEST( extra_txn_deq_empty( ctx->extra_txn_deq ) );
+  FD_TEST( ctx->bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_V_BLOCKHASH_EXPIRED_IDX ] ==
+           saved_bam_single_txn_invalid_cnt[ FD_METRICS_ENUM_PACK_BAM_SINGLE_TXN_INVALID_REASON_V_BLOCKHASH_EXPIRED_IDX ] + 1UL );
+
+  fd_memcpy( ctx->bam_single_txn_invalid_cnt, saved_bam_single_txn_invalid_cnt, sizeof(saved_bam_single_txn_invalid_cnt) );
+  ctx->highest_observed_slot = saved_highest_observed_slot;
+  ctx->leader_slot           = saved_leader_slot;
+  ctx->bam_out_idx           = saved_bam_out_idx;
+#endif
+
   /* resolv-pack link */
   fd_tile_test_link_t resolv_pack_link = {0};
   fd_tile_test_init_link_in( &config->topo, &resolv_pack_link, "resolv_pack", ctx, pack_find_in_idx,

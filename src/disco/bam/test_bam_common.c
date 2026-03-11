@@ -484,8 +484,8 @@ test_bam_env_create( test_bam_env_t * env,
   state->keepalive->ts_last_rx = now;
 
   fd_histf_new( state->metrics.node_hearbeat_network_latency_nanos,
-      FD_MHIST_MIN( BAM, NODE_HEARBEAT_NETWORK_LATENCY_NANOS ),
-      FD_MHIST_MAX( BAM, NODE_HEARBEAT_NETWORK_LATENCY_NANOS ) );
+      FD_MHIST_MIN( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS ),
+      FD_MHIST_MAX( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS ) );
   fd_histf_new( state->metrics.scheduler_ping_response_nanos,
       FD_MHIST_MIN( BAM, SCHEDULER_PING_RESPONSE_NANOS ),
       FD_MHIST_MAX( BAM, SCHEDULER_PING_RESPONSE_NANOS ) );

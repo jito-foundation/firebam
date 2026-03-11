@@ -381,8 +381,6 @@ metric introduced.
     <int value="1" name="Protobuf" label="Protobuf decode/encode error" />
     <int value="2" name="Transport" label="Transport error" />
     <int value="3" name="Timeout" label="I/O timeout" />
-    <int value="4" name="NoFeeInfo" label="Bundle dropped due to missing builder info" />
-    <int value="5" name="SslAlloc" label="OpenSSL alloc fail" />
 </enum>
 
 <enum name="BamSendAttempt">
@@ -417,19 +415,17 @@ metric introduced.
     <gauge name="Enabled" summary="Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled" />
     <gauge name="Healthy" summary="Boolean gauge: 1 when the BAM client is connected to the BAM node and connection is healthy, otherwise 0" />
     <counter name="TransactionReceived" summary="Cumulative number of transactions accepted from the BAM node, including transactions unpacked from bundles" />
-    <counter name="BundleReceived" summary="Cumulative number of bundles received from the BAM node" />
+    <counter name="BundleReceived" summary="Cumulative number of revert-on-error AtomicTxnBatch entries accepted and published to verify as BAM bundles" />
     <counter name="BundleResultsDropped" summary="Cumulative number of BAM bundle execution results discarded before publication" />
-    <counter name="PacketsDropped" summary="Cumulative number of BAM network packets dropped before forwarding to the TPU pipeline" />
+    <counter name="PacketsDropped" summary="Cumulative number of BAM AtomicTxnBatch packets rejected during decode because their declared payload exceeded the local MTU" />
     <counter name="HeartbeatsSent" summary="Cumulative number of validator heartbeat messages sent to the BAM node" />
     <counter name="HeartbeatsReceived" summary="Cumulative number of builder heartbeat messages received from the BAM node" />
     <counter name="Errors" enum="BamError" summary="Cumulative number of BAM client errors encountered, bucketed by BamError" />
     <gauge name="HeapSize" summary="Total workspace capacity reserved for the BAM tile (bytes)" />
     <gauge name="HeapFreeBytes" summary="Estimated free capacity in the BAM tile workspace heap (bytes)" />
     <counter name="Keepalives" summary="Cumulative number of HTTP/2 keepalive PINGs acknowledged by the BAM node" />
-    <counter name="Connections" summary="Cumulative number of successful BAM client connections established to the BAM node" />
-    <counter name="Disconnects" summary="Cumulative number of connection teardowns between the BAM client and BAM node" />
-    <counter name="ResultsSent" summary="Cumulative number of bundle execution result messages forwarded to the BAM node" />
-    <counter name="LeaderStateSent" summary="Cumulative number of leader state update messages sent to the BAM node" />
+    <counter name="Connections" summary="Cumulative number of transitions into BAM CONNECTED_HEALTHY state" />
+    <counter name="Disconnects" summary="Cumulative number of transitions out of BAM CONNECTED_HEALTHY state" />
     <counter name="IngressV0HeartbeatMsg" summary="Cumulative number of SchedulerResponseV0 heartbeat messages decoded from BAM ingress" />
     <counter name="IngressV0MultiMsg" summary="Cumulative number of SchedulerResponseV0 multiple_atomic_txn_batch messages decoded from BAM ingress" />
     <counter name="IngressMultiBatchTotal" summary="Cumulative number of AtomicTxnBatch entries staged from multiple_atomic_txn_batch messages (capped by local per-message max)" />
@@ -441,7 +437,6 @@ metric introduced.
     <counter name="IngressRejectDeser" summary="Cumulative number of BAM ingress rejects caused by deserialization/inconsistent-bundle conditions" />
     <counter name="IngressRejectEmpty" summary="Cumulative number of BAM ingress rejects caused by empty batch payloads (including empty wrapper messages)" />
     <counter name="IngressRejectNonRevertMultiPacket" summary="Cumulative number of batch rejects caused by non-revert multi-packet batches" />
-    <counter name="IngressRejectMissingBuilderInfo" summary="Cumulative number of batch rejects caused by missing builder info for revert-on-error batches" />
     <counter name="SendAttempt" enum="BamSendAttempt" summary="Cumulative number of BAM outbound message send attempts by message kind and outcome" />
     <counter name="ClientStepSkip" enum="BamClientStepSkipReason" summary="Cumulative number of BAM client-step skips by reason" />
     <counter name="StreamStateTransition" enum="BamStreamTransition" summary="Cumulative number of scheduler stream live-state transitions" />
@@ -450,11 +445,11 @@ metric introduced.
     <gauge name="RttSmoothed" summary="Exponentially smoothed BAM round-trip time estimate (nanoseconds)" />
     <gauge name="RttVar" summary="Smoothed variance of the BAM round-trip time estimator (nanoseconds)" />
     <gauge name="ResultsQueueDepth" summary="Current number of bundle execution results buffered for BAM feedback" />
-    <histogram name="NodeHearbeatNetworkLatencyNanos" min="10000" max="100000000">
+    <histogram name="NodeHeartbeatNetworkLatencyNanos" min="10000" max="100000000">
         <summary>Distribution of BAM node heartbeat timestamp to Frankendancer scheduler-stream receive callback time (nanoseconds); intended for relative trend analysis</summary>
     </histogram>
     <histogram name="SchedulerPingResponseNanos" min="1" max="100000000">
-        <summary>Distribution of BAM scheduler Ping response latencies from Ping receipt to Pong enqueue (nanoseconds)</summary>
+        <summary>Distribution of BAM scheduler Ping response latencies from scheduler-message receive callback to successful Pong send completion (nanoseconds)</summary>
     </histogram>
 </tile>
 
@@ -645,8 +640,8 @@ metric introduced.
     <counter name="TransactionSchedule" enum="PackTxnSchedule" summary="Result of trying to consider a transaction for scheduling" />
 
     <counter name="BundleCrankStatus" enum="BundleCrankResult" summary="Result of considering whether bundle cranks are needed" />
-    <counter name="BamBundleAbandon" enum="PackBamBundleAbandonReason" summary="Cumulative number of active BAM bundles abandoned before bundle insertion/execution, by reason" />
-    <counter name="BamSingleTxnInvalid" enum="PackBamSingleTxnInvalidReason" summary="Cumulative number of independent BAM transactions rejected after slot/blockhash revalidation, by reason" />
+    <counter name="BamBundleAbandon" enum="PackBamBundleAbandonReason" summary="Cumulative number of active BAM bundles abandoned due to sequencing or leader-slot boundary conditions, by reason (does not include blockhash-expiry invalidation after full reception)" />
+    <counter name="BamSingleTxnInvalid" enum="PackBamSingleTxnInvalidReason" summary="Cumulative number of independent BAM transactions rejected after slot/blockhash revalidation, including extra-storage reinsertion and pending-work eviction, by reason" />
 
     <gauge name="CusConsumedInBlock" summary="The number of cost units consumed in the current block, or 0 if pack is not currently packing a block" />
     <histogram name="CusScheduled" min="1000000" max="240000000">

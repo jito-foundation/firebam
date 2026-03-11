@@ -692,7 +692,6 @@ struct fd_gui {
     ulong err_protobuf;
     ulong err_transport;
     ulong err_timeout;
-    ulong err_missing_builder_info;
     ulong ingress_v0_heartbeat_msg;
     ulong ingress_v0_multi_msg;
     ulong ingress_multi_batch_total;
@@ -704,7 +703,6 @@ struct fd_gui {
     ulong ingress_reject_deser;
     ulong ingress_reject_empty;
     ulong ingress_reject_non_revert_multi_packet;
-    ulong ingress_reject_missing_builder_info;
   } bam;
 
   struct {

@@ -824,6 +824,7 @@ static void
 test_bam_multiple_batches_do_not_partially_publish_on_corruption( fd_wksp_t * wksp ) {
   /* A malformed later batch must prevent publishing earlier valid batches from
      the same MultipleAtomicTxnBatch payload. */
+  fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL, 0UL ) );
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -860,6 +861,7 @@ test_bam_multiple_batches_do_not_partially_publish_on_corruption( fd_wksp_t * wk
 
   FD_TEST( state->metrics.txn_received_cnt == 0UL );
   FD_TEST( state->metrics.bundle_received_cnt == 0UL );
+  FD_TEST( state->metrics.decode_fail_cnt == 2UL );
   FD_TEST( state->bam_pending_results == 1UL );
 
   test_bam_prepare_scheduler_stream( state );
@@ -972,7 +974,6 @@ test_bam_bundle_forwards_without_builder_info( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->metrics.bundle_received_cnt == 1UL );
   FD_TEST( state->metrics.txn_received_cnt == 2UL );
-  FD_TEST( state->metrics.missing_builder_info_fail_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 0UL );
 
   fd_txn_m_t * first = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, env->out_mcache[0].chunk );

@@ -306,7 +306,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Connection lifecycle and keepalive activity. bam_connections and bam_disconnects are counters for successful connects and teardowns; bam_keepalives counts HTTP/2 keepalive PINGs acknowledged by the BAM node.",
+      "description": "Connection lifecycle and keepalive activity. bam_connections and bam_disconnects count transitions into and out of CONNECTED_HEALTHY; bam_keepalives counts HTTP/2 keepalive PINGs acknowledged by the BAM node.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -675,7 +675,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second rate of leader state update messages sent to the BAM node (bam_leader_state_sent counter).",
+      "description": "Per-second rate of leader state update messages sent to the BAM node, using the successful `leader_state_sent` bucket of bam_send_attempt.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -763,7 +763,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_leader_state_sent{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_send_attempt{instance=~\"$instance\",bam_send_attempt=\"leader_state_sent\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Leader Updates",
           "range": true,
@@ -778,7 +778,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second ingest from the BAM node. bam_transaction_received counts accepted transactions (including those unpacked from bundles) and bam_bundle_received counts bundles received.",
+      "description": "Per-second ingest from the BAM node. bam_transaction_received counts accepted transactions, including those unpacked from accepted bundles, and bam_bundle_received counts accepted revert_on_error bundles published into the pipeline.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -893,7 +893,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second rate of bundle execution result messages forwarded back to the BAM node (bam_results_sent counter).",
+      "description": "Per-second rate of bundle execution result messages forwarded back to the BAM node, using the successful `result_sent` bucket of bam_send_attempt.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -981,7 +981,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_results_sent{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_send_attempt{instance=~\"$instance\",bam_send_attempt=\"result_sent\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Results Sent",
           "range": true,
@@ -1429,7 +1429,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(bam_node_hearbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(bam_node_heartbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p50",
           "range": true,
@@ -1441,7 +1441,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(bam_node_hearbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bam_node_heartbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p95",
           "range": true,
@@ -1453,7 +1453,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(bam_node_hearbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(bam_node_heartbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p99",
           "range": true,
@@ -1465,7 +1465,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_node_hearbeat_network_latency_nanos_sum{instance=~\"$instance\"}[$__rate_interval])) / sum by (instance) (rate(bam_node_hearbeat_network_latency_nanos_count{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_node_heartbeat_network_latency_nanos_sum{instance=~\"$instance\"}[$__rate_interval])) / sum by (instance) (rate(bam_node_heartbeat_network_latency_nanos_count{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Mean",
           "range": true,
@@ -1480,7 +1480,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Scheduler Ping to Pong response-latency distribution inside the BAM client, measured from Ping receipt to successful Pong enqueue.",
+      "description": "Scheduler Ping to Pong response-latency distribution inside the BAM client, measured from Ping receive callback to successful Pong send completion.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1619,7 +1619,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Drop rates from BAM ingest and feedback. bam_packets_dropped counts BAM network packets dropped before forwarding to the TPU pipeline; bam_bundle_results_dropped counts bundle execution results discarded before publication.",
+      "description": "Drop rates from BAM ingest and feedback. bam_packets_dropped counts oversized BAM packet payloads rejected during decode; bam_bundle_results_dropped counts bundle execution results discarded before publication.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1734,7 +1734,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second BAM client error rates grouped by bam_error. bam_errors is a cumulative counter for protobuf, transport, timeout, no_fee_info (missing builder info), and ssl_alloc failures.",
+      "description": "Per-second BAM client error rates grouped by bam_error. bam_errors is a cumulative counter for protobuf decode failures, transport errors, and request timeouts.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2568,7 +2568,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM ingress rejects by root cause: deserialization/inconsistent-bundle, empty payload, non-revert multi-packet, and missing builder info.",
+      "description": "Rate (events/sec) of BAM ingress rejects by root cause: deserialization/inconsistent-bundle, empty payload, and non-revert multi-packet.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2651,18 +2651,6 @@
           "legendFormat": "Reject: Non-Revert Multi-Packet",
           "range": true,
           "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_ingress_reject_missing_builder_info{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "Reject: Missing Builder Info",
-          "range": true,
-          "refId": "D"
         }
       ],
       "title": "BAM Ingress Reject Reasons",
@@ -2830,7 +2818,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Parity check over selected time range. Both values should be zero: bam_send_attempt success buckets should match the corresponding bam_*_sent counters.",
+      "description": "Successful BAM outbound sends over the selected time range, split by leader-state updates and bundle-result messages.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2846,7 +2834,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1
               }
             ]
           },
@@ -2887,9 +2875,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "abs(sum(increase(bam_send_attempt{instance=~\"$instance\",bam_send_attempt=\"leader_state_sent\"}[$__range])) - sum(increase(bam_leader_state_sent{instance=~\"$instance\"}[$__range])))",
+          "expr": "sum(increase(bam_send_attempt{instance=~\"$instance\",bam_send_attempt=\"leader_state_sent\"}[$__range]))",
           "instant": true,
-          "legendFormat": "|leader_state_sent delta|",
+          "legendFormat": "leader_state_sent",
           "range": false,
           "refId": "A"
         },
@@ -2899,14 +2887,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "abs(sum(increase(bam_send_attempt{instance=~\"$instance\",bam_send_attempt=\"result_sent\"}[$__range])) - sum(increase(bam_results_sent{instance=~\"$instance\"}[$__range])))",
+          "expr": "sum(increase(bam_send_attempt{instance=~\"$instance\",bam_send_attempt=\"result_sent\"}[$__range]))",
           "instant": true,
-          "legendFormat": "|result_sent delta|",
+          "legendFormat": "result_sent",
           "range": false,
           "refId": "B"
         }
       ],
-      "title": "BAM Send Attempt Parity (Range |Delta|)",
+      "title": "BAM Successful Sends (Range Count)",
       "type": "stat"
     },
     {
@@ -2914,7 +2902,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM outbound send-attempt outcomes, grouped by bam_send_attempt. Success buckets should track bam_leader_state_sent and bam_results_sent; no_stream/send_fail indicate dropped or failed sends.",
+      "description": "Rate (events/sec) of BAM outbound send-attempt outcomes, grouped by bam_send_attempt. The `leader_state_sent` and `result_sent` buckets are the canonical successful-send counters; no_stream/send_fail indicate dropped or failed sends.",
       "fieldConfig": {
         "defaults": {
           "color": {

@@ -60,10 +60,6 @@ struct fd_bam_metrics {
   ulong decode_fail_cnt;
   ulong transport_fail_cnt;
   ulong timeout_fail_cnt;
-  ulong missing_builder_info_fail_cnt;
-
-  ulong result_sent_cnt;
-  ulong leader_state_sent_cnt;
 
   /* Ingress diagnostics for BAM scheduler responses. */
   ulong ingress_v0_heartbeat_msg_cnt;
@@ -79,7 +75,6 @@ struct fd_bam_metrics {
   ulong ingress_reject_deser_cnt;
   ulong ingress_reject_empty_cnt;
   ulong ingress_reject_non_revert_multi_packet_cnt;
-  ulong ingress_reject_missing_builder_info_cnt;
 
   /* Enum counters staged locally and flushed during housekeeping. */
   ulong send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_CNT ];

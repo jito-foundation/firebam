@@ -835,8 +835,6 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
     ctx->metrics.send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_SEND_FAIL_IDX ]++;
     return 0;
   }
-  ctx->metrics.result_sent_cnt++;
-  FD_MCNT_INC( BAM, RESULTS_SENT, 1UL );
   ctx->metrics.send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_SENT_IDX ]++;
   return 1;
 }
@@ -863,8 +861,6 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
   if( FD_UNLIKELY( !send_res ) ) {
     ctx->metrics.send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_SEND_FAIL_IDX ]++;
   } else {
-    ctx->metrics.leader_state_sent_cnt++;
-    FD_MCNT_INC( BAM, LEADER_STATE_SENT, 1UL );
     ctx->metrics.send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_SENT_IDX ]++;
   }
 

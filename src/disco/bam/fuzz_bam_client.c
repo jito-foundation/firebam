@@ -232,8 +232,8 @@ bam_fuzz_env_init( int *    pargc,
   };
 
   fd_histf_new( bam_fuzz_ctx.hearbeat_network_latency,
-      FD_MHIST_MIN( BAM, NODE_HEARBEAT_NETWORK_LATENCY_NANOS ),
-      FD_MHIST_MAX( BAM, NODE_HEARBEAT_NETWORK_LATENCY_NANOS ) );
+      FD_MHIST_MIN( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS ),
+      FD_MHIST_MAX( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS ) );
 
   bam_fuzz_setup_keyguard();
 

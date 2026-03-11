@@ -107,9 +107,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, ERRORS_PROTOBUF,        ctx->metrics.decode_fail_cnt           );
   FD_MCNT_SET( BAM, ERRORS_TRANSPORT,       ctx->metrics.transport_fail_cnt        );
   FD_MCNT_SET( BAM, ERRORS_TIMEOUT,         ctx->metrics.timeout_fail_cnt          );
-  FD_MCNT_SET( BAM, ERRORS_NO_FEE_INFO,     ctx->metrics.missing_builder_info_fail_cnt );
-  FD_MCNT_SET( BAM, RESULTS_SENT,           ctx->metrics.result_sent_cnt           );
-  FD_MCNT_SET( BAM, LEADER_STATE_SENT,      ctx->metrics.leader_state_sent_cnt     );
   FD_MCNT_SET( BAM, INGRESS_V0_HEARTBEAT_MSG,               ctx->metrics.ingress_v0_heartbeat_msg_cnt );
   FD_MCNT_SET( BAM, INGRESS_V0_MULTI_MSG,                   ctx->metrics.ingress_v0_multi_msg_cnt );
   FD_MCNT_SET( BAM, INGRESS_MULTI_BATCH_TOTAL,              ctx->metrics.ingress_multi_batch_total_cnt );
@@ -121,7 +118,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, INGRESS_REJECT_DESER,                   ctx->metrics.ingress_reject_deser_cnt );
   FD_MCNT_SET( BAM, INGRESS_REJECT_EMPTY,                   ctx->metrics.ingress_reject_empty_cnt );
   FD_MCNT_SET( BAM, INGRESS_REJECT_NON_REVERT_MULTI_PACKET, ctx->metrics.ingress_reject_non_revert_multi_packet_cnt );
-  FD_MCNT_SET( BAM, INGRESS_REJECT_MISSING_BUILDER_INFO,    ctx->metrics.ingress_reject_missing_builder_info_cnt );
   FD_MCNT_ENUM_COPY( BAM, SEND_ATTEMPT,           ctx->metrics.send_attempt_cnt        );
   FD_MCNT_ENUM_COPY( BAM, CLIENT_STEP_SKIP,       ctx->metrics.client_step_skip_cnt    );
   FD_MCNT_ENUM_COPY( BAM, STREAM_STATE_TRANSITION, ctx->metrics.stream_transition_cnt    );
@@ -133,7 +129,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, RESULTS_QUEUE_DEPTH, (ulong)ctx->bam_pending_results );
   FD_MGAUGE_SET( BAM, ENABLED,      (ulong)ctx->enabled );
 
-  FD_MHIST_COPY( BAM, NODE_HEARBEAT_NETWORK_LATENCY_NANOS, ctx->metrics.node_hearbeat_network_latency_nanos );
+  FD_MHIST_COPY( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS, ctx->metrics.node_hearbeat_network_latency_nanos );
   FD_MHIST_COPY( BAM, SCHEDULER_PING_RESPONSE_NANOS, ctx->metrics.scheduler_ping_response_nanos );
 
   fd_wksp_t * wksp = fd_wksp_containing( ctx );
@@ -488,7 +484,6 @@ fd_bam_tile_publish_gui_update(
   update->err_protobuf   = ctx->metrics.decode_fail_cnt;
   update->err_transport  = ctx->metrics.transport_fail_cnt;
   update->err_timeout    = ctx->metrics.timeout_fail_cnt;
-  update->err_missing_builder_info = ctx->metrics.missing_builder_info_fail_cnt;
   update->ingress_v0_heartbeat_msg = ctx->metrics.ingress_v0_heartbeat_msg_cnt;
   update->ingress_v0_multi_msg = ctx->metrics.ingress_v0_multi_msg_cnt;
   update->ingress_multi_batch_total = ctx->metrics.ingress_multi_batch_total_cnt;
@@ -500,7 +495,6 @@ fd_bam_tile_publish_gui_update(
   update->ingress_reject_deser = ctx->metrics.ingress_reject_deser_cnt;
   update->ingress_reject_empty = ctx->metrics.ingress_reject_empty_cnt;
   update->ingress_reject_non_revert_multi_packet = ctx->metrics.ingress_reject_non_revert_multi_packet_cnt;
-  update->ingress_reject_missing_builder_info = ctx->metrics.ingress_reject_missing_builder_info_cnt;
 
   ulong tspub = fd_frag_meta_ts_comp( fd_bam_now() );
   fd_stem_publish(
@@ -1099,8 +1093,8 @@ unprivileged_init( fd_topo_t *      topo,
   fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
 
   fd_histf_new( ctx->metrics.node_hearbeat_network_latency_nanos,
-      FD_MHIST_MIN( BAM, NODE_HEARBEAT_NETWORK_LATENCY_NANOS ),
-      FD_MHIST_MAX( BAM, NODE_HEARBEAT_NETWORK_LATENCY_NANOS ) );
+      FD_MHIST_MIN( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS ),
+      FD_MHIST_MAX( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS ) );
   fd_histf_new( ctx->metrics.scheduler_ping_response_nanos,
       FD_MHIST_MIN( BAM, SCHEDULER_PING_RESPONSE_NANOS ),
       FD_MHIST_MAX( BAM, SCHEDULER_PING_RESPONSE_NANOS ) );

@@ -551,6 +551,7 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
     uchar deser_index  = decoded->state.has_deser_err
                        ? decoded->state.deser_index
                        : decoded->state.packet_cnt;
+    ctx->metrics.decode_fail_cnt++;
     FD_MCNT_INC( BAM, ERRORS_PROTOBUF, 1UL );
     /* Decode failure still produces a not-committed result, so count this as
        a BAM ingress reject in addition to the protobuf error bucket. */
@@ -835,7 +836,6 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
        the protobuf stream, but it does not refresh the builder-heartbeat
        watchdog or HTTP/2 keepalive state. */
     if( FD_LIKELY( ctx->bam_stream && ctx->bam_stream_live ) ) {
-      long ping_start_ns = fd_bam_now();
       bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
       msg.which_versioned_msg        = bam_api_SchedulerMessage_v0_tag;
       msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_pong_tag;
@@ -843,7 +843,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
         FD_LOG_WARNING(( "Failed to send BAM scheduler pong (id=%u)", decoded_v0.ping_id ));
       } else {
-        fd_bam_client_sample_scheduler_ping_response( ctx, ping_start_ns );
+        fd_bam_client_sample_scheduler_ping_response( ctx, rx_ts_ns );
       }
     }
     break;

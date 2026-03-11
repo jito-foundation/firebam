@@ -222,7 +222,7 @@
 #define FD_METRICS_COUNTER_PACK_BAM_BUNDLE_ABANDON_OFF  (183UL)
 #define FD_METRICS_COUNTER_PACK_BAM_BUNDLE_ABANDON_NAME "pack_bam_bundle_abandon"
 #define FD_METRICS_COUNTER_PACK_BAM_BUNDLE_ABANDON_TYPE (FD_METRICS_TYPE_COUNTER)
-#define FD_METRICS_COUNTER_PACK_BAM_BUNDLE_ABANDON_DESC "Cumulative number of active BAM bundles abandoned before bundle insertion/execution, by reason"
+#define FD_METRICS_COUNTER_PACK_BAM_BUNDLE_ABANDON_DESC "Cumulative number of active BAM bundles abandoned due to sequencing or leader-slot boundary conditions, by reason (does not include blockhash-expiry invalidation after full reception)"
 #define FD_METRICS_COUNTER_PACK_BAM_BUNDLE_ABANDON_CVT  (FD_METRICS_CONVERTER_NONE)
 #define FD_METRICS_COUNTER_PACK_BAM_BUNDLE_ABANDON_CNT  (4UL)
 
@@ -234,7 +234,7 @@
 #define FD_METRICS_COUNTER_PACK_BAM_SINGLE_TXN_INVALID_OFF  (187UL)
 #define FD_METRICS_COUNTER_PACK_BAM_SINGLE_TXN_INVALID_NAME "pack_bam_single_txn_invalid"
 #define FD_METRICS_COUNTER_PACK_BAM_SINGLE_TXN_INVALID_TYPE (FD_METRICS_TYPE_COUNTER)
-#define FD_METRICS_COUNTER_PACK_BAM_SINGLE_TXN_INVALID_DESC "Cumulative number of independent BAM transactions rejected after slot/blockhash revalidation, by reason"
+#define FD_METRICS_COUNTER_PACK_BAM_SINGLE_TXN_INVALID_DESC "Cumulative number of independent BAM transactions rejected after slot/blockhash revalidation, including extra-storage reinsertion and pending-work eviction, by reason"
 #define FD_METRICS_COUNTER_PACK_BAM_SINGLE_TXN_INVALID_CVT  (FD_METRICS_CONVERTER_NONE)
 #define FD_METRICS_COUNTER_PACK_BAM_SINGLE_TXN_INVALID_CNT  (2UL)
 

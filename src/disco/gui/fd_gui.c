@@ -2246,7 +2246,6 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   gui->bam.err_protobuf   = update->err_protobuf;
   gui->bam.err_transport  = update->err_transport;
   gui->bam.err_timeout    = update->err_timeout;
-  gui->bam.err_missing_builder_info = update->err_missing_builder_info;
   gui->bam.ingress_v0_heartbeat_msg = update->ingress_v0_heartbeat_msg;
   gui->bam.ingress_v0_multi_msg = update->ingress_v0_multi_msg;
   gui->bam.ingress_multi_batch_total = update->ingress_multi_batch_total;
@@ -2258,7 +2257,6 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   gui->bam.ingress_reject_deser = update->ingress_reject_deser;
   gui->bam.ingress_reject_empty = update->ingress_reject_empty;
   gui->bam.ingress_reject_non_revert_multi_packet = update->ingress_reject_non_revert_multi_packet;
-  gui->bam.ingress_reject_missing_builder_info = update->ingress_reject_missing_builder_info;
 
   fd_gui_printf_bam( gui );
   fd_http_server_ws_broadcast( gui->http );
