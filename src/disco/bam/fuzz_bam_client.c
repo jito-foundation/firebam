@@ -45,7 +45,7 @@ static struct {
 
   fd_bam_ctrl_t     ctrl;    /* Runtime enable/disable switch */
   fd_bam_fee_cfg_t  fee_cfg; /* Shared fee cfg buffer */
-  fd_histf_t        heartbeat_network_latency[1]; /* Histogram backing for BAM node heartbeat latency metric */
+  fd_histf_t        builder_heartbeat_arrival_delta[1]; /* Histogram backing for the BuilderHeartBeat arrival-delta metric */
 
   /* Backing storage for fd_grpc_client */
   void * grpc_client_mem;
@@ -231,9 +231,9 @@ bam_fuzz_env_init( int *    pargc,
       .cr_decrement_amount = 0UL
   };
 
-  fd_histf_new( bam_fuzz_ctx.heartbeat_network_latency,
-      FD_MHIST_MIN( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS ),
-      FD_MHIST_MAX( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS ) );
+  fd_histf_new( bam_fuzz_ctx.builder_heartbeat_arrival_delta,
+      FD_MHIST_MIN( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ),
+      FD_MHIST_MAX( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ) );
 
   bam_fuzz_setup_keyguard();
 
@@ -492,7 +492,7 @@ bam_fuzz_reset_tile( void ) {
   ctx->ctrl    = &bam_fuzz_ctx.ctrl;
   ctx->fee_cfg = &bam_fuzz_ctx.fee_cfg;
 
-  ctx->metrics.node_heartbeat_network_latency_nanos[0] = bam_fuzz_ctx.heartbeat_network_latency[0];
+  ctx->metrics.builder_heartbeat_arrival_delta_nanos[0] = bam_fuzz_ctx.builder_heartbeat_arrival_delta[0];
   ctx->keepalive_interval = (long)1e9;
   long now = fd_log_wallclock();
   FD_TEST( fd_rng_new( ctx->rng, 1234U, 0UL ) );

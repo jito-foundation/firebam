@@ -502,7 +502,7 @@ fd_gui_printf_bam( fd_gui_t * gui ) {
       jsonp_ulong(  gui->http, "heartbeat_sent",       gui->bam.heartbeat_sent );
       jsonp_ulong(  gui->http, "heartbeat_recv",       gui->bam.heartbeat_recv );
       jsonp_ulong(  gui->http, "txn_published",        gui->bam.txn_published );
-      jsonp_ulong(  gui->http, "bundle_published",     gui->bam.bundle_published );
+      jsonp_ulong(  gui->http, "atomic_batch_published", gui->bam.atomic_batch_published );
       jsonp_ulong(  gui->http, "ingress_packet_oversize", gui->bam.ingress_packet_oversize );
       jsonp_ulong(  gui->http, "failure_decode",       gui->bam.failure_decode );
       jsonp_ulong(  gui->http, "failure_request_failed", gui->bam.failure_request_failed );

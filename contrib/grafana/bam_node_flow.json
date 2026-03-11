@@ -675,7 +675,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second publish rate from BAM into verify. bam_transaction_published counts transactions published from BAM, including those unpacked from bundles, and bam_bundle_published counts revert_on_error bundles published into the pipeline.",
+      "description": "Per-second publish rate from BAM into verify. bam_transaction_published counts transactions published from BAM, including those unpacked from bundles, and bam_atomic_batch_published counts revert_on_error AtomicTxnBatch entries published into the pipeline.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -775,7 +775,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_bundle_published{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_atomic_batch_published{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Bundles Published",
           "range": true,
@@ -1223,7 +1223,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(bam_node_heartbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(bam_builder_heartbeat_arrival_delta_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p50",
           "range": true,
@@ -1235,7 +1235,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(bam_node_heartbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bam_builder_heartbeat_arrival_delta_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p95",
           "range": true,
@@ -1247,7 +1247,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(bam_node_heartbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(bam_builder_heartbeat_arrival_delta_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p99",
           "range": true,
@@ -1259,7 +1259,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_node_heartbeat_network_latency_nanos_sum{instance=~\"$instance\"}[$__rate_interval])) / sum by (instance) (rate(bam_node_heartbeat_network_latency_nanos_count{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_builder_heartbeat_arrival_delta_nanos_sum{instance=~\"$instance\"}[$__rate_interval])) / sum by (instance) (rate(bam_builder_heartbeat_arrival_delta_nanos_count{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Mean",
           "range": true,
@@ -2636,7 +2636,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM client-step skip iterations for stall_backoff only, using bam_step_skip. This is an iteration counter, so sustained reconnect backoff can produce large values.",
+      "description": "Rate (events/sec) of BAM scheduler stream live-state transitions, using bam_stream_transition.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2690,14 +2690,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(bam_step_skip{instance=~\"$instance\",bam_client_step_skip_reason=\"stall_backoff\"}[$__rate_interval]))",
+          "expr": "sum by (bam_stream_transition) (rate(bam_stream_transition{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "stall_backoff",
+          "legendFormat": "{{bam_stream_transition}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "BAM Client Step Skip: Stall Backoff",
+      "title": "BAM Stream Transitions",
       "type": "timeseries"
     },
     {
@@ -2705,7 +2705,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM client-step skip iterations for non-stall reasons, using bam_step_skip. Split out from stall_backoff so smaller signals remain visible. This panel now includes request_blocked, not_connected, drive_io_fail, and deferred_reset.",
+      "description": "Rate (events/sec) of pending BAM leader-state updates dropped before send, using bam_leader_pending_dropped.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2759,14 +2759,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (bam_client_step_skip_reason) (rate(bam_step_skip{instance=~\"$instance\",bam_client_step_skip_reason!=\"stall_backoff\"}[$__rate_interval]))",
+          "expr": "sum by (bam_leader_pending_drop_reason) (rate(bam_leader_pending_dropped{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "{{bam_client_step_skip_reason}}",
+          "legendFormat": "{{bam_leader_pending_drop_reason}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "BAM Client Step Skip: Other Reasons",
+      "title": "BAM Pending Leader Drops",
       "type": "timeseries"
     },
     {

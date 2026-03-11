@@ -48,7 +48,7 @@ typedef struct fd_bam_in_ctx fd_bam_in_ctx_t;
 
 struct fd_bam_metrics {
   ulong txn_published_cnt;
-  ulong bundle_published_cnt;
+  ulong atomic_batch_published_cnt;
   ulong feedback_result_drop_cnt;
   ulong ingress_packet_oversize_cnt;
   ulong keepalive_ack_cnt;
@@ -68,11 +68,10 @@ struct fd_bam_metrics {
 
   /* Enum counters staged locally and flushed during housekeeping. */
   ulong outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_CNT ];
-  ulong step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_CNT ];
   ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
   ulong leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
 
-  fd_histf_t node_heartbeat_network_latency_nanos[1];
+  fd_histf_t builder_heartbeat_arrival_delta_nanos[1];
   fd_histf_t scheduler_ping_response_nanos[1];
 };
 

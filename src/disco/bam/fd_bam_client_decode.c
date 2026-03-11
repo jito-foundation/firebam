@@ -508,7 +508,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                       i,
                                       0 );
     }
-    ctx->metrics.bundle_published_cnt++;
+    ctx->metrics.atomic_batch_published_cnt++;
   } else {
     for( uchar i=0; i<state->packet_cnt; i++ ) {
       fd_bam_tile_publish_txn( ctx,
@@ -811,7 +811,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
     if( FD_LIKELY( decoded_v0.heartbeat_time_sent_microseconds ) ) {
       ulong tsorig_ns = decoded_v0.heartbeat_time_sent_microseconds * 1000UL;
       ulong rx_ts_u   = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
-      fd_histf_sample( ctx->metrics.node_heartbeat_network_latency_nanos, fd_ulong_sat_sub( rx_ts_u, tsorig_ns ) );
+      fd_histf_sample( ctx->metrics.builder_heartbeat_arrival_delta_nanos, fd_ulong_sat_sub( rx_ts_u, tsorig_ns ) );
     }
     ctx->metrics.heartbeat_recv_cnt++;
     break;

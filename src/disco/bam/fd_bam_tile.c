@@ -96,7 +96,7 @@ loose_footprint( fd_topo_tile_t const * tile ) {
 static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.txn_published_cnt          );
-  FD_MCNT_SET( BAM, BUNDLE_PUBLISHED,        ctx->metrics.bundle_published_cnt       );
+  FD_MCNT_SET( BAM, ATOMIC_BATCH_PUBLISHED,  ctx->metrics.atomic_batch_published_cnt );
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_result_drop_cnt   );
   FD_MCNT_SET( BAM, INGRESS_PACKET_OVERSIZE, ctx->metrics.ingress_packet_oversize_cnt );
   FD_MCNT_SET( BAM, KEEPALIVE_ACKS,          ctx->metrics.keepalive_ack_cnt           );
@@ -110,7 +110,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, INGRESS_BATCH_PUBLISHED,                ctx->metrics.ingress_batch_published_cnt );
   FD_MCNT_ENUM_COPY( BAM, INGRESS_BATCH_REJECTED, ctx->metrics.ingress_batch_reject_cnt );
   FD_MCNT_ENUM_COPY( BAM, OUTBOUND_ENQUEUE_OUTCOME,  ctx->metrics.outbound_send_outcome_cnt );
-  FD_MCNT_ENUM_COPY( BAM, STEP_SKIP,              ctx->metrics.step_skip_cnt             );
   FD_MCNT_ENUM_COPY( BAM, STREAM_TRANSITION,      ctx->metrics.stream_transition_cnt     );
   FD_MCNT_ENUM_COPY( BAM, LEADER_PENDING_DROPPED, ctx->metrics.leader_pending_drop_cnt );
 
@@ -120,7 +119,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, FEEDBACK_QUEUE_DEPTH, (ulong)ctx->bam_pending_results );
   FD_MGAUGE_SET( BAM, ENABLED,      (ulong)ctx->enabled );
 
-  FD_MHIST_COPY( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS, ctx->metrics.node_heartbeat_network_latency_nanos );
+  FD_MHIST_COPY( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
   FD_MHIST_COPY( BAM, SCHEDULER_PING_RESPONSE_NANOS, ctx->metrics.scheduler_ping_response_nanos );
 
   fd_wksp_t * wksp = fd_wksp_containing( ctx );
@@ -469,7 +468,7 @@ fd_bam_tile_publish_gui_update(
   update->heartbeat_sent = ctx->metrics.heartbeat_sent_cnt;
   update->heartbeat_recv = ctx->metrics.heartbeat_recv_cnt;
   update->txn_published  = ctx->metrics.txn_published_cnt;
-  update->bundle_published = ctx->metrics.bundle_published_cnt;
+  update->atomic_batch_published = ctx->metrics.atomic_batch_published_cnt;
   update->ingress_packet_oversize = ctx->metrics.ingress_packet_oversize_cnt;
   update->failure_decode = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ];
   update->failure_request_failed = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ];
@@ -1083,9 +1082,9 @@ unprivileged_init( fd_topo_t *      topo,
   fd_grpc_client_set_version( ctx->grpc_client, fdctl_version_string, strlen( fdctl_version_string ) );
   fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
 
-  fd_histf_new( ctx->metrics.node_heartbeat_network_latency_nanos,
-                FD_MHIST_MIN( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS ),
-                FD_MHIST_MAX( BAM, NODE_HEARTBEAT_NETWORK_LATENCY_NANOS ) );
+  fd_histf_new( ctx->metrics.builder_heartbeat_arrival_delta_nanos,
+                FD_MHIST_MIN( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ),
+                FD_MHIST_MAX( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ) );
   fd_histf_new( ctx->metrics.scheduler_ping_response_nanos,
       FD_MHIST_MIN( BAM, SCHEDULER_PING_RESPONSE_NANOS ),
       FD_MHIST_MAX( BAM, SCHEDULER_PING_RESPONSE_NANOS ) );

@@ -687,7 +687,7 @@ struct fd_gui {
     ulong  heartbeat_sent;
     ulong  heartbeat_recv;
     ulong  txn_published;
-    ulong  bundle_published;
+    ulong  atomic_batch_published;
     ulong  ingress_packet_oversize;
     ulong  failure_decode;
     ulong  failure_request_failed;

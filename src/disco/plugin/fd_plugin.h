@@ -144,7 +144,7 @@ typedef struct {
   ulong  heartbeat_sent;               /* Validator heartbeats accepted by gRPC stream_send */
   ulong  heartbeat_recv;               /* Builder heartbeat messages successfully decoded */
   ulong  txn_published;                /* Transactions published from BAM to verify */
-  ulong  bundle_published;             /* Revert-on-error bundles published to verify */
+  ulong  atomic_batch_published;       /* revert_on_error AtomicTxnBatch entries published to verify */
   ulong  ingress_packet_oversize;      /* BAM packets over local MTU */
   ulong  failure_decode;               /* Local protobuf/envelope decode failures */
   ulong  failure_request_failed;       /* HTTP/gRPC request failures */

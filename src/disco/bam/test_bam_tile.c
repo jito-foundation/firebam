@@ -252,7 +252,7 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 0U, 1, 0);
 
   FD_TEST( state->metrics.txn_published_cnt == 0UL );
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
 
   fd_bam_client_grpc_rx_msg( state,
                              protobuf,
@@ -260,7 +260,7 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
   FD_TEST( state->metrics.txn_published_cnt == 1UL );
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
 
   zero_meta_ts( env->out_mcache, 1UL );
   fd_frag_meta_t expected[1] = {
@@ -301,7 +301,7 @@ test_bam_dump_bam_txns_smoke( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
   FD_TEST( state->metrics.txn_published_cnt == 1UL );
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
 
   fd_txn_m_t * tx0 = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
   FD_TEST( tx0->payload_sz == bam_dump_txn_fixture_sz );
@@ -470,7 +470,7 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
   FD_TEST( state->metrics.txn_published_cnt == 3UL );
-  FD_TEST( state->metrics.bundle_published_cnt == 1UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 1UL );
   FD_TEST( state->bundle_seq == 7U );
   FD_TEST( state->bundle_txn_cnt == 2U );
   FD_TEST( state->bam_pending_results == 0UL );
@@ -559,7 +559,7 @@ test_bam_multiple_batches_accept_limit_counts( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
   FD_TEST( state->metrics.txn_published_cnt == expected_txn_cnt );
-  FD_TEST( state->metrics.bundle_published_cnt == TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
   FD_TEST( state->bundle_seq == 700U + TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET - 1U );
   FD_TEST( state->bundle_txn_cnt == TEST_BAM_MAX_TXN_PER_ATOMIC_BATCH );
 
@@ -600,7 +600,7 @@ test_bam_scheduler_truncated_message_dropped( fd_wksp_t * wksp ) {
 
   FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ] == 1UL );
   FD_TEST( state->metrics.txn_published_cnt == 0UL );
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->metrics.ingress_packet_oversize_cnt == 0UL );
   FD_TEST( env->stem_seqs[0] == 0UL );
   FD_TEST( env->out_mcache[0].seq == 0UL );
@@ -638,7 +638,7 @@ test_bam_scheduler_trailing_corruption_does_not_publish( fd_wksp_t * wksp ) {
 
   FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ] == 1UL );
   FD_TEST( state->metrics.txn_published_cnt == 0UL );
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 0UL );
 
   test_bam_env_destroy( env );
@@ -699,11 +699,11 @@ test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
 
   FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ] == 0UL );
   FD_TEST( state->metrics.heartbeat_recv_cnt == 1UL );
-  FD_TEST( test_hist_total_cnt( state->metrics.node_heartbeat_network_latency_nanos ) == 1UL );
+  FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 1UL );
   ulong expected_latency = (ulong)g_clock - (12345UL * 1000UL);
-  FD_TEST( fd_histf_sum( state->metrics.node_heartbeat_network_latency_nanos ) == expected_latency );
+  FD_TEST( fd_histf_sum( state->metrics.builder_heartbeat_arrival_delta_nanos ) == expected_latency );
   FD_TEST( state->metrics.txn_published_cnt == 0UL );
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 0UL );
   FD_TEST( env->stem_seqs[0] == 0UL );
 
@@ -750,7 +750,7 @@ test_bam_multiple_batches_do_not_partially_publish_on_corruption( fd_wksp_t * wk
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
   FD_TEST( state->metrics.txn_published_cnt == 0UL );
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ] == 2UL );
   FD_TEST( state->bam_pending_results == 1UL );
 
@@ -815,7 +815,7 @@ test_bam_multiple_batches_reject_excess_batch_count( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
   FD_TEST( state->metrics.txn_published_cnt == TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 1UL );
 
   fd_frag_meta_t * meta = env->out_mcache;
@@ -856,14 +856,14 @@ test_bam_bundle_forwards_without_builder_info( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
 
   FD_TEST( state->builder_info_valid_until == 0L );
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   uchar protobuf[512];
   size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 2U, 2, 1);
   fd_bam_client_grpc_rx_msg( state,
                              protobuf,
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-  FD_TEST( state->metrics.bundle_published_cnt == 1UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 1UL );
   FD_TEST( state->bundle_seq == 2U );
   FD_TEST( state->metrics.txn_published_cnt == 2UL );
   FD_TEST( state->bam_pending_results == 0UL );
@@ -967,7 +967,7 @@ test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
                                protobuf_sz,
                                FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-    FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+    FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
     FD_TEST( state->metrics.txn_published_cnt == 0UL );
     FD_TEST( state->bam_pending_results == 1UL );
 
@@ -1022,7 +1022,7 @@ test_bam_non_revert_multi_packet_rejected_by_current_packet_stream_contract( fd_
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->metrics.txn_published_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 1UL );
 
@@ -1071,7 +1071,7 @@ test_bam_validation_orders_revert_consistency_before_vote_rejection( fd_wksp_t *
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 1UL );
 
   test_bam_prepare_scheduler_stream( state );
@@ -1114,7 +1114,7 @@ test_bam_bundle_rejects_real_vote_payload( fd_wksp_t * wksp ) {
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 1UL );
 
   test_bam_prepare_scheduler_stream( state );
@@ -1164,7 +1164,7 @@ test_bam_bundle_rejects_excess_packet_count( fd_wksp_t * wksp ) {
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->metrics.txn_published_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 1UL );
 
@@ -1290,7 +1290,7 @@ test_bam_bundle_rejects_empty_batch( fd_wksp_t * wksp ) {
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->metrics.txn_published_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 1UL );
 
@@ -1341,7 +1341,7 @@ test_bam_bundle_decode_fail_before_packet_callback_reports_inconsistent_bundle( 
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->metrics.txn_published_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 1UL );
 
@@ -1403,7 +1403,7 @@ test_bam_bundle_rejects_missing_batches( fd_wksp_t * wksp ) {
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.bundle_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->metrics.txn_published_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 1UL );
 
@@ -1508,26 +1508,6 @@ test_bam_grpc_timeout( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_stream_connecting == 0U );
   FD_TEST( state->bam_leader_pending == 0U );
   FD_TEST( state->defer_reset == 1U );
-
-  test_bam_env_destroy( env );
-}
-
-static void
-test_bam_deferred_reset_counts_step_skip( fd_wksp_t * wksp ) {
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
-  fd_bam_tile_t * state = env->state;
-
-  ulong before = state->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_DEFERRED_RESET_IDX ];
-  state->defer_reset = 1U;
-
-  int charge_busy = 0;
-  fd_bam_client_step( state, &charge_busy );
-
-  FD_TEST( state->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_DEFERRED_RESET_IDX ] == before + 1UL );
-  FD_TEST( state->defer_reset == 0U );
-  FD_TEST( charge_busy == 1 );
 
   test_bam_env_destroy( env );
 }
@@ -1662,7 +1642,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     long expected_ts = g_clock;
     FD_TEST( state->bam_last_builder_heartbeat_ns == expected_ts );
     FD_TEST( state->metrics.heartbeat_recv_cnt == 1UL );
-    FD_TEST( test_hist_total_cnt( state->metrics.node_heartbeat_network_latency_nanos ) == 1UL );
+    FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 1UL );
     test_bam_env_destroy( env );
   }
 
@@ -2085,7 +2065,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]    = 0UL;
     state->defer_reset                = 0U;
     ulong ping_samples_before         = test_hist_total_cnt( state->metrics.scheduler_ping_response_nanos );
-    ulong latency_samples_before      = test_hist_total_cnt( state->metrics.node_heartbeat_network_latency_nanos );
+    ulong latency_samples_before      = test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos );
 
     uint32_t ping_id = 0x00c0ffeeU;
     uchar protobuf[64];
@@ -2107,7 +2087,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     FD_TEST( state->metrics.keepalive_ack_cnt == 0UL );
     FD_TEST( state->bam_last_builder_heartbeat_ns == builder_ts );
     FD_TEST( test_hist_total_cnt( state->metrics.scheduler_ping_response_nanos ) == ping_samples_before + 1UL );
-    FD_TEST( test_hist_total_cnt( state->metrics.node_heartbeat_network_latency_nanos ) == latency_samples_before );
+    FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == latency_samples_before );
     FD_TEST( fd_histf_sum( state->metrics.scheduler_ping_response_nanos ) == 0UL );
 
     test_bam_decoded_message_t decoded;
@@ -2148,7 +2128,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     FD_TEST( state->bam_last_builder_heartbeat_ns == g_clock - FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8 );
     FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
     FD_TEST( test_hist_total_cnt( state->metrics.scheduler_ping_response_nanos ) == 1UL );
-    FD_TEST( test_hist_total_cnt( state->metrics.node_heartbeat_network_latency_nanos ) == 0UL );
+    FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 0UL );
 
     int charge_busy = 0;
     fd_bam_client_step( state, &charge_busy );
@@ -3755,7 +3735,6 @@ main( int     argc,
   /* Connection lifecycle and watchdog */
   test_bam_grpc_end_handling( wksp );
   test_bam_grpc_timeout( wksp );
-  test_bam_deferred_reset_counts_step_skip( wksp );
   test_bam_heartbeat_timeout_forces_disconnect( wksp );
   test_bam_heartbeat_reset_extends_timeout( wksp );
   test_bam_client_status( wksp );

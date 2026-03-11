@@ -2241,7 +2241,7 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   gui->bam.heartbeat_sent = update->heartbeat_sent;
   gui->bam.heartbeat_recv = update->heartbeat_recv;
   gui->bam.txn_published  = update->txn_published;
-  gui->bam.bundle_published = update->bundle_published;
+  gui->bam.atomic_batch_published = update->atomic_batch_published;
   gui->bam.ingress_packet_oversize = update->ingress_packet_oversize;
   gui->bam.failure_decode = update->failure_decode;
   gui->bam.failure_request_failed = update->failure_request_failed;
