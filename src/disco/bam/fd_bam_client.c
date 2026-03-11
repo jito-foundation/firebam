@@ -803,7 +803,6 @@ static int
 fd_bam_send_result( fd_bam_tile_t *               ctx,
                     fd_bam_bundle_result_t const * res ) {
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) {
-    ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_NO_STREAM_IDX ]++;
     return 0;
   }
 
@@ -832,10 +831,10 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
   msg.versioned_msg.v0.msg.multiple_atomic_txn_batch_result = multi;
 
   if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
-    ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_SEND_FAIL_IDX ]++;
+    ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SEND_OUTCOME_V_RESULT_SEND_FAIL_IDX ]++;
     return 0;
   }
-  ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_RESULT_SENT_IDX ]++;
+  ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SEND_OUTCOME_V_RESULT_SENT_IDX ]++;
   return 1;
 }
 
@@ -843,7 +842,7 @@ static int
 fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
                           fd_bam_leader_state_t const *  state ) {
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) {
-    ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_NO_STREAM_IDX ]++;
+    ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SEND_OUTCOME_V_LEADER_STATE_NO_STREAM_IDX ]++;
     return 0;
   }
 
@@ -859,9 +858,9 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
 
   const int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
   if( FD_UNLIKELY( !send_res ) ) {
-    ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_SEND_FAIL_IDX ]++;
+    ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SEND_OUTCOME_V_LEADER_STATE_SEND_FAIL_IDX ]++;
   } else {
-    ctx->metrics.outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_V_LEADER_STATE_SENT_IDX ]++;
+    ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SEND_OUTCOME_V_LEADER_STATE_SENT_IDX ]++;
   }
 
   return send_res;

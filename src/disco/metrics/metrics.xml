@@ -381,7 +381,7 @@ metric introduced.
     <int value="0" name="Decode" label="Local protobuf or scheduler-envelope decode failure" />
     <int value="1" name="RequestFailed" label="HTTP or gRPC request completed with a non-OK status" />
     <int value="2" name="Transport" label="DNS, socket, connect, or stream I/O failure" />
-    <int value="3" name="Protocol" label="Unsupported BAM protocol version or message shape from the peer" />
+    <int value="3" name="UnsupportedVersion" label="Unsupported scheduler-response version received from the BAM peer" />
     <int value="4" name="Timeout" label="Request, keepalive, or heartbeat timeout" />
 </enum>
 
@@ -394,13 +394,12 @@ metric introduced.
     <int value="5" name="OverflowMessage" label="Reject staged because a multiple_atomic_txn_batch message exceeded the local max batch count" />
 </enum>
 
-<enum name="BamSendAttempt">
+<enum name="BamSendOutcome">
     <int value="0" name="LeaderStateSent" label="Leader-state message sent successfully" />
     <int value="1" name="LeaderStateNoStream" label="Leader-state send skipped because stream is unavailable (not established or not live)" />
     <int value="2" name="LeaderStateSendFail" label="Leader-state send attempted but failed in gRPC stream_send" />
     <int value="3" name="ResultSent" label="Result message sent successfully" />
-    <int value="4" name="ResultNoStream" label="Result send skipped because stream is unavailable (not established or not live)" />
-    <int value="5" name="ResultSendFail" label="Result send attempted but failed in gRPC stream_send" />
+    <int value="4" name="ResultSendFail" label="Result send attempted but failed in gRPC stream_send" />
 </enum>
 
 <enum name="BamClientStepSkipReason">
@@ -429,8 +428,8 @@ metric introduced.
     <counter name="BundlePublished" summary="Cumulative number of revert-on-error AtomicTxnBatch entries published to verify as BAM bundles" />
     <counter name="FeedbackResultsDropped" summary="Cumulative number of BAM feedback results dropped because the local result queue was full" />
     <counter name="IngressPacketOversize" summary="Cumulative number of BAM packets rejected because their declared payload exceeded the local MTU" />
-    <counter name="HeartbeatsSent" summary="Cumulative number of validator heartbeat messages sent to the BAM node" />
-    <counter name="HeartbeatsReceived" summary="Cumulative number of builder heartbeat messages received from the BAM node" />
+    <counter name="ValidatorHeartbeatsSent" summary="Cumulative number of validator heartbeat messages successfully sent to the BAM node" />
+    <counter name="BuilderHeartbeatsReceived" summary="Cumulative number of builder heartbeat messages successfully decoded from the BAM node" />
     <counter name="Failure" enum="BamFailure" summary="Cumulative number of BAM client failures by class" />
     <gauge name="HeapSize" summary="Total workspace capacity reserved for the BAM tile (bytes)" />
     <gauge name="HeapFreeBytes" summary="Estimated free capacity in the BAM tile workspace heap (bytes)" />
@@ -438,18 +437,16 @@ metric introduced.
     <counter name="Connections" summary="Cumulative number of transitions into BAM CONNECTED_HEALTHY state" />
     <counter name="Disconnects" summary="Cumulative number of transitions out of BAM CONNECTED_HEALTHY state" />
     <counter name="IngressMultiMessageReceived" summary="Cumulative number of multiple_atomic_txn_batch messages decoded from BAM ingress" />
-    <counter name="IngressMultiMessageEmpty" summary="Cumulative number of multiple_atomic_txn_batch messages that contained zero AtomicTxnBatch entries" />
-    <counter name="IngressMultiMessageOverflow" summary="Cumulative number of multiple_atomic_txn_batch messages that exceeded the local max batch count" />
     <counter name="IngressBatchCommitAttempt" summary="Cumulative number of AtomicTxnBatch entries that entered BAM validate/commit" />
     <counter name="IngressBatchPublished" summary="Cumulative number of AtomicTxnBatch entries successfully published to verify" />
-    <counter name="IngressBatchRejected" enum="BamIngressBatchRejectReason" summary="Cumulative number of BAM AtomicTxnBatch rejects by reason" />
-    <counter name="OutboundSendAttempt" enum="BamSendAttempt" summary="Cumulative number of BAM outbound leader-state/result send attempts by message kind and outcome" />
+    <counter name="IngressBatchRejected" enum="BamIngressBatchRejectReason" summary="Cumulative number of BAM ingress rejects by reason across AtomicTxnBatch and multiple_atomic_txn_batch validation" />
+    <counter name="OutboundSendOutcome" enum="BamSendOutcome" summary="Cumulative number of BAM outbound leader-state/result send outcomes by message kind and outcome" />
     <counter name="StepSkip" enum="BamClientStepSkipReason" summary="Cumulative number of BAM client-step skips by reason" />
     <counter name="StreamTransition" enum="BamStreamTransition" summary="Cumulative number of scheduler stream live-state transitions" />
     <counter name="LeaderPendingDropped" enum="BamLeaderPendingDropReason" summary="Cumulative number of pending leader-state updates dropped before send, by reason" />
-    <gauge name="RttSample" summary="Latest BAM round-trip time sample captured at scrape time (nanoseconds)" />
-    <gauge name="RttSmoothed" summary="Exponentially smoothed BAM round-trip time estimate (nanoseconds)" />
-    <gauge name="RttDeviation" summary="Smoothed RTT variation estimate (nanoseconds)" />
+    <gauge name="KeepaliveRttSample" summary="Latest HTTP/2 keepalive round-trip time sample captured at scrape time (nanoseconds)" />
+    <gauge name="KeepaliveRttSmoothed" summary="Exponentially smoothed HTTP/2 keepalive round-trip time estimate (nanoseconds)" />
+    <gauge name="KeepaliveRttDeviation" summary="Smoothed HTTP/2 keepalive RTT variation estimate (nanoseconds)" />
     <gauge name="FeedbackQueueDepth" summary="Current number of BAM feedback results buffered for send" />
     <histogram name="NodeHeartbeatNetworkLatencyNanos" min="10000" max="100000000">
         <summary>Distribution of BAM node heartbeat timestamp to Frankendancer scheduler-stream receive callback time (nanoseconds); intended for relative trend analysis</summary>

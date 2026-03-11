@@ -61,15 +61,13 @@ struct fd_bam_metrics {
 
   /* Ingress diagnostics for BAM scheduler responses. */
   ulong ingress_multi_msg_received_cnt;
-  ulong ingress_multi_msg_empty_cnt;
-  ulong ingress_multi_msg_overflow_cnt;
 
   ulong ingress_batch_commit_attempt_cnt;
   ulong ingress_batch_published_cnt;
   ulong ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_CNT ];
 
   /* Enum counters staged locally and flushed during housekeeping. */
-  ulong outbound_send_attempt_cnt[ FD_METRICS_ENUM_BAM_SEND_ATTEMPT_CNT ];
+  ulong outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SEND_OUTCOME_CNT ];
   ulong step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_CNT ];
   ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
   ulong leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];

@@ -692,11 +692,9 @@ struct fd_gui {
     ulong  failure_decode;
     ulong  failure_request_failed;
     ulong  failure_transport;
-    ulong  failure_protocol;
+    ulong  failure_unsupported_version;
     ulong  failure_timeout;
     ulong  ingress_multi_message_received;
-    ulong  ingress_multi_message_empty;
-    ulong  ingress_multi_message_overflow;
     ulong  ingress_batch_commit_attempt;
     ulong  ingress_batch_published;
     ulong  ingress_batch_rejected_invalid_batch;

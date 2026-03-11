@@ -608,7 +608,6 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       FD_LOG_WARNING(( "MultipleAtomicTxnBatch exceeded max batch count (%u>%u)",
                        seen_batch_count + 1U,
                        FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ));
-      ctx->metrics.ingress_multi_msg_overflow_cnt++;
       ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
       decoded_multi->batch_cnt = seen_batch_count;
       decoded_multi->has_err_result = 1;
@@ -636,7 +635,6 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 
   if( FD_UNLIKELY( seen_batch_count == 0U ) ) {
     FD_LOG_WARNING(( "MultipleAtomicTxnBatch contained no AtomicTxnBatch entries" ));
-    ctx->metrics.ingress_multi_msg_empty_cnt++;
     ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_MESSAGE_IDX ]++;
     bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
     decoded_multi->has_err_result = 1;
@@ -798,7 +796,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !seen_v0 ) ) {
     if( version_tag && version_tag != bam_api_SchedulerResponse_v0_tag ) {
       FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", version_tag ));
-      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_PROTOCOL_IDX ]++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ]++;
       ctx->defer_reset = 1;
     } else {
       ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;

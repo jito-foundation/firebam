@@ -548,7 +548,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "BAM round-trip time in nanoseconds. bam_rtt_sample is the latest sample, bam_rtt_smoothed is the exponentially smoothed estimate, and bam_rtt_deviation is the smoothed RTT variation estimate.",
+      "description": "HTTP/2 keepalive round-trip time in nanoseconds. bam_keepalive_rtt_sample is the latest sample, bam_keepalive_rtt_smoothed is the exponentially smoothed estimate, and bam_keepalive_rtt_deviation is the smoothed RTT variation estimate.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -636,7 +636,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg by (instance) (bam_rtt_smoothed{instance=~\"$instance\"})",
+          "expr": "avg by (instance) (bam_keepalive_rtt_smoothed{instance=~\"$instance\"})",
           "instant": false,
           "legendFormat": "RTT Smoothed",
           "range": true,
@@ -648,7 +648,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg by (instance) (bam_rtt_sample{instance=~\"$instance\"})",
+          "expr": "avg by (instance) (bam_keepalive_rtt_sample{instance=~\"$instance\"})",
           "instant": false,
           "legendFormat": "RTT Sample",
           "range": true,
@@ -660,14 +660,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg by (instance) (bam_rtt_deviation{instance=~\"$instance\"})",
+          "expr": "avg by (instance) (bam_keepalive_rtt_deviation{instance=~\"$instance\"})",
           "instant": false,
           "legendFormat": "RTT Deviation",
           "range": true,
           "refId": "C"
         }
       ],
-      "title": "BAM RTT",
+      "title": "BAM Keepalive RTT",
       "type": "timeseries"
     },
     {
@@ -675,7 +675,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second rate of leader-state update messages sent to the BAM node, using the successful `leader_state_sent` bucket of bam_outbound_send_attempt.",
+      "description": "Per-second rate of leader-state update messages sent to the BAM node, using the successful `leader_state_sent` bucket of bam_outbound_send_outcome.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -763,7 +763,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_outbound_send_attempt{instance=~\"$instance\",bam_send_attempt=\"leader_state_sent\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_outbound_send_outcome{instance=~\"$instance\",bam_send_outcome=\"leader_state_sent\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Leader Updates",
           "range": true,
@@ -893,7 +893,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second rate of bundle execution result messages forwarded back to the BAM node, using the successful `result_sent` bucket of bam_outbound_send_attempt.",
+      "description": "Per-second rate of bundle execution result messages forwarded back to the BAM node, using the successful `result_sent` bucket of bam_outbound_send_outcome.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -981,7 +981,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_outbound_send_attempt{instance=~\"$instance\",bam_send_attempt=\"result_sent\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_outbound_send_outcome{instance=~\"$instance\",bam_send_outcome=\"result_sent\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Results Sent",
           "range": true,
@@ -2839,7 +2839,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(bam_outbound_send_attempt{instance=~\"$instance\",bam_send_attempt=\"leader_state_sent\"}[$__range]))",
+          "expr": "sum(increase(bam_outbound_send_outcome{instance=~\"$instance\",bam_send_outcome=\"leader_state_sent\"}[$__range]))",
           "instant": true,
           "legendFormat": "leader_state_sent",
           "range": false,
@@ -2851,7 +2851,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(bam_outbound_send_attempt{instance=~\"$instance\",bam_send_attempt=\"result_sent\"}[$__range]))",
+          "expr": "sum(increase(bam_outbound_send_outcome{instance=~\"$instance\",bam_send_outcome=\"result_sent\"}[$__range]))",
           "instant": true,
           "legendFormat": "result_sent",
           "range": false,
@@ -2866,7 +2866,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM outbound send-attempt outcomes, grouped by bam_send_attempt on bam_outbound_send_attempt. The `leader_state_sent` and `result_sent` buckets are the canonical successful-send counters; no_stream/send_fail indicate dropped or failed sends.",
+      "description": "Rate (events/sec) of BAM outbound send outcomes, grouped by bam_send_outcome on bam_outbound_send_outcome. The `leader_state_sent` and `result_sent` buckets are the canonical successful-send counters; no_stream/send_fail indicate skipped or failed sends.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2920,14 +2920,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (bam_send_attempt) (rate(bam_outbound_send_attempt{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (bam_send_outcome) (rate(bam_outbound_send_outcome{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "{{bam_send_attempt}}",
+          "legendFormat": "{{bam_send_outcome}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "BAM Send Attempts (by outcome)",
+      "title": "BAM Send Outcomes",
       "type": "timeseries"
     },
     {

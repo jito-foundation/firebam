@@ -137,9 +137,9 @@ typedef struct {
   uchar enabled;          /* Non-zero when operator enabled BAM */
 
   /* BAM operator diagnostics mirrored from the BAM tile metrics. */
-  float  rtt_sample;                   /* Latest RTT sample (ns) */
-  float  rtt_smoothed;                 /* Smoothed RTT estimate (ns) */
-  float  rtt_deviation;                /* Smoothed RTT variation estimate (ns) */
+  float  rtt_sample;                   /* Latest HTTP/2 keepalive RTT sample (ns) */
+  float  rtt_smoothed;                 /* Smoothed HTTP/2 keepalive RTT estimate (ns) */
+  float  rtt_deviation;                /* Smoothed HTTP/2 keepalive RTT variation estimate (ns) */
   ushort feedback_queue_depth;         /* Pending BAM feedback results */
   ulong  heartbeat_sent;               /* Validator heartbeats sent */
   ulong  heartbeat_recv;               /* Builder heartbeats received */
@@ -149,11 +149,9 @@ typedef struct {
   ulong  failure_decode;               /* Local protobuf/envelope decode failures */
   ulong  failure_request_failed;       /* HTTP/gRPC request failures */
   ulong  failure_transport;            /* DNS/socket/connect/I/O failures */
-  ulong  failure_protocol;             /* Unsupported BAM protocol messages */
+  ulong  failure_unsupported_version;  /* Unsupported BAM scheduler-response versions */
   ulong  failure_timeout;              /* Request/keepalive/heartbeat timeouts */
   ulong  ingress_multi_message_received;
-  ulong  ingress_multi_message_empty;
-  ulong  ingress_multi_message_overflow;
   ulong  ingress_batch_commit_attempt;
   ulong  ingress_batch_published;
   ulong  ingress_batch_rejected_invalid_batch;

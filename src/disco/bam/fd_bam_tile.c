@@ -100,25 +100,23 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_result_drop_cnt   );
   FD_MCNT_SET( BAM, INGRESS_PACKET_OVERSIZE, ctx->metrics.ingress_packet_oversize_cnt );
   FD_MCNT_SET( BAM, KEEPALIVE_ACKS,          ctx->metrics.keepalive_ack_cnt           );
-  FD_MCNT_SET( BAM, HEARTBEATS_SENT,        ctx->metrics.heartbeat_sent_cnt        );
-  FD_MCNT_SET( BAM, HEARTBEATS_RECEIVED,    ctx->metrics.heartbeat_recv_cnt        );
+  FD_MCNT_SET( BAM, VALIDATOR_HEARTBEATS_SENT,   ctx->metrics.heartbeat_sent_cnt   );
+  FD_MCNT_SET( BAM, BUILDER_HEARTBEATS_RECEIVED, ctx->metrics.heartbeat_recv_cnt   );
   FD_MCNT_SET( BAM, CONNECTIONS,            ctx->metrics.connection_cnt            );
   FD_MCNT_SET( BAM, DISCONNECTS,            ctx->metrics.disconnect_cnt            );
   FD_MCNT_ENUM_COPY( BAM, FAILURE,          ctx->metrics.failure_cnt               );
   FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_RECEIVED,         ctx->metrics.ingress_multi_msg_received_cnt );
-  FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_EMPTY,            ctx->metrics.ingress_multi_msg_empty_cnt );
-  FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_OVERFLOW,         ctx->metrics.ingress_multi_msg_overflow_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_PUBLISHED,                ctx->metrics.ingress_batch_published_cnt );
   FD_MCNT_ENUM_COPY( BAM, INGRESS_BATCH_REJECTED, ctx->metrics.ingress_batch_reject_cnt );
-  FD_MCNT_ENUM_COPY( BAM, OUTBOUND_SEND_ATTEMPT,  ctx->metrics.outbound_send_attempt_cnt );
+  FD_MCNT_ENUM_COPY( BAM, OUTBOUND_SEND_OUTCOME,  ctx->metrics.outbound_send_outcome_cnt );
   FD_MCNT_ENUM_COPY( BAM, STEP_SKIP,              ctx->metrics.step_skip_cnt             );
   FD_MCNT_ENUM_COPY( BAM, STREAM_TRANSITION,      ctx->metrics.stream_transition_cnt     );
   FD_MCNT_ENUM_COPY( BAM, LEADER_PENDING_DROPPED, ctx->metrics.leader_pending_drop_cnt );
 
-  FD_MGAUGE_SET( BAM, RTT_SAMPLE,   (ulong)ctx->rtt->latest_rtt   );
-  FD_MGAUGE_SET( BAM, RTT_SMOOTHED, (ulong)ctx->rtt->smoothed_rtt );
-  FD_MGAUGE_SET( BAM, RTT_DEVIATION, (ulong)ctx->rtt->var_rtt      );
+  FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SAMPLE,    (ulong)ctx->rtt->latest_rtt   );
+  FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SMOOTHED,  (ulong)ctx->rtt->smoothed_rtt );
+  FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_DEVIATION, (ulong)ctx->rtt->var_rtt      );
   FD_MGAUGE_SET( BAM, FEEDBACK_QUEUE_DEPTH, (ulong)ctx->bam_pending_results );
   FD_MGAUGE_SET( BAM, ENABLED,      (ulong)ctx->enabled );
 
@@ -477,11 +475,9 @@ fd_bam_tile_publish_gui_update(
   update->failure_decode = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ];
   update->failure_request_failed = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ];
   update->failure_transport = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ];
-  update->failure_protocol = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_PROTOCOL_IDX ];
+  update->failure_unsupported_version = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ];
   update->failure_timeout = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TIMEOUT_IDX ];
   update->ingress_multi_message_received = ctx->metrics.ingress_multi_msg_received_cnt;
-  update->ingress_multi_message_empty = ctx->metrics.ingress_multi_msg_empty_cnt;
-  update->ingress_multi_message_overflow = ctx->metrics.ingress_multi_msg_overflow_cnt;
   update->ingress_batch_commit_attempt = ctx->metrics.ingress_batch_commit_attempt_cnt;
   update->ingress_batch_published = ctx->metrics.ingress_batch_published_cnt;
   update->ingress_batch_rejected_invalid_batch = ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ];

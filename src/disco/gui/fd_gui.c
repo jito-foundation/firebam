@@ -2246,11 +2246,9 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   gui->bam.failure_decode = update->failure_decode;
   gui->bam.failure_request_failed = update->failure_request_failed;
   gui->bam.failure_transport = update->failure_transport;
-  gui->bam.failure_protocol = update->failure_protocol;
+  gui->bam.failure_unsupported_version = update->failure_unsupported_version;
   gui->bam.failure_timeout = update->failure_timeout;
   gui->bam.ingress_multi_message_received = update->ingress_multi_message_received;
-  gui->bam.ingress_multi_message_empty = update->ingress_multi_message_empty;
-  gui->bam.ingress_multi_message_overflow = update->ingress_multi_message_overflow;
   gui->bam.ingress_batch_commit_attempt = update->ingress_batch_commit_attempt;
   gui->bam.ingress_batch_published = update->ingress_batch_published;
   gui->bam.ingress_batch_rejected_invalid_batch = update->ingress_batch_rejected_invalid_batch;

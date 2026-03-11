@@ -507,11 +507,9 @@ fd_gui_printf_bam( fd_gui_t * gui ) {
       jsonp_ulong(  gui->http, "failure_decode",       gui->bam.failure_decode );
       jsonp_ulong(  gui->http, "failure_request_failed", gui->bam.failure_request_failed );
       jsonp_ulong(  gui->http, "failure_transport",    gui->bam.failure_transport );
-      jsonp_ulong(  gui->http, "failure_protocol",     gui->bam.failure_protocol );
+      jsonp_ulong(  gui->http, "failure_unsupported_version", gui->bam.failure_unsupported_version );
       jsonp_ulong(  gui->http, "failure_timeout",      gui->bam.failure_timeout );
       jsonp_ulong(  gui->http, "ingress_multi_message_received", gui->bam.ingress_multi_message_received );
-      jsonp_ulong(  gui->http, "ingress_multi_message_empty", gui->bam.ingress_multi_message_empty );
-      jsonp_ulong(  gui->http, "ingress_multi_message_overflow", gui->bam.ingress_multi_message_overflow );
       jsonp_ulong(  gui->http, "ingress_batch_commit_attempt", gui->bam.ingress_batch_commit_attempt );
       jsonp_ulong(  gui->http, "ingress_batch_published", gui->bam.ingress_batch_published );
       jsonp_ulong(  gui->http, "ingress_batch_rejected_invalid_batch", gui->bam.ingress_batch_rejected_invalid_batch );
