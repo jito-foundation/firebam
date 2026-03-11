@@ -448,13 +448,18 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       bam_types_AtomicTxnBatch const * batch ) {
   ulong resolved_slot = fd_bam_resolve_batch_slot( ctx, batch );
   fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ resolved_slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL ) ];
-  if( FD_UNLIKELY( !entry->valid || entry->slot!=resolved_slot ) ) {
-    fd_memset( entry, 0, sizeof(fd_bam_slot_ingress_timing_t) );
+  if( FD_UNLIKELY( !entry->valid ) ) {
+    fd_memset( entry, 0, sizeof(*entry) );
+    entry->slot  = resolved_slot;
+    entry->valid = 1U;
+  } else if( FD_UNLIKELY( entry->slot!=resolved_slot ) ) {
+    (void)fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, ctx->bam_leader_state.slot );
+    fd_memset( entry, 0, sizeof(*entry) );
     entry->slot  = resolved_slot;
     entry->valid = 1U;
   }
 
-  _Bool after_slot_end = !!ctx->bam_leader_state.slot && !!resolved_slot && resolved_slot < ctx->bam_leader_state.slot;
+  _Bool after_slot_end = resolved_slot && resolved_slot < ctx->bam_leader_state.slot;
   if( FD_UNLIKELY( !entry->txn_before_slot_end && !entry->txn_after_slot_end ) ) {
     entry->first_rx_ts_ns          = fd_bam_now();
     entry->first_rx_after_slot_end = (uchar)after_slot_end;

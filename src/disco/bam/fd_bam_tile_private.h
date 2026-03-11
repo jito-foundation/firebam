@@ -78,6 +78,7 @@ struct fd_bam_metrics {
 typedef struct fd_bam_metrics fd_bam_metrics_t;
 
 #define FD_BAM_SLOT_INGRESS_TIMING_CNT 32UL
+#define FD_BAM_SLOT_INGRESS_TIMING_SUMMARY_BUF_SZ 256UL
 
 typedef struct {
   ulong slot;
@@ -85,6 +86,7 @@ typedef struct {
   ulong txn_before_slot_end;
   ulong txn_after_slot_end;
   uchar first_rx_after_slot_end;
+  uchar summary_emitted;
   uchar valid;
 } fd_bam_slot_ingress_timing_t;
 
@@ -319,6 +321,14 @@ FD_PROTOTYPES_BEGIN
 
 long
 fd_bam_now( void );
+
+int
+fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
+                                             fd_bam_slot_ingress_timing_t * entry,
+                                             ulong                          current_leader_slot );
+
+void
+fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx );
 
 /* fd_bam_client_grpc_callbacks provides callbacks for grpc_client. */
 

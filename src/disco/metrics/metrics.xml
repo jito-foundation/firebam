@@ -416,6 +416,41 @@ metric introduced.
     <int value="4" name="Superseded" label="Pending leader-state replaced by a newer leader-state update before send" />
 </enum>
 
+<enum name="BamSlotIngressTimingIdx">
+    <int value="0" name="Idx0" label="Ring index 0" />
+    <int value="1" name="Idx1" label="Ring index 1" />
+    <int value="2" name="Idx2" label="Ring index 2" />
+    <int value="3" name="Idx3" label="Ring index 3" />
+    <int value="4" name="Idx4" label="Ring index 4" />
+    <int value="5" name="Idx5" label="Ring index 5" />
+    <int value="6" name="Idx6" label="Ring index 6" />
+    <int value="7" name="Idx7" label="Ring index 7" />
+    <int value="8" name="Idx8" label="Ring index 8" />
+    <int value="9" name="Idx9" label="Ring index 9" />
+    <int value="10" name="Idx10" label="Ring index 10" />
+    <int value="11" name="Idx11" label="Ring index 11" />
+    <int value="12" name="Idx12" label="Ring index 12" />
+    <int value="13" name="Idx13" label="Ring index 13" />
+    <int value="14" name="Idx14" label="Ring index 14" />
+    <int value="15" name="Idx15" label="Ring index 15" />
+    <int value="16" name="Idx16" label="Ring index 16" />
+    <int value="17" name="Idx17" label="Ring index 17" />
+    <int value="18" name="Idx18" label="Ring index 18" />
+    <int value="19" name="Idx19" label="Ring index 19" />
+    <int value="20" name="Idx20" label="Ring index 20" />
+    <int value="21" name="Idx21" label="Ring index 21" />
+    <int value="22" name="Idx22" label="Ring index 22" />
+    <int value="23" name="Idx23" label="Ring index 23" />
+    <int value="24" name="Idx24" label="Ring index 24" />
+    <int value="25" name="Idx25" label="Ring index 25" />
+    <int value="26" name="Idx26" label="Ring index 26" />
+    <int value="27" name="Idx27" label="Ring index 27" />
+    <int value="28" name="Idx28" label="Ring index 28" />
+    <int value="29" name="Idx29" label="Ring index 29" />
+    <int value="30" name="Idx30" label="Ring index 30" />
+    <int value="31" name="Idx31" label="Ring index 31" />
+</enum>
+
 <tile name="bam">
     <gauge name="Enabled" summary="Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled" />
     <gauge name="Healthy" summary="Boolean gauge: 1 when the BAM client is fully connected, authenticated, configured, and heartbeat healthy; otherwise 0" />
@@ -442,6 +477,12 @@ metric introduced.
     <gauge name="KeepaliveRttSmoothed" summary="Exponentially smoothed HTTP/2 keepalive round-trip time estimate (nanoseconds)" />
     <gauge name="KeepaliveRttDeviation" summary="Smoothed HTTP/2 keepalive RTT variation estimate (nanoseconds)" />
     <gauge name="FeedbackQueueDepth" summary="Current number of BAM feedback results buffered for send" />
+    <gauge name="SlotIngressTimingValid" enum="BamSlotIngressTimingIdx" summary="Current BAM slot-ingress timing ring entry validity by ring index (1 when occupied, 0 when empty)" />
+    <gauge name="SlotIngressTimingSlot" enum="BamSlotIngressTimingIdx" summary="Resolved slot currently stored in each BAM slot-ingress timing ring entry" />
+    <gauge name="SlotIngressTimingFirstRxTimestampNanos" enum="BamSlotIngressTimingIdx" summary="Wallclock timestamp of the first BAM transaction received for each slot-ingress timing ring entry (nanoseconds)" />
+    <gauge name="SlotIngressTimingFirstRxAfterSlotEnd" enum="BamSlotIngressTimingIdx" summary="Whether the first BAM transaction for each slot-ingress timing ring entry arrived after slot end (1=yes, 0=no)" />
+    <gauge name="SlotIngressTimingTxnsBeforeSlotEnd" enum="BamSlotIngressTimingIdx" summary="Cumulative number of BAM transactions received before slot end for each slot-ingress timing ring entry" />
+    <gauge name="SlotIngressTimingTxnsAfterSlotEnd" enum="BamSlotIngressTimingIdx" summary="Cumulative number of BAM transactions received after slot end for each slot-ingress timing ring entry" />
     <histogram name="BuilderHeartbeatArrivalDeltaNanos" min="10000" max="100000000">
         <summary>Distribution of remote BuilderHeartBeat timestamp to local scheduler-stream receive callback delta (nanoseconds); includes clock offset and is intended only for relative trend analysis</summary>
     </histogram>

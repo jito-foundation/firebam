@@ -27,6 +27,9 @@
 /* Provided by fdctl/firedancer version.c */
 extern char const fdctl_version_string[];
 
+FD_STATIC_ASSERT( FD_BAM_SLOT_INGRESS_TIMING_CNT==FD_METRICS_ENUM_BAM_SLOT_INGRESS_TIMING_IDX_CNT,
+                  bam_slot_ingress_timing_metric_enum_matches_ring );
+
 /* Admin RPC shims (exposed by agave) used to mutate ClusterInfo TPU adverts. */
 // Returns 0 when the TPU address is applied; -1 when failed.
 extern int fd_ext_admin_rpc_set_public_tpu( uint tpu_addr, ushort tpu_port, uint tpu_fwd_addr, ushort tpu_fwd_port );
@@ -93,6 +96,58 @@ loose_footprint( fd_topo_tile_t const * tile ) {
   return 1UL<<26; /* 64 MiB */
 }
 
+int
+fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
+                                             fd_bam_slot_ingress_timing_t * entry,
+                                             ulong                          current_leader_slot ) {
+  if( FD_UNLIKELY( !( ctx->dump_bam_txns || ctx->dump_bam_first_slot_txn ) || !entry->valid || entry->summary_emitted ) ) return 0;
+
+  char buf[ FD_BAM_SLOT_INGRESS_TIMING_SUMMARY_BUF_SZ ];
+  int written = snprintf( buf,
+                          sizeof(buf),
+                          "BAM slot ingress summary: slot=%lu first_rx_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
+                          entry->slot,
+                          entry->first_rx_ts_ns,
+                          (uint)entry->first_rx_after_slot_end,
+                          entry->txn_before_slot_end,
+                          entry->txn_after_slot_end,
+                          current_leader_slot );
+  if( FD_UNLIKELY( written<0 ) ) buf[ 0 ] = '\0';
+  else if( FD_UNLIKELY( (ulong)written>=sizeof(buf) ) ) buf[ sizeof(buf)-1UL ] = '\0';
+  FD_LOG_NOTICE(( "%s", buf ));
+  entry->summary_emitted = 1U;
+  return 1;
+}
+
+void
+fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx ) {
+  ulong valid[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
+  ulong slot[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
+  ulong first_rx_ts[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
+  ulong first_rx_after_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
+  ulong before_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
+  ulong after_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
+
+  for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ ) {
+    fd_bam_slot_ingress_timing_t const * entry = &ctx->slot_ingress_timing[ i ];
+    if( FD_UNLIKELY( !entry->valid ) ) continue;
+
+    valid[ i ]              = 1UL;
+    slot[ i ]               = entry->slot;
+    if( FD_LIKELY( entry->first_rx_ts_ns>0L ) ) first_rx_ts[ i ] = (ulong)entry->first_rx_ts_ns;
+    first_rx_after_end[ i ] = (ulong)entry->first_rx_after_slot_end;
+    before_end[ i ]         = entry->txn_before_slot_end;
+    after_end[ i ]          = entry->txn_after_slot_end;
+  }
+
+  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_VALID,                    valid              );
+  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_SLOT,                     slot               );
+  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_TIMESTAMP_NANOS, first_rx_ts        );
+  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_AFTER_SLOT_END,  first_rx_after_end );
+  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_TXNS_BEFORE_SLOT_END,     before_end         );
+  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_TXNS_AFTER_SLOT_END,      after_end          );
+}
+
 static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.txn_published_cnt          );
@@ -118,6 +173,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_DEVIATION, (ulong)ctx->rtt->var_rtt      );
   FD_MGAUGE_SET( BAM, FEEDBACK_QUEUE_DEPTH, (ulong)ctx->bam_pending_results );
   FD_MGAUGE_SET( BAM, ENABLED,      (ulong)ctx->enabled );
+  fd_bam_export_slot_ingress_timing_metrics( ctx );
 
   FD_MHIST_COPY( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
   FD_MHIST_COPY( BAM, SCHEDULER_PING_RESPONSE_NANOS, ctx->metrics.scheduler_ping_response_nanos );
@@ -282,6 +338,14 @@ enum {
 void
 fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   fd_bam_tile_handle_ctrl( ctx );
+  ulong current_leader_slot = ctx->bam_leader_state.slot;
+  if( FD_UNLIKELY( ctx->dump_bam_txns || ctx->dump_bam_first_slot_txn ) ) {
+    for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ ) {
+      fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ i ];
+      if( FD_LIKELY( !entry->valid || entry->summary_emitted || current_leader_slot<=entry->slot ) ) continue;
+      (void)fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, current_leader_slot );
+    }
+  }
   long now_ns          = fd_log_wallclock();
 
   if( FD_LIKELY( ctx->plugin_out.mem ) ) {
