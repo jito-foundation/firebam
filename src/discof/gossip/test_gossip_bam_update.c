@@ -75,7 +75,7 @@ setup_gossip( fd_gossip_tile_ctx_t * ctx,
 }
 
 static void
-test_bam_contact_updates_contact_info( void ) {
+test_gossip_apply_bam_contact_updates_contact_info( void ) {
   fd_gossip_tile_ctx_t ctx;
   fd_memset( &ctx, 0, sizeof(ctx) );
 
@@ -175,7 +175,7 @@ main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
 
-  test_bam_contact_updates_contact_info();
+  test_gossip_apply_bam_contact_updates_contact_info();
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
   return 0;

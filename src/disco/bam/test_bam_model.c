@@ -127,85 +127,42 @@ bam_model_decode_last_scheduler_message( fd_bam_tile_t *          state,
 FD_FN_UNUSED static _Bool
 bam_model_decode_last_wire_result( fd_bam_tile_t *         state,
                                  bam_model_wire_result_t * out ) {
-  fd_grpc_client_t * client = state->grpc_client;
-  fd_grpc_hdr_t hdr;
-  fd_memcpy( &hdr, client->nanopb_tx, sizeof(fd_grpc_hdr_t) );
-  uint msg_sz = fd_uint_bswap( hdr.msg_sz );
-  if( FD_UNLIKELY( !msg_sz ) ) return 0;
-  if( FD_UNLIKELY( msg_sz > state->grpc_buf_max ) ) return 0;
-
-  bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
-  pb_istream_t stream = pb_istream_from_buffer( client->nanopb_tx + sizeof(fd_grpc_hdr_t), msg_sz );
-
-  if( FD_UNLIKELY( !pb_decode( &stream, bam_api_SchedulerMessage_fields, &msg ) ) ) return 0;
-  if( FD_UNLIKELY( msg.which_versioned_msg != bam_api_SchedulerMessage_v0_tag ) ) return 0;
-  if( FD_UNLIKELY( msg.versioned_msg.v0.which_msg != bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag ) ) return 0;
-
-  bam_types_MultipleAtomicTxnBatchResult const * multi = &msg.versioned_msg.v0.msg.multiple_atomic_txn_batch_result;
-  if( FD_UNLIKELY( !multi->results.funcs.decode ) ) return 0;
-
-  /* Re-decode payload manually because nanopb callbacks do not materialize a list for us. */
-  pb_istream_t stream2 = pb_istream_from_buffer( client->nanopb_tx + sizeof(fd_grpc_hdr_t), msg_sz );
-  uint32_t tag;
-  pb_wire_type_t wire_type;
-  bool eof = false;
-  while( pb_decode_tag( &stream2, &wire_type, &tag, &eof ) ) {
-    if( tag != bam_api_SchedulerMessage_v0_tag || wire_type != PB_WT_STRING ) {
-      FD_TEST( pb_skip_field( &stream2, wire_type ) );
-      continue;
-    }
-
-    pb_istream_t v0_stream;
-    FD_TEST( pb_make_string_substream( &stream2, &v0_stream ) );
-    while( pb_decode_tag( &v0_stream, &wire_type, &tag, &eof ) ) {
-      if( tag != bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag || wire_type != PB_WT_STRING ) {
-        FD_TEST( pb_skip_field( &v0_stream, wire_type ) );
-        continue;
-      }
-      pb_istream_t multi_stream;
-      FD_TEST( pb_make_string_substream( &v0_stream, &multi_stream ) );
-
-      /* Decode first (and only) result entry. */
-      while( pb_decode_tag( &multi_stream, &wire_type, &tag, &eof ) ) {
-        if( tag != bam_types_MultipleAtomicTxnBatchResult_results_tag || wire_type != PB_WT_STRING ) {
-          FD_TEST( pb_skip_field( &multi_stream, wire_type ) );
-          continue;
-        }
-        pb_istream_t res_stream;
-        FD_TEST( pb_make_string_substream( &multi_stream, &res_stream ) );
-        bam_types_AtomicTxnBatchResult res = bam_types_AtomicTxnBatchResult_init_default;
-        FD_TEST( pb_decode( &res_stream, bam_types_AtomicTxnBatchResult_fields, &res ) );
-        fd_memset( out, 0, sizeof(*out) );
-        out->seq_id = res.seq_id;
-        if( res.which_result == bam_types_AtomicTxnBatchResult_committed_tag ) {
-          out->committed = 1U;
-          out->which_reason = 0U;
-        } else {
-          out->committed = 0U;
-          out->which_reason = (uchar)res.result.not_committed.which_reason;
-          if( res.result.not_committed.which_reason == bam_types_NotCommitted_scheduling_error_tag ) {
-            out->scheduling_error = res.result.not_committed.reason.scheduling_error;
-          } else if( res.result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag ) {
-            out->deser_reason = res.result.not_committed.reason.deserialization_error.reason;
-            out->idx          = (uchar)res.result.not_committed.reason.deserialization_error.index;
-          } else if( res.result.not_committed.which_reason == bam_types_NotCommitted_transaction_error_tag ) {
-            out->txn_reason = res.result.not_committed.reason.transaction_error.reason;
-            out->idx        = (uchar)res.result.not_committed.reason.transaction_error.index;
-          }
-        }
-        pb_close_string_substream( &multi_stream, &res_stream );
-        pb_close_string_substream( &v0_stream, &multi_stream );
-        pb_close_string_substream( &stream2, &v0_stream );
-        return 1;
-      }
-
-      pb_close_string_substream( &v0_stream, &multi_stream );
-    }
-
-    pb_close_string_substream( &stream2, &v0_stream );
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  if( FD_UNLIKELY( decoded.msg.which_versioned_msg != bam_api_SchedulerMessage_v0_tag ) ) {
+    FD_LOG_WARNING(( "unexpected wire versioned_msg=%u", decoded.msg.which_versioned_msg ));
+    return 0;
+  }
+  if( FD_UNLIKELY( decoded.msg.versioned_msg.v0.which_msg != bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag ) ) {
+    FD_LOG_WARNING(( "unexpected wire msg kind=%u", decoded.msg.versioned_msg.v0.which_msg ));
+    return 0;
+  }
+  if( FD_UNLIKELY( decoded.multi.result_cnt != 1UL ) ) {
+    FD_LOG_WARNING(( "unexpected wire result_cnt=%lu", decoded.multi.result_cnt ));
+    return 0;
   }
 
-  return 0;
+  bam_types_AtomicTxnBatchResult const * res = &decoded.multi.results[0];
+  fd_memset( out, 0, sizeof(*out) );
+  out->seq_id = res->seq_id;
+  if( res->which_result == bam_types_AtomicTxnBatchResult_committed_tag ) {
+    out->committed = 1U;
+    out->which_reason = 0U;
+    return 1;
+  }
+
+  out->committed = 0U;
+  out->which_reason = (uchar)res->result.not_committed.which_reason;
+  if( res->result.not_committed.which_reason == bam_types_NotCommitted_scheduling_error_tag ) {
+    out->scheduling_error = res->result.not_committed.reason.scheduling_error;
+  } else if( res->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag ) {
+    out->deser_reason = res->result.not_committed.reason.deserialization_error.reason;
+    out->idx          = (uchar)res->result.not_committed.reason.deserialization_error.index;
+  } else if( res->result.not_committed.which_reason == bam_types_NotCommitted_transaction_error_tag ) {
+    out->txn_reason = res->result.not_committed.reason.transaction_error.reason;
+    out->idx        = (uchar)res->result.not_committed.reason.transaction_error.index;
+  }
+  return 1;
 }
 
 /* ---------- Synthetic scheduler/bank model ---------- */
@@ -329,9 +286,6 @@ typedef struct {
   fd_bam_bundle_result_t model_results[ BAM_MODEL_MAX_RESULTS ];
   ulong model_result_cnt;
 
-  fd_bam_bundle_result_t oracle_results[ BAM_MODEL_MAX_RESULTS ];
-  ulong oracle_result_cnt;
-
   bam_model_trace_t traces[ BAM_MODEL_MAX_TRACES ];
   ulong trace_cnt;
 
@@ -406,12 +360,6 @@ bam_model_emit_model_result( bam_model_harness_t *               h,
   bam_model_record_intent( h, res->seq_id );
   if( FD_LIKELY( h->model_result_cnt < BAM_MODEL_MAX_RESULTS ) ) h->model_results[ h->model_result_cnt++ ] = *res;
   bam_model_try_enqueue_result( h, res );
-}
-
-static void
-bam_model_emit_oracle_result( bam_model_harness_t *               h,
-                            fd_bam_bundle_result_t const *    res ) {
-  if( FD_LIKELY( h->oracle_result_cnt < BAM_MODEL_MAX_RESULTS ) ) h->oracle_results[ h->oracle_result_cnt++ ] = *res;
 }
 
 static bam_model_txn_spec_t
@@ -584,7 +532,6 @@ bam_model_emit_partial_missing( bam_model_harness_t * h,
   }
 
   bam_model_emit_model_result( h, &res );
-  bam_model_emit_oracle_result( h, &res );
   p->active = 0U;
 }
 
@@ -835,12 +782,25 @@ bam_model_execute_batch( bam_model_harness_t * h,
   return res;
 }
 
+static fd_bam_bundle_result_t
+bam_model_make_outside_slot_result( uint  seq_id,
+                                    ulong slot,
+                                    uchar txn_cnt ) {
+  return (fd_bam_bundle_result_t){
+    .seq_id            = seq_id,
+    .slot              = slot,
+    .bundle_txn_cnt    = txn_cnt,
+    .execution_success = 0U,
+    .scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT,
+    .bundle_err        = FD_BAM_BUNDLE_ERR_NONE,
+  };
+}
+
 static void
 bam_model_process_ready( bam_model_harness_t * h ) {
   if( FD_UNLIKELY( !h->ready_cnt ) ) return;
   bam_model_sort_ready_by_priority( h );
   ulong current_slot = bam_model_current_slot( h );
-  ulong ready_out = 0UL;
 
   for( ulong i=0UL; i<h->ready_cnt; i++ ) {
     bam_model_batch_t const * b = &h->ready[ i ];
@@ -848,30 +808,22 @@ bam_model_process_ready( bam_model_harness_t * h ) {
 
     if( FD_UNLIKELY( bam_model_has_slot_hint( b->max_schedule_slot ) &&
                      b->max_schedule_slot<current_slot ) ) {
-      res = (fd_bam_bundle_result_t){
-        .seq_id            = b->seq_id,
-        .slot              = b->max_schedule_slot,
-        .bundle_txn_cnt    = b->txn_cnt,
-        .execution_success = 0U,
-        .scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT,
-        .bundle_err        = FD_BAM_BUNDLE_ERR_NONE,
-      };
+      res = bam_model_make_outside_slot_result( b->seq_id, b->max_schedule_slot, b->txn_cnt );
       bam_model_emit_model_result( h, &res );
-      bam_model_emit_oracle_result( h, &res );
       continue;
     }
 
     if( FD_UNLIKELY( !h->leader_on ) ) {
-      h->ready[ ready_out++ ] = *b;
+      res = bam_model_make_outside_slot_result( b->seq_id, current_slot, b->txn_cnt );
+      bam_model_emit_model_result( h, &res );
       continue;
     }
 
     res = bam_model_execute_batch( h, b );
     bam_model_emit_model_result( h, &res );
-    bam_model_emit_oracle_result( h, &res );
   }
 
-  h->ready_cnt = ready_out;
+  h->ready_cnt = 0UL;
 }
 
 static void
@@ -913,7 +865,6 @@ bam_model_absorb_verify_output( bam_model_harness_t * h ) {
         .deser_index       = t.batch_idx,
       };
       bam_model_emit_model_result( h, &rej );
-      bam_model_emit_oracle_result( h, &rej );
       p->active = 0U;
       h->out_read_seq++;
       continue;
@@ -933,7 +884,6 @@ bam_model_absorb_verify_output( bam_model_harness_t * h ) {
       fd_bam_bundle_result_t rej;
       if( FD_UNLIKELY( bam_model_batch_precheck_fail( &tmp, bam_model_current_slot( h ), &rej ) ) ) {
         bam_model_emit_model_result( h, &rej );
-        bam_model_emit_oracle_result( h, &rej );
         p->active = 0U;
         h->out_read_seq++;
         continue;
@@ -952,7 +902,6 @@ bam_model_absorb_verify_output( bam_model_harness_t * h ) {
         .deser_index       = t.batch_idx,
       };
       bam_model_emit_model_result( h, &rej );
-      bam_model_emit_oracle_result( h, &rej );
       p->active = 0U;
       h->out_read_seq++;
       continue;
@@ -975,7 +924,6 @@ bam_model_absorb_verify_output( bam_model_harness_t * h ) {
         .deser_index       = t.batch_idx,
       };
       bam_model_emit_model_result( h, &rej );
-      bam_model_emit_oracle_result( h, &rej );
       p->active = 0U;
       h->out_read_seq++;
       continue;
@@ -1002,7 +950,6 @@ bam_model_absorb_verify_output( bam_model_harness_t * h ) {
       }
       rej.transaction_err[ t.batch_idx ] = bam_types_TransactionErrorReason_ALREADY_PROCESSED;
       bam_model_emit_model_result( h, &rej );
-      bam_model_emit_oracle_result( h, &rej );
       p->active = 0U;
       h->out_read_seq++;
       continue;
@@ -1035,10 +982,13 @@ bam_model_absorb_verify_output( bam_model_harness_t * h ) {
 FD_FN_UNUSED static void
 bam_model_flush_wire_results( bam_model_harness_t * h ) {
   while( h->state->bam_pending_results ) {
+    ushort pending = h->state->bam_pending_results;
+    h->state->bam_pending_results = 1U;
     FD_TEST( fd_bam_test_flush_results( h->state )==1 );
     if( FD_UNLIKELY( h->wire_result_cnt >= BAM_MODEL_MAX_RESULTS ) ) continue;
     bam_model_wire_result_t * wr = &h->wire_results[ h->wire_result_cnt ];
     if( FD_UNLIKELY( bam_model_decode_last_wire_result( h->state, wr ) ) ) h->wire_result_cnt++;
+    h->state->bam_pending_results = (ushort)( pending-1U );
   }
 }
 
@@ -1164,23 +1114,113 @@ bam_model_assert_intents( bam_model_harness_t const * h ) {
 }
 
 static void
-bam_model_assert_matches_oracle( bam_model_harness_t const * h ) {
-  FD_TEST( h->model_result_cnt == h->oracle_result_cnt );
+bam_model_expected_wire_result( fd_bam_bundle_result_t const * res,
+                                bam_model_wire_result_t *      out ) {
+  fd_memset( out, 0, sizeof(*out) );
+  out->seq_id = res->seq_id;
+
+  if( FD_LIKELY( res->execution_success ) ) {
+    out->committed = 1U;
+    return;
+  }
+
+  if( FD_UNLIKELY( res->bundle_err==FD_BAM_BUNDLE_ERR_DESER ) ) {
+    out->which_reason = bam_types_NotCommitted_deserialization_error_tag;
+    out->deser_reason = (bam_types_DeserializationErrorReason)res->deser_reason;
+    out->idx          = res->deser_index;
+    return;
+  }
+
+  if( FD_UNLIKELY( res->scheduling_error != FD_BAM_SCHED_ERR_NONE ) ) {
+    if( FD_LIKELY( res->scheduling_error <= _bam_types_SchedulingError_MAX ) ) {
+      out->which_reason     = bam_types_NotCommitted_scheduling_error_tag;
+      out->scheduling_error = (bam_types_SchedulingError)res->scheduling_error;
+    } else {
+      out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+    }
+    return;
+  }
+
+  for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
+    if( FD_UNLIKELY( !res->sanitize_success[ i ] ) ) {
+      out->which_reason = bam_types_NotCommitted_deserialization_error_tag;
+      out->deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+      out->idx          = i;
+      return;
+    }
+  }
+
+  if( FD_UNLIKELY( res->transaction_err_count ) ) {
+    uchar err_idx = 0U;
+    _Bool found_non_cancelled = 0;
+    for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
+      if( FD_LIKELY( res->transaction_err[ i ] != bam_types_TransactionErrorReason_COMMIT_CANCELLED ) ) {
+        err_idx = i;
+        found_non_cancelled = 1;
+        break;
+      }
+    }
+
+    if( FD_UNLIKELY( !found_non_cancelled && res->bundle_txn_cnt>1U ) ) {
+      out->which_reason     = bam_types_NotCommitted_scheduling_error_tag;
+      out->scheduling_error = bam_types_SchedulingError_POH_TIMEOUT;
+      return;
+    }
+
+    if( FD_LIKELY( res->transaction_err[ err_idx ] < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
+      out->which_reason = bam_types_NotCommitted_transaction_error_tag;
+      out->txn_reason   = res->transaction_err[ err_idx ];
+      out->idx          = err_idx;
+    } else {
+      out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+    }
+    return;
+  }
+
+  out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+}
+
+static void
+bam_model_assert_wire_matches_model( bam_model_harness_t * h ) {
+  bam_model_flush_wire_results( h );
+  if( FD_UNLIKELY( h->wire_result_cnt != h->model_result_cnt ) ) {
+    FD_LOG_WARNING(( "wire/model result count mismatch: wire=%lu model=%lu",
+                     h->wire_result_cnt, h->model_result_cnt ));
+    for( ulong i=0UL; i<h->model_result_cnt; i++ ) {
+      FD_LOG_WARNING(( "model[%lu]: seq=%u success=%d sched=%u bundle_err=%u txn_err_cnt=%u",
+                       i,
+                       h->model_results[i].seq_id,
+                       h->model_results[i].execution_success,
+                       h->model_results[i].scheduling_error,
+                       h->model_results[i].bundle_err,
+                       h->model_results[i].transaction_err_count ));
+    }
+    for( ulong i=0UL; i<h->wire_result_cnt; i++ ) {
+      FD_LOG_WARNING(( "wire[%lu]: seq=%u committed=%u which_reason=%u",
+                       i,
+                       h->wire_results[i].seq_id,
+                       h->wire_results[i].committed,
+                       h->wire_results[i].which_reason ));
+    }
+  }
+  FD_TEST( h->wire_result_cnt == h->model_result_cnt );
   for( ulong i=0UL; i<h->model_result_cnt; i++ ) {
-    fd_bam_bundle_result_t const * a = &h->model_results[i];
-    fd_bam_bundle_result_t const * b = &h->oracle_results[i];
-    FD_TEST( a->seq_id            == b->seq_id );
-    FD_TEST( a->bundle_txn_cnt    == b->bundle_txn_cnt );
-    FD_TEST( a->execution_success == b->execution_success );
-    FD_TEST( a->scheduling_error  == b->scheduling_error );
-    FD_TEST( a->bundle_err        == b->bundle_err );
-    FD_TEST( a->deser_reason      == b->deser_reason );
-    FD_TEST( a->deser_index       == b->deser_index );
-    FD_TEST( a->transaction_err_count == b->transaction_err_count );
-    for( uchar j=0U; j<a->bundle_txn_cnt; j++ ) {
-      FD_TEST( a->transaction_err[j] == b->transaction_err[j] );
-      FD_TEST( a->sanitize_success[j] == b->sanitize_success[j] );
-      FD_TEST( a->consumed_cus[j] == b->consumed_cus[j] );
+    bam_model_wire_result_t expected;
+    bam_model_expected_wire_result( &h->model_results[i], &expected );
+
+    bam_model_wire_result_t const * actual = &h->wire_results[i];
+    FD_TEST( actual->seq_id       == expected.seq_id );
+    FD_TEST( actual->committed    == expected.committed );
+    FD_TEST( actual->which_reason == expected.which_reason );
+
+    if( expected.which_reason == bam_types_NotCommitted_scheduling_error_tag ) {
+      FD_TEST( actual->scheduling_error == expected.scheduling_error );
+    } else if( expected.which_reason == bam_types_NotCommitted_deserialization_error_tag ) {
+      FD_TEST( actual->deser_reason == expected.deser_reason );
+      FD_TEST( actual->idx          == expected.idx );
+    } else if( expected.which_reason == bam_types_NotCommitted_transaction_error_tag ) {
+      FD_TEST( actual->txn_reason == expected.txn_reason );
+      FD_TEST( actual->idx        == expected.idx );
     }
   }
 }
@@ -1316,54 +1356,51 @@ bam_model_run_scenario_slot_source_fallback( bam_model_harness_t * h ) {
 }
 
 static void
-bam_model_run_scenario_non_leader_phase( bam_model_harness_t * h ) {
+bam_model_run_scenario_non_leader_rejects_buffered_and_new_work( bam_model_harness_t * h ) {
+  h->leader_on = 0U;
+
   bam_model_batch_def_t buffered = bam_model_make_batch( 905U, 100UL, 1U, 2U );
   bam_model_node_deliver_batches( h, &buffered, 1UL, 0U );
-  bam_model_absorb_verify_output( h );
-  FD_TEST( h->ready_cnt==1UL );
+  bam_model_apply_pipeline( h );
 
-  /* Buffered work should remain queued while not leader. */
-  h->leader_on = 0U;
-  bam_model_process_ready( h );
-  FD_TEST( h->model_result_cnt==0UL );
-  FD_TEST( h->ready_cnt==1UL );
-
-  /* Once leader mode starts, the buffered work can execute normally. */
-  h->leader_on = 1U;
-  bam_model_process_ready( h );
   FD_TEST( h->model_result_cnt==1UL );
   FD_TEST( h->model_results[0].seq_id==905U );
-  FD_TEST( h->model_results[0].scheduling_error==FD_BAM_SCHED_ERR_NONE );
+  FD_TEST( !h->model_results[0].execution_success );
+  FD_TEST( h->model_results[0].scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+  FD_TEST( h->ready_cnt==0UL );
 
-  /* Newly received work while non-leader should also remain queued. */
-  h->leader_on = 0U;
   bam_model_batch_def_t fresh = bam_model_make_batch( 906U, 100UL, 1U, 1U );
   bam_model_node_deliver_batches( h, &fresh, 1UL, 0U );
   bam_model_apply_pipeline( h );
-  FD_TEST( h->model_result_cnt==1UL );
-  FD_TEST( h->ready_cnt==1UL );
+  FD_TEST( h->model_result_cnt==2UL );
+  FD_TEST( h->model_results[1].seq_id==906U );
+  FD_TEST( !h->model_results[1].execution_success );
+  FD_TEST( h->model_results[1].scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+  FD_TEST( h->ready_cnt==0UL );
 
   h->leader_on = 1U;
   bam_model_process_ready( h );
   FD_TEST( h->model_result_cnt==2UL );
-  FD_TEST( h->model_results[1].seq_id==906U );
-  FD_TEST( h->model_results[1].scheduling_error==FD_BAM_SCHED_ERR_NONE );
+  FD_TEST( h->ready_cnt==0UL );
 }
 
 static void
-bam_model_run_scenario_no_hint_non_leader_phase( bam_model_harness_t * h ) {
+bam_model_run_scenario_non_leader_rejects_work_without_slot_hint( bam_model_harness_t * h ) {
   h->leader_on = 0U;
+
   bam_model_batch_def_t buffered = bam_model_make_batch( 908U, 0UL, 1U, 1U );
   bam_model_node_deliver_batches( h, &buffered, 1UL, 0U );
   bam_model_apply_pipeline( h );
-  FD_TEST( h->model_result_cnt==0UL );
-  FD_TEST( h->ready_cnt==1UL );
+  FD_TEST( h->model_result_cnt==1UL );
+  FD_TEST( h->model_results[0].seq_id==908U );
+  FD_TEST( !h->model_results[0].execution_success );
+  FD_TEST( h->model_results[0].scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+  FD_TEST( h->ready_cnt==0UL );
 
   h->leader_on = 1U;
   bam_model_process_ready( h );
   FD_TEST( h->model_result_cnt==1UL );
-  FD_TEST( h->model_results[0].seq_id==908U );
-  FD_TEST( h->model_results[0].scheduling_error==FD_BAM_SCHED_ERR_NONE );
+  FD_TEST( h->ready_cnt==0UL );
 }
 
 static void
@@ -1656,79 +1693,79 @@ bam_model_run_scenarios( fd_wksp_t * wksp ) {
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_prevalidation_inconsistent_revert( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_prevalidation_stale_slot( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_non_atomic_stale_slot( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_slot_source_fallback( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
-  bam_model_run_scenario_non_leader_phase( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_run_scenario_non_leader_rejects_buffered_and_new_work( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
-  bam_model_run_scenario_no_hint_non_leader_phase( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_run_scenario_non_leader_rejects_work_without_slot_hint( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_bank_unavailable_timeout( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_atomic_success( h );
   bam_model_assert_trace_metadata( h );
   bam_model_assert_intents( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_atomic_verify_fail( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_atomic_lut_fail( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_atomic_exec_fail( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_partial_then_seq_switch( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_non_atomic_success_fail( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_non_atomic_sanitize_fail( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_replay_same_seq( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
@@ -1741,12 +1778,12 @@ bam_model_run_scenarios( fd_wksp_t * wksp ) {
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_limit_edges( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_fee_accounting( h );
-  bam_model_assert_matches_oracle( h );
+  bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
