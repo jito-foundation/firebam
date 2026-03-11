@@ -1341,7 +1341,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Receive-delay distribution for builder heartbeats from BAM node to BAM client.",
+      "description": "Relative BAM node heartbeat latency distribution, computed from the heartbeat timestamp to Frankendancer scheduler-stream receive callback time.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1429,7 +1429,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(bam_message_rx_delay_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(bam_node_hearbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p50",
           "range": true,
@@ -1441,7 +1441,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(bam_message_rx_delay_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bam_node_hearbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p95",
           "range": true,
@@ -1453,7 +1453,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(bam_message_rx_delay_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(bam_node_hearbeat_network_latency_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p99",
           "range": true,
@@ -1465,14 +1465,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_message_rx_delay_nanos_sum{instance=~\"$instance\"}[$__rate_interval])) / sum by (instance) (rate(bam_message_rx_delay_nanos_count{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_node_hearbeat_network_latency_nanos_sum{instance=~\"$instance\"}[$__rate_interval])) / sum by (instance) (rate(bam_node_hearbeat_network_latency_nanos_count{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Mean",
           "range": true,
           "refId": "D"
         }
       ],
-      "title": "BAM Message RX Delay",
+      "title": "BAM Node Heartbeat Network Latency",
       "type": "timeseries"
     },
     {

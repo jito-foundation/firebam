@@ -450,8 +450,8 @@ metric introduced.
     <gauge name="RttSmoothed" summary="Exponentially smoothed BAM round-trip time estimate (nanoseconds)" />
     <gauge name="RttVar" summary="Smoothed variance of the BAM round-trip time estimator (nanoseconds)" />
     <gauge name="ResultsQueueDepth" summary="Current number of bundle execution results buffered for BAM feedback" />
-    <histogram name="MessageRxDelayNanos" min="100000" max="1000000000">
-        <summary>Distribution of builder-heartbeat receive delays from the BAM node to the BAM client (nanoseconds)</summary>
+    <histogram name="NodeHearbeatNetworkLatencyNanos" min="10000" max="100000000">
+        <summary>Distribution of BAM node heartbeat timestamp to Frankendancer scheduler-stream receive callback time (nanoseconds); intended for relative trend analysis</summary>
     </histogram>
     <histogram name="SchedulerPingResponseNanos" min="1" max="100000000">
         <summary>Distribution of BAM scheduler Ping response latencies from Ping receipt to Pong enqueue (nanoseconds)</summary>

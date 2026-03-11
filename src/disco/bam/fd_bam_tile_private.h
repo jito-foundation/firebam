@@ -87,7 +87,7 @@ struct fd_bam_metrics {
   ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
   ulong leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
 
-  fd_histf_t msg_rx_delay[1];
+  fd_histf_t node_hearbeat_network_latency_nanos[1];
   fd_histf_t scheduler_ping_response_nanos[1];
 };
 
@@ -436,10 +436,6 @@ fd_bam_tile_publish_txn(
     uint               source_ipv4 );
 
 void
-fd_bam_client_sample_heartbeat_delay( fd_bam_tile_t * ctx,
-                                      uint64_t        time_sent_microseconds );
-
-void
 fd_bam_client_sample_scheduler_ping_response( fd_bam_tile_t * ctx,
                                               long            ping_start_ns );
 
@@ -454,8 +450,9 @@ fd_bam_should_dump_batch( fd_bam_tile_t *             ctx,
 
 void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
-                                  void const *      data,
-                                  ulong             data_sz );
+                                  void const *    data,
+                                  ulong           data_sz,
+                                  long            rx_ts_ns );
 
 /* fd_bam_client_status provides a "check engine light".
 

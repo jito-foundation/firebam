@@ -737,8 +737,9 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
    and may request a reset; otherwise it commits the staged versioned payload. */
 void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
-                                   void const *      data,
-                                   ulong             data_sz ) {
+                                  void const *    data,
+                                  ulong           data_sz,
+                                  long            rx_ts_ns ) {
   pb_istream_t istream = pb_istream_from_buffer( data, data_sz );
 
   uint32_t      tag;
@@ -785,13 +786,17 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
 
   switch( decoded_v0.kind ) {
   case FD_BAM_V0_STAGED_HEARTBEAT:
-    ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
-    fd_bam_client_sample_heartbeat_delay( ctx, decoded_v0.heartbeat_time_sent_microseconds );
+    ctx->bam_last_builder_heartbeat_ns = rx_ts_ns;
+    if( FD_LIKELY( decoded_v0.heartbeat_time_sent_microseconds ) ) {
+      ulong tsorig_ns = decoded_v0.heartbeat_time_sent_microseconds * 1000UL;
+      ulong rx_ts_u   = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
+      fd_histf_sample( ctx->metrics.node_hearbeat_network_latency_nanos, fd_ulong_sat_sub( rx_ts_u, tsorig_ns ) );
+    }
     ctx->metrics.heartbeat_recv_cnt++;
     break;
   case FD_BAM_V0_STAGED_MULTI:
     fd_bam_commit_multiple_atomic_txn_batch( ctx, &decoded_v0.multi );
-    ctx->bam_last_builder_heartbeat_ns = fd_bam_now();
+    ctx->bam_last_builder_heartbeat_ns = rx_ts_ns;
     break;
   case FD_BAM_V0_STAGED_PING:
     /* Scheduler proto Ping is only a latency probe. It must be answered on

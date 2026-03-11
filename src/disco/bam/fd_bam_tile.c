@@ -133,7 +133,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, RESULTS_QUEUE_DEPTH, (ulong)ctx->bam_pending_results );
   FD_MGAUGE_SET( BAM, ENABLED,      (ulong)ctx->enabled );
 
-  FD_MHIST_COPY( BAM, MESSAGE_RX_DELAY_NANOS, ctx->metrics.msg_rx_delay );
+  FD_MHIST_COPY( BAM, NODE_HEARBEAT_NETWORK_LATENCY_NANOS, ctx->metrics.node_hearbeat_network_latency_nanos );
   FD_MHIST_COPY( BAM, SCHEDULER_PING_RESPONSE_NANOS, ctx->metrics.scheduler_ping_response_nanos );
 
   fd_wksp_t * wksp = fd_wksp_containing( ctx );
@@ -1098,9 +1098,9 @@ unprivileged_init( fd_topo_t *      topo,
   fd_grpc_client_set_version( ctx->grpc_client, fdctl_version_string, strlen( fdctl_version_string ) );
   fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
 
-  fd_histf_new( ctx->metrics.msg_rx_delay,
-      FD_MHIST_MIN( BAM, MESSAGE_RX_DELAY_NANOS ),
-      FD_MHIST_MAX( BAM, MESSAGE_RX_DELAY_NANOS ) );
+  fd_histf_new( ctx->metrics.node_hearbeat_network_latency_nanos,
+      FD_MHIST_MIN( BAM, NODE_HEARBEAT_NETWORK_LATENCY_NANOS ),
+      FD_MHIST_MAX( BAM, NODE_HEARBEAT_NETWORK_LATENCY_NANOS ) );
   fd_histf_new( ctx->metrics.scheduler_ping_response_nanos,
       FD_MHIST_MIN( BAM, SCHEDULER_PING_RESPONSE_NANOS ),
       FD_MHIST_MAX( BAM, SCHEDULER_PING_RESPONSE_NANOS ) );

@@ -694,6 +694,7 @@ test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
   zero_meta_ts( env->out_mcache, 2UL );
+  g_clock = (long)20e6;
 
   bam_types_Packet packet = bam_types_Packet_init_default;
   packet.data.size      = 1U;
@@ -741,6 +742,9 @@ test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
 
   FD_TEST( state->metrics.decode_fail_cnt == 0UL );
   FD_TEST( state->metrics.heartbeat_recv_cnt == 1UL );
+  FD_TEST( test_hist_total_cnt( state->metrics.node_hearbeat_network_latency_nanos ) == 1UL );
+  ulong expected_latency = (ulong)g_clock - (12345UL * 1000UL);
+  FD_TEST( fd_histf_sum( state->metrics.node_hearbeat_network_latency_nanos ) == expected_latency );
   FD_TEST( state->metrics.txn_received_cnt == 0UL );
   FD_TEST( state->metrics.bundle_received_cnt == 0UL );
   FD_TEST( state->bam_pending_results == 0UL );
@@ -1650,7 +1654,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
   /* Uses helper-generated scheduler responses to drive heartbeat timestamping
      and ensure batches refresh the watchdog deadline. */
 
-  /* Heartbeat message updates timestamp to prove unsolicited pings refresh the deadline. */
+  /* Heartbeat message updates timestamp and produces one heartbeat-latency sample. */
   {
     /* Subtest: direct heartbeat bumps the builder heartbeat timestamp. */
     test_bam_env_t env[1];
@@ -1659,6 +1663,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     long expected_ts = g_clock;
     FD_TEST( state->bam_last_builder_heartbeat_ns == expected_ts );
     FD_TEST( state->metrics.heartbeat_recv_cnt == 1UL );
+    FD_TEST( test_hist_total_cnt( state->metrics.node_hearbeat_network_latency_nanos ) == 1UL );
     test_bam_env_destroy( env );
   }
 
@@ -2081,6 +2086,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     state->metrics.decode_fail_cnt    = 0UL;
     state->defer_reset                = 0U;
     ulong ping_samples_before         = test_hist_total_cnt( state->metrics.scheduler_ping_response_nanos );
+    ulong latency_samples_before      = test_hist_total_cnt( state->metrics.node_hearbeat_network_latency_nanos );
 
     uint32_t ping_id = 0x00c0ffeeU;
     uchar protobuf[64];
@@ -2102,6 +2108,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     FD_TEST( state->metrics.ping_ack_cnt == 0UL );
     FD_TEST( state->bam_last_builder_heartbeat_ns == builder_ts );
     FD_TEST( test_hist_total_cnt( state->metrics.scheduler_ping_response_nanos ) == ping_samples_before + 1UL );
+    FD_TEST( test_hist_total_cnt( state->metrics.node_hearbeat_network_latency_nanos ) == latency_samples_before );
     FD_TEST( fd_histf_sum( state->metrics.scheduler_ping_response_nanos ) == 0UL );
 
     test_bam_decoded_message_t decoded;
@@ -2142,6 +2149,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     FD_TEST( state->bam_last_builder_heartbeat_ns == g_clock - FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8 );
     FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
     FD_TEST( test_hist_total_cnt( state->metrics.scheduler_ping_response_nanos ) == 1UL );
+    FD_TEST( test_hist_total_cnt( state->metrics.node_hearbeat_network_latency_nanos ) == 0UL );
 
     int charge_busy = 0;
     fd_bam_client_step( state, &charge_busy );
