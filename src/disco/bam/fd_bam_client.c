@@ -69,6 +69,7 @@ typedef enum {
   FD_BAM_LEADER_PENDING_DROP_REQUEST_FAILED,      /* dropped when stream request fails */
   FD_BAM_LEADER_PENDING_DROP_STREAM_ENDED,        /* dropped when stream ends */
   FD_BAM_LEADER_PENDING_DROP_STREAM_TIMEOUT,      /* dropped when stream times out */
+  FD_BAM_LEADER_PENDING_DROP_SUPERSEDED,          /* dropped because a newer leader-state update replaced it */
 } fd_bam_leader_pending_drop_reason_t;
 
 static inline void
@@ -99,6 +100,9 @@ fd_bam_drop_pending_leader_state( fd_bam_tile_t *                       ctx,
     break;
   case FD_BAM_LEADER_PENDING_DROP_STREAM_TIMEOUT:
     ctx->metrics.leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_TIMEOUT_IDX ]++;
+    break;
+  case FD_BAM_LEADER_PENDING_DROP_SUPERSEDED:
+    ctx->metrics.leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ]++;
     break;
   default:
     break;
@@ -980,6 +984,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   }
 
   if( FD_UNLIKELY( ctx->defer_reset ) ) {
+    ctx->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_DEFERRED_RESET_IDX ]++;
     FD_LOG_WARNING(( "BAM client reset requested; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
       ctx->server_fqdn,
       FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
@@ -1109,6 +1114,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     return;
   }
   if( FD_UNLIKELY( ctx->defer_reset ) ) {
+    ctx->metrics.step_skip_cnt[ FD_METRICS_ENUM_BAM_CLIENT_STEP_SKIP_REASON_V_DEFERRED_RESET_IDX ]++;
     FD_LOG_WARNING(( "BAM client reset; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
                      ctx->server_fqdn,
                      FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),

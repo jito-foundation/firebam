@@ -406,8 +406,7 @@ bam_after_frag( fd_bam_tile_t *     ctx,
       FD_LOG_WARNING(( "Unexpected in_idx=%lu for staged BAM leader state", in_idx ));
       break;
     }
-    ctx->bam_leader_state = *(fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->leader_in.mem, ctx->frag_staged_chunk );
-    ctx->bam_leader_pending = 1U;
+    fd_bam_stage_leader_state( ctx, (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->leader_in.mem, ctx->frag_staged_chunk ) );
     break;
   default:
     /* Unknown staged kind (e.g. memory corruption) is ignored to avoid

@@ -295,6 +295,17 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
   ctx->bam_pending_results = (ushort)( ctx->bam_pending_results + 1U );
 }
 
+FD_FN_UNUSED static inline void
+fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
+                           fd_bam_leader_state_t const *  state ) {
+  if( FD_UNLIKELY( ctx->bam_leader_pending &&
+                   0!=memcmp( &ctx->bam_leader_state, state, sizeof(fd_bam_leader_state_t) ) ) ) {
+    ctx->metrics.leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ]++;
+  }
+  ctx->bam_leader_state = *state;
+  ctx->bam_leader_pending = 1U;
+}
+
 /* Define 'request_ctx' IDs to identify different types of gRPC calls */
 
 #define FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge               0

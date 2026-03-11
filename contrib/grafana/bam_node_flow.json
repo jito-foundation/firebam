@@ -608,7 +608,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 12
       },
@@ -668,109 +668,6 @@
         }
       ],
       "title": "BAM Keepalive RTT",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Per-second rate of leader-state update messages accepted by gRPC stream_send, using the successful `leader_state_enqueued` bucket of bam_outbound_enqueue_outcome.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "smooth",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 12
-      },
-      "id": 17,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch8",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_outbound_enqueue_outcome{instance=~\"$instance\",bam_enqueue_outcome=\"leader_state_enqueued\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "Leader Updates",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "BAM Leader Update Enqueue Rate",
       "type": "timeseries"
     },
     {
@@ -838,7 +735,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 20
       },
@@ -886,109 +783,6 @@
         }
       ],
       "title": "BAM Publish Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Per-second rate of bundle execution result messages accepted by gRPC stream_send, using the successful `result_enqueued` bucket of bam_outbound_enqueue_outcome.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "smooth",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 20
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch8",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_outbound_enqueue_outcome{instance=~\"$instance\",bam_enqueue_outcome=\"result_enqueued\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "Results Enqueued",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "BAM Results Enqueue Rate",
       "type": "timeseries"
     },
     {
@@ -1734,7 +1528,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second BAM client failure rates grouped by bam_failure. bam_failure is a cumulative counter with disjoint decode, request_failed, transport, protocol, and timeout buckets.",
+      "description": "Per-second BAM client failure rates grouped by bam_failure. bam_failure is a cumulative counter with disjoint decode, request_failed, transport, unsupported_version, and timeout buckets.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2301,7 +2095,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM ingress message classes. bam_builder_heartbeats_decoded reflects successfully decoded BuilderHeartBeat messages; bam_ingress_multi_message_received reflects decoded multiple_atomic_txn_batch scheduler payloads.",
+      "description": "Rate (events/sec) of decoded multiple_atomic_txn_batch scheduler payloads. Builder-heartbeat traffic is shown in the dedicated BAM Heartbeats panel, so this panel isolates work-carrying ingress messages.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2327,7 +2121,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 68
       },
@@ -2355,107 +2149,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_builder_heartbeats_decoded{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "Heartbeat Messages",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
           "expr": "sum by (instance) (rate(bam_ingress_multi_message_received{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "Multi Messages",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "BAM Ingress Message Mix",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Rate (events/sec) of wrapper-level multiple_atomic_txn_batch rejects, sourced from the empty_message and overflow_message buckets of bam_ingress_batch_rejected.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 68
-      },
-      "id": 32,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-20781422371.patch2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_ingress_batch_rejected{instance=~\"$instance\",bam_ingress_batch_reject_reason=\"empty_message\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "Empty Wrapper Msg",
+          "legendFormat": "Work Messages",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_ingress_batch_rejected{instance=~\"$instance\",bam_ingress_batch_reject_reason=\"overflow_message\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "Overflow Wrapper Msg",
-          "range": true,
-          "refId": "B"
         }
       ],
-      "title": "BAM Ingress Wrapper Rejects",
+      "title": "BAM Ingress Work Messages",
       "type": "timeseries"
     },
     {
@@ -2710,7 +2411,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Total pending leader-state updates dropped before send over the selected time range, grouped by bam_leader_pending_drop_reason. Healthy steady state is typically near zero.",
+      "description": "Total pending leader-state updates cleared or superseded before send over the selected time range, grouped by bam_leader_pending_drop_reason. Healthy steady state is typically near zero; superseded indicates a newer pending leader-state replaced an older unsent one.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2774,7 +2475,7 @@
           "refId": "A"
         }
       ],
-      "title": "BAM Leader Pending Drops (Range Count)",
+      "title": "BAM Leader Pending Clears (Range Count)",
       "type": "stat"
     },
     {
@@ -3004,7 +2705,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM client-step skip iterations for non-stall reasons, using bam_step_skip. Split out from stall_backoff so smaller signals remain visible.",
+      "description": "Rate (events/sec) of BAM client-step skip iterations for non-stall reasons, using bam_step_skip. Split out from stall_backoff so smaller signals remain visible. This panel now includes request_blocked, not_connected, drive_io_fail, and deferred_reset.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3172,7 +2873,7 @@
         "x": 12,
         "y": 101
       },
-      "id": 33,
+      "id": 34,
       "options": {
         "legend": {
           "calcs": [
@@ -3260,6 +2961,6 @@
   "timezone": "utc",
   "title": "Firedancer BAM Node Flow",
   "uid": "bamnodeflow",
-  "version": 12,
+  "version": 14,
   "weekStart": ""
 }

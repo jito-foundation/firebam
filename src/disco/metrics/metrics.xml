@@ -407,7 +407,8 @@ metric introduced.
     <int value="0" name="RequestBlocked" label="Client step skipped because gRPC request path is blocked" />
     <int value="1" name="StallBackoff" label="Client step skipped because reconnect backoff is active" />
     <int value="2" name="NotConnected" label="Client step skipped while waiting for TCP connect progression" />
-    <int value="3" name="DriveIoFail" label="Client step skipped because drive_io failed or a deferred reset was pending" />
+    <int value="3" name="DriveIoFail" label="Client step skipped because drive_io failed" />
+    <int value="4" name="DeferredReset" label="Client step skipped because a deferred reset was pending" />
 </enum>
 
 <enum name="BamStreamTransition">
@@ -420,6 +421,7 @@ metric introduced.
     <int value="1" name="RequestFailed" label="Pending leader-state cleared because scheduler stream request failed" />
     <int value="2" name="StreamEnded" label="Pending leader-state cleared because scheduler stream ended" />
     <int value="3" name="StreamTimeout" label="Pending leader-state cleared because scheduler stream timed out" />
+    <int value="4" name="Superseded" label="Pending leader-state replaced by a newer leader-state update before send" />
 </enum>
 
 <tile name="bam">
@@ -444,7 +446,7 @@ metric introduced.
     <counter name="OutboundEnqueueOutcome" enum="BamEnqueueOutcome" summary="Cumulative number of BAM outbound leader-state/result enqueue outcomes at the gRPC stream_send boundary" />
     <counter name="StepSkip" enum="BamClientStepSkipReason" summary="Cumulative number of BAM client-step skips by reason" />
     <counter name="StreamTransition" enum="BamStreamTransition" summary="Cumulative number of scheduler stream live-state transitions" />
-    <counter name="LeaderPendingDropped" enum="BamLeaderPendingDropReason" summary="Cumulative number of pending leader-state updates dropped before send, by reason" />
+    <counter name="LeaderPendingDropped" enum="BamLeaderPendingDropReason" summary="Cumulative number of pending leader-state updates cleared or superseded before send, by reason" />
     <gauge name="KeepaliveRttSample" summary="Latest HTTP/2 keepalive round-trip time sample captured at scrape time (nanoseconds)" />
     <gauge name="KeepaliveRttSmoothed" summary="Exponentially smoothed HTTP/2 keepalive round-trip time estimate (nanoseconds)" />
     <gauge name="KeepaliveRttDeviation" summary="Smoothed HTTP/2 keepalive RTT variation estimate (nanoseconds)" />
