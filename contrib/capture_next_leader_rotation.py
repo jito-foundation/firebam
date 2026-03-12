@@ -204,6 +204,29 @@ def rpc_call(rpc_url: str, method: str, params=None) -> Any:
     return json.loads(body)["result"]
 
 
+def run_ip_route_json(*args: str) -> list[dict[str, Any]]:
+    try:
+        completed = subprocess.run(
+            ["ip", "-json", "route", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip()
+        detail = stderr or exc.stdout.strip() or str(exc)
+        raise RuntimeError(f"failed to query route info via `ip route {' '.join(args)}`: {detail}") from exc
+
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"failed to parse route info from `ip route {' '.join(args)}`") from exc
+
+    if not isinstance(payload, list):
+        raise RuntimeError(f"unexpected route info format from `ip route {' '.join(args)}`")
+    return [route for route in payload if isinstance(route, dict)]
+
+
 def get_next_leader_rotation(rpc_url: str, min_start_slot_exclusive: Optional[int] = None) -> tuple[str, int, int, int]:
     identity = rpc_call(rpc_url, "getIdentity")["identity"]
 
@@ -830,11 +853,34 @@ def capture_next_leader_rotation(
     firedancer_log_start = firedancer_log_path.stat()
 
     tcpdump_filter = "not (net 127.0.0.0/8 or host ::1)"
+    route_args = ("show", "default")
+    route_error = "could not determine capture interface from default route"
     if args.bam_only:
+        route_args = ("get", bam_ip)
+        route_error = f"could not determine capture interface for route to {bam_ip}"
         tcpdump_filter = f"host {bam_ip} and {tcpdump_filter}"
+    capture_routes = [
+        route
+        for route in run_ip_route_json(*route_args)
+        if isinstance(route.get("dev"), str) and route["dev"]
+    ]
+    selected_route = (
+        next(iter(capture_routes), None)
+        if args.bam_only
+        else min(
+            capture_routes,
+            key=lambda route: parse_int(route.get("metric")),
+            default=None,
+        )
+    )
+    if selected_route is None:
+        raise RuntimeError(route_error)
+    capture_interface = str(selected_route["dev"])
+    if args.bam_only:
         print(
             "bam-only capture enabled: "
             f"parsed BAM endpoint {bam_ip}:{bam_port} from {firedancer_log_path}; "
+            f"capture interface='{capture_interface}'; "
             f"tcpdump filter='{tcpdump_filter}'"
         )
     pcap_cmd = [
@@ -843,7 +889,7 @@ def capture_next_leader_rotation(
         "sudo",
         "tcpdump",
         "-i",
-        "any",
+        capture_interface,
         "-B",
         "8192", # default is 2MiB, change to 8MiB to avoid drops
         "-n",
@@ -855,7 +901,7 @@ def capture_next_leader_rotation(
     print(
         "capture directory: "
         f"{run_dir}; starting tcpdump and metrics capture now for ~{args.capture_time_sec}s "
-        f"with filter '{tcpdump_filter}'"
+        f"on interface '{capture_interface}' with filter '{tcpdump_filter}'"
     )
     tcpdump_proc = subprocess.Popen(pcap_cmd, cwd=run_dir)
     capture_deadline = time.monotonic() + args.capture_time_sec
