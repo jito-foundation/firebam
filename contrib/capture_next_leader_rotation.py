@@ -24,6 +24,7 @@ PROCESSED_COMMITMENT = "processed"
 FAST_POLL_WINDOW_SEC = 10.0
 FAST_POLL_INTERVAL_SEC = 1.0
 WEBSOCAT_BUFFER_BYTES = "12000000"
+ETHTOOL_STATS_FILTER_RE = re.compile(r"drop|error|discard|miss|fifo", re.IGNORECASE)
 
 
 def non_negative_int(value: str) -> int:
@@ -883,6 +884,19 @@ def capture_next_leader_rotation(
             f"capture interface='{capture_interface}'; "
             f"tcpdump filter='{tcpdump_filter}'"
         )
+    public_internet_interfaces = list(
+        dict.fromkeys(
+            route["dev"]
+            for route in run_ip_route_json("show", "default")
+            if isinstance(route.get("dev"), str) and route["dev"]
+            and (Path("/sys/class/net") / route["dev"] / "device").exists()
+        )
+    )
+
+    if public_internet_interfaces:
+        print(f"default-route diagnostics interfaces: {', '.join(public_internet_interfaces)}")
+    else:
+        print("warning: no default-route interfaces discovered for diagnostics", file=sys.stderr)
     pcap_cmd = [
         "timeout",
         str(args.capture_time_sec),
@@ -903,6 +917,78 @@ def capture_next_leader_rotation(
         f"{run_dir}; starting tcpdump and metrics capture now for ~{args.capture_time_sec}s "
         f"on interface '{capture_interface}' with filter '{tcpdump_filter}'"
     )
+    diag_dir: Optional[Path] = None
+    ethtool_path = "/sbin/ethtool" if Path("/sbin/ethtool").exists() else (shutil.which("ethtool") or "/sbin/ethtool")
+    tc_path = "/sbin/tc" if Path("/sbin/tc").exists() else (shutil.which("tc") or "/sbin/tc")
+
+    def capture_diag_phase(phase: str) -> None:
+        if diag_dir is None:
+            return
+
+        print(f"{phase.replace('_', ' ')}: collecting interface diagnostics for {', '.join(public_internet_interfaces)}")
+        for iface in public_internet_interfaces:
+            try:
+                completed = subprocess.run(
+                    [ethtool_path, "-S", iface],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                output = "\n".join(
+                    line for line in completed.stdout.splitlines() if ETHTOOL_STATS_FILTER_RE.search(line)
+                ) or "[no matching lines]"
+                if completed.stderr:
+                    output = f"{output}\n\n[stderr]\n{completed.stderr}" if output else f"[stderr]\n{completed.stderr}"
+            except OSError as exc:
+                output = f"{exc}\n"
+            (diag_dir / f"{phase}_{iface}_ethtool_stats.txt").write_text(
+                output if output.endswith("\n") else f"{output}\n",
+                encoding="utf-8",
+            )
+
+            try:
+                completed = subprocess.run(
+                    ["sudo", tc_path, "-s", "qdisc", "show", "dev", iface],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                output = completed.stdout
+                if completed.stderr:
+                    output = f"{output}\n\n[stderr]\n{completed.stderr}" if output else f"[stderr]\n{completed.stderr}"
+            except OSError as exc:
+                output = f"{exc}\n"
+            (diag_dir / f"{phase}_{iface}_tc_qdisc.txt").write_text(
+                output if output.endswith("\n") else f"{output}\n",
+                encoding="utf-8",
+            )
+
+            try:
+                completed = subprocess.run(
+                    ["ip", "-json", "-s", "link", "show", iface],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                output = completed.stdout
+                if completed.stderr:
+                    output = f"{output}\n\n[stderr]\n{completed.stderr}" if output else f"[stderr]\n{completed.stderr}"
+            except OSError as exc:
+                output = f"{exc}\n"
+            (diag_dir / f"{phase}_{iface}_ip_link.txt").write_text(
+                output if output.endswith("\n") else f"{output}\n",
+                encoding="utf-8",
+            )
+
+    if public_internet_interfaces:
+        diag_dir = run_dir / "interface_diagnostics"
+        try:
+            diag_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"warning: failed to create {diag_dir}: {exc}", file=sys.stderr)
+            diag_dir = None
+        else:
+            capture_diag_phase("before_capture")
     tcpdump_proc = subprocess.Popen(pcap_cmd, cwd=run_dir)
     capture_deadline = time.monotonic() + args.capture_time_sec
 
@@ -918,6 +1004,7 @@ def capture_next_leader_rotation(
                 time.sleep(sleep_for)
     finally:
         rc = tcpdump_proc.wait()
+        capture_diag_phase("after_capture")
 
     clipped_log_path = run_dir / "firedancer.log"
     firedancer_log_end = firedancer_log_path.stat()
