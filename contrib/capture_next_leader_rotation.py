@@ -155,14 +155,11 @@ def parse_args() -> argparse.Namespace:
     add_websocket_args(websocket_p)
 
     args = p.parse_args(argv)
-    if args.cmd is None:
-        p.print_help()
-        raise SystemExit(0)
-
-    if getattr(args, "rpc_url", None) is None:
-        args.rpc_url = f"http://{args.host}:8899"
-    if getattr(args, "metrics_url", None) is None:
-        args.metrics_url = f"http://{args.host}:7999/metrics"
+    if args.cmd == "capture":
+        if args.rpc_url is None:
+            args.rpc_url = f"http://{args.host}:8899"
+        if args.metrics_url is None:
+            args.metrics_url = f"http://{args.host}:7999/metrics"
     if args.websocket_url is None:
         args.websocket_url = f"ws://{args.host}:80/websocket"
     args.websocket_url = args.websocket_url.strip()
@@ -206,22 +203,13 @@ def rpc_call(rpc_url: str, method: str, params=None) -> Any:
 
 
 def run_ip_route_json(*args: str) -> list[dict[str, Any]]:
-    try:
-        completed = subprocess.run(
-            ["ip", "-json", "route", *args],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.strip()
-        detail = stderr or exc.stdout.strip() or str(exc)
-        raise RuntimeError(f"failed to query route info via `ip route {' '.join(args)}`: {detail}") from exc
-
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"failed to parse route info from `ip route {' '.join(args)}`") from exc
+    completed = subprocess.run(
+        ["ip", "-json", "route", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout)
 
     if not isinstance(payload, list):
         raise RuntimeError(f"unexpected route info format from `ip route {' '.join(args)}`")
@@ -379,17 +367,12 @@ def compute_produced_slots(snapshot: list[dict[str, Any]], identity: str, comple
 
         start_slot = parse_int(epoch_value.get("start_slot"))
         leader_slots = epoch_value.get("leader_slots")
-        if isinstance(leader_slots, dict):
-            leader_entries = leader_slots.items()
-        elif isinstance(leader_slots, list):
-            leader_entries = enumerate(leader_slots)
-        else:
+        if not isinstance(leader_slots, list):
             continue
 
-        for slot_group, leader_idx in leader_entries:
+        for slot_group_idx, leader_idx in enumerate(leader_slots):
             if parse_int(leader_idx) != validator_idx:
                 continue
-            slot_group_idx = parse_int(slot_group)
 
             base_slot = start_slot + (slot_group_idx * 4)
             for slot in range(base_slot, base_slot + 4):
@@ -526,28 +509,10 @@ def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
             "block_fail": drop_block_fail,
         },
         "slot_metrics": {
-            "votes": (
-                (
-                    parse_int(publish.get("success_vote_transaction_cnt"))
-                    if "success_vote_transaction_cnt" in publish
-                    else parse_int(publish.get("success_vote_transactions"))
-                )
-                + (
-                    parse_int(publish.get("failed_vote_transaction_cnt"))
-                    if "failed_vote_transaction_cnt" in publish
-                    else parse_int(publish.get("failed_vote_transactions"))
-                )
-            ),
-            "non_vote_failure": (
-                parse_int(publish.get("failed_nonvote_transaction_cnt"))
-                if "failed_nonvote_transaction_cnt" in publish
-                else parse_int(publish.get("failed_nonvote_transactions"))
-            ),
-            "non_vote_success": (
-                parse_int(publish.get("success_nonvote_transaction_cnt"))
-                if "success_nonvote_transaction_cnt" in publish
-                else parse_int(publish.get("success_nonvote_transactions"))
-            ),
+            "votes": parse_int(publish.get("success_vote_transaction_cnt"))
+            + parse_int(publish.get("failed_vote_transaction_cnt")),
+            "non_vote_failure": parse_int(publish.get("failed_nonvote_transaction_cnt")),
+            "non_vote_success": parse_int(publish.get("success_nonvote_transaction_cnt")),
             "compute_units": parse_int(publish.get("compute_units")),
             "priority_fees_sol": round((parse_int(publish.get("priority_fee")) / 1_000_000_000) * 10000) / 10000,
             "transaction_fees_sol": round((parse_int(publish.get("transaction_fee")) / 1_000_000_000) * 10000) / 10000,
@@ -631,9 +596,11 @@ def scrape_websocket_slots(
     produced_slots = compute_produced_slots(snapshot, identity, completed_slot)
     if not produced_slots:
         raise RuntimeError("no produced slots discovered from epoch schedules")
-    query_slots = produced_slots
-    if mode == "recent" and recent_count > 0:
-        query_slots = query_slots[-max(recent_count * 4, recent_count + 8):]
+    query_slots = (
+        produced_slots[-max(recent_count * 4, recent_count + 8):]
+        if mode == "recent" and recent_count > 0
+        else produced_slots
+    )
 
     query_payloads = [
         {
@@ -646,11 +613,7 @@ def scrape_websocket_slots(
     ]
 
     seen_query_results = False
-    pending_ids = {
-        str(req.get("id"))
-        for req in query_payloads
-        if req.get("id") is not None
-    }
+    pending_ids = {str(req["id"]) for req in query_payloads}
     for wait_secs, timeout_secs in (
         (query_wait_secs, detail_timeout_secs),
         (query_wait_secs + 4, detail_timeout_secs + 40),
@@ -820,7 +783,7 @@ def capture_next_leader_rotation(
 
     if args.bam_only:
         bam_log_endpoint_patterns = (
-            re.compile(r"Connected to BAM node at .*?\(((?P<ip>(?:\d{1,3}\.){3}\d{1,3})):(?P<port>\d+)\)"),
+            re.compile(r"Connected to BAM node at .*?\((?P<ip>(?:\d{1,3}\.){3}\d{1,3}):(?P<port>\d+)\)"),
             re.compile(r"Connecting to \w+://(?P<ip>(?:\d{1,3}\.){3}\d{1,3}):(?P<port>\d+)"),
             re.compile(r"\bBAM\b.*?/(?P<ip>(?:\d{1,3}\.){3}\d{1,3}):(?P<port>\d+)"),
         )
