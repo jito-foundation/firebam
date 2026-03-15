@@ -26,6 +26,141 @@ FAST_POLL_INTERVAL_SEC = 1.0
 WEBSOCAT_BUFFER_BYTES = "12000000"
 ETHTOOL_STATS_FILTER_RE = re.compile(r"drop|error|discard|miss|fifo", re.IGNORECASE)
 
+# Representative slot rows emitted by `websocket-scrape`, captured from
+# `wss://fd-mainnet.stakingfacilities.com/websocket` on 2026-03-15.
+WEBSOCKET_SLOT_OUTPUT_EXAMPLES: list[dict[str, Any]] = [
+    {
+        "slot": 406626210,
+        "sankey_nodes": {
+            "quic": 23739,
+            "udp": 2261,
+            "received": 26000,
+            "gossip": 721,
+            "block_engine": 74,
+            "verify": 26795,
+            "dedup": 9153,
+            "resolv": 3135,
+            "crank": 0,
+            "buffered_in": 4068,
+            "pack": 7201,
+            "bank": 2394,
+            "packed": 1953,
+        },
+        "sankey_drops": {
+            "malformed": 0,
+            "abandoned": 0,
+            "unparseable": 17,
+            "bad_signature": 0,
+            "verify_duplicate": 17625,
+            "dedup_duplicate": 6018,
+            "unresolved": 0,
+            "bad_lut": 0,
+            "resolv_expired": 2,
+            "buffered": 4300,
+            "unpackable": 43,
+            "pack_expired": 464,
+            "already_executed": 0,
+            "unexecutable": 441,
+            "block_success": 1481,
+            "block_fail": 364,
+        },
+        "slot_metrics": {
+            "votes": 764,
+            "non_vote_failure": 364,
+            "non_vote_success": 717,
+            "compute_units": 59999633,
+            "priority_fees_sol": 0.0107,
+            "transaction_fees_sol": 0.0047,
+            "tips_sol": 0.0015,
+        },
+        "publish": {
+            "slot": 406626210,
+            "mine": True,
+            "start_timestamp_nanos": "1773598026227233763",
+            "target_end_timestamp_nanos": "1773598026577233920",
+            "skipped": False,
+            "level": "rooted",
+            "duration_nanos": 349194122,
+            "completed_time_nanos": "1773598026584007852",
+            "success_nonvote_transaction_cnt": 717,
+            "failed_nonvote_transaction_cnt": 364,
+            "success_vote_transaction_cnt": 764,
+            "failed_vote_transaction_cnt": 0,
+            "max_compute_units": 60000000,
+            "compute_units": 59999633,
+            "shreds": None,
+            "transaction_fee": 4722500,
+            "priority_fee": 10699961,
+            "tips": 1532399,
+        },
+    },
+    {
+        "slot": 406626211,
+        "sankey_nodes": {
+            "quic": 19388,
+            "udp": 1332,
+            "received": 20720,
+            "gossip": 807,
+            "block_engine": 84,
+            "verify": 21611,
+            "dedup": 7367,
+            "resolv": 2403,
+            "crank": 0,
+            "buffered_in": 4300,
+            "pack": 6702,
+            "bank": 1856,
+            "packed": 1608,
+        },
+        "sankey_drops": {
+            "malformed": 0,
+            "abandoned": 0,
+            "unparseable": 15,
+            "bad_signature": 0,
+            "verify_duplicate": 14229,
+            "dedup_duplicate": 4964,
+            "unresolved": 0,
+            "bad_lut": 0,
+            "resolv_expired": 1,
+            "buffered": 4495,
+            "unpackable": 11,
+            "pack_expired": 340,
+            "already_executed": 0,
+            "unexecutable": 248,
+            "block_success": 1133,
+            "block_fail": 387,
+        },
+        "slot_metrics": {
+            "votes": 767,
+            "non_vote_failure": 387,
+            "non_vote_success": 366,
+            "compute_units": 59958283,
+            "priority_fees_sol": 0.0181,
+            "transaction_fees_sol": 0.0039,
+            "tips_sol": 0.0021,
+        },
+        "publish": {
+            "slot": 406626211,
+            "mine": True,
+            "start_timestamp_nanos": "1773598026577233763",
+            "target_end_timestamp_nanos": "1773598026927233536",
+            "skipped": False,
+            "level": "rooted",
+            "duration_nanos": 350168260,
+            "completed_time_nanos": "1773598026934176112",
+            "success_nonvote_transaction_cnt": 366,
+            "failed_nonvote_transaction_cnt": 387,
+            "success_vote_transaction_cnt": 767,
+            "failed_vote_transaction_cnt": 0,
+            "max_compute_units": 60000000,
+            "compute_units": 59958283,
+            "shreds": None,
+            "transaction_fee": 3947500,
+            "priority_fee": 18143821,
+            "tips": 2093004,
+        },
+    },
+]
+
 
 def non_negative_int(value: str) -> int:
     try:
@@ -59,32 +194,43 @@ def add_websocket_args(parser: argparse.ArgumentParser) -> None:
         "--websocket-url",
         type=non_empty_string,
         default=os.getenv("WEBSOCKET_URL", os.getenv("WEBSOCKET_HOST")),
-        help="websocket URL (default: ws://<host>:80/websocket)",
+        help=(
+            "websocket URL (default: ws://<host>:80/websocket). Expected to be a Firedancer "
+            "GUI endpoint that streams summary/epoch rows and accepts slot.query_detailed."
+        ),
     )
     parser.add_argument(
         "--websocket-mode",
         choices=("recent", "since-startup"),
         default=os.getenv("WEBSOCKET_MODE", "recent"),
+        help=(
+            "recent = emit the last N produced slots discovered from the snapshot; "
+            "since-startup = emit all produced slots completed since startup_time_nanos"
+        ),
     )
     parser.add_argument(
         "--websocket-recent-count",
         type=non_negative_int,
         default=non_negative_int(os.getenv("WEBSOCKET_RECENT_COUNT", "16")),
+        help="number of slot rows to keep in recent mode after the detailed query pass",
     )
     parser.add_argument(
         "--websocket-snapshot-secs",
         type=non_negative_int,
         default=non_negative_int(os.getenv("WEBSOCKET_SNAPSHOT_SECS", "2")),
+        help="seconds to wait for summary.identity_key/startup_time_nanos/completed_slot and epoch.new rows",
     )
     parser.add_argument(
         "--websocket-query-wait-secs",
         type=non_negative_int,
         default=non_negative_int(os.getenv("WEBSOCKET_QUERY_WAIT_SECS", "8")),
+        help="idle grace period after the last slot query response before ending a query pass",
     )
     parser.add_argument(
         "--websocket-detail-timeout-secs",
         type=non_negative_int,
         default=non_negative_int(os.getenv("WEBSOCKET_DETAIL_TIMEOUT_SECS", "60")),
+        help="absolute timeout for one slot.query_detailed pass",
     )
 
 
@@ -143,7 +289,7 @@ def parse_args() -> argparse.Namespace:
     websocket_p = subparsers.add_parser(
         "websocket-scrape",
         help="run only the websocket slot scrape",
-        description="Run only the websocket slot scrape and emit NDJSON results.",
+        description="Run only the websocket scrape and emit NDJSON results.",
     )
     websocket_p.add_argument("--host", type=non_empty_string, default=os.getenv("HOST", "127.0.0.1"))
     websocket_p.add_argument(
@@ -290,17 +436,34 @@ class WebsocketJsonSession:
     def __init__(self, websocket_url: str) -> None:
         self.websocket_url = websocket_url
         self.proc: Optional[subprocess.Popen[str]] = None
+        self._exit_stderr: Optional[str] = None
 
     def __enter__(self) -> "WebsocketJsonSession":
         self.proc = subprocess.Popen(
             ["websocat", "-B", WEBSOCAT_BUFFER_BYTES, self.websocket_url],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
         return self
+
+    def _connection_error(self) -> RuntimeError:
+        exit_code = None if self.proc is None else self.proc.poll()
+        if self._exit_stderr is None:
+            if self.proc is None or self.proc.stderr is None:
+                self._exit_stderr = ""
+            else:
+                try:
+                    self._exit_stderr = self.proc.stderr.read() or ""
+                except (OSError, ValueError):
+                    self._exit_stderr = ""
+        stderr_text = self._exit_stderr.strip()
+        message = f"websocket connection failed (exit code {exit_code})"
+        if stderr_text:
+            message = f"{message}: {stderr_text}"
+        return RuntimeError(message)
 
     def __exit__(self, exc_type, exc, tb) -> None:
         if self.proc is None:
@@ -308,8 +471,6 @@ class WebsocketJsonSession:
 
         if self.proc.stdin is not None and not self.proc.stdin.closed:
             self.proc.stdin.close()
-        if self.proc.stdout is not None and not self.proc.stdout.closed:
-            self.proc.stdout.close()
 
         if self.proc.poll() is None:
             self.proc.terminate()
@@ -319,23 +480,39 @@ class WebsocketJsonSession:
                 self.proc.kill()
                 self.proc.wait()
 
+        if self.proc.stdout is not None and not self.proc.stdout.closed:
+            self.proc.stdout.close()
+        if self.proc.stderr is not None and not self.proc.stderr.closed:
+            self.proc.stderr.close()
+
     def send_json(self, payload: dict[str, Any]) -> None:
         if self.proc is None or self.proc.stdin is None:
             raise RuntimeError("websocket process is not available")
-        self.proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
-        self.proc.stdin.flush()
+        if self.proc.poll() is not None:
+            raise self._connection_error()
+        try:
+            self.proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            raise self._connection_error() from exc
 
     def read_json(self, timeout_sec: float) -> Optional[dict[str, Any]]:
         if self.proc is None or self.proc.stdout is None:
             return None
+        if self.proc.poll() is not None:
+            raise self._connection_error()
 
         timeout = max(0.0, timeout_sec)
         ready, _, _ = select.select([self.proc.stdout], [], [], timeout)
         if not ready:
+            if self.proc.poll() is not None:
+                raise self._connection_error()
             return None
 
         line = self.proc.stdout.readline()
         if not line:
+            if self.proc.poll() is not None:
+                raise self._connection_error()
             return None
 
         try:
@@ -346,16 +523,9 @@ class WebsocketJsonSession:
         return payload if isinstance(payload, dict) else None
 
 
-def compute_produced_slots(snapshot: list[dict[str, Any]], identity: str, completed_slot: int) -> list[int]:
+def compute_produced_slots(epoch_values: list[dict[str, Any]], identity: str, completed_slot: int) -> list[int]:
     produced: set[int] = set()
-    for row in snapshot:
-        if row.get("topic") != "epoch" or row.get("key") != "new":
-            continue
-
-        epoch_value = row.get("value")
-        if not isinstance(epoch_value, dict):
-            continue
-
+    for epoch_value in epoch_values:
         staked_pubkeys = epoch_value.get("staked_pubkeys")
         if not isinstance(staked_pubkeys, list):
             continue
@@ -383,7 +553,15 @@ def compute_produced_slots(snapshot: list[dict[str, Any]], identity: str, comple
 
 
 def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
-    if row.get("topic") != "slot" or row.get("key") not in {"query", "query_detailed"}:
+    """Parse one slot.query_detailed response row from the Firedancer GUI websocket.
+
+    Expected wire shape:
+      - request: {"topic":"slot","key":"query_detailed","params":{"slot":<u64>}}
+      - response: {"topic":"slot","key":"query","value":{"publish":...,"waterfall":...}}
+    """
+
+    # Live GUI servers currently reply to slot.query_detailed with key="query".
+    if row.get("topic") != "slot" or row.get("key") != "query":
         return None
 
     value = row.get("value")
@@ -395,13 +573,12 @@ def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
         return None
 
     waterfall = value.get("waterfall")
-    waterfall_in: dict[str, Any] = {}
-    waterfall_drops: dict[str, Any] = {}
-    if isinstance(waterfall, dict):
-        if isinstance(waterfall.get("in"), dict):
-            waterfall_in = waterfall["in"]
-        if isinstance(waterfall.get("out"), dict):
-            waterfall_drops = waterfall["out"]
+    if not isinstance(waterfall, dict):
+        return None
+    waterfall_in = waterfall.get("in")
+    waterfall_drops = waterfall.get("out")
+    if not isinstance(waterfall_in, dict) or not isinstance(waterfall_drops, dict):
+        return None
 
     in_quic = parse_int(waterfall_in.get("quic"))
     in_udp = parse_int(waterfall_in.get("udp"))
@@ -440,6 +617,7 @@ def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
     drop_block_success = parse_int(waterfall_drops.get("block_success"))
     drop_block_fail = parse_int(waterfall_drops.get("block_fail"))
     unresolved = max(0, parse_int(waterfall_drops.get("resolv_retained")) - in_resolv_retained)
+    drop_resolv_expired_total = drop_resolv_expired + drop_resolv_ancient
 
     received = in_quic + in_udp
     verify = (
@@ -499,7 +677,7 @@ def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
             "dedup_duplicate": drop_dedup_duplicate,
             "unresolved": unresolved,
             "bad_lut": drop_resolv_lut_failed,
-            "resolv_expired": drop_resolv_expired,
+            "resolv_expired": drop_resolv_expired_total,
             "buffered": drop_pack_retained,
             "unpackable": drop_pack_invalid,
             "pack_expired": drop_pack_expired,
@@ -535,10 +713,12 @@ def scrape_websocket_slots(
         raise RuntimeError(
             f"invalid websocket URL '{websocket_url}'; expected ws://<host>[/path] or wss://<host>[/path]"
         )
-    snapshot: list[dict[str, Any]] = []
     snapshot_deadline = time.monotonic() + snapshot_secs
     summary_keys = {"identity_key", "startup_time_nanos", "completed_slot"}
     summary_values: dict[str, Any] = {}
+    summary_rows: list[dict[str, Any]] = []
+    seen_summary_keys: set[str] = set()
+    epoch_values: list[dict[str, Any]] = []
 
     with WebsocketJsonSession(websocket_url) as ws:
         while time.monotonic() <= snapshot_deadline:
@@ -546,24 +726,34 @@ def scrape_websocket_slots(
             if row is None:
                 continue
 
-            snapshot.append(row)
             topic = row.get("topic")
             key = row.get("key")
             value = row.get("value")
-            if topic == "summary" and key in summary_keys and value is not None and key not in summary_values:
-                summary_values[key] = value
+            if topic == "summary" and key in summary_keys and value is not None:
+                summary_key = str(key)
+                if summary_key not in summary_values:
+                    summary_values[summary_key] = value
+                if summary_key not in seen_summary_keys:
+                    seen_summary_keys.add(summary_key)
+                    summary_rows.append(
+                        {
+                            "record_type": "summary",
+                            "topic": topic,
+                            "key": summary_key,
+                            "value": value,
+                        }
+                    )
+            elif topic == "epoch" and key == "new" and isinstance(value, dict):
+                epoch_values.append(value)
 
             if len(summary_values) != 3:
                 continue
 
             completed_slot = parse_int(summary_values["completed_slot"])
             if any(
-                snapshot_row.get("topic") == "epoch"
-                and snapshot_row.get("key") == "new"
-                and isinstance(snapshot_row.get("value"), dict)
-                and parse_int(snapshot_row["value"].get("start_slot")) <= completed_slot
-                <= parse_int(snapshot_row["value"].get("end_slot"))
-                for snapshot_row in snapshot
+                parse_int(epoch_value.get("start_slot")) <= completed_slot
+                <= parse_int(epoch_value.get("end_slot"))
+                for epoch_value in epoch_values
             ):
                 break
 
@@ -577,13 +767,10 @@ def scrape_websocket_slots(
     completed_slot = parse_int(summary_values["completed_slot"])
     epoch_ranges = [
         (
-            parse_int(row["value"].get("start_slot")),
-            parse_int(row["value"].get("end_slot")),
+            parse_int(epoch_value.get("start_slot")),
+            parse_int(epoch_value.get("end_slot")),
         )
-        for row in snapshot
-        if row.get("topic") == "epoch"
-        and row.get("key") == "new"
-        and isinstance(row.get("value"), dict)
+        for epoch_value in epoch_values
     ]
     if not any(start_slot <= completed_slot <= end_slot for start_slot, end_slot in epoch_ranges):
         ranges_display = ", ".join(f"{start_slot}-{end_slot}" for start_slot, end_slot in epoch_ranges) or "none"
@@ -593,7 +780,7 @@ def scrape_websocket_slots(
             "try increasing --websocket-snapshot-secs"
         )
 
-    produced_slots = compute_produced_slots(snapshot, identity, completed_slot)
+    produced_slots = compute_produced_slots(epoch_values, identity, completed_slot)
     if not produced_slots:
         raise RuntimeError("no produced slots discovered from epoch schedules")
     query_slots = (
@@ -637,7 +824,7 @@ def scrape_websocket_slots(
                 details.append(row)
                 if (
                     row.get("topic") == "slot"
-                    and row.get("key") in {"query", "query_detailed"}
+                    and row.get("key") == "query"
                     and row.get("id") is not None
                 ):
                     response_id = str(row.get("id"))
@@ -650,7 +837,7 @@ def scrape_websocket_slots(
 
         seen_query_results = seen_query_results or any(
             row.get("topic") == "slot"
-            and row.get("key") in {"query", "query_detailed"}
+            and row.get("key") == "query"
             and row.get("value") is not None
             for row in details
         )
@@ -672,7 +859,16 @@ def scrape_websocket_slots(
             parsed_rows = parsed_rows[-recent_count:]
 
         if parsed_rows:
-            return parsed_rows
+            epoch_rows = [
+                {
+                    "record_type": "epoch",
+                    "topic": "epoch",
+                    "key": "new",
+                    "value": epoch_value,
+                }
+                for epoch_value in epoch_values
+            ]
+            return [*summary_rows, *epoch_rows, *({"record_type": "slot", **row} for row in parsed_rows)]
 
     if seen_query_results:
         return []
@@ -992,7 +1188,7 @@ def capture_next_leader_rotation(
         print(f"error: tcpdump failed with exit code {rc}", file=sys.stderr)
         return rc, next_rotation_end_slot
 
-    websocket_output_path = run_dir / "websocket_slots.ndjson"
+    websocket_output_path = run_dir / "websocket.ndjson"
     print(
         "running websocket scrape at end of capture: "
         f"url={args.websocket_url} mode={args.websocket_mode}"
@@ -1047,3 +1243,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         raise SystemExit(130)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1)
