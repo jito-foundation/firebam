@@ -25,6 +25,9 @@ FAST_POLL_WINDOW_SEC = 10.0
 FAST_POLL_INTERVAL_SEC = 1.0
 WEBSOCAT_BUFFER_BYTES = "12000000"
 ETHTOOL_STATS_FILTER_RE = re.compile(r"drop|error|discard|miss|fifo", re.IGNORECASE)
+WEBSOCKET_SUMMARY_KEYS = frozenset({"identity_key", "startup_time_nanos", "completed_slot"})
+WEBSOCKET_SLOT_QUERY_REQUEST_KEY = "query_detailed"
+WEBSOCKET_SLOT_QUERY_RESPONSE_KEY = "query"
 
 # Representative slot rows emitted by `websocket-scrape`, captured from
 # `wss://fd-mainnet.stakingfacilities.com/websocket` on 2026-03-15.
@@ -230,7 +233,7 @@ def add_websocket_args(parser: argparse.ArgumentParser) -> None:
         "--websocket-detail-timeout-secs",
         type=non_negative_int,
         default=non_negative_int(os.getenv("WEBSOCKET_DETAIL_TIMEOUT_SECS", "60")),
-        help="absolute timeout for one slot.query_detailed pass",
+        help=f"absolute timeout for one slot.{WEBSOCKET_SLOT_QUERY_REQUEST_KEY} pass",
     )
 
 
@@ -561,7 +564,7 @@ def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
     """
 
     # Live GUI servers currently reply to slot.query_detailed with key="query".
-    if row.get("topic") != "slot" or row.get("key") != "query":
+    if row.get("topic") != "slot" or row.get("key") != WEBSOCKET_SLOT_QUERY_RESPONSE_KEY:
         return None
 
     value = row.get("value")
@@ -714,10 +717,8 @@ def scrape_websocket_slots(
             f"invalid websocket URL '{websocket_url}'; expected ws://<host>[/path] or wss://<host>[/path]"
         )
     snapshot_deadline = time.monotonic() + snapshot_secs
-    summary_keys = {"identity_key", "startup_time_nanos", "completed_slot"}
     summary_values: dict[str, Any] = {}
     summary_rows: list[dict[str, Any]] = []
-    seen_summary_keys: set[str] = set()
     epoch_values: list[dict[str, Any]] = []
 
     with WebsocketJsonSession(websocket_url) as ws:
@@ -729,12 +730,10 @@ def scrape_websocket_slots(
             topic = row.get("topic")
             key = row.get("key")
             value = row.get("value")
-            if topic == "summary" and key in summary_keys and value is not None:
+            if topic == "summary" and key in WEBSOCKET_SUMMARY_KEYS and value is not None:
                 summary_key = str(key)
                 if summary_key not in summary_values:
                     summary_values[summary_key] = value
-                if summary_key not in seen_summary_keys:
-                    seen_summary_keys.add(summary_key)
                     summary_rows.append(
                         {
                             "record_type": "summary",
@@ -746,7 +745,7 @@ def scrape_websocket_slots(
             elif topic == "epoch" and key == "new" and isinstance(value, dict):
                 epoch_values.append(value)
 
-            if len(summary_values) != 3:
+            if len(summary_values) != len(WEBSOCKET_SUMMARY_KEYS):
                 continue
 
             completed_slot = parse_int(summary_values["completed_slot"])
@@ -757,7 +756,7 @@ def scrape_websocket_slots(
             ):
                 break
 
-    if len(summary_values) != 3:
+    if len(summary_values) != len(WEBSOCKET_SUMMARY_KEYS):
         raise RuntimeError(
             "timed out waiting for required websocket summary data; "
             "try increasing --websocket-snapshot-secs"
@@ -792,7 +791,7 @@ def scrape_websocket_slots(
     query_payloads = [
         {
             "topic": "slot",
-            "key": "query_detailed",
+            "key": WEBSOCKET_SLOT_QUERY_REQUEST_KEY,
             "id": 1000 + i,
             "params": {"slot": slot},
         }
@@ -800,7 +799,7 @@ def scrape_websocket_slots(
     ]
 
     seen_query_results = False
-    pending_ids = {str(req["id"]) for req in query_payloads}
+    pending_ids = {req["id"] for req in query_payloads}
     for wait_secs, timeout_secs in (
         (query_wait_secs, detail_timeout_secs),
         (query_wait_secs + 4, detail_timeout_secs + 40),
@@ -824,10 +823,10 @@ def scrape_websocket_slots(
                 details.append(row)
                 if (
                     row.get("topic") == "slot"
-                    and row.get("key") == "query"
-                    and row.get("id") is not None
+                    and row.get("key") == WEBSOCKET_SLOT_QUERY_RESPONSE_KEY
+                    and isinstance(row.get("id"), int)
                 ):
-                    response_id = str(row.get("id"))
+                    response_id = row["id"]
                     if response_id in pending_ids and response_id not in seen_ids:
                         seen_ids.add(response_id)
                         idle_deadline = time.monotonic() + wait_secs
@@ -837,7 +836,7 @@ def scrape_websocket_slots(
 
         seen_query_results = seen_query_results or any(
             row.get("topic") == "slot"
-            and row.get("key") == "query"
+            and row.get("key") == WEBSOCKET_SLOT_QUERY_RESPONSE_KEY
             and row.get("value") is not None
             for row in details
         )
