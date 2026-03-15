@@ -338,12 +338,11 @@ enum {
 void
 fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   fd_bam_tile_handle_ctrl( ctx );
-  ulong current_leader_slot = ctx->bam_leader_state.slot;
   if( FD_UNLIKELY( ctx->dump_bam_txns || ctx->dump_bam_first_slot_txn ) ) {
-    for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ ) {
+    for( uchar i=0; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ ) {
       fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ i ];
-      if( FD_LIKELY( !entry->valid || entry->summary_emitted || current_leader_slot<=entry->slot ) ) continue;
-      (void)fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, current_leader_slot );
+      if( FD_LIKELY( !entry->valid || entry->summary_emitted || ctx->bam_leader_state.slot<=entry->slot ) ) continue;
+      (void)fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, ctx->bam_leader_state.slot );
     }
   }
   long now_ns          = fd_log_wallclock();
@@ -409,7 +408,7 @@ bam_during_frag( fd_bam_tile_t * ctx,
       FD_LOG_WARNING(( "Unexpected BAM bundle result size %lu", sz ));
       return;
     }
-    if( FD_UNLIKELY( ( chunk < ctx->bank_in.chunk0 ) | ( chunk > ctx->bank_in.wmark ) ) ) {
+    if( FD_UNLIKELY( chunk < ctx->bank_in.chunk0 || chunk > ctx->bank_in.wmark ) ) {
       FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->bank_in.chunk0, ctx->bank_in.wmark ));
       return;
     }
@@ -421,7 +420,7 @@ bam_during_frag( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( in_idx != ctx->pack_leader_in_idx ) ) return;
 
   if( FD_LIKELY( sz == sizeof(fd_bam_leader_state_t) ) ) {
-    if( FD_UNLIKELY( ( chunk < ctx->leader_in.chunk0 ) | ( chunk > ctx->leader_in.wmark ) ) ) {
+    if( FD_UNLIKELY( chunk < ctx->leader_in.chunk0 || chunk > ctx->leader_in.wmark ) ) {
       FD_LOG_WARNING(( "BAM leader state chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
       return;
     }
@@ -430,7 +429,7 @@ bam_during_frag( fd_bam_tile_t * ctx,
     return;
   }
   if( FD_LIKELY( sz == sizeof(fd_bam_bundle_result_t) ) ) {
-    if( FD_UNLIKELY( ( chunk < ctx->leader_in.chunk0 ) | ( chunk > ctx->leader_in.wmark ) ) ) {
+    if( FD_UNLIKELY( chunk < ctx->leader_in.chunk0 || chunk > ctx->leader_in.wmark ) ) {
       FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
       return;
     }

@@ -77,8 +77,8 @@ struct fd_bam_metrics {
 
 typedef struct fd_bam_metrics fd_bam_metrics_t;
 
-#define FD_BAM_SLOT_INGRESS_TIMING_CNT 32UL
-#define FD_BAM_SLOT_INGRESS_TIMING_SUMMARY_BUF_SZ 256UL
+#define FD_BAM_SLOT_INGRESS_TIMING_CNT 32
+#define FD_BAM_SLOT_INGRESS_TIMING_SUMMARY_BUF_SZ 256
 
 typedef struct {
   ulong slot;
@@ -203,10 +203,7 @@ struct fd_bam_tile {
   fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for admin-RPC TPU advert updates (Frankendancer) */
 
   /* Bundle state */
-  uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle).
-                                                     Scheduler batches copy the sender-provided seq_id so
-                                                     every txn in the bundle shares the same
-                                                     block_engine.bundle_id. */
+  uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle). */
   uchar bundle_txn_cnt;                           /* Number of txns in current bundle */
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
   fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by resolved slot for debug captures. */
