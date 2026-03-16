@@ -159,6 +159,15 @@ typedef struct {
 } fd_pack_in_ctx_t;
 
 typedef struct {
+  ulong       idx;
+  fd_wksp_t * mem;
+  ulong       chunk0;
+  ulong       wmark;
+  ulong       chunk;
+} pack_bam_out_ctx_t;
+/* pack_bam_out_ctx_t tracks publication state for one pack->bam link. */
+
+typedef struct {
   fd_pack_t *  pack;
   fd_txn_e_t * cur_spot;
   uchar        bundle_kind; /* PACK_TILE_BUNDLE_KIND_* (none/BE/BAM) */
@@ -291,15 +300,14 @@ typedef struct {
   ulong       poh_out_wmark;
   ulong       poh_out_chunk;
 
-  /* pack->bam output link ("pack_bam"). This link carries (discriminated by frag size)
-       - fd_bam_leader_state_t   (leader state updates)
-       - fd_bam_bundle_result_t  (pre-execution bundle drop results)
-  */
-  ulong bam_out_idx;
-  fd_wksp_t * bam_out_mem;
-  ulong       bam_out_chunk0;
-  ulong       bam_out_wmark;
-  ulong       bam_out_chunk;
+  /* pack->bam outputs are split by semantic contract:
+       - pack_bam_leader carries fd_bam_leader_state_t snapshots. The BAM
+         tile coalesces these latest-value-wins before sending upstream.
+       - pack_bam_result carries fd_bam_bundle_result_t feedback. The BAM
+         tile queues these durably FIFO across reconnect/reset.
+     Keeping them separate removes the internal size-based mux. */
+  pack_bam_out_ctx_t bam_leader_out;
+  pack_bam_out_ctx_t bam_result_out;
 
   ulong      insert_result[ FD_PACK_INSERT_RETVAL_CNT ];
   ulong      bam_bundle_assembly_abandon_cnt[ FD_METRICS_ENUM_PACK_BAM_BUNDLE_ASSEMBLY_ABANDON_REASON_CNT ];
@@ -432,7 +440,7 @@ typedef struct {
        - Values may update asynchronously; reads are treated best-effort. */
   fd_bam_fee_cfg_t const * bam_fee_cfg;
 
-  /* Last leader-state message published to pack_bam. Used to avoid spamming
+  /* Last leader-state message published to pack_bam_leader. Used to avoid spamming
      identical updates.
 
      Sentinel: slot==ULONG_MAX means "no cached publish yet", which is safe
@@ -517,8 +525,10 @@ remove_ib( fd_pack_ctx_t * ctx ) {
 static inline void
 pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
                                     fd_stem_context_t * stem ) {
+  /* Leader snapshots are latest-value-wins, so pack only publishes when
+     the derived state actually changes. */
   if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) return;
-  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
+  if( FD_UNLIKELY( ctx->bam_leader_out.idx==ULONG_MAX ) ) return;
   long now_ticks = fd_tickcount();
   long now_ns = ctx->approx_wallclock_ns + (long)((double)(now_ticks - ctx->approx_tickcount) / ctx->ticks_per_ns);
 
@@ -539,36 +549,44 @@ pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
                  !memcmp( &state, &ctx->last_bam_leader_state, sizeof(state) ) ) ) return;
   ctx->last_bam_leader_state = state;
 
-  fd_bam_leader_state_t * out = fd_chunk_to_laddr( ctx->bam_out_mem, ctx->bam_out_chunk );
+  fd_bam_leader_state_t * out = fd_chunk_to_laddr( ctx->bam_leader_out.mem, ctx->bam_leader_out.chunk );
   *out = state;
 
   fd_stem_publish( stem,
-                   ctx->bam_out_idx,
+                   ctx->bam_leader_out.idx,
                    0UL,
-                   ctx->bam_out_chunk,
+                   ctx->bam_leader_out.chunk,
                    sizeof(fd_bam_leader_state_t),
                    0UL,
                    0UL,
                    fd_frag_meta_ts_comp( now_ticks ) );
-  ctx->bam_out_chunk = fd_dcache_compact_next( ctx->bam_out_chunk, sizeof(fd_bam_leader_state_t), ctx->bam_out_chunk0, ctx->bam_out_wmark );
+  ctx->bam_leader_out.chunk = fd_dcache_compact_next( ctx->bam_leader_out.chunk,
+                                                      sizeof(fd_bam_leader_state_t),
+                                                      ctx->bam_leader_out.chunk0,
+                                                      ctx->bam_leader_out.wmark );
 }
 
 static inline void
 pack_tile_publish_bam_result( fd_pack_ctx_t *             ctx,
                               fd_stem_context_t *         stem,
                               fd_bam_bundle_result_t const * res ) {
-  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
-  fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->bam_out_mem, ctx->bam_out_chunk );
+  /* Results are durable feedback records and publish one-for-one onto
+     the pack_bam_result link. */
+  if( FD_UNLIKELY( ctx->bam_result_out.idx==ULONG_MAX ) ) return;
+  fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->bam_result_out.mem, ctx->bam_result_out.chunk );
   *out = *res;
   fd_stem_publish( stem,
-                   ctx->bam_out_idx,
+                   ctx->bam_result_out.idx,
                    0UL,
-                   ctx->bam_out_chunk,
+                   ctx->bam_result_out.chunk,
                    sizeof(fd_bam_bundle_result_t),
                    0UL,
                    0UL,
                    fd_frag_meta_ts_comp( fd_tickcount() ) );
-  ctx->bam_out_chunk = fd_dcache_compact_next( ctx->bam_out_chunk, sizeof(fd_bam_bundle_result_t), ctx->bam_out_chunk0, ctx->bam_out_wmark );
+  ctx->bam_result_out.chunk = fd_dcache_compact_next( ctx->bam_result_out.chunk,
+                                                      sizeof(fd_bam_bundle_result_t),
+                                                      ctx->bam_result_out.chunk0,
+                                                      ctx->bam_result_out.wmark );
 }
 
 static inline void
@@ -2045,20 +2063,27 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->poh_out_wmark  = fd_dcache_compact_wmark ( ctx->poh_out_mem, topo->links[ tile->out_link_id[ 1 ] ].dcache, topo->links[ tile->out_link_id[ 1 ] ].mtu );
   ctx->poh_out_chunk  = ctx->poh_out_chunk0;
 
-  ctx->bam_out_idx = ULONG_MAX;
-  ctx->bam_out_mem = NULL;
-  ctx->bam_out_chunk0 = 0UL;
-  ctx->bam_out_wmark  = 0UL;
-  ctx->bam_out_chunk  = 0UL;
+  ctx->bam_leader_out = (pack_bam_out_ctx_t){ .idx = ULONG_MAX };
+  ctx->bam_result_out = (pack_bam_out_ctx_t){ .idx = ULONG_MAX };
 
-  ulong bam_out_idx = fd_topo_find_tile_out_link( topo, tile, "pack_bam", tile->kind_id );
-  if( bam_out_idx!=ULONG_MAX ) {
-    ctx->bam_out_idx = bam_out_idx;
-    fd_topo_link_t const * bam_out = &topo->links[ tile->out_link_id[ bam_out_idx ] ];
-    ctx->bam_out_mem    = topo->workspaces[ topo->objs[ bam_out->dcache_obj_id ].wksp_id ].wksp;
-    ctx->bam_out_chunk0 = fd_dcache_compact_chunk0( ctx->bam_out_mem, bam_out->dcache );
-    ctx->bam_out_wmark  = fd_dcache_compact_wmark ( ctx->bam_out_mem, bam_out->dcache, bam_out->mtu );
-    ctx->bam_out_chunk  = ctx->bam_out_chunk0;
+  ulong bam_leader_out_idx = fd_topo_find_tile_out_link( topo, tile, "pack_bam_leader", tile->kind_id );
+  if( bam_leader_out_idx!=ULONG_MAX ) {
+    fd_topo_link_t const * bam_leader_out = &topo->links[ tile->out_link_id[ bam_leader_out_idx ] ];
+    ctx->bam_leader_out.idx    = bam_leader_out_idx;
+    ctx->bam_leader_out.mem    = topo->workspaces[ topo->objs[ bam_leader_out->dcache_obj_id ].wksp_id ].wksp;
+    ctx->bam_leader_out.chunk0 = fd_dcache_compact_chunk0( ctx->bam_leader_out.mem, bam_leader_out->dcache );
+    ctx->bam_leader_out.wmark  = fd_dcache_compact_wmark ( ctx->bam_leader_out.mem, bam_leader_out->dcache, bam_leader_out->mtu );
+    ctx->bam_leader_out.chunk  = ctx->bam_leader_out.chunk0;
+  }
+
+  ulong bam_result_out_idx = fd_topo_find_tile_out_link( topo, tile, "pack_bam_result", tile->kind_id );
+  if( bam_result_out_idx!=ULONG_MAX ) {
+    fd_topo_link_t const * bam_result_out = &topo->links[ tile->out_link_id[ bam_result_out_idx ] ];
+    ctx->bam_result_out.idx    = bam_result_out_idx;
+    ctx->bam_result_out.mem    = topo->workspaces[ topo->objs[ bam_result_out->dcache_obj_id ].wksp_id ].wksp;
+    ctx->bam_result_out.chunk0 = fd_dcache_compact_chunk0( ctx->bam_result_out.mem, bam_result_out->dcache );
+    ctx->bam_result_out.wmark  = fd_dcache_compact_wmark ( ctx->bam_result_out.mem, bam_result_out->dcache, bam_result_out->mtu );
+    ctx->bam_result_out.chunk  = ctx->bam_result_out.chunk0;
   }
 
   ulong bam_fee_cfg_obj_id = fd_pod_query_ulong( topo->props, "bam_fee_cfg", ULONG_MAX );

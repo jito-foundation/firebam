@@ -13,6 +13,15 @@ FD_IMPORT_BINARY( bam_dump_txn_fixture, "src/ballet/txn/fixtures/transaction2.bi
 #define TEST_BAM_MAX_TXN_PER_ATOMIC_BATCH       5UL
 #define TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET  8UL
 
+/* Test-only shim implemented in fd_bam_tile.c so this unit test can
+   drive channel validation without exposing bam_during_frag or
+   bam_after_frag through production headers. */
+extern void
+fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
+                                  ulong           in_idx,
+                                  ulong           chunk,
+                                  ulong           sz );
+
 /* Applies a BAM fee configuration to the pack crank state. Updates
    tip-receiver destinations stored in |crank3| and |crank2| and writes
    a clamped copy of commission_bps into |crank3| when a new version is
@@ -485,22 +494,22 @@ test_bam_slot_ingress_timing_summary_format_and_gate( fd_wksp_t * wksp ) {
     .valid                   = 1U
   };
 
-  FD_TEST( fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL ) == 0 );
+  fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL );
   FD_TEST( entry->summary_emitted == 0U );
 
   state->dump_bam_txns = 1U;
-  FD_TEST( fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL ) == 1 );
+  fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL );
   FD_TEST( entry->summary_emitted == 1U );
 
   entry->summary_emitted = 0U;
   state->dump_bam_txns = 0U;
   state->dump_bam_first_slot_txn = 1U;
-  FD_TEST( fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL ) == 1 );
+  fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL );
   FD_TEST( entry->summary_emitted == 1U );
 
   entry->summary_emitted = 0U;
   state->dump_bam_first_slot_txn = 0U;
-  FD_TEST( fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL ) == 0 );
+  fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL );
   FD_TEST( entry->summary_emitted == 0U );
 
   test_bam_env_destroy( env );
@@ -2381,6 +2390,83 @@ test_bam_leader_state_supersede_counts_drop( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_pack_leader_channel_contract( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  union {
+    fd_bam_leader_state_t leader;
+    uchar                 bytes[ sizeof(fd_bam_leader_state_t) ];
+  } ingress = { .leader = {
+    .slot = 77UL,
+    .tick = 9U,
+    .slot_cu_budget_remaining = 456U
+  } };
+
+  state->pack_bam_leader_in_idx = 3UL;
+  state->pack_leader_in = (fd_bam_in_ctx_t){
+    .mem    = (fd_wksp_t *)ingress.bytes,
+    .chunk0 = 0UL,
+    .wmark  = 0UL
+  };
+
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_leader_in_idx, 0UL, sizeof(fd_bam_leader_state_t) );
+
+  FD_TEST( state->bam_leader_pending == 1U );
+  FD_TEST( state->bam_leader_state.slot == ingress.leader.slot );
+  FD_TEST( state->bam_leader_state.tick == ingress.leader.tick );
+  FD_TEST( state->bam_leader_state.slot_cu_budget_remaining == ingress.leader.slot_cu_budget_remaining );
+  FD_TEST( state->bam_pending_results == 0U );
+
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_leader_in_idx, 0UL, sizeof(fd_bam_bundle_result_t) );
+
+  FD_TEST( state->bam_leader_pending == 1U );
+  FD_TEST( state->bam_leader_state.slot == ingress.leader.slot );
+  FD_TEST( state->bam_pending_results == 0U );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_pack_result_channel_contract( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  union {
+    fd_bam_bundle_result_t result;
+    uchar                  bytes[ sizeof(fd_bam_bundle_result_t) ];
+  } ingress = { .result = {0} };
+  ingress.result = test_make_bundle_result( 905U, 1905UL, 2U );
+
+  state->pack_bam_result_in_idx = 4UL;
+  state->pack_result_in = (fd_bam_in_ctx_t){
+    .mem    = (fd_wksp_t *)ingress.bytes,
+    .chunk0 = 0UL,
+    .wmark  = 0UL
+  };
+
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_result_in_idx, 0UL, sizeof(fd_bam_bundle_result_t) );
+
+  FD_TEST( state->bam_pending_results == 1U );
+  FD_TEST( state->bam_results_head == 0U );
+  FD_TEST( state->bam_results_tail == 1U );
+  FD_TEST( state->bam_results[ 0 ].seq_id == ingress.result.seq_id );
+  FD_TEST( state->bam_results[ 0 ].slot == ingress.result.slot );
+  FD_TEST( state->bam_results[ 0 ].bundle_txn_cnt == ingress.result.bundle_txn_cnt );
+  FD_TEST( state->bam_leader_pending == 0U );
+
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_result_in_idx, 0UL, sizeof(fd_bam_leader_state_t) );
+
+  FD_TEST( state->bam_pending_results == 1U );
+  FD_TEST( state->bam_results[ 0 ].seq_id == ingress.result.seq_id );
+  FD_TEST( state->bam_leader_pending == 0U );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_scheduler_result_publishes_message( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -3921,6 +4007,8 @@ main( int     argc,
   test_bam_scheduler_ping_publishes_message( wksp );
   test_bam_scheduler_leader_state_publishes_message( wksp );
   test_bam_leader_state_supersede_counts_drop( wksp );
+  test_bam_pack_leader_channel_contract( wksp );
+  test_bam_pack_result_channel_contract( wksp );
   test_bam_scheduler_result_publishes_message( wksp );
   test_bam_scheduler_result_committed_with_execution_error_publishes_message( wksp );
   test_bam_scheduler_result_not_committed_publishes_message( wksp );

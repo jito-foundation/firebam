@@ -453,7 +453,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     entry->slot  = resolved_slot;
     entry->valid = 1U;
   } else if( FD_UNLIKELY( entry->slot!=resolved_slot ) ) {
-    (void)fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, ctx->bam_leader_state.slot );
+    fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, ctx->bam_leader_state.slot );
     fd_memset( entry, 0, sizeof(*entry) );
     entry->slot  = resolved_slot;
     entry->valid = 1U;

@@ -2292,6 +2292,76 @@ fd_pack_microblock_complete( fd_pack_t * pack,
 #define TRY_BUNDLE_HAS_CONFLICTS       (-1)
 #define TRY_BUNDLE_DOES_NOT_FIT        (-2)
 #define TRY_BUNDLE_SUCCESS(n)          ( n) /* schedule bundle with n transactions */
+static inline int
+fd_pack_try_schedule_bundle( fd_pack_t  * pack,
+                             ulong        bank_tile,
+                             fd_txn_p_t * out ) {
+  int state = pack->initializer_bundle_state;
+  if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_PENDING) | (state==FD_PACK_IB_STATE_FAILED ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
+
+  fd_pack_ord_txn_t * pool    = pack->pool;
+  treap_t           * bundles = pack->pending_bundles;
+
+  int saw_conflict   = 0;
+  int saw_doesnt_fit = 0;
+
+  for( treap_rev_iter_t _txn0=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _txn0 ); _txn0=fd_pack_bundle_next( _txn0, pool ) ) {
+    fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
+    ulong bundle_idx = fd_pack_bundle_idx( txn0 );
+    _Bool const cand_is_bam = txn0->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+    uint  const cand_seq    = cand_is_bam ? txn0->txn->bam.seq_id : 0U;
+
+    if( FD_UNLIKELY( txn0->skip==pack->compressed_slot_number ) ) {
+      for( treap_rev_iter_t _cur=_txn0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
+        if( FD_UNLIKELY( fd_pack_bundle_idx( treap_rev_iter_ele( _cur, pool ) )!=bundle_idx ) ) break;
+        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
+      }
+      continue;
+    }
+
+    int is_ib = !!(txn0->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
+    if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_NOT_INITIALIZED) & !is_ib ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
+
+    int blocked_by_prior = 0;
+    /* Conflicting BAM bundles resolve by lower seq_id first; insertion order is
+       only the tie-breaker after that priority. */
+    for( treap_rev_iter_t _other=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _other ); _other=fd_pack_bundle_next( _other, pool ) ) {
+      if( FD_UNLIKELY( _other==_txn0 ) ) continue;
+      fd_pack_ord_txn_t * other = treap_rev_iter_ele( _other, pool );
+      ulong const other_bundle_idx = fd_pack_bundle_idx( other );
+      if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) continue;
+      if( FD_LIKELY( !fd_pack_bundle_conflicts( pack, _other, _txn0 ) ) ) continue;
+
+      if( FD_UNLIKELY( cand_is_bam && other->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+        uint const other_seq = other->txn->bam.seq_id;
+        if( FD_UNLIKELY( other_seq != cand_seq ) ) {
+          if( FD_LIKELY( other_seq > cand_seq ) ) continue;
+        } else if( FD_LIKELY( other_bundle_idx > bundle_idx ) ) continue;
+      } else if( FD_LIKELY( other_bundle_idx > bundle_idx ) ) continue;
+
+      blocked_by_prior = 1;
+      break;
+    }
+    if( FD_UNLIKELY( blocked_by_prior ) ) {
+      saw_conflict = 1;
+      continue;
+    }
+
+    int bundle_result = fd_pack_try_schedule_bundle_candidate( pack, bank_tile, out, _txn0, bundle_idx, is_ib );
+    if( FD_UNLIKELY( bundle_result>0 ) ) return bundle_result;
+    if( FD_UNLIKELY( bundle_result==TRY_BUNDLE_HAS_CONFLICTS ) ) {
+      saw_conflict = 1;
+    } else {
+      FD_TEST( bundle_result==TRY_BUNDLE_DOES_NOT_FIT );
+      saw_doesnt_fit = 1;
+    }
+  }
+
+  if( FD_UNLIKELY( saw_conflict   ) ) return TRY_BUNDLE_HAS_CONFLICTS;
+  if( FD_UNLIKELY( saw_doesnt_fit ) ) return TRY_BUNDLE_DOES_NOT_FIT;
+  return TRY_BUNDLE_NO_READY_BUNDLES;
+}
+
 static int
 fd_pack_try_schedule_bundle_candidate( fd_pack_t       * pack,
                                        ulong             bank_tile,
@@ -2554,77 +2624,6 @@ fd_pack_try_schedule_bundle_candidate( fd_pack_t       * pack,
   }
   return TRY_BUNDLE_SUCCESS( (int)txn_cnt );
 }
-
-static inline int
-fd_pack_try_schedule_bundle( fd_pack_t  * pack,
-                             ulong        bank_tile,
-                             fd_txn_p_t * out ) {
-  int state = pack->initializer_bundle_state;
-  if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_PENDING) | (state==FD_PACK_IB_STATE_FAILED ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
-
-  fd_pack_ord_txn_t * pool    = pack->pool;
-  treap_t           * bundles = pack->pending_bundles;
-
-  int saw_conflict   = 0;
-  int saw_doesnt_fit = 0;
-
-  for( treap_rev_iter_t _txn0=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _txn0 ); _txn0=fd_pack_bundle_next( _txn0, pool ) ) {
-    fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
-    ulong bundle_idx = fd_pack_bundle_idx( txn0 );
-    _Bool const cand_is_bam = txn0->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
-    uint  const cand_seq    = cand_is_bam ? txn0->txn->bam.seq_id : 0U;
-
-    if( FD_UNLIKELY( txn0->skip==pack->compressed_slot_number ) ) {
-      for( treap_rev_iter_t _cur=_txn0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
-        if( FD_UNLIKELY( fd_pack_bundle_idx( treap_rev_iter_ele( _cur, pool ) )!=bundle_idx ) ) break;
-        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
-      }
-      continue;
-    }
-
-    int is_ib = !!(txn0->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
-    if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_NOT_INITIALIZED) & !is_ib ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
-
-    int blocked_by_prior = 0;
-    /* Conflicting BAM bundles resolve by lower seq_id first; insertion order is
-       only the tie-breaker after that priority. */
-    for( treap_rev_iter_t _other=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _other ); _other=fd_pack_bundle_next( _other, pool ) ) {
-      if( FD_UNLIKELY( _other==_txn0 ) ) continue;
-      fd_pack_ord_txn_t * other = treap_rev_iter_ele( _other, pool );
-      ulong const other_bundle_idx = fd_pack_bundle_idx( other );
-      if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) continue;
-      if( FD_LIKELY( !fd_pack_bundle_conflicts( pack, _other, _txn0 ) ) ) continue;
-
-      if( FD_UNLIKELY( cand_is_bam && other->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
-        uint const other_seq = other->txn->bam.seq_id;
-        if( FD_UNLIKELY( other_seq != cand_seq ) ) {
-          if( FD_LIKELY( other_seq > cand_seq ) ) continue;
-        } else if( FD_LIKELY( other_bundle_idx > bundle_idx ) ) continue;
-      } else if( FD_LIKELY( other_bundle_idx > bundle_idx ) ) continue;
-
-      blocked_by_prior = 1;
-      break;
-    }
-    if( FD_UNLIKELY( blocked_by_prior ) ) {
-      saw_conflict = 1;
-      continue;
-    }
-
-    int bundle_result = fd_pack_try_schedule_bundle_candidate( pack, bank_tile, out, _txn0, bundle_idx, is_ib );
-    if( FD_UNLIKELY( bundle_result>0 ) ) return bundle_result;
-    if( FD_UNLIKELY( bundle_result==TRY_BUNDLE_HAS_CONFLICTS ) ) {
-      saw_conflict = 1;
-    } else {
-      FD_TEST( bundle_result==TRY_BUNDLE_DOES_NOT_FIT );
-      saw_doesnt_fit = 1;
-    }
-  }
-
-  if( FD_UNLIKELY( saw_conflict   ) ) return TRY_BUNDLE_HAS_CONFLICTS;
-  if( FD_UNLIKELY( saw_doesnt_fit ) ) return TRY_BUNDLE_DOES_NOT_FIT;
-  return TRY_BUNDLE_NO_READY_BUNDLES;
-}
-
 
 ulong
 fd_pack_schedule_next_microblock( fd_pack_t *  pack,

@@ -78,8 +78,6 @@ struct fd_bam_metrics {
 typedef struct fd_bam_metrics fd_bam_metrics_t;
 
 #define FD_BAM_SLOT_INGRESS_TIMING_CNT 32
-#define FD_BAM_SLOT_INGRESS_TIMING_SUMMARY_BUF_SZ 256
-
 typedef struct {
   ulong slot;
   long  first_rx_ts_ns;
@@ -134,10 +132,12 @@ struct fd_bam_tile {
   fd_keyswitch_t * keyswitch;                     /* Manages the identity keypair */
   fd_keyguard_client_t keyguard_client[1];        /* Keyguard client used to request signatures */
 
-  ulong            bank_bam_in_idx;               /* Polled input index for bank->bam in stem callback space */
-  ulong            pack_leader_in_idx;            /* Polled input index for pack->bam in stem callback space */
-  fd_bam_in_ctx_t  bank_in;                       /* Bank bundle ingress dcache context */
-  fd_bam_in_ctx_t  leader_in;                     /* Pack tile ingress for leader state/results */
+  ulong            bank_bam_in_idx;               /* Polled input index for bank_bam durable results in stem callback space */
+  ulong            pack_bam_leader_in_idx;        /* Polled input index for pack_bam_leader snapshot/control updates */
+  ulong            pack_bam_result_in_idx;        /* Polled input index for pack_bam_result durable bundle feedback */
+  fd_bam_in_ctx_t  bank_in;                       /* Bank->BAM result ingress dcache context */
+  fd_bam_in_ctx_t  pack_leader_in;                /* Pack->BAM latest-value-wins leader-state ingress */
+  fd_bam_in_ctx_t  pack_result_in;                /* Pack->BAM durable result ingress */
   uchar            frag_staged_kind;              /* FD_BAM_FRAG_STAGED_* marker set by during_frag and consumed by after_frag; NONE means "drop/no-op". */
   ulong            frag_staged_chunk;             /* during_frag staged source dcache chunk for after_frag commit */
 
@@ -218,8 +218,8 @@ struct fd_bam_tile {
   ushort                bam_pending_results;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_head;                /* Index of next result to flush (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
-  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Ring buffer of bundle outcomes awaiting publication */
-  fd_bam_leader_state_t  bam_leader_state;               /* Cached leader-schedule budget received from the BAM node */
+  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_result and bank_bam; preserved across reconnect/reset until flushed */
+  fd_bam_leader_state_t  bam_leader_state;               /* Latest pack_bam_leader snapshot awaiting publication; newer unsent snapshots supersede older ones */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
@@ -231,7 +231,7 @@ struct fd_bam_tile {
   uint                  bam_auth_inflight      : 1;      /* true while GetAuthChallenge GRPC call is pending */
   uint                  bam_config_inflight    : 1;      /* true while GetBuilderConfig GRPC call is pending */
   uint                  bam_config_received    : 1;      /* set after a valid ConfigResponse lands on the current connection */
-  uint                  bam_leader_pending     : 1;      /* set when awaiting a scheduler leader-state response */
+  uint                  bam_leader_pending     : 1;      /* set when a coalesced leader snapshot awaits send; not durable like bam_results */
 
   /* Error backoff */
   fd_rng_t rng[1];                                /* RNG used to randomize reconnects */
@@ -261,6 +261,8 @@ struct fd_bam_tile {
 
 typedef struct fd_bam_tile fd_bam_tile_t;
 
+/* Result feedback is durable: append to the local FIFO ring and keep it
+   across reconnect/reset until the scheduler stream accepts it. */
 FD_FN_UNUSED static inline void
 fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
                        fd_bam_bundle_result_t const * res ) {
@@ -293,6 +295,8 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
   ctx->bam_pending_results = (ushort)( ctx->bam_pending_results + 1U );
 }
 
+/* Leader state is latest-value-wins control information: keep only one
+   pending snapshot and count superseded unsent updates. */
 FD_FN_UNUSED static inline void
 fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
@@ -319,7 +323,7 @@ FD_PROTOTYPES_BEGIN
 long
 fd_bam_now( void );
 
-int
+void
 fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
                                              fd_bam_slot_ingress_timing_t * entry,
                                              ulong                          current_leader_slot );

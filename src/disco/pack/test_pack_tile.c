@@ -1081,11 +1081,11 @@ main( int     argc,
   fd_memcpy( saved_bam_work_invalidated_cnt, ctx->bam_work_invalidated_cnt, sizeof(saved_bam_work_invalidated_cnt) );
   ulong saved_highest_observed_slot = ctx->highest_observed_slot;
   ulong saved_leader_slot           = ctx->leader_slot;
-  ulong saved_bam_out_idx           = ctx->bam_out_idx;
+  ulong saved_bam_result_out_idx    = ctx->bam_result_out.idx;
 
   ctx->highest_observed_slot = 200UL;
   ctx->leader_slot           = ULONG_MAX;
-  ctx->bam_out_idx           = ULONG_MAX;
+  ctx->bam_result_out.idx    = ULONG_MAX;
 
   fd_pack_extra_txn_t * extra = extra_txn_deq_peek_tail( extra_txn_deq_insert_tail( ctx->extra_txn_deq ) );
   fd_memset( extra, 0, sizeof(*extra) );
@@ -1102,7 +1102,7 @@ main( int     argc,
   fd_memcpy( ctx->bam_work_invalidated_cnt, saved_bam_work_invalidated_cnt, sizeof(saved_bam_work_invalidated_cnt) );
   ctx->highest_observed_slot = saved_highest_observed_slot;
   ctx->leader_slot           = saved_leader_slot;
-  ctx->bam_out_idx           = saved_bam_out_idx;
+  ctx->bam_result_out.idx    = saved_bam_result_out_idx;
 #endif
 
   /* resolv-pack link */

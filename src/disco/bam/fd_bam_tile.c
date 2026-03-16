@@ -96,27 +96,20 @@ loose_footprint( fd_topo_tile_t const * tile ) {
   return 1UL<<26; /* 64 MiB */
 }
 
-int
+void
 fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
                                              fd_bam_slot_ingress_timing_t * entry,
                                              ulong                          current_leader_slot ) {
-  if( FD_UNLIKELY( !( ctx->dump_bam_txns || ctx->dump_bam_first_slot_txn ) || !entry->valid || entry->summary_emitted ) ) return 0;
+  if( FD_UNLIKELY( !( ctx->dump_bam_txns || ctx->dump_bam_first_slot_txn ) || entry->summary_emitted ) ) return;
 
-  char buf[ FD_BAM_SLOT_INGRESS_TIMING_SUMMARY_BUF_SZ ];
-  int written = snprintf( buf,
-                          sizeof(buf),
-                          "BAM slot ingress summary: slot=%lu first_rx_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
-                          entry->slot,
-                          entry->first_rx_ts_ns,
-                          (uint)entry->first_rx_after_slot_end,
-                          entry->txn_before_slot_end,
-                          entry->txn_after_slot_end,
-                          current_leader_slot );
-  if( FD_UNLIKELY( written<0 ) ) buf[ 0 ] = '\0';
-  else if( FD_UNLIKELY( (ulong)written>=sizeof(buf) ) ) buf[ sizeof(buf)-1UL ] = '\0';
-  FD_LOG_NOTICE(( "%s", buf ));
+  FD_LOG_NOTICE(( "BAM slot ingress summary: slot=%lu first_rx_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
+                  entry->slot,
+                  entry->first_rx_ts_ns,
+                  (uint)entry->first_rx_after_slot_end,
+                  entry->txn_before_slot_end,
+                  entry->txn_after_slot_end,
+                  current_leader_slot ));
   entry->summary_emitted = 1U;
-  return 1;
 }
 
 void
@@ -342,7 +335,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     for( uchar i=0; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ ) {
       fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ i ];
       if( FD_LIKELY( !entry->valid || entry->summary_emitted || ctx->bam_leader_state.slot<=entry->slot ) ) continue;
-      (void)fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, ctx->bam_leader_state.slot );
+      fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, ctx->bam_leader_state.slot );
     }
   }
   long now_ns          = fd_log_wallclock();
@@ -417,27 +410,38 @@ bam_during_frag( fd_bam_tile_t * ctx,
     return;
   }
 
-  if( FD_UNLIKELY( in_idx != ctx->pack_leader_in_idx ) ) return;
+  fd_bam_in_ctx_t const * pack_in;
+  ulong                   expected_sz;
+  uchar                   staged_kind;
+  char const *            size_what;
+  char const *            chunk_what;
 
-  if( FD_LIKELY( sz == sizeof(fd_bam_leader_state_t) ) ) {
-    if( FD_UNLIKELY( chunk < ctx->leader_in.chunk0 || chunk > ctx->leader_in.wmark ) ) {
-      FD_LOG_WARNING(( "BAM leader state chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
-      return;
-    }
-    ctx->frag_staged_chunk = chunk;
-    ctx->frag_staged_kind = FD_BAM_FRAG_STAGED_LEADER;
+  if( FD_LIKELY( in_idx == ctx->pack_bam_leader_in_idx ) ) {
+    pack_in     = &ctx->pack_leader_in;
+    expected_sz = sizeof(fd_bam_leader_state_t);
+    staged_kind = FD_BAM_FRAG_STAGED_LEADER;
+    size_what   = "pack->bam leader fragment";
+    chunk_what  = "BAM leader state";
+  } else if( FD_LIKELY( in_idx == ctx->pack_bam_result_in_idx ) ) {
+    pack_in     = &ctx->pack_result_in;
+    expected_sz = sizeof(fd_bam_bundle_result_t);
+    staged_kind = FD_BAM_FRAG_STAGED_RESULT;
+    size_what   = "pack->bam result fragment";
+    chunk_what  = "BAM bundle result";
+  } else {
     return;
   }
-  if( FD_LIKELY( sz == sizeof(fd_bam_bundle_result_t) ) ) {
-    if( FD_UNLIKELY( chunk < ctx->leader_in.chunk0 || chunk > ctx->leader_in.wmark ) ) {
-      FD_LOG_WARNING(( "BAM bundle result chunk %lu out of range [%lu,%lu]", chunk, ctx->leader_in.chunk0, ctx->leader_in.wmark ));
-      return;
-    }
-    ctx->frag_staged_chunk = chunk;
-    ctx->frag_staged_kind = FD_BAM_FRAG_STAGED_RESULT;
+
+  if( FD_UNLIKELY( sz != expected_sz ) ) {
+    FD_LOG_WARNING(( "Unexpected %s size %lu", size_what, sz ));
     return;
   }
-  FD_LOG_WARNING(( "Unexpected pack->bam fragment size %lu", sz ));
+  if( FD_UNLIKELY( chunk < pack_in->chunk0 || chunk > pack_in->wmark ) ) {
+    FD_LOG_WARNING(( "%s chunk %lu out of range [%lu,%lu]", chunk_what, chunk, pack_in->chunk0, pack_in->wmark ));
+    return;
+  }
+  ctx->frag_staged_chunk = chunk;
+  ctx->frag_staged_kind = staged_kind;
 }
 
 static void
@@ -454,8 +458,8 @@ bam_after_frag( fd_bam_tile_t *     ctx,
     fd_bam_bundle_result_t const * res = NULL;
     if( FD_LIKELY( in_idx==ctx->bank_bam_in_idx ) ) {
       res = (fd_bam_bundle_result_t const *)fd_chunk_to_laddr( ctx->bank_in.mem, ctx->frag_staged_chunk );
-    } else if( FD_LIKELY( in_idx==ctx->pack_leader_in_idx ) ) {
-      res = (fd_bam_bundle_result_t const *)fd_chunk_to_laddr( ctx->leader_in.mem, ctx->frag_staged_chunk );
+    } else if( FD_LIKELY( in_idx==ctx->pack_bam_result_in_idx ) ) {
+      res = (fd_bam_bundle_result_t const *)fd_chunk_to_laddr( ctx->pack_result_in.mem, ctx->frag_staged_chunk );
     } else {
       FD_LOG_WARNING(( "Unexpected in_idx=%lu for staged BAM bundle result", in_idx ));
       break;
@@ -464,11 +468,11 @@ bam_after_frag( fd_bam_tile_t *     ctx,
     break;
   }
   case FD_BAM_FRAG_STAGED_LEADER:
-    if( FD_UNLIKELY( in_idx!=ctx->pack_leader_in_idx ) ) {
+    if( FD_UNLIKELY( in_idx!=ctx->pack_bam_leader_in_idx ) ) {
       FD_LOG_WARNING(( "Unexpected in_idx=%lu for staged BAM leader state", in_idx ));
       break;
     }
-    fd_bam_stage_leader_state( ctx, (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->leader_in.mem, ctx->frag_staged_chunk ) );
+    fd_bam_stage_leader_state( ctx, (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->pack_leader_in.mem, ctx->frag_staged_chunk ) );
     break;
   default:
     /* Unknown staged kind (e.g. memory corruption) is ignored to avoid
@@ -477,6 +481,15 @@ bam_after_frag( fd_bam_tile_t *     ctx,
   }
   ctx->frag_staged_kind = FD_BAM_FRAG_STAGED_NONE;
   ctx->frag_staged_chunk = 0UL;
+}
+
+void
+fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
+                                  ulong           in_idx,
+                                  ulong           chunk,
+                                  ulong           sz ) {
+  bam_during_frag( ctx, in_idx, 0UL, 0UL, chunk, sz, 0UL );
+  bam_after_frag( ctx, in_idx, 0UL, 0UL, sz, 0UL, 0UL, NULL );
 }
 
 static void
@@ -946,7 +959,8 @@ privileged_init( fd_topo_t *      topo,
   ctx->grpc_buf_max    = tile->bam.buf_sz;
   ctx->tcp_sock        = -1;
   ctx->bank_bam_in_idx = ULONG_MAX;
-  ctx->pack_leader_in_idx = ULONG_MAX;
+  ctx->pack_bam_leader_in_idx = ULONG_MAX;
+  ctx->pack_bam_result_in_idx = ULONG_MAX;
   ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
 
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
@@ -1076,13 +1090,21 @@ unprivileged_init( fd_topo_t *      topo,
   fd_topo_link_t const * bank_in = &topo->links[ tile->in_link_id[ bank_in_idx ] ];
   ctx->bank_in = bam_in_link( topo, bank_in );
 
-  ulong leader_in_idx = fd_topo_find_tile_in_link( topo, tile, "pack_bam", tile->kind_id );
-  if( FD_UNLIKELY( leader_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing pack_bam link" ));
-  if( FD_UNLIKELY( !tile->in_link_poll[ leader_in_idx ] ) ) FD_LOG_ERR(( "pack_bam must be polled" ));
-  ctx->pack_leader_in_idx = 0UL;
-  for( ulong i=0UL; i<leader_in_idx; i++ ) ctx->pack_leader_in_idx += (ulong)!!tile->in_link_poll[ i ];
+  ulong leader_in_idx = fd_topo_find_tile_in_link( topo, tile, "pack_bam_leader", tile->kind_id );
+  if( FD_UNLIKELY( leader_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing pack_bam_leader link" ));
+  if( FD_UNLIKELY( !tile->in_link_poll[ leader_in_idx ] ) ) FD_LOG_ERR(( "pack_bam_leader must be polled" ));
+  ctx->pack_bam_leader_in_idx = 0UL;
+  for( ulong i=0UL; i<leader_in_idx; i++ ) ctx->pack_bam_leader_in_idx += (ulong)!!tile->in_link_poll[ i ];
   fd_topo_link_t const * leader_in = &topo->links[ tile->in_link_id[ leader_in_idx ] ];
-  ctx->leader_in = bam_in_link( topo, leader_in );
+  ctx->pack_leader_in = bam_in_link( topo, leader_in );
+
+  ulong result_in_idx = fd_topo_find_tile_in_link( topo, tile, "pack_bam_result", tile->kind_id );
+  if( FD_UNLIKELY( result_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing pack_bam_result link" ));
+  if( FD_UNLIKELY( !tile->in_link_poll[ result_in_idx ] ) ) FD_LOG_ERR(( "pack_bam_result must be polled" ));
+  ctx->pack_bam_result_in_idx = 0UL;
+  for( ulong i=0UL; i<result_in_idx; i++ ) ctx->pack_bam_result_in_idx += (ulong)!!tile->in_link_poll[ i ];
+  fd_topo_link_t const * result_in = &topo->links[ tile->in_link_id[ result_in_idx ] ];
+  ctx->pack_result_in = bam_in_link( topo, result_in );
 
   ulong verify_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_verif", tile->kind_id );
   if( FD_UNLIKELY( verify_out_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_verif link" ));

@@ -329,7 +329,8 @@ fd_topo_initialize( config_t * config ) {
     fd_topob_wksp( topo, "bam_verif"   );
     fd_topob_wksp( topo, "bam_sign"    );
     fd_topob_wksp( topo, "sign_bam"    );
-    fd_topob_wksp( topo, "pack_bam"    );
+    fd_topob_wksp( topo, "pack_bam_leader" );
+    fd_topob_wksp( topo, "pack_bam_result" );
     fd_topob_wksp( topo, "bank_bam"    );
     fd_topob_wksp( topo, "bam_status"  );
     fd_topob_wksp( topo, "bam_ctrl"    );
@@ -338,7 +339,12 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_link( topo, "bam_verif",  "bam_verif",  config->tiles.verify.receive_buffer_size, FD_TPU_PARSED_MTU,          1UL );
     /**/                 fd_topob_link( topo, "bam_sign",   "bam_sign",   65536UL,                                  256UL,                       1UL );
     /**/                 fd_topob_link( topo, "sign_bam",   "sign_bam",   128UL,                                    64UL,                        1UL );
-    /**/                 fd_topob_link( topo, "pack_bam",   "pack_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
+    /* Keep pack->bam leader snapshots and result feedback on separate
+       internal links because BAM coalesces leader state but durably
+       queues results across reconnects. The external scheduler stream
+       is unchanged; this only removes the internal size-based mux. */
+    /**/                 fd_topob_link( topo, "pack_bam_leader", "pack_bam_leader", FD_BAM_MAX_PENDING_RESULTS, sizeof(fd_bam_leader_state_t),  1UL );
+    /**/                 fd_topob_link( topo, "pack_bam_result", "pack_bam_result", FD_BAM_MAX_PENDING_RESULTS, sizeof(fd_bam_bundle_result_t), 1UL );
     /**/                 fd_topob_link( topo, "bank_bam",   "bank_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
 
     /**/                 fd_topob_tile( topo, "bam",     "bam",     "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1 );
@@ -351,8 +357,10 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "sign_bam",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
     /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_bam",     0UL                                                );
 
-    /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_bam",     0UL                                                );
-    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+    /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_bam_leader", 0UL                                             );
+    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam_leader", 0UL,         FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+    /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_bam_result", 0UL                                             );
+    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam_result", 0UL,         FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
     /**/                 fd_topob_tile_out( topo, "bank",   0UL,                        "bank_bam",     0UL                                                );
     /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
 
