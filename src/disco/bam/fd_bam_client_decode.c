@@ -360,7 +360,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
                        fd_bam_batch_ctx_t const *       state,
                        bam_types_AtomicTxnBatch const * batch ) {
   if( FD_UNLIKELY( state->has_deser_err ) ) {
-    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
+    ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
       .slot              = batch->max_schedule_slot,
@@ -377,7 +377,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   }
 
   if( FD_UNLIKELY( state->packet_cnt == 0U ) ) {
-    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_BATCH_IDX ]++;
+    ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_BATCH_IDX ]++;
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
       .slot              = batch->max_schedule_slot,
@@ -394,7 +394,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   }
 
   if( FD_UNLIKELY( (!state->revert_on_error) && state->packet_cnt>1U ) ) {
-    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ]++;
+    ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ]++;
     /* For now, revert_on_error=0 batches are assumed to contain exactly one
        packet so we can return one result per seq_id without BAM-node changes. */
     fd_bam_bundle_result_t res = {
@@ -423,7 +423,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
     }
   }
   if( FD_UNLIKELY( simple_vote_idx >= 0 ) ) {
-    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_VOTE_TRANSACTION_IDX ]++;
+    ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_VOTE_TRANSACTION_IDX ]++;
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
       .slot              = batch->max_schedule_slot,
@@ -556,7 +556,7 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
                        ? decoded->state.deser_index
                        : decoded->state.packet_cnt;
     ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
-    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
+    ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
     char const * err = PB_GET_ERROR( stream );
     FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)", err ));
     fd_bam_bundle_result_t res = {
@@ -613,7 +613,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       FD_LOG_WARNING(( "MultipleAtomicTxnBatch exceeded max batch count (%u>%u)",
                        seen_batch_count + 1U,
                        FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ));
-      ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
+      ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
       decoded_multi->batch_cnt = seen_batch_count;
       decoded_multi->has_err_result = 1;
       decoded_multi->err_result = (fd_bam_bundle_result_t){
@@ -640,7 +640,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 
   if( FD_UNLIKELY( seen_batch_count == 0U ) ) {
     FD_LOG_WARNING(( "MultipleAtomicTxnBatch contained no AtomicTxnBatch entries" ));
-    ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_MESSAGE_IDX ]++;
+    ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_MESSAGE_IDX ]++;
     bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
     decoded_multi->has_err_result = 1;
     decoded_multi->err_result = (fd_bam_bundle_result_t){
@@ -726,7 +726,7 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
       int ok = fd_bam_decode_multiple_atomic_txn_batch( ctx, &substream, &decoded_multi );
       pb_close_string_substream( stream, &substream );
       if( FD_UNLIKELY( !ok ) ) return 0;
-      ctx->metrics.ingress_multi_msg_received_cnt++;
+      ctx->metrics.ingress_multi_message_received_cnt++;
       decoded_v0->kind  = FD_BAM_V0_STAGED_MULTI;
       decoded_v0->multi = decoded_multi;
       break;
@@ -818,7 +818,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       ulong rx_ts_u   = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
       fd_histf_sample( ctx->metrics.builder_heartbeat_arrival_delta_nanos, fd_ulong_sat_sub( rx_ts_u, tsorig_ns ) );
     }
-    ctx->metrics.heartbeat_recv_cnt++;
+    ctx->metrics.builder_heartbeats_decoded_cnt++;
     break;
   case FD_BAM_V0_STAGED_MULTI:
     fd_bam_commit_multiple_atomic_txn_batch( ctx, &decoded_v0.multi );

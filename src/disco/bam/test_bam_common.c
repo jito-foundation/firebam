@@ -146,10 +146,10 @@ test_make_bundle_result( uint  seq_id,
 FD_FN_UNUSED static void
 test_enqueue_bundle_result( fd_bam_tile_t *               state,
                             fd_bam_bundle_result_t const * res ) {
-  FD_TEST( state->bam_pending_results < FD_BAM_MAX_PENDING_RESULTS );
+  FD_TEST( state->feedback_queue_depth < FD_BAM_MAX_PENDING_RESULTS );
   state->bam_results[ state->bam_results_tail ] = *res;
   state->bam_results_tail = (ushort)(( state->bam_results_tail + 1U ) % FD_BAM_MAX_PENDING_RESULTS);
-  state->bam_pending_results = (ushort)( state->bam_pending_results + 1U );
+  state->feedback_queue_depth = (ushort)( state->feedback_queue_depth + 1U );
 }
 
 FD_FN_UNUSED static void

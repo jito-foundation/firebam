@@ -137,13 +137,13 @@ typedef struct {
   uchar enabled;          /* Non-zero when operator enabled BAM */
 
   /* BAM operator diagnostics mirrored from the BAM tile metrics. */
-  float  rtt_sample;                   /* Latest HTTP/2 keepalive RTT sample (ns) */
-  float  rtt_smoothed;                 /* Smoothed HTTP/2 keepalive RTT estimate (ns) */
-  float  rtt_deviation;                /* Smoothed HTTP/2 keepalive RTT variation estimate (ns) */
+  float  keepalive_rtt_sample;         /* Latest HTTP/2 keepalive RTT sample (ns) */
+  float  keepalive_rtt_smoothed;       /* Smoothed HTTP/2 keepalive RTT estimate (ns) */
+  float  keepalive_rtt_deviation;      /* Smoothed HTTP/2 keepalive RTT variation estimate (ns) */
   ushort feedback_queue_depth;         /* Pending BAM feedback results */
-  ulong  heartbeat_sent;               /* Validator heartbeats accepted by gRPC stream_send */
-  ulong  heartbeat_recv;               /* Builder heartbeat messages successfully decoded */
-  ulong  txn_published;                /* Transactions published from BAM to verify */
+  ulong  validator_heartbeats_enqueued; /* Validator heartbeats accepted by gRPC stream_send */
+  ulong  builder_heartbeats_decoded;   /* Builder heartbeat messages successfully decoded */
+  ulong  transaction_published;        /* Transactions published from BAM to verify */
   ulong  atomic_batch_published;       /* revert_on_error AtomicTxnBatch entries published to verify */
   ulong  ingress_packet_oversize;      /* BAM packets over local MTU */
   ulong  failure_decode;               /* Local protobuf/envelope decode failures */

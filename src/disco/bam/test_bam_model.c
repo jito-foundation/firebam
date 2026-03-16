@@ -343,15 +343,15 @@ static void
 bam_model_try_enqueue_result( bam_model_harness_t *            h,
                             fd_bam_bundle_result_t const * res ) {
   fd_bam_tile_t * state = h->state;
-  if( FD_UNLIKELY( state->bam_pending_results >= FD_BAM_MAX_PENDING_RESULTS ) ) {
-    state->metrics.feedback_result_drop_cnt++;
+  if( FD_UNLIKELY( state->feedback_queue_depth >= FD_BAM_MAX_PENDING_RESULTS ) ) {
+    state->metrics.feedback_results_dropped_cnt++;
     h->drop_cnt++;
     return;
   }
 
   state->bam_results[ state->bam_results_tail ] = *res;
   state->bam_results_tail = (ushort)(( state->bam_results_tail + 1U ) % FD_BAM_MAX_PENDING_RESULTS );
-  state->bam_pending_results = (ushort)( state->bam_pending_results + 1U );
+  state->feedback_queue_depth = (ushort)( state->feedback_queue_depth + 1U );
 }
 
 static void
@@ -981,14 +981,14 @@ bam_model_absorb_verify_output( bam_model_harness_t * h ) {
 
 FD_FN_UNUSED static void
 bam_model_flush_wire_results( bam_model_harness_t * h ) {
-  while( h->state->bam_pending_results ) {
-    ushort pending = h->state->bam_pending_results;
-    h->state->bam_pending_results = 1U;
+  while( h->state->feedback_queue_depth ) {
+    ushort pending = h->state->feedback_queue_depth;
+    h->state->feedback_queue_depth = 1U;
     FD_TEST( fd_bam_test_flush_results( h->state )==1 );
     if( FD_UNLIKELY( h->wire_result_cnt >= BAM_MODEL_MAX_RESULTS ) ) continue;
     bam_model_wire_result_t * wr = &h->wire_results[ h->wire_result_cnt ];
     if( FD_UNLIKELY( bam_model_decode_last_wire_result( h->state, wr ) ) ) h->wire_result_cnt++;
-    h->state->bam_pending_results = (ushort)( pending-1U );
+    h->state->feedback_queue_depth = (ushort)( pending-1U );
   }
 }
 
@@ -1600,12 +1600,12 @@ bam_model_run_scenario_replay_new_seq_after_missing_result( bam_model_harness_t 
   ulong fee_after_first = h->fee_lamports_total;
 
   /* Simulate bounded channel pressure: second result intent is dropped. */
-  h->state->bam_pending_results = FD_BAM_MAX_PENDING_RESULTS;
-  ulong drop_before = h->state->metrics.feedback_result_drop_cnt;
+  h->state->feedback_queue_depth = FD_BAM_MAX_PENDING_RESULTS;
+  ulong drop_before = h->state->metrics.feedback_results_dropped_cnt;
   bam_model_node_deliver_batches( h, &b1, 1UL, 0U );
   bam_model_apply_pipeline( h );
 
-  FD_TEST( h->state->metrics.feedback_result_drop_cnt > drop_before );
+  FD_TEST( h->state->metrics.feedback_results_dropped_cnt > drop_before );
   FD_TEST( h->fee_lamports_total==fee_after_first );
 }
 
@@ -1615,15 +1615,15 @@ bam_model_run_scenario_disconnect_reconnect( bam_model_harness_t * h ) {
   bam_model_node_deliver_batches( h, &b, 1UL, 0U );
   bam_model_apply_pipeline( h );
 
-  FD_TEST( h->state->bam_pending_results>=1U );
+  FD_TEST( h->state->feedback_queue_depth>=1U );
   fd_bam_client_reset( h->state );
-  FD_TEST( h->state->bam_pending_results>=1U );
+  FD_TEST( h->state->feedback_queue_depth>=1U );
 
   test_bam_env_mock_conn( h->env );
   bam_model_prepare_scheduler_stream( h->state );
   bam_model_keepalive_sync( h->state, g_clock );
   FD_TEST( h->state->bam_stream != NULL );
-  FD_TEST( h->state->bam_pending_results>=1U );
+  FD_TEST( h->state->feedback_queue_depth>=1U );
 }
 
 static void
@@ -1673,10 +1673,10 @@ bam_model_run_scenario_forced_saturation( bam_model_harness_t * h ) {
     .scheduling_error=FD_BAM_SCHED_ERR_OUTSIDE_SLOT,
     .bundle_err=FD_BAM_BUNDLE_ERR_NONE,
   };
-  ulong before_drop = h->state->metrics.feedback_result_drop_cnt;
-  h->state->bam_pending_results = FD_BAM_MAX_PENDING_RESULTS;
+  ulong before_drop = h->state->metrics.feedback_results_dropped_cnt;
+  h->state->feedback_queue_depth = FD_BAM_MAX_PENDING_RESULTS;
   bam_model_try_enqueue_result( h, &fill );
-  FD_TEST( h->state->metrics.feedback_result_drop_cnt > before_drop );
+  FD_TEST( h->state->metrics.feedback_results_dropped_cnt > before_drop );
 }
 
 static void

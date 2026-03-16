@@ -47,29 +47,29 @@ typedef struct fd_bam_in_ctx fd_bam_in_ctx_t;
    by reconnects (fd_bam_client_reset). */
 
 struct fd_bam_metrics {
-  ulong txn_published_cnt;
+  ulong transaction_published_cnt;
   ulong atomic_batch_published_cnt;
-  ulong feedback_result_drop_cnt;
+  ulong feedback_results_dropped_cnt;
   ulong ingress_packet_oversize_cnt;
-  ulong keepalive_ack_cnt;
-  ulong heartbeat_sent_cnt;
-  ulong heartbeat_recv_cnt;
-  ulong healthy_connect_cnt;
-  ulong healthy_disconnect_cnt;
+  ulong keepalive_acks_cnt;
+  ulong validator_heartbeats_enqueued_cnt;
+  ulong builder_heartbeats_decoded_cnt;
+  ulong healthy_connects_cnt;
+  ulong healthy_disconnects_cnt;
 
   ulong failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_CNT ];
 
   /* Ingress diagnostics for BAM scheduler responses. */
-  ulong ingress_multi_msg_received_cnt;
+  ulong ingress_multi_message_received_cnt;
 
   ulong ingress_batch_commit_attempt_cnt;
   ulong ingress_batch_published_cnt;
-  ulong ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_CNT ];
+  ulong ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_CNT ];
 
   /* Enum counters staged locally and flushed during housekeeping. */
-  ulong outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_CNT ];
+  ulong outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_CNT ];
   ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
-  ulong leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
+  ulong leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
 
   fd_histf_t builder_heartbeat_arrival_delta_nanos[1];
   fd_histf_t scheduler_ping_response_nanos[1];
@@ -215,7 +215,7 @@ struct fd_bam_tile {
   long                  bam_last_builder_heartbeat_ns;   /* fd_bam_now() timestamp of last builder liveness refresh from BuilderHeartBeat or bundle work; scheduler proto Ping is intentionally excluded (0 if none received) */
   long                  bam_last_validator_heartbeat_ns; /* fd_bam_now() timestamp of last validator heartbeat (0 if never sent) */
   long                  bam_last_config_poll_ns;         /* fd_bam_now() timestamp of last config poll attempt (0 if never polled) */
-  ushort                bam_pending_results;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
+  ushort                feedback_queue_depth;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_head;                /* Index of next result to flush (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_result and bank_bam; preserved across reconnect/reset until flushed */
@@ -250,11 +250,11 @@ struct fd_bam_tile {
   fd_bam_metrics_t metrics;                         /* Tile-local counters flushed to metrics */
 
   /* Check engine light */
-  fd_plugin_bam_update_status_t bundle_status_recent;  /* most recently observed 'check engine light' */ //TODO: update this for bam
-  fd_plugin_bam_update_status_t bundle_status_plugin;  /* last 'plugin' update written */
-  fd_plugin_bam_update_status_t bundle_status_counted; /* last status used for healthy-edge counters */
-  fd_plugin_bam_update_status_t bundle_status_logged;  /* last logged bundle status */
-  long  last_bundle_status_log_nanos;
+  fd_plugin_bam_update_status_t bam_status_recent;  /* most recently observed 'check engine light' */ //TODO: update this for bam
+  fd_plugin_bam_update_status_t bam_status_plugin;  /* last 'plugin' update written */
+  fd_plugin_bam_update_status_t bam_status_counted; /* last status used for healthy-edge counters */
+  fd_plugin_bam_update_status_t bam_status_logged;  /* last logged bundle status */
+  long  last_bam_status_log_nanos;
   long  last_gui_publish_nanos;
   uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
 };
@@ -284,15 +284,15 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
                      res->deser_reason, res->seq_id, res->slot ));
   }
 
-  if( FD_UNLIKELY( ctx->bam_pending_results>=FD_BAM_MAX_PENDING_RESULTS ) ) {
+  if( FD_UNLIKELY( ctx->feedback_queue_depth>=FD_BAM_MAX_PENDING_RESULTS ) ) {
     FD_LOG_WARNING(( "Dropping BAM bundle result (bam tile queue full): seq_id=%u slot=%lu bundle_txn_cnt=%u exec_success=%u sched_err=%u",
                      res->seq_id, res->slot, res->bundle_txn_cnt, (uint)res->execution_success, res->scheduling_error ));
-    ctx->metrics.feedback_result_drop_cnt++;
+    ctx->metrics.feedback_results_dropped_cnt++;
     return;
   }
   ctx->bam_results[ ctx->bam_results_tail ] = *res;
   ctx->bam_results_tail = (ushort)((ctx->bam_results_tail + 1U) % FD_BAM_MAX_PENDING_RESULTS);
-  ctx->bam_pending_results = (ushort)( ctx->bam_pending_results + 1U );
+  ctx->feedback_queue_depth = (ushort)( ctx->feedback_queue_depth + 1U );
 }
 
 /* Leader state is latest-value-wins control information: keep only one
@@ -302,7 +302,7 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
   if( FD_UNLIKELY( ctx->bam_leader_pending &&
                    0!=memcmp( &ctx->bam_leader_state, state, sizeof(fd_bam_leader_state_t) ) ) ) {
-    ctx->metrics.leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ]++;
+    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ]++;
   }
   ctx->bam_leader_state = *state;
   ctx->bam_leader_pending = 1U;

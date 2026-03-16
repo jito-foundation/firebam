@@ -143,28 +143,28 @@ fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx ) {
 
 static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
-  FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.txn_published_cnt          );
+  FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.transaction_published_cnt          );
   FD_MCNT_SET( BAM, ATOMIC_BATCH_PUBLISHED,  ctx->metrics.atomic_batch_published_cnt );
-  FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_result_drop_cnt   );
+  FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_results_dropped_cnt   );
   FD_MCNT_SET( BAM, INGRESS_PACKET_OVERSIZE, ctx->metrics.ingress_packet_oversize_cnt );
-  FD_MCNT_SET( BAM, KEEPALIVE_ACKS,          ctx->metrics.keepalive_ack_cnt           );
-  FD_MCNT_SET( BAM, VALIDATOR_HEARTBEATS_ENQUEUED, ctx->metrics.heartbeat_sent_cnt       );
-  FD_MCNT_SET( BAM, BUILDER_HEARTBEATS_DECODED,    ctx->metrics.heartbeat_recv_cnt       );
-  FD_MCNT_SET( BAM, HEALTHY_CONNECTS,              ctx->metrics.healthy_connect_cnt      );
-  FD_MCNT_SET( BAM, HEALTHY_DISCONNECTS,           ctx->metrics.healthy_disconnect_cnt   );
+  FD_MCNT_SET( BAM, KEEPALIVE_ACKS,          ctx->metrics.keepalive_acks_cnt           );
+  FD_MCNT_SET( BAM, VALIDATOR_HEARTBEATS_ENQUEUED, ctx->metrics.validator_heartbeats_enqueued_cnt       );
+  FD_MCNT_SET( BAM, BUILDER_HEARTBEATS_DECODED,    ctx->metrics.builder_heartbeats_decoded_cnt       );
+  FD_MCNT_SET( BAM, HEALTHY_CONNECTS,              ctx->metrics.healthy_connects_cnt      );
+  FD_MCNT_SET( BAM, HEALTHY_DISCONNECTS,           ctx->metrics.healthy_disconnects_cnt   );
   FD_MCNT_ENUM_COPY( BAM, FAILURE,          ctx->metrics.failure_cnt               );
-  FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_RECEIVED,         ctx->metrics.ingress_multi_msg_received_cnt );
+  FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_RECEIVED,         ctx->metrics.ingress_multi_message_received_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_PUBLISHED,                ctx->metrics.ingress_batch_published_cnt );
-  FD_MCNT_ENUM_COPY( BAM, INGRESS_BATCH_REJECTED, ctx->metrics.ingress_batch_reject_cnt );
-  FD_MCNT_ENUM_COPY( BAM, OUTBOUND_ENQUEUE_OUTCOME,  ctx->metrics.outbound_send_outcome_cnt );
+  FD_MCNT_ENUM_COPY( BAM, INGRESS_BATCH_REJECTED, ctx->metrics.ingress_batch_rejected_cnt );
+  FD_MCNT_ENUM_COPY( BAM, OUTBOUND_ENQUEUE_OUTCOME,  ctx->metrics.outbound_enqueue_outcome_cnt );
   FD_MCNT_ENUM_COPY( BAM, STREAM_TRANSITION,      ctx->metrics.stream_transition_cnt     );
-  FD_MCNT_ENUM_COPY( BAM, LEADER_PENDING_DROPPED, ctx->metrics.leader_pending_drop_cnt );
+  FD_MCNT_ENUM_COPY( BAM, LEADER_PENDING_DROPPED, ctx->metrics.leader_pending_dropped_cnt );
 
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SAMPLE,    (ulong)ctx->rtt->latest_rtt   );
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SMOOTHED,  (ulong)ctx->rtt->smoothed_rtt );
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_DEVIATION, (ulong)ctx->rtt->var_rtt      );
-  FD_MGAUGE_SET( BAM, FEEDBACK_QUEUE_DEPTH, (ulong)ctx->bam_pending_results );
+  FD_MGAUGE_SET( BAM, FEEDBACK_QUEUE_DEPTH, (ulong)ctx->feedback_queue_depth );
   FD_MGAUGE_SET( BAM, ENABLED,      (ulong)ctx->enabled );
   fd_bam_export_slot_ingress_timing_metrics( ctx );
 
@@ -347,22 +347,22 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   }
 
   long log_interval_ns = (long)30e9;
-  long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
+  long log_next_ns     = ctx->last_bam_status_log_nanos + log_interval_ns;
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   if( FD_UNLIKELY( (
     status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED ||
     status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) && now_ns > log_next_ns ) ) {
     FD_LOG_WARNING(( "No BAM node connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
-    ctx->last_bundle_status_log_nanos = now_ns;
+    ctx->last_bam_status_log_nanos = now_ns;
   }
 
   _Bool use_bam = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   _Bool tpu_update_pending = ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ) |
                             ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
-  if( FD_UNLIKELY( ctx->bundle_status_recent != status || tpu_update_pending ) ) {
+  if( FD_UNLIKELY( ctx->bam_status_recent != status || tpu_update_pending ) ) {
     fd_bam_gossip_update( ctx, ctx->stem, use_bam );
   }
-  ctx->bundle_status_recent = status;
+  ctx->bam_status_recent = status;
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
     /* Expose BAM connectivity via a shared latch. The verify tile uses
        this to pause QUIC/bundle traffic when BAM has taken over leader
@@ -533,17 +533,17 @@ fd_bam_tile_publish_gui_update(
               fd_ushort_bswap( ctx->bam_tpu_fwd.port ) );
   }
 
-  update->status_code  = ctx->bundle_status_recent;
+  update->status_code  = ctx->bam_status_recent;
   update->enabled = ctx->enabled;
 
   /* Propagate metrics to the GUI so operators can see health without scraping a Prom endpoint. */
-  update->rtt_sample    = ctx->rtt->latest_rtt;
-  update->rtt_smoothed  = ctx->rtt->smoothed_rtt;
-  update->rtt_deviation = ctx->rtt->var_rtt;
-  update->feedback_queue_depth = ctx->bam_pending_results;
-  update->heartbeat_sent = ctx->metrics.heartbeat_sent_cnt;
-  update->heartbeat_recv = ctx->metrics.heartbeat_recv_cnt;
-  update->txn_published  = ctx->metrics.txn_published_cnt;
+  update->keepalive_rtt_sample    = ctx->rtt->latest_rtt;
+  update->keepalive_rtt_smoothed  = ctx->rtt->smoothed_rtt;
+  update->keepalive_rtt_deviation = ctx->rtt->var_rtt;
+  update->feedback_queue_depth = ctx->feedback_queue_depth;
+  update->validator_heartbeats_enqueued = ctx->metrics.validator_heartbeats_enqueued_cnt;
+  update->builder_heartbeats_decoded = ctx->metrics.builder_heartbeats_decoded_cnt;
+  update->transaction_published  = ctx->metrics.transaction_published_cnt;
   update->atomic_batch_published = ctx->metrics.atomic_batch_published_cnt;
   update->ingress_packet_oversize = ctx->metrics.ingress_packet_oversize_cnt;
   update->failure_decode = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ];
@@ -551,15 +551,15 @@ fd_bam_tile_publish_gui_update(
   update->failure_transport = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ];
   update->failure_unsupported_version = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ];
   update->failure_timeout = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TIMEOUT_IDX ];
-  update->ingress_multi_message_received = ctx->metrics.ingress_multi_msg_received_cnt;
+  update->ingress_multi_message_received = ctx->metrics.ingress_multi_message_received_cnt;
   update->ingress_batch_commit_attempt = ctx->metrics.ingress_batch_commit_attempt_cnt;
   update->ingress_batch_published = ctx->metrics.ingress_batch_published_cnt;
-  update->ingress_batch_rejected_invalid_batch = ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ];
-  update->ingress_batch_rejected_empty_batch = ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_BATCH_IDX ];
-  update->ingress_batch_rejected_vote_transaction = ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_VOTE_TRANSACTION_IDX ];
-  update->ingress_batch_rejected_non_revert_multi_packet = ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ];
-  update->ingress_batch_rejected_empty_message = ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_MESSAGE_IDX ];
-  update->ingress_batch_rejected_overflow_message = ctx->metrics.ingress_batch_reject_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ];
+  update->ingress_batch_rejected_invalid_batch = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ];
+  update->ingress_batch_rejected_empty_batch = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_BATCH_IDX ];
+  update->ingress_batch_rejected_vote_transaction = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_VOTE_TRANSACTION_IDX ];
+  update->ingress_batch_rejected_non_revert_multi_packet = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ];
+  update->ingress_batch_rejected_empty_message = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_MESSAGE_IDX ];
+  update->ingress_batch_rejected_overflow_message = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ];
 
   ulong tspub = fd_frag_meta_ts_comp( fd_bam_now() );
   fd_stem_publish(
@@ -585,9 +585,9 @@ after_credit( fd_bam_tile_t *  ctx,
   fd_bam_client_step( ctx, charge_busy );
 
   if( ctx->plugin_out.mem ) {
-    if( FD_UNLIKELY( ctx->gui_dirty || ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
+    if( FD_UNLIKELY( ctx->gui_dirty || ctx->bam_status_recent != ctx->bam_status_plugin ) ) {
       fd_bam_tile_publish_gui_update( ctx, stem );
-      ctx->bundle_status_plugin = ctx->bundle_status_recent;
+      ctx->bam_status_plugin = ctx->bam_status_recent;
       ctx->gui_dirty = 0U;
       *charge_busy = 1;
     }
@@ -1134,13 +1134,13 @@ unprivileged_init( fd_topo_t *      topo,
   /* Set idle ping timer */
   ctx->keepalive_interval = (long)tile->bam.keepalive_interval_nanos;
 
-  ctx->bundle_status_recent = ctx->enabled
+  ctx->bam_status_recent = ctx->enabled
       ? FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED
       : FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
-  ctx->bundle_status_plugin = ctx->bundle_status_recent;
-  ctx->bundle_status_counted = ctx->bundle_status_recent;
-  ctx->bundle_status_logged = ctx->bundle_status_recent;
-  ctx->last_bundle_status_log_nanos = fd_log_wallclock();
+  ctx->bam_status_plugin = ctx->bam_status_recent;
+  ctx->bam_status_counted = ctx->bam_status_recent;
+  ctx->bam_status_logged = ctx->bam_status_recent;
+  ctx->last_bam_status_log_nanos = fd_log_wallclock();
   ctx->gui_dirty = 1U;
 
   ctx->bam_tpu         = (fd_ip4_port_t){0};

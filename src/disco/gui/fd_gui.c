@@ -2234,13 +2234,13 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   memcpy( gui->bam.tpu_fwd_cstr, update->tpu_fwd_cstr, sizeof( gui->bam.tpu_fwd_cstr )-1 );
   gui->bam.tpu_fwd_cstr[ sizeof( gui->bam.tpu_fwd_cstr )-1 ] = '\0';
 
-  gui->bam.rtt_sample    = update->rtt_sample;
-  gui->bam.rtt_smoothed  = update->rtt_smoothed;
-  gui->bam.rtt_deviation = update->rtt_deviation;
+  gui->bam.keepalive_rtt_sample    = update->keepalive_rtt_sample;
+  gui->bam.keepalive_rtt_smoothed  = update->keepalive_rtt_smoothed;
+  gui->bam.keepalive_rtt_deviation = update->keepalive_rtt_deviation;
   gui->bam.feedback_queue_depth = update->feedback_queue_depth;
-  gui->bam.heartbeat_sent = update->heartbeat_sent;
-  gui->bam.heartbeat_recv = update->heartbeat_recv;
-  gui->bam.txn_published  = update->txn_published;
+  gui->bam.validator_heartbeats_enqueued = update->validator_heartbeats_enqueued;
+  gui->bam.builder_heartbeats_decoded = update->builder_heartbeats_decoded;
+  gui->bam.transaction_published  = update->transaction_published;
   gui->bam.atomic_batch_published = update->atomic_batch_published;
   gui->bam.ingress_packet_oversize = update->ingress_packet_oversize;
   gui->bam.failure_decode = update->failure_decode;

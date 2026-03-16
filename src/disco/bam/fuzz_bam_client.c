@@ -552,10 +552,10 @@ bam_fuzz_reset_tile( void ) {
   ctx->keylog_fd             = -1;
   ctx->grpc_buf_max          = 4096UL;
   ctx->tcp_sock              = -1;
-  ctx->bundle_status_logged  = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
-  ctx->bundle_status_recent  = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
+  ctx->bam_status_logged  = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
+  ctx->bam_status_recent  = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->enabled               = 1U;
-  ctx->bam_pending_results   = 0U;
+  ctx->feedback_queue_depth   = 0U;
   ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
 
   /* Assume a valid builder config was fetched so bundle publish paths don't abort */
@@ -663,7 +663,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
     long hb_now = fd_log_wallclock();
     ctx->bam_last_builder_heartbeat_ns   = hb_now;
     ctx->bam_last_validator_heartbeat_ns = hb_now;
-    ctx->bundle_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+    ctx->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   }
 
   if( apply_ctrl ) {
@@ -735,7 +735,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   }
 
   bam_fuzz_exercise_outbound( ctx, data, size );
-  ctx->bundle_status_recent = bam_fuzz_status( ctx );
-  bam_fuzz_publish_and_check( ctx->bundle_status_recent == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  ctx->bam_status_recent = bam_fuzz_status( ctx );
+  bam_fuzz_publish_and_check( ctx->bam_status_recent == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   return 0;
 }

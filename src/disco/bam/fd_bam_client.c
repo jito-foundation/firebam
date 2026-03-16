@@ -90,19 +90,19 @@ fd_bam_drop_pending_leader_state( fd_bam_tile_t *                       ctx,
 
   switch( reason ) {
   case FD_BAM_LEADER_PENDING_DROP_CLIENT_RESET:
-    ctx->metrics.leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_CLIENT_RESET_IDX ]++;
+    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_CLIENT_RESET_IDX ]++;
     break;
   case FD_BAM_LEADER_PENDING_DROP_REQUEST_FAILED:
-    ctx->metrics.leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_REQUEST_FAILED_IDX ]++;
+    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_REQUEST_FAILED_IDX ]++;
     break;
   case FD_BAM_LEADER_PENDING_DROP_STREAM_ENDED:
-    ctx->metrics.leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_ENDED_IDX ]++;
+    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_ENDED_IDX ]++;
     break;
   case FD_BAM_LEADER_PENDING_DROP_STREAM_TIMEOUT:
-    ctx->metrics.leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_TIMEOUT_IDX ]++;
+    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_TIMEOUT_IDX ]++;
     break;
   case FD_BAM_LEADER_PENDING_DROP_SUPERSEDED:
-    ctx->metrics.leader_pending_drop_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ]++;
+    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ]++;
     break;
   default:
     break;
@@ -164,7 +164,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
      scheduler stream comes up.  The server expects every dispatched
      bundle to eventually produce a result; dropping them here would lose
      that guarantee. */
-  /* ctx->bam_pending_results        = 0UL; */
+  /* ctx->feedback_queue_depth        = 0UL; */
   /* ctx->bam_results_head           = 0UL; */
   /* ctx->bam_results_tail           = 0UL; */
   fd_bam_drop_pending_leader_state( ctx, FD_BAM_LEADER_PENDING_DROP_CLIENT_RESET );
@@ -331,7 +331,7 @@ fd_bam_tile_publish_bundle_txn(
 
   fd_stem_publish( ctx->stem, ctx->verify_out.idx, 1, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
   ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
-  ctx->metrics.txn_published_cnt++;
+  ctx->metrics.transaction_published_cnt++;
 }
 
 /* Forwards a regular transaction to the tango message bus. */
@@ -373,7 +373,7 @@ fd_bam_tile_publish_txn(
 
   fd_stem_publish( ctx->stem, ctx->verify_out.idx, 0, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
   ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
-  ctx->metrics.txn_published_cnt++;
+  ctx->metrics.transaction_published_cnt++;
 }
 
 static bool
@@ -800,14 +800,14 @@ fd_bam_send_heartbeat( fd_bam_tile_t * ctx,
     return;
   }
   ctx->bam_last_validator_heartbeat_ns = now;
-  ctx->metrics.heartbeat_sent_cnt++;
+  ctx->metrics.validator_heartbeats_enqueued_cnt++;
 }
 
 static int
 fd_bam_send_result( fd_bam_tile_t *               ctx,
                     fd_bam_bundle_result_t const * res ) {
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) {
-    ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_NO_STREAM_IDX ]++;
+    ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_NO_STREAM_IDX ]++;
     return 0;
   }
 
@@ -836,10 +836,10 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
   msg.versioned_msg.v0.msg.multiple_atomic_txn_batch_result = multi;
 
   if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
-    ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_ENQUEUE_FAIL_IDX ]++;
+    ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_ENQUEUE_FAIL_IDX ]++;
     return 0;
   }
-  ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_ENQUEUED_IDX ]++;
+  ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_ENQUEUED_IDX ]++;
   return 1;
 }
 
@@ -847,7 +847,7 @@ static int
 fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
                           fd_bam_leader_state_t const *  state ) {
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) {
-    ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_NO_STREAM_IDX ]++;
+    ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_NO_STREAM_IDX ]++;
     return 0;
   }
 
@@ -863,9 +863,9 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
 
   const int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
   if( FD_UNLIKELY( !send_res ) ) {
-    ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUE_FAIL_IDX ]++;
+    ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUE_FAIL_IDX ]++;
   } else {
-    ctx->metrics.outbound_send_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUED_IDX ]++;
+    ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUED_IDX ]++;
   }
 
   return send_res;
@@ -874,12 +874,12 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
 static int
 fd_bam_flush_results( fd_bam_tile_t * ctx ) {
   int busy = 0;
-  while( ctx->bam_pending_results ) {
+  while( ctx->feedback_queue_depth ) {
     fd_bam_bundle_result_t const * res =
         &ctx->bam_results[ ctx->bam_results_head ];
     if( FD_UNLIKELY( !fd_bam_send_result( ctx, res ) ) ) break;
     ctx->bam_results_head = (ctx->bam_results_head + 1) % FD_BAM_MAX_PENDING_RESULTS;
-    ctx->bam_pending_results--;
+    ctx->feedback_queue_depth--;
     busy = 1;
   }
   return busy;
@@ -1127,11 +1127,11 @@ fd_bam_client_log_status( fd_bam_tile_t *              ctx,
                           fd_plugin_bam_update_status_t status ) {
   // TODO: connected/disconnected state should handle healthy and unhealthy versions
   int const healthy_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-  int const healthy_before = ( ctx->bundle_status_logged == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  int const healthy_before = ( ctx->bam_status_logged == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
   if( FD_UNLIKELY( healthy_now != healthy_before ) ) {
     long ts = fd_log_wallclock();
-    if( FD_LIKELY( ts-(ctx->last_bundle_status_log_nanos) >= (long)1e6 ) ) {
+    if( FD_LIKELY( ts-(ctx->last_bam_status_log_nanos) >= (long)1e6 ) ) {
       if( healthy_now ) {
         char const * scheme = "http";
 # if FD_HAS_OPENSSL
@@ -1145,8 +1145,8 @@ fd_bam_client_log_status( fd_bam_tile_t *              ctx,
       } else {
         FD_LOG_WARNING(( "Disconnected from BAM node" ));
       }
-      ctx->last_bundle_status_log_nanos = ts;
-      ctx->bundle_status_logged = status;
+      ctx->last_bam_status_log_nanos = ts;
+      ctx->bam_status_logged = status;
     }
   }
 }
@@ -1158,12 +1158,12 @@ fd_bam_client_step( fd_bam_tile_t * ctx,
   fd_bam_client_step1( ctx, charge_busy );
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   int const healthy_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-  int const healthy_before = ( ctx->bundle_status_counted == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  int const healthy_before = ( ctx->bam_status_counted == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   if( FD_UNLIKELY( healthy_now != healthy_before ) ) {
-    if( healthy_now ) ctx->metrics.healthy_connect_cnt++;
-    else              ctx->metrics.healthy_disconnect_cnt++;
+    if( healthy_now ) ctx->metrics.healthy_connects_cnt++;
+    else              ctx->metrics.healthy_disconnects_cnt++;
   }
-  ctx->bundle_status_counted = status;
+  ctx->bam_status_counted = status;
   fd_bam_client_log_status( ctx, status );
 }
 
@@ -1357,7 +1357,7 @@ fd_bam_client_grpc_ping_ack( void * app_ctx ) {
     fd_rtt_sample( ctx->rtt, (float)rtt_sample, 0 );
     FD_LOG_DEBUG(( "Keepalive ACK" ));
   }
-  ctx->metrics.keepalive_ack_cnt++;
+  ctx->metrics.keepalive_acks_cnt++;
 }
 
 fd_grpc_client_callbacks_t fd_bam_client_grpc_callbacks = {

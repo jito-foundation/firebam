@@ -495,13 +495,13 @@ fd_gui_printf_bam( fd_gui_t * gui ) {
       else if( FD_LIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) jsonp_string( gui->http, "status", "connected-healthy" );
       else                                                                               jsonp_string( gui->http, "status", "unexpected" );
 
-      jsonp_double( gui->http, "rtt_sample_nanos",     (double)gui->bam.rtt_sample );
-      jsonp_double( gui->http, "rtt_smoothed_nanos",   (double)gui->bam.rtt_smoothed );
-      jsonp_double( gui->http, "rtt_deviation_nanos",  (double)gui->bam.rtt_deviation );
+      jsonp_double( gui->http, "keepalive_rtt_sample",     (double)gui->bam.keepalive_rtt_sample );
+      jsonp_double( gui->http, "keepalive_rtt_smoothed",   (double)gui->bam.keepalive_rtt_smoothed );
+      jsonp_double( gui->http, "keepalive_rtt_deviation",  (double)gui->bam.keepalive_rtt_deviation );
       jsonp_ulong(  gui->http, "feedback_queue_depth", gui->bam.feedback_queue_depth );
-      jsonp_ulong(  gui->http, "heartbeat_sent",       gui->bam.heartbeat_sent );
-      jsonp_ulong(  gui->http, "heartbeat_recv",       gui->bam.heartbeat_recv );
-      jsonp_ulong(  gui->http, "txn_published",        gui->bam.txn_published );
+      jsonp_ulong(  gui->http, "validator_heartbeats_enqueued", gui->bam.validator_heartbeats_enqueued );
+      jsonp_ulong(  gui->http, "builder_heartbeats_decoded",    gui->bam.builder_heartbeats_decoded );
+      jsonp_ulong(  gui->http, "transaction_published",         gui->bam.transaction_published );
       jsonp_ulong(  gui->http, "atomic_batch_published", gui->bam.atomic_batch_published );
       jsonp_ulong(  gui->http, "ingress_packet_oversize", gui->bam.ingress_packet_oversize );
       jsonp_ulong(  gui->http, "failure_decode",       gui->bam.failure_decode );
