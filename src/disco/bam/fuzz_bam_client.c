@@ -330,7 +330,6 @@ bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
 
       // todo: use dynamic signature
       strlcpy( ctx->bam_auth_signature, "1111111111111111111111111111111111", sizeof( ctx->bam_auth_signature ) );
-      ctx->bam_challenge_to_sign_len = (uchar)len;
       ctx->bam_auth_ready            = 1U;
       ctx->bam_auth_inflight         = 0U;
     }
@@ -412,8 +411,8 @@ bam_fuzz_build_auth_challenge_payload( uchar selector,
 }
 
 /* Verify auth state mirrors the decoded payload when a structured auth
-   message was generated. Expects bam_auth_ready=1 with matching length and
-   contents when decode succeeds; otherwise expects all zeroed auth flags. */
+   message was generated. Expects bam_auth_ready=1 with matching challenge
+   contents when decode succeeds; otherwise expects cleared auth state. */
 static void
 bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
                             bam_fuzz_auth_payload_t  info,
@@ -424,13 +423,13 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
   if( FD_UNLIKELY( !info.expect_decode_ok ) ) {
     FD_TEST( ctx->bam_auth_ready==0U );
     FD_TEST( ctx->bam_auth_inflight==0U );
-    FD_TEST( ctx->bam_challenge_to_sign_len==0U );
+    FD_TEST( ctx->challenge_to_sign[ 0 ]=='\0' );
     return;
   }
 
   FD_TEST( ctx->bam_auth_ready==1U );
   FD_TEST( ctx->bam_auth_inflight==0U );
-  FD_TEST( ctx->bam_challenge_to_sign_len==info.expected_len );
+  FD_TEST( strnlen( ctx->challenge_to_sign, sizeof( ctx->challenge_to_sign ) )==info.expected_len );
   /* Generator fills challenge_to_sign with a single repeated byte; ensure decode preserved it. */
   for( ulong i=0UL; i<info.expected_len; i++ ) {
     FD_TEST( ((uchar)ctx->challenge_to_sign[ i ])==info.start_byte );
@@ -439,9 +438,9 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
 
 static void
 bam_fuzz_assert_auth_cleared( fd_bam_tile_t * ctx ) {
-  /* Assert auth bookkeeping is cleared (ready=0, inflight=0, len=0). */
+  /* Assert auth bookkeeping is cleared (ready=0, inflight=0, empty challenge). */
   FD_TEST( ctx->bam_auth_ready==0U );
-  FD_TEST( ctx->bam_challenge_to_sign_len==0U );
+  FD_TEST( ctx->challenge_to_sign[ 0 ]=='\0' );
   FD_TEST( ctx->bam_auth_inflight==0U );
 }
 
@@ -576,7 +575,7 @@ bam_fuzz_seed_stream_state( fd_bam_tile_t * ctx,
   } else if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) ) {
     ctx->bam_auth_inflight      = 1U;
     ctx->bam_auth_ready         = 0U;
-    ctx->bam_challenge_to_sign_len = 0U;
+    ctx->challenge_to_sign[ 0 ] = '\0';
   } else if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig ) ) {
     ctx->bam_config_inflight = 1U;
   }

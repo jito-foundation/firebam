@@ -651,7 +651,6 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( state->metrics.transaction_published_cnt == 3UL );
   FD_TEST( state->metrics.atomic_batch_published_cnt == 1UL );
   FD_TEST( state->bundle_seq == 7U );
-  FD_TEST( state->bundle_txn_cnt == 2U );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   fd_frag_meta_t * meta = env->out_mcache;
@@ -740,7 +739,6 @@ test_bam_multiple_batches_accept_limit_counts( fd_wksp_t * wksp ) {
   FD_TEST( state->metrics.transaction_published_cnt == expected_txn_cnt );
   FD_TEST( state->metrics.atomic_batch_published_cnt == TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
   FD_TEST( state->bundle_seq == 700U + TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET - 1U );
-  FD_TEST( state->bundle_txn_cnt == TEST_BAM_MAX_TXN_PER_ATOMIC_BATCH );
 
   fd_frag_meta_t * meta = env->out_mcache;
   FD_TEST( meta[0].seq == 0UL );
@@ -1668,11 +1666,11 @@ test_bam_grpc_timeout( fd_wksp_t * wksp ) {
 
   state->bam_auth_inflight      = 1U;
   state->bam_auth_ready         = 1U;
-  state->bam_challenge_to_sign_len = 16U;
+  strlcpy( state->challenge_to_sign, "stale-challenge", sizeof( state->challenge_to_sign ) );
   fd_bam_client_grpc_rx_timeout( state, FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge, FD_GRPC_DEADLINE_HEADER );
   FD_TEST( state->bam_auth_inflight == 0U );
   FD_TEST( state->bam_auth_ready == 0U );
-  FD_TEST( state->bam_challenge_to_sign_len == 0U );
+  FD_TEST( state->challenge_to_sign[ 0 ] == '\0' );
   FD_TEST( state->defer_reset == 1U );
 
   state->defer_reset = 0U;
@@ -2086,8 +2084,7 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
 
   FD_TEST( state->bam_auth_inflight == 0U );
   FD_TEST( state->bam_auth_ready == 1U );
-  FD_TEST( state->bam_challenge_to_sign_len == challenge_len );
-  FD_TEST( 0 == memcmp( state->challenge_to_sign, challenge, challenge_len ) );
+  FD_TEST( 0 == strcmp( state->challenge_to_sign, challenge ) );
 
   char expected_sig[ FD_BASE58_ENCODED_64_SZ ];
   FD_TEST( fd_base58_encode_64( signature, NULL, expected_sig ) );
@@ -2133,7 +2130,7 @@ test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
   state->bam_last_config_poll_ns = g_clock;
 
   char const challenge[] = "challenge-123";
-  state->bam_challenge_to_sign_len = (uchar)strlcpy( state->challenge_to_sign, challenge, sizeof(challenge) );
+  strlcpy( state->challenge_to_sign, challenge, sizeof( state->challenge_to_sign ) );
 
   char const signature[] = "sig-abcdef";
   strlcpy( state->bam_auth_signature, signature, sizeof(signature) );
@@ -2146,6 +2143,7 @@ test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_stream != NULL );
   FD_TEST( state->bam_stream_connecting == 1U );
   FD_TEST( state->bam_auth_ready == 0U );
+  FD_TEST( state->challenge_to_sign[ 0 ] == '\0' );
   FD_TEST( state->bam_stream_live == 0U );
 
   test_bam_decoded_message_t decoded;

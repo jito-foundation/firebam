@@ -153,10 +153,10 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   fd_bam_set_stream_live( ctx, 0U );
   ctx->bam_stream_connecting      = 0;
   ctx->bam_auth_ready             = 0;
+  ctx->challenge_to_sign[ 0 ]     = '\0';
   ctx->bam_auth_inflight          = 0;
   ctx->bam_config_inflight        = 0;
   ctx->bam_config_received        = 0;
-  ctx->bam_challenge_to_sign_len     = 0U;
   ctx->bam_last_builder_heartbeat_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
   ctx->bam_last_config_poll_ns    = 0L;
@@ -582,6 +582,8 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   bam_api_AuthChallengeResponse resp = bam_api_AuthChallengeResponse_init_default;
   if( FD_UNLIKELY( !pb_decode( &istream, &bam_api_AuthChallengeResponse_msg, &resp ) ) ) {
     ctx->bam_auth_inflight = 0;
+    ctx->bam_auth_ready    = 0;
+    ctx->challenge_to_sign[ 0 ] = '\0';
     FD_LOG_WARNING(( "Protobuf decode of (bam_api.AuthChallengeResponse) failed" ));
     return 0;
   }
@@ -589,12 +591,13 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   size_t challenge_len = strnlen( resp.challenge_to_sign, sizeof(resp.challenge_to_sign) );
   if( FD_UNLIKELY( challenge_len == sizeof(resp.challenge_to_sign) ) ) {
     ctx->bam_auth_inflight = 0;
+    ctx->bam_auth_ready    = 0;
+    ctx->challenge_to_sign[ 0 ] = '\0';
     FD_LOG_WARNING(( "AuthChallengeResponse challenge not NUL terminated" ));
     return 0;
   }
 
-  ctx->bam_auth_inflight      = 0;
-  ctx->bam_challenge_to_sign_len = (uchar)challenge_len;
+  ctx->bam_auth_inflight = 0;
   fd_memcpy( ctx->challenge_to_sign, resp.challenge_to_sign, sizeof(ctx->challenge_to_sign) );
 
   uchar  sign_payload[ FD_BAM_AUTH_LABEL_LEN + sizeof(bam_api_AuthChallengeResponse) ]; // the null is to be included
@@ -784,6 +787,7 @@ fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
   ctx->bam_stream            = stream;
   ctx->bam_stream_connecting = 1;
   ctx->bam_auth_ready        = 0;
+  ctx->challenge_to_sign[ 0 ] = '\0';
 }
 
 static void
@@ -1059,7 +1063,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   }
 
   /* Did a HTTP/2 PING time out */
-  long check_ts = ctx->cached_ts = fd_bam_now();
+  long check_ts = fd_bam_now();
   if( FD_UNLIKELY( fd_keepalive_is_timeout( ctx->keepalive, check_ts ) ) ) {
     FD_LOG_WARNING(( "BAM gRPC timed out (HTTP/2 PING went unanswered for %.2f seconds); retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
                      (double)( check_ts - ctx->keepalive->ts_last_tx )/1e9,
@@ -1249,9 +1253,9 @@ fd_bam_client_request_failed( fd_bam_tile_t * ctx,
   fd_bam_tile_backoff( ctx, fd_bam_now() );
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
-    ctx->bam_auth_inflight       = 0;
-    ctx->bam_auth_ready          = 0;
-    ctx->bam_challenge_to_sign_len  = 0;
+    ctx->bam_auth_inflight      = 0;
+    ctx->bam_auth_ready         = 0;
+    ctx->challenge_to_sign[ 0 ] = '\0';
     break;
   case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
     ctx->bam_config_inflight = 0;
@@ -1261,7 +1265,7 @@ fd_bam_client_request_failed( fd_bam_tile_t * ctx,
     fd_bam_set_stream_live( ctx, 0U );
     ctx->bam_stream_connecting  = 0;
     ctx->bam_auth_ready         = 0;
-    ctx->bam_challenge_to_sign_len = 0;
+    ctx->challenge_to_sign[ 0 ] = '\0';
     fd_bam_drop_pending_leader_state( ctx, FD_BAM_LEADER_PENDING_DROP_REQUEST_FAILED );
     break;
   }
@@ -1312,7 +1316,7 @@ fd_bam_client_grpc_rx_end(
     if( resp->grpc_status == FD_GRPC_STATUS_UNAUTHENTICATED ||
         resp->grpc_status == FD_GRPC_STATUS_PERMISSION_DENIED ) {
       ctx->bam_auth_ready         = 0;
-      ctx->bam_challenge_to_sign_len = 0;
+      ctx->challenge_to_sign[ 0 ] = '\0';
     }
     return;
   }
@@ -1331,9 +1335,9 @@ fd_bam_client_grpc_rx_timeout(
   ctx->defer_reset = 1;
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
-    ctx->bam_auth_inflight       = 0;
-    ctx->bam_auth_ready          = 0;
-    ctx->bam_challenge_to_sign_len  = 0;
+    ctx->bam_auth_inflight      = 0;
+    ctx->bam_auth_ready         = 0;
+    ctx->challenge_to_sign[ 0 ] = '\0';
     break;
   case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
     ctx->bam_config_inflight = 0;

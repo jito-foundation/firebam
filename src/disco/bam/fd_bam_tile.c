@@ -572,6 +572,7 @@ fd_bam_tile_publish_gui_update(
       0UL, /* seq */
       tspub
   );
+  ctx->last_gui_publish_nanos = fd_log_wallclock();
   ctx->plugin_out.chunk = fd_dcache_compact_next( ctx->plugin_out.chunk, sizeof(fd_plugin_msg_bam_update_t), ctx->plugin_out.chunk0, ctx->plugin_out.wmark );
 }
 
@@ -890,6 +891,7 @@ fd_bam_tile_init_openssl( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !alloc ) ) {
     FD_LOG_ERR(( "fd_alloc_new failed" ));
   }
+  /* TODO: plumb ssl_alloc through OpenSSL teardown/reset instead of keeping it as init-only state. */
   ctx->ssl_alloc = alloc;
   fd_openssl_set_thread_alloc( alloc );
 

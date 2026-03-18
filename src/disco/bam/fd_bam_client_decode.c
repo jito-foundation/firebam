@@ -502,7 +502,6 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
 
   if( state->revert_on_error ) {
     ctx->bundle_seq                = batch->seq_id;
-    ctx->bundle_txn_cnt            = state->packet_cnt;
     ctx->bundle_max_schedule_slot  = batch->max_schedule_slot;
 
     for( uchar i=0; i<state->packet_cnt; i++ ) {

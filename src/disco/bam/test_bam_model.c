@@ -1434,7 +1434,7 @@ bam_model_run_scenario_auth_and_control( bam_model_harness_t * h ) {
                       FD_BAM_AUTH_LABEL_LEN + challenge_len ) );
 
   FD_TEST( h->state->bam_auth_ready==1U );
-  FD_TEST( h->state->bam_challenge_to_sign_len==(uchar)challenge_len );
+  FD_TEST( 0==strcmp( h->state->challenge_to_sign, challenge ) );
   FD_TEST( h->state->bam_auth_signature[0] != '\0' );
 
   uchar expected_sig_raw[ 64 ];

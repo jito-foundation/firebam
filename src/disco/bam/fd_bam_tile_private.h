@@ -147,7 +147,7 @@ struct fd_bam_tile {
   /* OpenSSL */
   SSL_CTX *    ssl_ctx;                           /* Owning TLS context for BAM connection */
   SSL *        ssl;                               /* TLS session bound to tcp_sock */
-  fd_alloc_t * ssl_alloc;                         /* Allocator backing OpenSSL init */
+  fd_alloc_t * ssl_alloc;                         /* TODO: use this when BAM owns OpenSSL allocator teardown/reset lifecycle */
 # endif /* FD_HAS_OPENSSL */
 
   /* Currently running config, values loaded via TOML and updated by set_bam admin control */
@@ -170,7 +170,6 @@ struct fd_bam_tile {
   int  so_rcvbuf;                                 /* Desired receive buffer size */
   uchar tcp_sock_connected : 1;                   /* Set once connect handshake completes */
   uchar defer_reset : 1;                          /* Delay reset until after current iteration */
-  long cached_ts;                                 /* Last fd_bam_now() sample for metrics */
 
   /* Keepalive via HTTP/2 PINGs (randomized) */
   long              keepalive_interval;           /* Target interval for PING dispatch */
@@ -204,7 +203,6 @@ struct fd_bam_tile {
 
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle). */
-  uchar bundle_txn_cnt;                           /* Number of txns in current bundle */
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
   fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by resolved slot for debug captures. */
   ulong dump_bam_last_slot;                       /* Most recent resolved slot dumped under dump_bam_first_slot_txn */
@@ -223,11 +221,10 @@ struct fd_bam_tile {
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
-  uchar                 bam_challenge_to_sign_len;       /* Length of current auth challenge */
   char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Base58-encoded Ed25519 signature for BAM auth (NUL-terminated) */
   uint                  bam_stream_live        : 1;      /* set once bam_stream is established and delivering messages */
   uint                  bam_stream_connecting  : 1;      /* set during gRPC stream handshake before bam_stream_live */
-  uint                  bam_auth_ready         : 1;      /* set when bam_auth_challenge/_len contain a fresh challenge to sign */
+  uint                  bam_auth_ready         : 1;      /* set when challenge_to_sign contains a fresh, NUL-terminated challenge to sign */
   uint                  bam_auth_inflight      : 1;      /* true while GetAuthChallenge GRPC call is pending */
   uint                  bam_config_inflight    : 1;      /* true while GetBuilderConfig GRPC call is pending */
   uint                  bam_config_received    : 1;      /* set after a valid ConfigResponse lands on the current connection */
