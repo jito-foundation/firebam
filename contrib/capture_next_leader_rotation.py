@@ -28,6 +28,8 @@ ETHTOOL_STATS_FILTER_RE = re.compile(r"drop|error|discard|miss|fifo", re.IGNOREC
 WEBSOCKET_SUMMARY_KEYS = frozenset({"identity_key", "startup_time_nanos", "completed_slot"})
 WEBSOCKET_SLOT_QUERY_REQUEST_KEY = "query_detailed"
 WEBSOCKET_SLOT_QUERY_RESPONSE_KEY = "query"
+WEBSOCKET_BAM_UPDATE_TOPIC = "bam"
+WEBSOCKET_BAM_UPDATE_KEY = "update"
 
 # Representative slot rows emitted by `websocket-scrape`, captured from
 # `wss://fd-mainnet.stakingfacilities.com/websocket` on 2026-03-15.
@@ -720,6 +722,7 @@ def scrape_websocket_slots(
     summary_values: dict[str, Any] = {}
     summary_rows: list[dict[str, Any]] = []
     epoch_values: list[dict[str, Any]] = []
+    bam_value: Optional[dict[str, Any]] = None
 
     with WebsocketJsonSession(websocket_url) as ws:
         while time.monotonic() <= snapshot_deadline:
@@ -744,6 +747,8 @@ def scrape_websocket_slots(
                     )
             elif topic == "epoch" and key == "new" and isinstance(value, dict):
                 epoch_values.append(value)
+            elif topic == WEBSOCKET_BAM_UPDATE_TOPIC and key == WEBSOCKET_BAM_UPDATE_KEY and isinstance(value, dict):
+                bam_value = value
 
             if len(summary_values) != len(WEBSOCKET_SUMMARY_KEYS):
                 continue
@@ -858,6 +863,16 @@ def scrape_websocket_slots(
             parsed_rows = parsed_rows[-recent_count:]
 
         if parsed_rows:
+            query_bam_value = next(
+                (
+                    row.get("value")
+                    for row in reversed(details)
+                    if row.get("topic") == WEBSOCKET_BAM_UPDATE_TOPIC
+                    and row.get("key") == WEBSOCKET_BAM_UPDATE_KEY
+                    and isinstance(row.get("value"), dict)
+                ),
+                None,
+            )
             epoch_rows = [
                 {
                     "record_type": "epoch",
@@ -867,7 +882,19 @@ def scrape_websocket_slots(
                 }
                 for epoch_value in epoch_values
             ]
-            return [*summary_rows, *epoch_rows, *({"record_type": "slot", **row} for row in parsed_rows)]
+            output_rows = [*summary_rows, *epoch_rows]
+            selected_bam_value = query_bam_value if query_bam_value is not None else bam_value
+            if selected_bam_value is not None:
+                output_rows.append(
+                    {
+                        "record_type": "bam",
+                        "topic": WEBSOCKET_BAM_UPDATE_TOPIC,
+                        "key": WEBSOCKET_BAM_UPDATE_KEY,
+                        "value": selected_bam_value,
+                    }
+                )
+            output_rows.extend({"record_type": "slot", **row} for row in parsed_rows)
+            return output_rows
 
     if seen_query_results:
         return []
