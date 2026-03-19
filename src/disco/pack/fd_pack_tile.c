@@ -301,9 +301,9 @@ typedef struct {
   ulong       poh_out_chunk;
 
   /* pack->bam outputs are split by semantic contract:
-       - pack_bam_leader carries fd_bam_leader_state_t snapshots. The BAM
+       - pack_bam_ldr carries fd_bam_leader_state_t snapshots. The BAM
          tile coalesces these latest-value-wins before sending upstream.
-       - pack_bam_result carries fd_bam_bundle_result_t feedback. The BAM
+       - pack_bam_res carries fd_bam_bundle_result_t feedback. The BAM
          tile queues these durably FIFO across reconnect/reset.
      Keeping them separate removes the internal size-based mux. */
   pack_bam_out_ctx_t bam_leader_out;
@@ -440,7 +440,7 @@ typedef struct {
        - Values may update asynchronously; reads are treated best-effort. */
   fd_bam_fee_cfg_t const * bam_fee_cfg;
 
-  /* Last leader-state message published to pack_bam_leader. Used to avoid spamming
+  /* Last leader-state message published to pack_bam_ldr. Used to avoid spamming
      identical updates.
 
      Sentinel: slot==ULONG_MAX means "no cached publish yet", which is safe
@@ -571,7 +571,7 @@ pack_tile_publish_bam_result( fd_pack_ctx_t *             ctx,
                               fd_stem_context_t *         stem,
                               fd_bam_bundle_result_t const * res ) {
   /* Results are durable feedback records and publish one-for-one onto
-     the pack_bam_result link. */
+     the pack_bam_res link. */
   if( FD_UNLIKELY( ctx->bam_result_out.idx==ULONG_MAX ) ) return;
   fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->bam_result_out.mem, ctx->bam_result_out.chunk );
   *out = *res;
@@ -2066,7 +2066,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_leader_out = (pack_bam_out_ctx_t){ .idx = ULONG_MAX };
   ctx->bam_result_out = (pack_bam_out_ctx_t){ .idx = ULONG_MAX };
 
-  ulong bam_leader_out_idx = fd_topo_find_tile_out_link( topo, tile, "pack_bam_leader", tile->kind_id );
+  ulong bam_leader_out_idx = fd_topo_find_tile_out_link( topo, tile, "pack_bam_ldr", tile->kind_id );
   if( bam_leader_out_idx!=ULONG_MAX ) {
     fd_topo_link_t const * bam_leader_out = &topo->links[ tile->out_link_id[ bam_leader_out_idx ] ];
     ctx->bam_leader_out.idx    = bam_leader_out_idx;
@@ -2076,7 +2076,7 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->bam_leader_out.chunk  = ctx->bam_leader_out.chunk0;
   }
 
-  ulong bam_result_out_idx = fd_topo_find_tile_out_link( topo, tile, "pack_bam_result", tile->kind_id );
+  ulong bam_result_out_idx = fd_topo_find_tile_out_link( topo, tile, "pack_bam_res", tile->kind_id );
   if( bam_result_out_idx!=ULONG_MAX ) {
     fd_topo_link_t const * bam_result_out = &topo->links[ tile->out_link_id[ bam_result_out_idx ] ];
     ctx->bam_result_out.idx    = bam_result_out_idx;

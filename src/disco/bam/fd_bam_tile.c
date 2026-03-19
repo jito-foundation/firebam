@@ -1092,17 +1092,17 @@ unprivileged_init( fd_topo_t *      topo,
   fd_topo_link_t const * bank_in = &topo->links[ tile->in_link_id[ bank_in_idx ] ];
   ctx->bank_in = bam_in_link( topo, bank_in );
 
-  ulong leader_in_idx = fd_topo_find_tile_in_link( topo, tile, "pack_bam_leader", tile->kind_id );
-  if( FD_UNLIKELY( leader_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing pack_bam_leader link" ));
-  if( FD_UNLIKELY( !tile->in_link_poll[ leader_in_idx ] ) ) FD_LOG_ERR(( "pack_bam_leader must be polled" ));
+  ulong leader_in_idx = fd_topo_find_tile_in_link( topo, tile, "pack_bam_ldr", tile->kind_id );
+  if( FD_UNLIKELY( leader_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing pack_bam_ldr link" ));
+  if( FD_UNLIKELY( !tile->in_link_poll[ leader_in_idx ] ) ) FD_LOG_ERR(( "pack_bam_ldr must be polled" ));
   ctx->pack_bam_leader_in_idx = 0UL;
   for( ulong i=0UL; i<leader_in_idx; i++ ) ctx->pack_bam_leader_in_idx += (ulong)!!tile->in_link_poll[ i ];
   fd_topo_link_t const * leader_in = &topo->links[ tile->in_link_id[ leader_in_idx ] ];
   ctx->pack_leader_in = bam_in_link( topo, leader_in );
 
-  ulong result_in_idx = fd_topo_find_tile_in_link( topo, tile, "pack_bam_result", tile->kind_id );
-  if( FD_UNLIKELY( result_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing pack_bam_result link" ));
-  if( FD_UNLIKELY( !tile->in_link_poll[ result_in_idx ] ) ) FD_LOG_ERR(( "pack_bam_result must be polled" ));
+  ulong result_in_idx = fd_topo_find_tile_in_link( topo, tile, "pack_bam_res", tile->kind_id );
+  if( FD_UNLIKELY( result_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing pack_bam_res link" ));
+  if( FD_UNLIKELY( !tile->in_link_poll[ result_in_idx ] ) ) FD_LOG_ERR(( "pack_bam_res must be polled" ));
   ctx->pack_bam_result_in_idx = 0UL;
   for( ulong i=0UL; i<result_in_idx; i++ ) ctx->pack_bam_result_in_idx += (ulong)!!tile->in_link_poll[ i ];
   fd_topo_link_t const * result_in = &topo->links[ tile->in_link_id[ result_in_idx ] ];

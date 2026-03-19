@@ -133,8 +133,8 @@ struct fd_bam_tile {
   fd_keyguard_client_t keyguard_client[1];        /* Keyguard client used to request signatures */
 
   ulong            bank_bam_in_idx;               /* Polled input index for bank_bam durable results in stem callback space */
-  ulong            pack_bam_leader_in_idx;        /* Polled input index for pack_bam_leader snapshot/control updates */
-  ulong            pack_bam_result_in_idx;        /* Polled input index for pack_bam_result durable bundle feedback */
+  ulong            pack_bam_leader_in_idx;        /* Polled input index for pack_bam_ldr snapshot/control updates */
+  ulong            pack_bam_result_in_idx;        /* Polled input index for pack_bam_res durable bundle feedback */
   fd_bam_in_ctx_t  bank_in;                       /* Bank->BAM result ingress dcache context */
   fd_bam_in_ctx_t  pack_leader_in;                /* Pack->BAM latest-value-wins leader-state ingress */
   fd_bam_in_ctx_t  pack_result_in;                /* Pack->BAM durable result ingress */
@@ -216,8 +216,8 @@ struct fd_bam_tile {
   ushort                feedback_queue_depth;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_head;                /* Index of next result to flush (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
-  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_result and bank_bam; preserved across reconnect/reset until flushed */
-  fd_bam_leader_state_t  bam_leader_state;               /* Latest pack_bam_leader snapshot awaiting publication; newer unsent snapshots supersede older ones */
+  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_res and bank_bam; preserved across reconnect/reset until flushed */
+  fd_bam_leader_state_t  bam_leader_state;               /* Latest pack_bam_ldr snapshot awaiting publication; newer unsent snapshots supersede older ones */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */

@@ -31,137 +31,140 @@ WEBSOCKET_SLOT_QUERY_RESPONSE_KEY = "query"
 WEBSOCKET_BAM_UPDATE_TOPIC = "bam"
 WEBSOCKET_BAM_UPDATE_KEY = "update"
 
-# Representative slot rows emitted by `websocket-scrape`, captured from
-# `wss://fd-mainnet.stakingfacilities.com/websocket` on 2026-03-15.
+# Representative websocket-scrape slot rows verified against the TPU Waterfall
+# screenshots and a live scrape from
+# wss://fd-mainnet.stakingfacilities.com/websocket on 2026-03-19.
 WEBSOCKET_SLOT_OUTPUT_EXAMPLES: list[dict[str, Any]] = [
     {
-        "slot": 406626210,
+        "record_type": "slot",
+        "slot": 407546504,
         "sankey_nodes": {
-            "quic": 23739,
-            "udp": 2261,
-            "received": 26000,
-            "gossip": 721,
-            "block_engine": 74,
-            "verify": 26795,
-            "dedup": 9153,
-            "resolv": 3135,
-            "crank": 0,
-            "buffered_in": 4068,
-            "pack": 7201,
-            "bank": 2394,
-            "packed": 1953,
+            "quic": 226432,
+            "udp": 16629,
+            "received": 243061,
+            "gossip": 775,
+            "block_engine": 2005,
+            "verify": 245531,
+            "dedup": 72631,
+            "resolv": 23484,
+            "crank": 1,
+            "buffered_in": 1544,
+            "pack": 24732,
+            "bank": 2996,
+            "packed": 1396,
         },
         "sankey_drops": {
-            "malformed": 0,
-            "abandoned": 0,
-            "unparseable": 17,
-            "bad_signature": 0,
-            "verify_duplicate": 17625,
-            "dedup_duplicate": 6018,
-            "unresolved": 0,
-            "bad_lut": 0,
-            "resolv_expired": 2,
-            "buffered": 4300,
-            "unpackable": 43,
-            "pack_expired": 464,
-            "already_executed": 0,
-            "unexecutable": 441,
-            "block_success": 1481,
-            "block_fail": 364,
+            "malformed": 296,
+            "abandoned": 14,
+            "unparseable": 3777,
+            "bad_signature": 1166,
+            "verify_duplicate": 167957,
+            "dedup_duplicate": 49157,
+            "unresolved": 10,
+            "bad_lut": 7,
+            "resolv_expired": 290,
+            "buffered": 12,
+            "unpackable": 94,
+            "pack_expired": 6913,
+            "already_executed": 14717,
+            "unexecutable": 1600,
+            "block_success": 1173,
+            "block_fail": 40,
         },
         "slot_metrics": {
-            "votes": 764,
-            "non_vote_failure": 364,
-            "non_vote_success": 717,
-            "compute_units": 59999633,
-            "priority_fees_sol": 0.0107,
-            "transaction_fees_sol": 0.0047,
-            "tips_sol": 0.0015,
+            "votes": 792,
+            "non_vote_failure": 38,
+            "non_vote_success": 383,
+            "compute_units": 28254168,
+            "priority_fees_sol": 0.0065,
+            "transaction_fees_sol": 0.0032,
+            "tips_sol": 0.0003,
         },
         "publish": {
-            "slot": 406626210,
+            "slot": 407546504,
             "mine": True,
-            "start_timestamp_nanos": "1773598026227233763",
-            "target_end_timestamp_nanos": "1773598026577233920",
+            "start_timestamp_nanos": "1773961567957924856",
+            "target_end_timestamp_nanos": "1773961568307924992",
             "skipped": False,
             "level": "rooted",
-            "duration_nanos": 349194122,
-            "completed_time_nanos": "1773598026584007852",
-            "success_nonvote_transaction_cnt": 717,
-            "failed_nonvote_transaction_cnt": 364,
-            "success_vote_transaction_cnt": 764,
-            "failed_vote_transaction_cnt": 0,
+            "duration_nanos": 363301926,
+            "completed_time_nanos": "1773961568315791427",
+            "success_nonvote_transaction_cnt": 383,
+            "failed_nonvote_transaction_cnt": 38,
+            "success_vote_transaction_cnt": 790,
+            "failed_vote_transaction_cnt": 2,
             "max_compute_units": 60000000,
-            "compute_units": 59999633,
+            "compute_units": 28254168,
             "shreds": None,
-            "transaction_fee": 4722500,
-            "priority_fee": 10699961,
-            "tips": 1532399,
+            "transaction_fee": 3160000,
+            "priority_fee": 6458807,
+            "tips": 294454,
         },
     },
     {
-        "slot": 406626211,
+        "record_type": "slot",
+        "slot": 407546528,
         "sankey_nodes": {
-            "quic": 19388,
-            "udp": 1332,
-            "received": 20720,
-            "gossip": 807,
-            "block_engine": 84,
-            "verify": 21611,
-            "dedup": 7367,
-            "resolv": 2403,
-            "crank": 0,
-            "buffered_in": 4300,
-            "pack": 6702,
-            "bank": 1856,
-            "packed": 1608,
+            "quic": 84456,
+            "udp": 8687,
+            "received": 93143,
+            "gossip": 649,
+            "block_engine": 1707,
+            "verify": 95352,
+            "dedup": 24321,
+            "resolv": 10010,
+            "crank": 1,
+            "buffered_in": 5,
+            "pack": 9867,
+            "bank": 2206,
+            "packed": 1222,
         },
         "sankey_drops": {
-            "malformed": 0,
-            "abandoned": 0,
-            "unparseable": 15,
-            "bad_signature": 0,
-            "verify_duplicate": 14229,
-            "dedup_duplicate": 4964,
-            "unresolved": 0,
+            "malformed": 21,
+            "abandoned": 126,
+            "unparseable": 366,
+            "bad_signature": 1106,
+            "verify_duplicate": 69559,
+            "dedup_duplicate": 14404,
+            "unresolved": 93,
             "bad_lut": 0,
-            "resolv_expired": 1,
-            "buffered": 4495,
-            "unpackable": 11,
-            "pack_expired": 340,
-            "already_executed": 0,
-            "unexecutable": 248,
-            "block_success": 1133,
-            "block_fail": 387,
+            "resolv_expired": 149,
+            "buffered": 7,
+            "unpackable": 21,
+            "pack_expired": 2003,
+            "already_executed": 5630,
+            "unexecutable": 984,
+            "block_success": 1289,
+            "block_fail": 66,
         },
         "slot_metrics": {
-            "votes": 767,
-            "non_vote_failure": 387,
-            "non_vote_success": 366,
-            "compute_units": 59958283,
-            "priority_fees_sol": 0.0181,
-            "transaction_fees_sol": 0.0039,
-            "tips_sol": 0.0021,
+            "votes": 737,
+            "non_vote_failure": 62,
+            "non_vote_success": 556,
+            "compute_units": 34655814,
+            "priority_fees_sol": 0.0114,
+            "transaction_fees_sol": 0.0035,
+            "tips_sol": 0.0008,
         },
         "publish": {
-            "slot": 406626211,
+            "slot": 407546528,
             "mine": True,
-            "start_timestamp_nanos": "1773598026577233763",
-            "target_end_timestamp_nanos": "1773598026927233536",
+            "start_timestamp_nanos": "1773961576935436679",
+            "target_end_timestamp_nanos": "1773961577285436928",
             "skipped": False,
             "level": "rooted",
-            "duration_nanos": 350168260,
-            "completed_time_nanos": "1773598026934176112",
-            "success_nonvote_transaction_cnt": 366,
-            "failed_nonvote_transaction_cnt": 387,
-            "success_vote_transaction_cnt": 767,
-            "failed_vote_transaction_cnt": 0,
+            "duration_nanos": 362852511,
+            "completed_time_nanos": "1773961577293099707",
+            "success_nonvote_transaction_cnt": 556,
+            "failed_nonvote_transaction_cnt": 62,
+            "success_vote_transaction_cnt": 733,
+            "failed_vote_transaction_cnt": 4,
             "max_compute_units": 60000000,
-            "compute_units": 59958283,
+            "compute_units": 34655814,
             "shreds": None,
-            "transaction_fee": 3947500,
-            "priority_fee": 18143821,
-            "tips": 2093004,
+            "transaction_fee": 3507500,
+            "priority_fee": 11423704,
+            "tips": 817945,
         },
     },
 ]
@@ -616,14 +619,31 @@ def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
     drop_resolv_no_ledger = parse_int(waterfall_drops.get("resolv_no_ledger"))
     drop_pack_retained = parse_int(waterfall_drops.get("pack_retained"))
     drop_pack_invalid = parse_int(waterfall_drops.get("pack_invalid"))
+    drop_pack_invalid_bundle = parse_int(waterfall_drops.get("pack_invalid_bundle"))
     drop_pack_expired = parse_int(waterfall_drops.get("pack_expired"))
     drop_pack_already_executed = parse_int(waterfall_drops.get("pack_already_executed"))
+    drop_pack_leader_slow = parse_int(waterfall_drops.get("pack_leader_slow"))
     drop_bank_invalid = parse_int(waterfall_drops.get("bank_invalid"))
     drop_block_success = parse_int(waterfall_drops.get("block_success"))
     drop_block_fail = parse_int(waterfall_drops.get("block_fail"))
-    unresolved = max(0, parse_int(waterfall_drops.get("resolv_retained")) - in_resolv_retained)
+    # Historical slot queries expose resolv_retained with a wrapped 16-bit delta
+    # representation. Normalize that first, then feed the result into the same
+    # stage accounting the GUI uses for the TPU waterfall.
+    unresolved = parse_int(waterfall_drops.get("resolv_retained")) - in_resolv_retained
+    if unresolved < 0:
+        unresolved += 1 << 16
+    if unresolved >= (1 << 15):
+        unresolved = (1 << 16) - unresolved
     drop_resolv_expired_total = drop_resolv_expired + drop_resolv_ancient
+    drop_resolv_failed = drop_resolv_lut_failed + drop_resolv_expired_total + drop_resolv_no_ledger
+    # The UI groups leader-slow with buffered, and invalid-bundle with
+    # unpackable, so collapse those counters into the same buckets here.
+    drop_pack_buffered = drop_pack_retained + drop_pack_leader_slow
+    drop_pack_unpacked = drop_pack_invalid + drop_pack_invalid_bundle
 
+    # These derived node counts intentionally follow the current GUI formulas
+    # from src/disco/gui/fd_gui_printf.c and src/disco/gui/sankey_debug.py so
+    # websocket-scrape matches the on-screen TPU Waterfall exactly.
     received = in_quic + in_udp
     verify = (
         received
@@ -636,21 +656,17 @@ def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
         - drop_verify_overrun
     )
     dedup = verify - drop_unparseable - drop_bad_signature - drop_verify_duplicate
-    resolv = dedup - drop_dedup_duplicate
+    resolv = dedup - drop_dedup_duplicate + unresolved
     pack = (
         resolv
         + in_pack_cranked
         + in_pack_retained
-        - unresolved
-        - drop_resolv_lut_failed
-        - drop_resolv_expired
-        - drop_resolv_ancient
-        - drop_resolv_no_ledger
+        - drop_resolv_failed
     )
     bank = (
         pack
-        - drop_pack_retained
-        - drop_pack_invalid
+        - drop_pack_buffered
+        - drop_pack_unpacked
         - drop_pack_expired
         - drop_pack_already_executed
     )
@@ -683,8 +699,8 @@ def parse_slot_result_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
             "unresolved": unresolved,
             "bad_lut": drop_resolv_lut_failed,
             "resolv_expired": drop_resolv_expired_total,
-            "buffered": drop_pack_retained,
-            "unpackable": drop_pack_invalid,
+            "buffered": drop_pack_buffered,
+            "unpackable": drop_pack_unpacked,
             "pack_expired": drop_pack_expired,
             "already_executed": drop_pack_already_executed,
             "unexecutable": drop_bank_invalid,

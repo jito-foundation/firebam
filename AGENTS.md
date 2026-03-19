@@ -39,11 +39,11 @@ Firedancer Tile Flow Diagram
 
   Feedback/control links
     pack tile ──pack_bundle──▶ bundle tile         bank tile ──bank_bundle──▶ bundle tile
-    pack tile ──pack_bam_leader──▶ bam tile
-    pack tile ──pack_bam_result──▶ bam tile       bank tile ──bank_bam─────▶ bam tile
+    pack tile ──pack_bam_ldr──▶ bam tile
+    pack tile ──pack_bam_res──▶ bam tile         bank tile ──bank_bam─────▶ bam tile
     bam tile ──bam_status fseq──▶ verify tiles (suppresses QUIC/bundle while BAM owns TPU)
 
   Semantics
-    pack_bam_leader carries latest-value-wins `fd_bam_leader_state_t` snapshots.
-    pack_bam_result and bank_bam carry durable FIFO `fd_bam_bundle_result_t` feedback.
+    pack_bam_ldr carries latest-value-wins `fd_bam_leader_state_t` snapshots.
+    pack_bam_res and bank_bam carry durable FIFO `fd_bam_bundle_result_t` feedback.
 ```
