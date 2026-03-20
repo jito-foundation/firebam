@@ -5,9 +5,7 @@ set -euo pipefail
 #
 # Swap the identity for a single validator type (Agave or Firedancer).
 # - Toggles between staked and dummy identities based on IDENTITY_LINK_PATH.
-# - Promotes with --require-tower when switching to the staked identity.
 # - Updates /etc/solana/identity.json symlink for restart consistency.
-# - Does not copy tower files; ensure the tower exists before promotion.
 #
 # This script does not stop or start systemd services; it only performs
 # set-identity and file operations. Use --dry-run to inspect commands.
@@ -24,7 +22,7 @@ Modes:
 Behavior:
   If IDENTITY_LINK_PATH points at the staked identity, demote to the dummy
   identity. If it points at the dummy identity, promote to the staked
-  identity (using --require-tower).
+  identity.
 
   --wait  Wait for a restart window of $MIN_IDLE_TIME minutes before demotion
           (Agave mode only)
@@ -194,9 +192,11 @@ fi
 if [[ "$IDENTITY_LINK_PATH" -ef "$STAKED_IDENTITY_KEYPAIR_PATH" ]]; then
   TARGET_IDENTITY="$DUMMY_IDENTITY_KEYPAIR_PATH"
   TARGET_MODE="dummy"
+  TARGET_PUBKEY="$DUMMY_PUBKEY"
 elif [[ "$IDENTITY_LINK_PATH" -ef "$DUMMY_IDENTITY_KEYPAIR_PATH" ]]; then
   TARGET_IDENTITY="$STAKED_IDENTITY_KEYPAIR_PATH"
   TARGET_MODE="staked"
+  TARGET_PUBKEY="$STAKED_PUBKEY"
 else
   echo "error: identity symlink points to neither staked nor dummy keypair: $IDENTITY_LINK_PATH" >&2
   exit 1
@@ -217,7 +217,6 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
       exit 1
     }
 
-  TARGET_PUBKEY=$([[ "$TARGET_MODE" == "staked" ]] && echo "$STAKED_PUBKEY" || echo "$DUMMY_PUBKEY")
   # Match scope from getClusterNodes gossip address:
   # "our" = target pubkey on this host IP, "other" = target pubkey on a different IP, "none" = target pubkey absent.
   TARGET_MATCH_SCOPE="$(echo "$CLUSTER_JSON" | jq --raw-output --exit-status --arg pubkey "$TARGET_PUBKEY" --arg iface "$INTERFACE_IP" '
@@ -247,10 +246,10 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
   # is present in gossip but has fallen behind by DELINQUENT_SLOT_DISTANCE slots.
   # This keeps duplicate-identity protection for active validators.
   ALLOW_DELINQUENT_STAKED_PROMOTE=0
-  CURRENT_SLOT=-1
-  STAKED_LAST_VOTE=-1
-  SLOT_LAG=-1
   if [[ "$TARGET_MODE" == "staked" && "$TARGET_MATCH_SCOPE" != "none" ]]; then
+    CURRENT_SLOT=-1
+    STAKED_LAST_VOTE=-1
+    SLOT_LAG=-1
     CURRENT_SLOT_JSON="$(curl -s --fail --max-time 10 \
       -X POST -H "Content-Type: application/json" \
       -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' \
@@ -316,9 +315,6 @@ if [[ "$WAIT" -eq 1 ]]; then
 fi
 if [[ "$SET_IDENTITY_FORCE" -eq 1 ]]; then
   cmd+=(--force)
-fi
-if [[ "$TARGET_MODE" == "staked" ]]; then
-  cmd+=(--require-tower)
 fi
 cmd+=("$TARGET_IDENTITY")
 run "${cmd[@]}"
