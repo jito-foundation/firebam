@@ -119,7 +119,7 @@ typedef enum {
 } pack_tile_bam_bundle_assembly_abandon_reason_t;
 
 typedef enum {
-  PACK_TILE_BAM_INVALID_NONE = 0,
+  PACK_TILE_BAM_INVALID_NONE = 0, // TODO: annotate what these mean
   PACK_TILE_BAM_INVALID_OUTSIDE_SLOT,
   PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED,
 } pack_tile_bam_invalid_reason_t;
@@ -530,13 +530,13 @@ pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
   if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) return;
   if( FD_UNLIKELY( ctx->bam_leader_out.idx==ULONG_MAX ) ) return;
   long now_ticks = fd_tickcount();
-  long now_ns = ctx->approx_wallclock_ns + (long)((double)(now_ticks - ctx->approx_tickcount) / ctx->ticks_per_ns);
+  long now_ns = ctx->approx_wallclock_ns + (long)((double)(now_ticks - ctx->approx_tickcount) / ctx->ticks_per_ns); // todo: why do we use approx time calculation?
 
-  uint tick = 0U;
-  if( FD_LIKELY( ctx->_became_leader->tick_duration_ns ) ) {
+  uint tick = 0U; // todo: add comment what this does
+  if( FD_LIKELY( ctx->_became_leader->tick_duration_ns ) ) { // TODO: when is tick duration 0??
     long slot_start_ns = ctx->slot_end_ns - (long)(ctx->_became_leader->tick_duration_ns * ctx->_became_leader->ticks_per_slot);
     long elapsed_ns    = now_ns - slot_start_ns;
-    if( FD_LIKELY( elapsed_ns>0L ) ) tick = (uint)(elapsed_ns / (long)ctx->_became_leader->tick_duration_ns);
+    if( FD_LIKELY( elapsed_ns>0L ) ) tick = (uint)(elapsed_ns / (long)ctx->_became_leader->tick_duration_ns); // TODO: should we have check? what is benefit
     tick = fd_uint_min( tick, (uint)ctx->_became_leader->ticks_per_slot );
   }
 
@@ -570,8 +570,6 @@ static inline void
 pack_tile_publish_bam_result( fd_pack_ctx_t *             ctx,
                               fd_stem_context_t *         stem,
                               fd_bam_bundle_result_t const * res ) {
-  /* Results are durable feedback records and publish one-for-one onto
-     the pack_bam_res link. */
   if( FD_UNLIKELY( ctx->bam_result_out.idx==ULONG_MAX ) ) return;
   fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->bam_result_out.mem, ctx->bam_result_out.chunk );
   *out = *res;
@@ -596,7 +594,7 @@ pack_tile_publish_bam_invalid_result( fd_pack_ctx_t *                ctx,
                                       ulong                          max_schedule_slot,
                                       uchar                          txn_cnt,
                                       pack_tile_bam_invalid_reason_t reason ) {
-  fd_bam_bundle_result_t res = {0};
+  fd_bam_bundle_result_t res = {0}; // todo: initialize properly the first time, not afterwards
   res.seq_id            = seq_id;
   res.slot              = max_schedule_slot;
   res.bundle_txn_cnt    = txn_cnt;
@@ -613,6 +611,8 @@ pack_tile_publish_bam_invalid_result( fd_pack_ctx_t *                ctx,
   pack_tile_publish_bam_result( ctx, stem, &res );
 }
 
+
+// TODO: do we need this?? seems like bs
 static inline ulong
 pack_tile_bam_current_slot( fd_pack_ctx_t const * ctx ) {
   if( FD_LIKELY( ctx->leader_slot!=ULONG_MAX ) ) return ctx->leader_slot;
@@ -638,12 +638,14 @@ pack_tile_bam_invalid_reason( ulong current_slot,
   ulong oldest_live_slot = fd_ulong_max( current_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS;
   if( FD_UNLIKELY( blockhash_slot<oldest_live_slot ) ) return PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED;
   if( FD_UNLIKELY( max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT &&
-                   max_schedule_slot<fd_ulong_max( current_slot, blockhash_slot ) ) ) {
+                   max_schedule_slot<fd_ulong_max( current_slot, blockhash_slot ) ) ) { // TODO: double check this is correct
     return PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
   }
   return PACK_TILE_BAM_INVALID_NONE;
 }
 
+
+// TODO: can we early return here instead? what does this function even do????
 static inline void
 pack_tile_remove_pending_bam_work_seq( fd_pack_ctx_t * ctx,
                                        uint            seq_id ) {
@@ -675,13 +677,15 @@ pack_tile_track_pending_bam_work( fd_pack_ctx_t *          ctx,
   }
   pack_bam_pending_work_t * item = &ctx->bam_pending_work[ ctx->bam_pending_work_cnt++ ];
   item->txn_cnt = txn_cnt;
-  fd_memset( item->sig, 0, sizeof(item->sig) );
+  fd_memset( item->sig, 0, sizeof(item->sig) ); // TODO: do we need this?? seem unnecessary
   fd_memcpy( item->sig, sigs, (ulong)item->txn_cnt * sizeof(fd_ed25519_sig_t) );
   item->seq_id            = seq_id;
   item->max_schedule_slot = max_schedule_slot;
   item->blockhash_slot    = blockhash_slot;
 }
 
+
+// TODO: this interation is complicated, can we simplify it
 static inline void
 pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t *     ctx,
                                           fd_stem_context_t * stem,
@@ -821,7 +825,7 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
 
   FD_TEST( ctx->current_bam_bundle->txn_received!=ctx->current_bam_bundle->txn_cnt );
 
-  fd_bam_bundle_result_t res = {0};
+  fd_bam_bundle_result_t res = {0}; // TODO: set fields in initializer
   res.seq_id            = ctx->current_bam_bundle->seq_id;
   res.slot              = ctx->current_bam_bundle->max_schedule_slot;
   res.bundle_txn_cnt    = ctx->current_bam_bundle->txn_cnt;
@@ -839,6 +843,7 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
   if( FD_UNLIKELY( queue_missing_result ) ) {
     /* Only partially received BAM bundles queue here, so bundle_txn_cnt is
        guaranteed non-zero and remains a reliable empty/non-empty sentinel. */
+    // TODO: better explain this branch
     ctx->pending_bam_result[0] = res;
   } else {
     pack_tile_publish_bam_result( ctx, stem, &res );
@@ -848,6 +853,8 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
   ctx->current_bam_bundle->bundle = NULL;
 }
 
+
+// TODO: can we simplify this???
 static inline void
 pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               fd_stem_context_t * stem,
@@ -855,13 +862,13 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               char const *        reason,
                               pack_tile_bam_bundle_assembly_abandon_reason_t bam_abandon_reason ) {
   /* bundle_txn_cnt==0 means there is no deferred BAM result to flush. */
-  if( FD_UNLIKELY( ctx->pending_bam_result->bundle_txn_cnt ) ) {
+  if( FD_LIKELY( ctx->pending_bam_result->bundle_txn_cnt ) ) {
     pack_tile_publish_bam_result( ctx, stem, ctx->pending_bam_result );
     ctx->pending_bam_result->bundle_txn_cnt = 0U;
   }
   pack_tile_evict_invalid_pending_bam_work( ctx, stem, fd_ulong_sat_add( ctx->leader_slot, 1UL ) );
   pack_tile_abandon_current_bam_bundle( ctx, stem, 0, bam_abandon_reason );
-  if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
+  if( FD_LIKELY( ctx->current_bundle->bundle ) ) {
     fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
     ctx->current_bundle->bundle = NULL;
   }
