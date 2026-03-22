@@ -1057,8 +1057,25 @@ main( int     argc,
 
   FD_TEST( pack_tile_bam_invalid_reason( 100UL,  99UL, 100UL ) == PACK_TILE_BAM_INVALID_OUTSIDE_SLOT );
   FD_TEST( pack_tile_bam_invalid_reason( 100UL,   0UL, 100UL ) == PACK_TILE_BAM_INVALID_OUTSIDE_SLOT );
+  FD_TEST( pack_tile_bam_invalid_reason(  50UL,  99UL, 100UL ) == PACK_TILE_BAM_INVALID_OUTSIDE_SLOT );
   FD_TEST( pack_tile_bam_invalid_reason( 200UL, 200UL,  39UL ) == PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED );
   FD_TEST( pack_tile_bam_invalid_reason( 200UL, 200UL,  40UL ) == PACK_TILE_BAM_INVALID_NONE );
+  FD_TEST( pack_tile_bam_invalid_reason( ULONG_MAX, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT, 100UL ) == PACK_TILE_BAM_INVALID_NONE );
+  FD_TEST( pack_tile_bam_invalid_reason( ULONG_MAX,  99UL, 100UL ) == PACK_TILE_BAM_INVALID_OUTSIDE_SLOT );
+
+  fd_became_leader_t leader_state = {
+    .slot_start_ns    = 1000L,
+    .slot_end_ns      = 1640L,
+    .ticks_per_slot   = 64UL,
+    .tick_duration_ns = 10UL
+  };
+  FD_TEST( pack_tile_bam_leader_tick( &leader_state,  999L ) == 0U );
+  FD_TEST( pack_tile_bam_leader_tick( &leader_state, 1000L ) == 0U );
+  FD_TEST( pack_tile_bam_leader_tick( &leader_state, 1010L ) == 1U );
+  FD_TEST( pack_tile_bam_leader_tick( &leader_state, 1639L ) == 63U );
+  FD_TEST( pack_tile_bam_leader_tick( &leader_state, 2000L ) == 64U );
+  leader_state.tick_duration_ns = 0UL;
+  FD_TEST( pack_tile_bam_leader_tick( &leader_state, 1500L ) == 0U );
 
   ulong bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_CNT ] = {0};
   pack_tile_record_bam_work_invalidated( bam_work_invalidated_cnt, PACK_TILE_BAM_INVALID_OUTSIDE_SLOT, 1U );

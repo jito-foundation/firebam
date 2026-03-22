@@ -29,7 +29,9 @@ struct __attribute__((aligned(64))) fd_txn_p {
      the transaction result code. */
   uint  flags;
 
-  /* BAM metadata for transactions originating from BAM scheduling. */
+  /* BAM metadata for transactions originating from BAM scheduling.
+     max_schedule_slot is not stored here on this branch; pack carries that
+     slot hint in sidecar state to preserve the fd_txn_p_t layout. */
   struct {
     uint  seq_id;
     uchar batch_idx;
