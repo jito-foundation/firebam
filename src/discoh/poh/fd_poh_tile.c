@@ -636,6 +636,11 @@ static poh_link_t start_progress_plugin;
 static poh_link_t vote_listener_plugin;
 static poh_link_t validator_info_plugin;
 
+/* Latest Agave start progress state pushed over FFI (see
+   agave/core/src/validator.rs). 11 => ValidatorStartProgress::Running. */
+#define FD_START_PROGRESS_STATE_RUNNING (11)
+static volatile uchar fd_start_progress_state;
+
 static void
 poh_link_wait_credit( poh_link_t * link ) {
   if( FD_LIKELY( link->cr_avail ) ) return;
@@ -1348,11 +1353,11 @@ fd_ext_poh_reset( ulong         completed_bank_slot, /* The slot that successful
       the shred tile needs to be aware of.  Since their computation
       requires the bank, we are forced (so far) to receive them here
       from the Rust side, before forwarding them to the shred tile as
-      POH_PKT_TYPE_FEAT_ACT_SLOT. */
-  if( FD_UNLIKELY( !fd_memeq( ctx->features_activation->slots, features_activation, sizeof(fd_shred_features_activation_t) ) ) ) {
-    fd_memcpy( ctx->features_activation->slots, features_activation, sizeof(fd_shred_features_activation_t) );
-    ctx->features_activation_avail = 1UL;
-  }
+      POH_PKT_TYPE_FEAT_ACT_SLOT.  This is not elegant, and it should
+      be revised in the future (TODO), but it provides a "temporary"
+      working solution to handle features activation. */
+  fd_memcpy( ctx->features_activation->slots, features_activation, sizeof(fd_shred_features_activation_t) );
+  ctx->features_activation_avail = 1UL;
 
   fd_ext_poh_write_unlock();
 }
@@ -2180,11 +2185,17 @@ fd_ext_plugin_publish_genesis_hash( ulong   sig,
   poh_link_publish( &replay_plugin, sig, data, data_len );
 }
 
+_Bool
+fd_ext_is_agave_running( void ) {
+  return FD_VOLATILE_CONST( fd_start_progress_state )==FD_START_PROGRESS_STATE_RUNNING;
+}
+
 void
 fd_ext_plugin_publish_start_progress( ulong   sig,
                                       uchar * data,
                                       ulong   data_len ) {
   poh_link_publish( &start_progress_plugin, sig, data, data_len );
+  if( FD_LIKELY( data_len ) ) FD_VOLATILE( fd_start_progress_state ) = data[ 0 ];
 }
 
 void

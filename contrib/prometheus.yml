@@ -1,0 +1,16 @@
+global:
+  scrape_interval: ${PROM_SCRAPE_INTERVAL}
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: firedancer
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:7999
+
+remote_write:
+  - url: http://prometheus.metrics.jito.wtf:9090/api/v1/write   # CHANGE THIS
+    basic_auth:
+      username: metrics
+      password_file: ../opt/prometheus_remote_write_password.txt

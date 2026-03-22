@@ -373,9 +373,123 @@ metric introduced.
     <int value="1" name="Protobuf" label="Protobuf decode/encode error" />
     <int value="2" name="Transport" label="Transport error" />
     <int value="3" name="Timeout" label="I/O timeout" />
-    <int value="4" name="NoFeeInfo" label="Bundle dropped due to missing fee info" />
+    <int value="4" name="NoFeeInfo" label="Bundle dropped due to missing builder info" />
     <int value="5" name="SslAlloc" label="OpenSSL alloc fail" />
 </enum>
+
+<enum name="BamFailure">
+    <int value="0" name="Decode" label="Local protobuf or scheduler-envelope decode failure" />
+    <int value="1" name="RequestFailed" label="HTTP or gRPC request completed with a non-OK status" />
+    <int value="2" name="Transport" label="DNS, socket, connect, or stream I/O failure" />
+    <int value="3" name="UnsupportedVersion" label="Unsupported scheduler-response version received from the BAM peer" />
+    <int value="4" name="Timeout" label="Request, keepalive, or heartbeat timeout" />
+</enum>
+
+<enum name="BamIngressBatchRejectReason">
+    <int value="0" name="InvalidBatch" label="Batch rejected because AtomicTxnBatch decode or structural validation failed" />
+    <int value="1" name="EmptyBatch" label="Batch rejected because it contained zero packets" />
+    <int value="2" name="VoteTransaction" label="Batch rejected because it contained a simple vote transaction" />
+    <int value="3" name="NonRevertMultiPacket" label="Batch rejected because a non-revert batch contained multiple packets" />
+    <int value="4" name="EmptyMessage" label="Wrapper rejected because a multiple_atomic_txn_batch message contained zero batches" />
+    <int value="5" name="OverflowMessage" label="Wrapper rejected because a multiple_atomic_txn_batch message exceeded the local max batch count" />
+</enum>
+
+<enum name="BamEnqueueOutcome">
+    <int value="0" name="LeaderStateEnqueued" label="Leader-state message accepted by gRPC stream_send" />
+    <int value="1" name="LeaderStateNoStream" label="Leader-state send skipped because stream is unavailable (not established or not live)" />
+    <int value="2" name="LeaderStateEnqueueFail" label="Leader-state send attempted but fd_grpc_client_stream_send returned failure" />
+    <int value="3" name="ResultEnqueued" label="Result message accepted by gRPC stream_send" />
+    <int value="4" name="ResultNoStream" label="Result send skipped because stream is unavailable (not established or not live)" />
+    <int value="5" name="ResultEnqueueFail" label="Result send attempted but fd_grpc_client_stream_send returned failure" />
+</enum>
+
+<enum name="BamStreamTransition">
+    <int value="0" name="DownToLive" label="Scheduler stream transitioned from not-live to live" />
+    <int value="1" name="LiveToDown" label="Scheduler stream transitioned from live to not-live" />
+</enum>
+
+<enum name="BamLeaderPendingDropReason">
+    <int value="0" name="ClientReset" label="Pending leader-state cleared because BAM client was reset" />
+    <int value="1" name="RequestFailed" label="Pending leader-state cleared because scheduler stream request failed" />
+    <int value="2" name="StreamEnded" label="Pending leader-state cleared because scheduler stream ended" />
+    <int value="3" name="StreamTimeout" label="Pending leader-state cleared because scheduler stream timed out" />
+    <int value="4" name="Superseded" label="Pending leader-state replaced by a newer leader-state update before send" />
+</enum>
+
+<enum name="BamSlotIngressTimingIdx">
+    <int value="0" name="Idx0" label="Ring index 0" />
+    <int value="1" name="Idx1" label="Ring index 1" />
+    <int value="2" name="Idx2" label="Ring index 2" />
+    <int value="3" name="Idx3" label="Ring index 3" />
+    <int value="4" name="Idx4" label="Ring index 4" />
+    <int value="5" name="Idx5" label="Ring index 5" />
+    <int value="6" name="Idx6" label="Ring index 6" />
+    <int value="7" name="Idx7" label="Ring index 7" />
+    <int value="8" name="Idx8" label="Ring index 8" />
+    <int value="9" name="Idx9" label="Ring index 9" />
+    <int value="10" name="Idx10" label="Ring index 10" />
+    <int value="11" name="Idx11" label="Ring index 11" />
+    <int value="12" name="Idx12" label="Ring index 12" />
+    <int value="13" name="Idx13" label="Ring index 13" />
+    <int value="14" name="Idx14" label="Ring index 14" />
+    <int value="15" name="Idx15" label="Ring index 15" />
+    <int value="16" name="Idx16" label="Ring index 16" />
+    <int value="17" name="Idx17" label="Ring index 17" />
+    <int value="18" name="Idx18" label="Ring index 18" />
+    <int value="19" name="Idx19" label="Ring index 19" />
+    <int value="20" name="Idx20" label="Ring index 20" />
+    <int value="21" name="Idx21" label="Ring index 21" />
+    <int value="22" name="Idx22" label="Ring index 22" />
+    <int value="23" name="Idx23" label="Ring index 23" />
+    <int value="24" name="Idx24" label="Ring index 24" />
+    <int value="25" name="Idx25" label="Ring index 25" />
+    <int value="26" name="Idx26" label="Ring index 26" />
+    <int value="27" name="Idx27" label="Ring index 27" />
+    <int value="28" name="Idx28" label="Ring index 28" />
+    <int value="29" name="Idx29" label="Ring index 29" />
+    <int value="30" name="Idx30" label="Ring index 30" />
+    <int value="31" name="Idx31" label="Ring index 31" />
+</enum>
+
+<tile name="bam">
+    <gauge name="Enabled" summary="Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled" />
+    <gauge name="Healthy" summary="Boolean gauge: 1 when the BAM client is fully connected, authenticated, configured, and heartbeat healthy; otherwise 0" />
+    <counter name="TransactionPublished" summary="Cumulative number of transactions published from BAM to verify, including transactions unpacked from bundles" />
+    <counter name="AtomicBatchPublished" summary="Cumulative number of revert_on_error AtomicTxnBatch entries published to verify as atomic BAM batches" />
+    <counter name="FeedbackResultsDropped" summary="Cumulative number of BAM feedback results dropped because the local result queue was full" />
+    <counter name="IngressPacketOversize" summary="Cumulative number of BAM packets rejected because their declared payload exceeded the local MTU" />
+    <counter name="ValidatorHeartbeatsEnqueued" summary="Cumulative number of validator heartbeat messages accepted by gRPC stream_send" />
+    <counter name="BuilderHeartbeatsDecoded" summary="Cumulative number of builder heartbeat messages successfully decoded from the BAM node" />
+    <counter name="Failure" enum="BamFailure" summary="Cumulative number of BAM client failures by class" />
+    <gauge name="HeapSize" summary="Total workspace capacity reserved for the BAM tile (bytes)" />
+    <gauge name="HeapFreeBytes" summary="Estimated free capacity in the BAM tile workspace heap (bytes)" />
+    <counter name="KeepaliveAcks" summary="Cumulative number of HTTP/2 keepalive PING acknowledgments received from the BAM node" />
+    <counter name="HealthyConnects" summary="Cumulative number of transitions into BAM CONNECTED_HEALTHY state" />
+    <counter name="HealthyDisconnects" summary="Cumulative number of transitions out of BAM CONNECTED_HEALTHY state" />
+    <counter name="IngressMultiMessageReceived" summary="Cumulative number of multiple_atomic_txn_batch messages decoded from BAM ingress" />
+    <counter name="IngressBatchCommitAttempt" summary="Cumulative number of AtomicTxnBatch entries that entered BAM validate/commit" />
+    <counter name="IngressBatchPublished" summary="Cumulative number of AtomicTxnBatch entries successfully published to verify" />
+    <counter name="IngressBatchRejected" enum="BamIngressBatchRejectReason" summary="Cumulative number of BAM ingress rejects by reason across AtomicTxnBatch validation and multiple_atomic_txn_batch wrapper checks" />
+    <counter name="OutboundEnqueueOutcome" enum="BamEnqueueOutcome" summary="Cumulative number of BAM outbound leader-state/result enqueue outcomes at the gRPC stream_send boundary" />
+    <counter name="StreamTransition" enum="BamStreamTransition" summary="Cumulative number of scheduler stream live-state transitions" />
+    <counter name="LeaderPendingDropped" enum="BamLeaderPendingDropReason" summary="Cumulative number of pending leader-state updates cleared or superseded before send, by reason" />
+    <gauge name="KeepaliveRttSample" summary="Latest HTTP/2 keepalive round-trip time sample captured at scrape time (nanoseconds)" />
+    <gauge name="KeepaliveRttSmoothed" summary="Exponentially smoothed HTTP/2 keepalive round-trip time estimate (nanoseconds)" />
+    <gauge name="KeepaliveRttDeviation" summary="Smoothed HTTP/2 keepalive RTT variation estimate (nanoseconds)" />
+    <gauge name="FeedbackQueueDepth" summary="Current number of BAM feedback results buffered for send" />
+    <gauge name="SlotIngressTimingValid" enum="BamSlotIngressTimingIdx" summary="Current BAM slot-ingress timing ring entry validity by ring index (1 when occupied, 0 when empty)" />
+    <gauge name="SlotIngressTimingSlot" enum="BamSlotIngressTimingIdx" summary="Resolved slot currently stored in each BAM slot-ingress timing ring entry" />
+    <gauge name="SlotIngressTimingFirstRxTimestampNanos" enum="BamSlotIngressTimingIdx" summary="Wallclock timestamp of the first BAM transaction received for each slot-ingress timing ring entry (nanoseconds)" />
+    <gauge name="SlotIngressTimingFirstRxAfterSlotEnd" enum="BamSlotIngressTimingIdx" summary="Whether the first BAM transaction for each slot-ingress timing ring entry arrived after slot end (1=yes, 0=no)" />
+    <gauge name="SlotIngressTimingTxnsBeforeSlotEnd" enum="BamSlotIngressTimingIdx" summary="Cumulative number of BAM transactions received before slot end for each slot-ingress timing ring entry" />
+    <gauge name="SlotIngressTimingTxnsAfterSlotEnd" enum="BamSlotIngressTimingIdx" summary="Cumulative number of BAM transactions received after slot end for each slot-ingress timing ring entry" />
+    <histogram name="BuilderHeartbeatArrivalDeltaNanos" min="10000" max="100000000">
+        <summary>Distribution of remote BuilderHeartBeat timestamp to local scheduler-stream receive callback delta (nanoseconds); includes clock offset and is intended only for relative trend analysis</summary>
+    </histogram>
+    <histogram name="SchedulerPingResponseNanos" min="1" max="100000000">
+        <summary>Distribution of BAM scheduler Ping response latencies from scheduler-message receive callback to successful Pong enqueue (nanoseconds)</summary>
+    </histogram>
+</tile>
 
 <tile name="bundle">
     <counter name="TransactionReceived" summary="Total count of transactions received, including transactions within bundles" />
@@ -511,6 +625,19 @@ metric introduced.
   <int value="3" name="InsertionFailed" label="Tried to insert an initializer bundle to update the on-chain state, but insertion failed" />
 </enum>
 
+<enum name="PackBamBundleAssemblyAbandonReason">
+  <int value="0" name="NewSeqBeforeComplete" label="Active BAM bundle abandoned because a new sequence arrived before completion" />
+  <int value="1" name="LeaderSlotEnd" label="Active BAM bundle abandoned at leader slot end" />
+  <int value="2" name="PohTimeout" label="Active BAM bundle abandoned because the PoH leader-slot wallclock deadline elapsed" />
+</enum>
+
+<enum name="PackBamWorkInvalidReason">
+  <int value="0" name="SingleOutsideSlot" label="Independent BAM transaction invalidated because packing moved outside its allowed slot window" />
+  <int value="1" name="SingleBlockhashExpired" label="Independent BAM transaction invalidated because its blockhash expired" />
+  <int value="2" name="BundleOutsideSlot" label="Fully assembled BAM bundle invalidated because packing moved outside its allowed slot window" />
+  <int value="3" name="BundleBlockhashExpired" label="Fully assembled BAM bundle invalidated because one of its blockhashes expired" />
+</enum>
+
 <tile name="pack">
     <histogram name="ScheduleMicroblockDurationSeconds" min="0.00000001" max="0.1" converter="seconds">
         <summary>Duration of scheduling one microblock</summary>
@@ -552,6 +679,8 @@ metric introduced.
     <counter name="TransactionSchedule" enum="PackTxnSchedule" summary="Result of trying to consider a transaction for scheduling" />
 
     <counter name="BundleCrankStatus" enum="BundleCrankResult" summary="Result of considering whether bundle cranks are needed" />
+    <counter name="BamBundleAssemblyAbandon" enum="PackBamBundleAssemblyAbandonReason" summary="Cumulative number of in-progress multi-transaction BAM bundles abandoned before full assembly, by reason" />
+    <counter name="BamWorkInvalidated" enum="PackBamWorkInvalidReason" summary="Cumulative number of BAM transactions or fully assembled BAM bundles invalidated by slot/blockhash revalidation, by work kind and reason" />
 
     <gauge name="CusConsumedInBlock" summary="The number of cost units consumed in the current block, or 0 if pack is not currently packing a block" />
     <histogram name="CusScheduled" min="1000000" max="240000000">
