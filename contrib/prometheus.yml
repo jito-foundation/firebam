@@ -13,4 +13,4 @@ remote_write:
   - url: http://prometheus.metrics.jito.wtf:9090/api/v1/write   # CHANGE THIS
     basic_auth:
       username: metrics
-      password_file: ../opt/prometheus_remote_write_password.txt
+      password_file: ${PROM_PASSWORD_FILE}

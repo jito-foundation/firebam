@@ -29,8 +29,10 @@ Options (install only):
 '
 
 run_prometheus() {
-  shift
-  export PROM_SCRAPE_INTERVAL
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+
   mkdir -p "${PROM_CACHE_DIR}" "${PROM_DATA_DIR}" "$(dirname "${PROM_PASSWORD_FILE}")"
   if [[ ! -f "${PROM_PASSWORD_FILE}" ]]; then
     read -r -s -p "Prometheus remote_write password: " PROMETHEUS_METRICS_PASSWORD
@@ -41,9 +43,12 @@ run_prometheus() {
   if [[ ! -x "${PROM_CACHE_DIR}/prometheus-${PROM_VERSION}.${OS}-${ARCH}/prometheus" ]]; then
     wget -O - "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.${OS}-${ARCH}.tar.gz" | tar -xzf - -C "${PROM_CACHE_DIR}"
   fi
+  export PROM_SCRAPE_INTERVAL PROM_PASSWORD_FILE
+  envsubst '${PROM_SCRAPE_INTERVAL} ${PROM_PASSWORD_FILE}' \
+    < "${SCRIPT_DIR}/prometheus.yml" > "${PROM_CACHE_DIR}/prometheus-${PROM_VERSION}.yml"
+
   exec "${PROM_CACHE_DIR}/prometheus-${PROM_VERSION}.${OS}-${ARCH}/prometheus" \
-    --enable-feature=expand-env \
-    --config.file="${SCRIPT_DIR}/prometheus.yml" \
+    --config.file="${PROM_CACHE_DIR}/prometheus-${PROM_VERSION}.yml" \
     --storage.tsdb.path="${PROM_DATA_DIR}"
 }
 
