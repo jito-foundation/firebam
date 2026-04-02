@@ -243,9 +243,8 @@ def add_websocket_args(parser: argparse.ArgumentParser) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    argv = sys.argv[1:]
-    explicit_cmd = bool(argv) and argv[0] in {"capture", "websocket-scrape"}
-    if not explicit_cmd and not (len(argv) == 1 and argv[0] in {"-h", "--help"}):
+    argv = sys.argv[1:] or ["-h"]
+    if argv[0] not in {"capture", "websocket-scrape", "-h", "--help"}:
         argv = ["capture", *argv]
 
     p = argparse.ArgumentParser(
