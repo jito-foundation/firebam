@@ -312,6 +312,7 @@ typedef struct {
   ulong      insert_result[ FD_PACK_INSERT_RETVAL_CNT ];
   ulong      bam_bundle_assembly_abandon_cnt[ FD_METRICS_ENUM_PACK_BAM_BUNDLE_ASSEMBLY_ABANDON_REASON_CNT ];
   ulong      bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_CNT ];
+  ulong      bam_pending_work_evicted_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_CNT ];
   fd_histf_t schedule_duration[ 1 ];
   fd_histf_t no_sched_duration[ 1 ];
   fd_histf_t insert_duration  [ 1 ];
@@ -723,6 +724,7 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t *     ctx,
     pack_bam_pending_work_t item = pack_tile_pending_bam_work_swap_remove( ctx, i );
 
     pack_tile_record_bam_work_invalidated( ctx->bam_work_invalidated_cnt, invalid_reason, item.txn_cnt );
+    pack_tile_record_bam_work_invalidated( ctx->bam_pending_work_evicted_cnt, invalid_reason, item.txn_cnt );
 
     ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)(void const *)&item.sig[ 0 ] );
     FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
@@ -910,6 +912,8 @@ metrics_write( fd_pack_ctx_t * ctx ) {
   FD_MCNT_ENUM_COPY( PACK, TRANSACTION_INSERTED,          ctx->insert_result  );
   FD_MCNT_ENUM_COPY( PACK, BAM_BUNDLE_ASSEMBLY_ABANDON,   ctx->bam_bundle_assembly_abandon_cnt );
   FD_MCNT_ENUM_COPY( PACK, BAM_WORK_INVALIDATED,          ctx->bam_work_invalidated_cnt );
+  FD_MCNT_ENUM_COPY( PACK, BAM_PENDING_WORK_EVICTED,      ctx->bam_pending_work_evicted_cnt );
+  FD_MGAUGE_SET(     PACK, BAM_PENDING_WORK_COUNT,        ctx->bam_pending_work_cnt );
   FD_MCNT_ENUM_COPY( PACK, METRIC_TIMING,        ((ulong*)ctx->metric_timing) );
   FD_MCNT_ENUM_COPY( PACK, BUNDLE_CRANK_STATUS,           ctx->crank->metrics );
   FD_MHIST_COPY( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS, ctx->schedule_duration );
@@ -2108,6 +2112,7 @@ unprivileged_init( fd_topo_t *      topo,
   memset( ctx->insert_result, '\0', FD_PACK_INSERT_RETVAL_CNT * sizeof(ulong) );
   memset( ctx->bam_bundle_assembly_abandon_cnt, '\0', sizeof(ctx->bam_bundle_assembly_abandon_cnt) );
   memset( ctx->bam_work_invalidated_cnt, '\0', sizeof(ctx->bam_work_invalidated_cnt) );
+  memset( ctx->bam_pending_work_evicted_cnt, '\0', sizeof(ctx->bam_pending_work_evicted_cnt) );
   fd_histf_join( fd_histf_new( ctx->schedule_duration, FD_MHIST_SECONDS_MIN( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS ),
                                                        FD_MHIST_SECONDS_MAX( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS ) ) );
   fd_histf_join( fd_histf_new( ctx->no_sched_duration, FD_MHIST_SECONDS_MIN( PACK, NO_SCHED_MICROBLOCK_DURATION_SECONDS ),

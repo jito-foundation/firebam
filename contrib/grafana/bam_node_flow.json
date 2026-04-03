@@ -2906,6 +2906,141 @@
       ],
       "title": "Pack BAM Work Invalidated (by reason)",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of BAM pending-work items that were accepted into pack, remained in the pending-work tracker, and were later evicted by slot/blockhash revalidation, grouped by pack_bam_work_invalid_reason.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.000001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 109
+      },
+      "id": 35,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pack_bam_work_invalid_reason) (rate(pack_bam_pending_work_evicted{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{pack_bam_work_invalid_reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pack BAM Pending Work Evicted (by reason)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Current count of BAM work items that have been accepted into pack and are still tracked in pack's pending-work set, before schedule handoff or cleanup.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 109
+      },
+      "id": 36,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(pack_bam_pending_work_count{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "pending work",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pack BAM Pending Work Count",
+      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -2961,6 +3096,6 @@
   "timezone": "utc",
   "title": "Firedancer BAM Node Flow",
   "uid": "bamnodeflow",
-  "version": 14,
+  "version": 15,
   "weekStart": ""
 }

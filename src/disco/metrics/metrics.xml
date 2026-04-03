@@ -681,6 +681,8 @@ metric introduced.
     <counter name="BundleCrankStatus" enum="BundleCrankResult" summary="Result of considering whether bundle cranks are needed" />
     <counter name="BamBundleAssemblyAbandon" enum="PackBamBundleAssemblyAbandonReason" summary="Cumulative number of in-progress multi-transaction BAM bundles abandoned before full assembly, by reason" />
     <counter name="BamWorkInvalidated" enum="PackBamWorkInvalidReason" summary="Cumulative number of BAM transactions or fully assembled BAM bundles invalidated by slot/blockhash revalidation, by work kind and reason" />
+    <counter name="BamPendingWorkEvicted" enum="PackBamWorkInvalidReason" summary="Cumulative number of BAM pending-work items evicted after acceptance into pack because slot/blockhash revalidation later failed, by work kind and reason" />
+    <gauge name="BamPendingWorkCount" summary="Current number of BAM work items tracked in pack's pending-work set after acceptance and before scheduling or cleanup" />
 
     <gauge name="CusConsumedInBlock" summary="The number of cost units consumed in the current block, or 0 if pack is not currently packing a block" />
     <histogram name="CusScheduled" min="1000000" max="240000000">
