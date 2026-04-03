@@ -51,6 +51,7 @@ fsync: (eq (arg 0) logfile_fd)
 #
 # resolv: Send DNS queries via UDP or TCP
 socket: (and (or (eq (arg 0) "AF_INET")
+                 (eq (arg 0) "AF_UNIX")
                  (eq (arg 0) "AF_INET6"))
              (or (and (or (eq (arg 1) "SOCK_STREAM|SOCK_CLOEXEC")
                           (eq (arg 1) "SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK"))

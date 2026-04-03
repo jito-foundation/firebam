@@ -543,19 +543,38 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->bundle.tls_cert_verify = !!config->tiles.bundle.tls_cert_verify;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "bam" ) ) ) {
-      strncpy( tile->bam.url, config->tiles.bam.url, sizeof(tile->bam.url) );
-      tile->bam.url_len = strnlen( tile->bam.url, 255 );
-      strncpy( tile->bam.sni, config->tiles.bam.tls_domain_name, sizeof(tile->bam.sni) );
-      tile->bam.sni_len = strnlen( tile->bam.sni, 255 );
-      strncpy( tile->bam.identity_key_path, config->paths.identity_key, sizeof(tile->bam.identity_key_path) );
-      strncpy( tile->bam.key_log_path, config->development.bam.ssl_key_log_file, sizeof(tile->bam.key_log_path) );
-      tile->bam.buf_sz = config->development.bam.buffer_size_kib<<10;
-      tile->bam.ssl_heap_sz = 0UL; /* Currently unused by the BAM tile. */
-      tile->bam.keepalive_interval_nanos = config->tiles.bam.keepalive_interval_millis * (ulong)1e6;
-      tile->bam.tls_cert_verify = !!config->tiles.bam.tls_cert_verify;
-      tile->bam.enabled = !!config->tiles.bam.enabled;
-      tile->bam.dump_bam_txns = !!config->development.bam.dump_bam_txns;
-      tile->bam.dump_bam_first_slot_txn = !!config->development.bam.dump_bam_first_slot_txn;
+    uint configured_default_tpu_addr = FD_UNLIKELY( !config->gossip.entrypoints_cnt )
+      ? FD_IP4_ADDR( 127, 0, 0, 1 )
+      : 0U;
+    if( FD_LIKELY( config->net.bind_address[ 0 ] ) ) {
+      uint bind_addr = config->net.bind_address_parsed;
+      if( FD_LIKELY( bind_addr &&
+                     ( bind_addr<IP4_LOOPBACK_START_NET || bind_addr>IP4_LOOPBACK_END_NET ) ) )
+        configured_default_tpu_addr = bind_addr;
+    }
+
+    strncpy( tile->bam.url, config->tiles.bam.url, sizeof(tile->bam.url) );
+    tile->bam.url_len = strnlen( tile->bam.url, 255 );
+    strncpy( tile->bam.sni, config->tiles.bam.tls_domain_name, sizeof(tile->bam.sni) );
+    tile->bam.sni_len = strnlen( tile->bam.sni, 255 );
+    FD_TEST( fd_cstr_printf_check( tile->bam.admin_rpc_path,
+                                   sizeof(tile->bam.admin_rpc_path),
+                                   NULL,
+                                   "%s/admin.rpc",
+                                   config->frankendancer.paths.ledger ) );
+    tile->bam.configured_default_tpu = (fd_ip4_port_t){
+      .addr = configured_default_tpu_addr,
+      .port = fd_ushort_bswap( config->tiles.quic.regular_transaction_listen_port )
+    };
+    strncpy( tile->bam.identity_key_path, config->paths.identity_key, sizeof(tile->bam.identity_key_path) );
+    strncpy( tile->bam.key_log_path, config->development.bam.ssl_key_log_file, sizeof(tile->bam.key_log_path) );
+    tile->bam.buf_sz = config->development.bam.buffer_size_kib<<10;
+    tile->bam.ssl_heap_sz = 0UL; /* Currently unused by the BAM tile. */
+    tile->bam.keepalive_interval_nanos = config->tiles.bam.keepalive_interval_millis * (ulong)1e6;
+    tile->bam.tls_cert_verify = !!config->tiles.bam.tls_cert_verify;
+    tile->bam.enabled = !!config->tiles.bam.enabled;
+    tile->bam.dump_bam_txns = !!config->development.bam.dump_bam_txns;
+    tile->bam.dump_bam_first_slot_txn = !!config->development.bam.dump_bam_first_slot_txn;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "verify" ) ) ) {
     tile->verify.tcache_depth = config->tiles.verify.signature_cache_size;

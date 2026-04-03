@@ -108,8 +108,8 @@ typedef struct {
    - fd_bam_try_agave_update_tpu() compares the desired "applied" state
      (BAM vs default TPU) to ctx->tpu_update_state.  If it already matches,
      it skips the admin RPC update, preventing duplicate updates.
-   - On failure (Agave not running yet, or admin RPC failure), it records a
-     PENDING_* state so fd_bam_tile_housekeeping() will retry later.
+   - On failure (admin RPC unavailable, apply failure, or readback mismatch),
+     it records a PENDING_* state so fd_bam_tile_housekeeping() will retry later.
    - When BAM TPU sockets change (new ConfigResponse), we set UNKNOWN so the
      next call will re-apply even if we're already in BAM mode. */
 
@@ -198,7 +198,8 @@ struct fd_bam_tile {
   fd_ip4_port_t bam_tpu_fwd;           /* Latest TPU Forward socket advertised by BAM */
   fd_ip4_port_t default_tpu;           /* TPU socket Agave booted with (non-BAM) */
   fd_ip4_port_t default_tpu_fwd;       /* TPU Forward socket Agave booted with */
-  _Bool default_tpu_cached;            /* true once defaults have been captured via admin RPC */
+  fd_ip4_port_t configured_default_tpu; /* Startup TPU advert derived from local Frankendancer config when the advertised IP is locally knowable. Firedancer Agave uses the same base UDP socket for tpu and tpu_forwards. */
+  char admin_rpc_path[ PATH_MAX ];     /* Frankendancer Agave admin socket path; empty disables the cross-process admin path. */
   fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for admin-RPC TPU advert updates (Frankendancer) */
 
   /* Bundle state */
@@ -327,6 +328,26 @@ fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
 
 void
 fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx );
+
+/* Admin-RPC helpers used by Frankendancer BAM mode.  The low-level
+   request hook is weak so unit tests can override it without touching
+   the production Unix-socket transport. */
+
+int
+fd_bam_admin_rpc_request( char const * admin_rpc_path,
+                          char const * request,
+                          char *       response,
+                          ulong        response_max );
+
+int
+fd_bam_admin_rpc_get_contact_info( char const *   admin_rpc_path,
+                                   fd_ip4_port_t * out_tpu,
+                                   fd_ip4_port_t * out_tpu_fwd );
+
+int
+fd_bam_admin_rpc_set_public_tpu( char const *       admin_rpc_path,
+                                 fd_ip4_port_t const tpu,
+                                 fd_ip4_port_t const tpu_fwd );
 
 /* fd_bam_client_grpc_callbacks provides callbacks for grpc_client. */
 

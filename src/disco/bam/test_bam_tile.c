@@ -65,6 +65,64 @@ fd_bam_now( void ) {
   return g_clock;
 }
 
+#define TEST_BAM_ADMIN_RPC_MAX_CALLS   16UL
+#define TEST_BAM_ADMIN_RPC_REQ_BUF_SZ  512UL
+#define TEST_BAM_ADMIN_RPC_RESP_BUF_SZ 2048UL
+
+typedef struct {
+  int  rc;
+  char response[ TEST_BAM_ADMIN_RPC_RESP_BUF_SZ ];
+} test_bam_admin_rpc_reply_t;
+
+static struct {
+  char                        paths[ TEST_BAM_ADMIN_RPC_MAX_CALLS ][ PATH_MAX ];
+  char                        requests[ TEST_BAM_ADMIN_RPC_MAX_CALLS ][ TEST_BAM_ADMIN_RPC_REQ_BUF_SZ ];
+  test_bam_admin_rpc_reply_t  replies[ TEST_BAM_ADMIN_RPC_MAX_CALLS ];
+  ulong                       request_cnt;
+  ulong                       reply_cnt;
+  ulong                       reply_idx;
+} test_bam_admin_rpc_mock;
+
+static void
+test_bam_admin_rpc_mock_reset( void ) {
+  fd_memset( &test_bam_admin_rpc_mock, 0, sizeof(test_bam_admin_rpc_mock) );
+}
+
+static void
+test_bam_admin_rpc_mock_push_reply( int          rc,
+                                    char const * response ) {
+  FD_TEST( test_bam_admin_rpc_mock.reply_cnt < TEST_BAM_ADMIN_RPC_MAX_CALLS );
+  test_bam_admin_rpc_reply_t * reply = &test_bam_admin_rpc_mock.replies[ test_bam_admin_rpc_mock.reply_cnt++ ];
+  reply->rc = rc;
+  if( FD_LIKELY( response ) ) strlcpy( reply->response, response, sizeof(reply->response) );
+  else                        reply->response[ 0 ] = '\0';
+}
+
+int
+fd_bam_admin_rpc_request( char const * admin_rpc_path,
+                          char const * request,
+                          char *       response,
+                          ulong        response_max ) {
+  FD_TEST( test_bam_admin_rpc_mock.reply_idx < test_bam_admin_rpc_mock.reply_cnt );
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt < TEST_BAM_ADMIN_RPC_MAX_CALLS );
+
+  ulong req_idx = test_bam_admin_rpc_mock.request_cnt++;
+  strlcpy( test_bam_admin_rpc_mock.paths[ req_idx ], admin_rpc_path ? admin_rpc_path : "", PATH_MAX );
+  strlcpy( test_bam_admin_rpc_mock.requests[ req_idx ], request ? request : "", TEST_BAM_ADMIN_RPC_REQ_BUF_SZ );
+
+  test_bam_admin_rpc_reply_t const * reply = &test_bam_admin_rpc_mock.replies[ test_bam_admin_rpc_mock.reply_idx++ ];
+  if( FD_UNLIKELY( reply->rc ) ) {
+    if( FD_LIKELY( response && response_max ) ) response[ 0 ] = '\0';
+    return reply->rc;
+  }
+
+  FD_TEST( response );
+  FD_TEST( response_max );
+  FD_TEST( strnlen( reply->response, sizeof(reply->response) ) < response_max );
+  strlcpy( response, reply->response, response_max );
+  return 0;
+}
+
 static ulong
 test_hist_total_cnt( fd_histf_t const * hist ) {
   ulong total = 0UL;
@@ -3192,6 +3250,164 @@ test_bam_ctrl_blank_url_clears_and_disables( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+static void
+test_bam_admin_rpc_apply_success_caches_default_and_marks_applied( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  strlcpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof(state->admin_rpc_path) );
+  FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_tpu.addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
+  state->bam_tpu.port     = fd_ushort_bswap( 7000 );
+  state->bam_tpu_fwd.port = fd_ushort_bswap( 7001 );
+
+  test_bam_admin_rpc_mock_reset();
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":1}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"8.8.8.8:7001\"},\"id\":4}" );
+
+  fd_bam_gossip_update( state, state->stem, 1 );
+
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
+  FD_TEST( !strcmp( test_bam_admin_rpc_mock.paths[0], "/tmp/test-bam-admin.rpc" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[0], "\"method\":\"contactInfo\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setPublicTpuAddress\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "9.9.9.9:7000" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "\"method\":\"setPublicTpuForwardsAddress\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "8.8.8.8:7001" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "\"method\":\"contactInfo\"" ) );
+
+  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM );
+  FD_TEST( fd_ushort_bswap( state->default_tpu.port ) == 4242 );
+  FD_TEST( fd_ushort_bswap( state->default_tpu_fwd.port ) == 4343 );
+
+  uint expected_default_tpu = 0U;
+  uint expected_default_tpu_fwd = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &expected_default_tpu ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &expected_default_tpu_fwd ) );
+  FD_TEST( state->default_tpu.addr == expected_default_tpu );
+  FD_TEST( state->default_tpu_fwd.addr == expected_default_tpu_fwd );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_admin_rpc_readback_mismatch_stays_pending( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  strlcpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof(state->admin_rpc_path) );
+  FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_tpu.addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
+  state->bam_tpu.port     = fd_ushort_bswap( 7000 );
+  state->bam_tpu_fwd.port = fd_ushort_bswap( 7001 );
+
+  test_bam_admin_rpc_mock_reset();
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":1}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":4}" );
+
+  fd_bam_gossip_update( state, state->stem, 1 );
+
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
+  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_admin_rpc_revert_uses_cached_defaults( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  strlcpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof(state->admin_rpc_path) );
+  FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_tpu.addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
+  state->bam_tpu.port     = fd_ushort_bswap( 7000 );
+  state->bam_tpu_fwd.port = fd_ushort_bswap( 7001 );
+  FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->default_tpu.addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &state->default_tpu_fwd.addr ) );
+  state->default_tpu.port     = fd_ushort_bswap( 4242 );
+  state->default_tpu_fwd.port = fd_ushort_bswap( 4343 );
+
+  test_bam_admin_rpc_mock_reset();
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"8.8.8.8:7001\"},\"id\":1}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":4}" );
+
+  fd_bam_gossip_update( state, state->stem, 0 );
+
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setPublicTpuAddress\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "1.1.1.1:4242" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "\"method\":\"setPublicTpuForwardsAddress\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "2.2.2.2:4343" ) );
+  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_admin_rpc_restart_recovers_configured_defaults_for_revert( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  strlcpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof(state->admin_rpc_path) );
+  FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_tpu.addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
+  state->bam_tpu.port     = fd_ushort_bswap( 7000 );
+  state->bam_tpu_fwd.port = fd_ushort_bswap( 7001 );
+
+  FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->configured_default_tpu.addr ) );
+  state->configured_default_tpu.port = fd_ushort_bswap( 4242 );
+
+  test_bam_admin_rpc_mock_reset();
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"8.8.8.8:7001\"},\"id\":1}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"1.1.1.1:4242\"},\"id\":1}" );
+
+  fd_bam_gossip_update( state, state->stem, 0 );
+
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
+  FD_TEST( state->default_tpu.l == state->configured_default_tpu.l );
+  FD_TEST( state->default_tpu_fwd.l == state->configured_default_tpu.l );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "1.1.1.1:4242" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "1.1.1.1:4242" ) );
+  FD_TEST( fd_ushort_bswap( state->default_tpu.port ) == 4242 );
+  FD_TEST( fd_ushort_bswap( state->default_tpu_fwd.port ) == 4242 );
+  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_admin_rpc_path_empty_skips_frankendancer_apply( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_tpu.addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
+  state->bam_tpu.port     = fd_ushort_bswap( 7000 );
+  state->bam_tpu_fwd.port = fd_ushort_bswap( 7001 );
+
+  test_bam_admin_rpc_mock_reset();
+  fd_bam_gossip_update( state, state->stem, 1 );
+
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 0UL );
+  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM );
+
+  test_bam_env_destroy( env );
+}
+
 /* --- Gossip advertisement ------------------------------------------------------------ */
 
 static void
@@ -4028,6 +4244,11 @@ main( int     argc,
   test_bam_ctrl_enable_from_disabled_start( wksp );
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
   test_bam_ctrl_blank_url_clears_and_disables( wksp );
+  test_bam_admin_rpc_apply_success_caches_default_and_marks_applied( wksp );
+  test_bam_admin_rpc_readback_mismatch_stays_pending( wksp );
+  test_bam_admin_rpc_revert_uses_cached_defaults( wksp );
+  test_bam_admin_rpc_restart_recovers_configured_defaults_for_revert( wksp );
+  test_bam_admin_rpc_path_empty_skips_frankendancer_apply( wksp );
 
   /* Gossip advertisement */
   test_bam_gossip_publishes_bam_config_contact( wksp );

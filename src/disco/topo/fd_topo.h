@@ -274,6 +274,8 @@ struct fd_topo_tile {
       ulong url_len;
       char  sni[ FD_SNI_BUF_MAX ];
       ulong sni_len;
+      char  admin_rpc_path[ PATH_MAX ];
+      fd_ip4_port_t configured_default_tpu;
       char  identity_key_path[ PATH_MAX ];
       char  key_log_path[ PATH_MAX ];
       ulong buf_sz;
