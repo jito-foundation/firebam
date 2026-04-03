@@ -2243,7 +2243,9 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   gui->bam.transaction_published  = update->transaction_published;
   gui->bam.atomic_batch_published = update->atomic_batch_published;
   gui->bam.ingress_packet_oversize = update->ingress_packet_oversize;
-  gui->bam.failure_decode = update->failure_decode;
+  gui->bam.failure_auth_challenge_decode = update->failure_auth_challenge_decode;
+  gui->bam.failure_config_decode = update->failure_config_decode;
+  gui->bam.failure_scheduler_envelope_decode = update->failure_scheduler_envelope_decode;
   gui->bam.failure_request_failed = update->failure_request_failed;
   gui->bam.failure_transport = update->failure_transport;
   gui->bam.failure_unsupported_version = update->failure_unsupported_version;

@@ -689,7 +689,9 @@ struct fd_gui {
     ulong  transaction_published;
     ulong  atomic_batch_published;
     ulong  ingress_packet_oversize;
-    ulong  failure_decode;
+    ulong  failure_auth_challenge_decode;
+    ulong  failure_config_decode;
+    ulong  failure_scheduler_envelope_decode;
     ulong  failure_request_failed;
     ulong  failure_transport;
     ulong  failure_unsupported_version;

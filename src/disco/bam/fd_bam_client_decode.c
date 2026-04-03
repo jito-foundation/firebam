@@ -573,7 +573,6 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
     uchar deser_index  = decoded->state.has_deser_err
                        ? decoded->state.deser_index
                        : decoded->state.packet_cnt;
-    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
     char const * err = PB_GET_ERROR( stream );
     FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)", err ));
@@ -626,7 +625,10 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       fd_bam_decoded_batch_t overflow_batch;
       _Bool const ok = fd_bam_decode_batch( ctx, &substream, &overflow_batch );
       pb_close_string_substream( stream, &substream );
-      if( FD_UNLIKELY( !ok ) ) return 0;
+      if( FD_UNLIKELY( !ok ) ) {
+        decoded_multi->batch_cnt = 0U;
+        return 1;
+      }
 
       FD_LOG_WARNING(( "MultipleAtomicTxnBatch exceeded max batch count (%u>%u)",
                        seen_batch_count + 1U,
@@ -649,7 +651,14 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 
     _Bool const ok = fd_bam_decode_batch( ctx, &substream, &decoded_multi->batches[ seen_batch_count ] );
     pb_close_string_substream( stream, &substream );
-    if( FD_UNLIKELY( !ok ) ) return 0;
+    if( FD_UNLIKELY( !ok ) ) {
+      /* Invalid AtomicTxnBatch decode is already metered and its
+         not-committed result is already enqueued at the batch layer. Do not
+         bubble it up as a scheduler-envelope failure. Drop any earlier staged
+         batches so the message cannot partially publish. */
+      decoded_multi->batch_cnt = 0U;
+      return 1;
+    }
     seen_batch_count++;
   }
 
@@ -777,8 +786,9 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
 }
 
 /* Decodes bam_api.SchedulerResponse (versioned envelope) using a two-phase
-   stage/commit flow. On decode failure or unsupported version it bumps metrics
-   and may request a reset; otherwise it commits the staged versioned payload. */
+   stage/commit flow. Envelope decode failures and unsupported versions bump
+   bam_failure, while handled AtomicTxnBatch rejects stay in
+   bam_ingress_batch_rejected. */
 void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
                                   void const *    data,
@@ -822,7 +832,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ]++;
       ctx->defer_reset = 1;
     } else {
-      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ]++;
       FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) missing version" ));
     }
     return;
@@ -867,6 +877,6 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   return;
 
 fail:
-  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
+  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ]++;
   FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed (%s)", PB_GET_ERROR( &istream ) ));
 }

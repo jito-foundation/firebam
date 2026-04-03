@@ -599,7 +599,9 @@ fd_bam_tile_publish_gui_update(
   update->transaction_published  = ctx->metrics.transaction_published_cnt;
   update->atomic_batch_published = ctx->metrics.atomic_batch_published_cnt;
   update->ingress_packet_oversize = ctx->metrics.ingress_packet_oversize_cnt;
-  update->failure_decode = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ];
+  update->failure_auth_challenge_decode = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_AUTH_CHALLENGE_DECODE_IDX ];
+  update->failure_config_decode = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONFIG_DECODE_IDX ];
+  update->failure_scheduler_envelope_decode = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ];
   update->failure_request_failed = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ];
   update->failure_transport = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ];
   update->failure_unsupported_version = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ];

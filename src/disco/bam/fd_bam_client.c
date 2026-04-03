@@ -605,9 +605,9 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   return 1;
 }
 
-/* Decodes bam_api.ConfigResponse. On protobuf failure it increments decode
-   metrics and returns early; otherwise it updates cached BAM config in place
-   and applies builder config atomically (all-or-nothing). */
+/* Decodes bam_api.ConfigResponse. On protobuf failure it increments the
+   config-decode failure metric and returns early; otherwise it updates cached
+   BAM config in place and applies builder config atomically (all-or-nothing). */
 static void
 fd_bam_handle_config( fd_bam_tile_t * ctx,
                       void const *    protobuf,
@@ -615,7 +615,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   pb_istream_t istream = pb_istream_from_buffer( protobuf, protobuf_sz );
   if( FD_UNLIKELY( !pb_decode( &istream, &bam_api_ConfigResponse_msg, &resp ) ) ) {
-    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONFIG_DECODE_IDX ]++;
     FD_LOG_WARNING(( "Protobuf decode of (bam_api.ConfigResponse) failed" ));
     return;
   }
@@ -1223,7 +1223,7 @@ fd_bam_client_grpc_rx_msg(
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     if( FD_UNLIKELY( !fd_bam_handle_auth_challenge( ctx, protobuf, protobuf_sz ) ) ) {
-      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_AUTH_CHALLENGE_DECODE_IDX ]++;
       fd_bam_tile_backoff( ctx, fd_bam_now() );
     }
     break;

@@ -839,8 +839,8 @@ test_bam_multiple_batches_accept_limit_counts( fd_wksp_t * wksp ) {
 }
 
 static void
-/* Ensures truncated scheduler responses trigger decode_fail accounting and
-   drop the message without emitting any downstream fragments. */
+/* Ensures truncated scheduler responses trigger scheduler-envelope failure
+   accounting and drop the message without emitting any downstream fragments. */
 test_bam_scheduler_truncated_message_dropped( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -857,7 +857,8 @@ test_bam_scheduler_truncated_message_dropped( fd_wksp_t * wksp ) {
                              protobuf_sz - 1UL,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ] == 1UL );
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 1UL );
+  FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 0UL );
   FD_TEST( state->metrics.transaction_published_cnt == 0UL );
   FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->metrics.ingress_packet_oversize_cnt == 0UL );
@@ -895,7 +896,8 @@ test_bam_scheduler_trailing_corruption_does_not_publish( fd_wksp_t * wksp ) {
                              protobuf_sz + 1UL,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ] == 1UL );
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 1UL );
+  FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 0UL );
   FD_TEST( state->metrics.transaction_published_cnt == 0UL );
   FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->feedback_queue_depth == 0UL );
@@ -956,7 +958,7 @@ test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ] == 0UL );
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
   FD_TEST( state->metrics.builder_heartbeats_decoded_cnt == 1UL );
   FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 1UL );
   ulong expected_latency = (ulong)g_clock - (12345UL * 1000UL);
@@ -1010,7 +1012,8 @@ test_bam_multiple_batches_do_not_partially_publish_on_corruption( fd_wksp_t * wk
 
   FD_TEST( state->metrics.transaction_published_cnt == 0UL );
   FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
-  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ] == 2UL );
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
+  FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 1UL );
   FD_TEST( state->feedback_queue_depth == 1UL );
 
   test_bam_prepare_scheduler_stream( state );
@@ -2321,7 +2324,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     state->bam_last_builder_heartbeat_ns = builder_ts;
     state->metrics.builder_heartbeats_decoded_cnt = 0UL;
     state->metrics.keepalive_acks_cnt       = 0UL;
-    state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]    = 0UL;
+    state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] = 0UL;
     state->defer_reset                = 0U;
     ulong ping_samples_before         = test_hist_total_cnt( state->metrics.scheduler_pong_enqueue_nanos );
     ulong latency_samples_before      = test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos );
@@ -2341,7 +2344,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
                                FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
     FD_TEST( state->defer_reset == 0U );
-    FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ] == 0UL );
+    FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
     FD_TEST( state->metrics.builder_heartbeats_decoded_cnt == 0UL );
     FD_TEST( state->metrics.keepalive_acks_cnt == 0UL );
     FD_TEST( state->bam_last_builder_heartbeat_ns == builder_ts );
@@ -3832,7 +3835,6 @@ test_bam_config_requires_full_contact_before_gossip_override( fd_wksp_t * wksp )
 
 /* --- Config and fee propagation ----------------------------------------------------- */
 
-static void
 test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
