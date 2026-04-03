@@ -160,8 +160,8 @@ typedef struct {
   ulong  ingress_batch_rejected_empty_batch;
   ulong  ingress_batch_rejected_vote_transaction;
   ulong  ingress_batch_rejected_non_revert_multi_packet;
-  ulong  ingress_batch_rejected_empty_message;
-  ulong  ingress_batch_rejected_overflow_message;
+  ulong  ingress_message_rejected_empty_message;
+  ulong  ingress_message_rejected_overflow_message;
 } fd_plugin_msg_bam_update_t;
 
 #endif /* HEADER_fd_src_disco_plugin_fd_plugin_h */

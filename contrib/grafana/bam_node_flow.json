@@ -744,7 +744,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "HTTP/2 keepalive round-trip time in nanoseconds. bam_keepalive_rtt_sample is the latest sample, bam_keepalive_rtt_smoothed is the exponentially smoothed estimate, and bam_keepalive_rtt_deviation is the smoothed RTT variation estimate.",
+      "description": "HTTP/2 keepalive round-trip time in nanoseconds. The series are shown only after bam_keepalive_rtt_valid becomes 1, so startup zeroes do not appear as real RTT samples.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -832,7 +832,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg by (instance) (bam_keepalive_rtt_smoothed{instance=~\"$instance\"})",
+          "expr": "avg by (instance) (bam_keepalive_rtt_smoothed{instance=~\"$instance\"}) and on (instance) (max by (instance) (bam_keepalive_rtt_valid{instance=~\"$instance\"}) > 0)",
           "instant": false,
           "legendFormat": "RTT Smoothed",
           "range": true,
@@ -844,7 +844,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg by (instance) (bam_keepalive_rtt_sample{instance=~\"$instance\"})",
+          "expr": "avg by (instance) (bam_keepalive_rtt_sample{instance=~\"$instance\"}) and on (instance) (max by (instance) (bam_keepalive_rtt_valid{instance=~\"$instance\"}) > 0)",
           "instant": false,
           "legendFormat": "RTT Sample",
           "range": true,
@@ -856,7 +856,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg by (instance) (bam_keepalive_rtt_deviation{instance=~\"$instance\"})",
+          "expr": "avg by (instance) (bam_keepalive_rtt_deviation{instance=~\"$instance\"}) and on (instance) (max by (instance) (bam_keepalive_rtt_valid{instance=~\"$instance\"}) > 0)",
           "instant": false,
           "legendFormat": "RTT Deviation",
           "range": true,
@@ -1724,7 +1724,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second BAM control-plane and session failure rates grouped by bam_failure. bam_failure is a cumulative counter with disjoint auth_challenge_decode, config_decode, scheduler_envelope_decode, request_failed, transport, unsupported_version, and timeout buckets. AtomicTxnBatch corruption stays in bam_ingress_batch_rejected instead of bam_failure.",
+      "description": "Per-second BAM control-plane and session failure rates grouped by bam_failure. bam_failure is a cumulative counter with disjoint auth_challenge_decode, config_decode, scheduler_envelope_decode, request_failed, resolve, connect, io, unsupported_version, request_timeout, keepalive_timeout, and builder_heartbeat_timeout buckets. Batch and wrapper-level scheduler payload rejects stay in bam_ingress_batch_rejected and bam_ingress_message_rejected instead of bam_failure.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2360,7 +2360,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) through BAM ingress batch lifecycle: commit attempts, published entries, and total rejected entries. Rejections are the sum of the disjoint bam_ingress_batch_rejected reason buckets.",
+      "description": "Rate (events/sec) through the AtomicTxnBatch entry lifecycle: commit attempts, published entries, and batch-level rejected entries. Wrapper-message rejects are tracked separately in bam_ingress_message_rejected.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2453,7 +2453,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM ingress rejects by reason, grouped by bam_ingress_batch_reject_reason. The buckets are disjoint and cover invalid_batch, empty_batch, vote_transaction, non_revert_multi_packet, empty_message, and overflow_message. invalid_batch is reserved for AtomicTxnBatch decode or structural rejects and is disjoint from bam_failure.",
+      "description": "Rate (events/sec) of BAM ingress rejects by reason. Batch-entry rejects use bam_ingress_batch_reject_reason; multiple_atomic_txn_batch wrapper rejects use bam_ingress_message_reject_reason.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2509,9 +2509,21 @@
           "editorMode": "code",
           "expr": "sum by (bam_ingress_batch_reject_reason) (rate(bam_ingress_batch_rejected{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "{{bam_ingress_batch_reject_reason}}",
+          "legendFormat": "batch: {{bam_ingress_batch_reject_reason}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (bam_ingress_message_reject_reason) (rate(bam_ingress_message_rejected{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "message: {{bam_ingress_message_reject_reason}}",
+          "range": true,
+          "refId": "B"
         }
       ],
       "title": "BAM Ingress Reject Reasons",
@@ -2669,9 +2681,21 @@
           "legendFormat": "{{bam_leader_pending_drop_reason}}",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(bam_leader_pending_replaced{instance=~\"$instance\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "replaced",
+          "range": false,
+          "refId": "B"
         }
       ],
-      "title": "BAM Leader Pending Clears (Range Count)",
+      "title": "BAM Leader Pending Clears/Replacements (Range Count)",
       "type": "stat"
     },
     {
@@ -2901,7 +2925,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of pending BAM leader-state updates dropped before send, using bam_leader_pending_dropped.",
+      "description": "Rate (events/sec) of pending BAM leader-state updates cleared before send, split between explicit drops in bam_leader_pending_dropped and latest-value-wins replacements in bam_leader_pending_replaced.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2960,9 +2984,21 @@
           "legendFormat": "{{bam_leader_pending_drop_reason}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(bam_leader_pending_replaced{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "replaced",
+          "range": true,
+          "refId": "B"
         }
       ],
-      "title": "BAM Pending Leader Drops",
+      "title": "BAM Pending Leader Clears/Replacements",
       "type": "timeseries"
     },
     {

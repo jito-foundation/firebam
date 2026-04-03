@@ -65,18 +65,18 @@ struct fd_bam_metrics {
   ulong ingress_batch_commit_attempt_cnt;
   ulong ingress_batch_published_cnt;
   ulong ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_CNT ];
+  ulong ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_CNT ];
 
   /* Enum counters staged locally and flushed during housekeeping. */
   ulong outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_CNT ];
   ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
   ulong leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
+  ulong leader_pending_replaced_cnt;
   ulong slot_ingress_result_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_CNT ];
   ulong slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_CNT ];
   ulong leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_CNT ];
   ulong healthy_leader_slot_result_cnt[ FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_CNT ];
 
-  fd_histf_t slot_ingress_first_before_end_nanos[1];
-  fd_histf_t slot_ingress_first_after_end_nanos[1];
   fd_histf_t builder_heartbeat_arrival_delta_nanos[1];
   fd_histf_t scheduler_pong_enqueue_nanos[1];
 };
@@ -100,6 +100,12 @@ typedef struct {
   ulong slot;
   long  slot_end_ns;
 } fd_bam_recent_slot_meta_t;
+
+#define FD_BAM_STATUS_HISTORY_CNT 16
+typedef struct {
+  long                          ts_ns;
+  fd_plugin_bam_update_status_t status;
+} fd_bam_status_history_t;
 
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
@@ -267,6 +273,9 @@ struct fd_bam_tile {
   fd_plugin_bam_update_status_t bam_status_plugin;  /* last 'plugin' update written */
   fd_plugin_bam_update_status_t bam_status_counted; /* last status used for healthy-edge counters */
   fd_plugin_bam_update_status_t bam_status_logged;  /* last logged bundle status */
+  ulong bam_status_history_next;                    /* ring write index for BAM status transition history */
+  ulong bam_status_history_cnt;                     /* number of populated BAM status transition records */
+  fd_bam_status_history_t bam_status_history[ FD_BAM_STATUS_HISTORY_CNT ];
   long  last_bam_status_log_nanos;
   long  last_gui_publish_nanos;
   uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
@@ -349,12 +358,8 @@ fd_bam_finalize_slot_ingress_rollup( fd_bam_tile_t *                ctx,
     tx_after    = 0UL;
   } else if( FD_LIKELY( entry->first_rx_ts_ns<=slot_end_ns ) ) {
     result_idx = FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_BEFORE_END_IDX;
-    fd_histf_sample( ctx->metrics.slot_ingress_first_before_end_nanos,
-                     fd_ulong_sat_sub( (ulong)slot_end_ns, (ulong)entry->first_rx_ts_ns ) );
   } else {
     result_idx = FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_AFTER_END_IDX;
-    fd_histf_sample( ctx->metrics.slot_ingress_first_after_end_nanos,
-                     fd_ulong_sat_sub( (ulong)entry->first_rx_ts_ns, (ulong)slot_end_ns ) );
   }
 
   ctx->metrics.slot_ingress_result_cnt[ result_idx ]++;
@@ -371,7 +376,7 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
   if( FD_UNLIKELY( ctx->bam_leader_pending &&
                    !fd_bam_leader_state_eq( &ctx->bam_leader_state, state ) ) ) {
-    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ]++;
+    ctx->metrics.leader_pending_replaced_cnt++;
   }
   if( FD_LIKELY( state->slot_end_ns ) ) {
     ulong idx = state->slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL );

@@ -73,6 +73,24 @@ static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
   fd_plugin_bam_update_status_t bundle_status = fd_bam_client_status( ctx );
   _Bool healthy = bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+  ulong current_slot_first_ingress_recorded       = 0UL;
+  ulong current_slot_first_ingress_slot_end_known = 0UL;
+  ulong current_slot_first_ingress_distance_nanos = 0UL;
+  ulong current_slot_first_ingress_after_end      = 0UL;
+  ulong leader_slot = ctx->bam_leader_state.slot;
+  if( FD_LIKELY( leader_slot!=ULONG_MAX ) ) {
+    fd_bam_slot_ingress_timing_t const * entry = &ctx->slot_ingress_timing[ leader_slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL ) ];
+    if( FD_LIKELY( entry->valid && entry->slot==leader_slot && entry->first_rx_ts_ns ) ) {
+      current_slot_first_ingress_recorded = 1UL;
+      long slot_end_ns = entry->slot_end_ns ? entry->slot_end_ns : ctx->bam_leader_state.slot_end_ns;
+      if( FD_LIKELY( slot_end_ns ) ) {
+        long delta = entry->first_rx_ts_ns - slot_end_ns;
+        current_slot_first_ingress_slot_end_known = 1UL;
+        current_slot_first_ingress_distance_nanos = fd_long_abs( delta );
+        current_slot_first_ingress_after_end      = (ulong)( delta>0L );
+      }
+    }
+  }
   FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.transaction_published_cnt          );
   FD_MCNT_SET( BAM, ATOMIC_BATCH_PUBLISHED,  ctx->metrics.atomic_batch_published_cnt );
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_results_dropped_cnt   );
@@ -87,9 +105,11 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_PUBLISHED,                ctx->metrics.ingress_batch_published_cnt );
   FD_MCNT_ENUM_COPY( BAM, INGRESS_BATCH_REJECTED, ctx->metrics.ingress_batch_rejected_cnt );
+  FD_MCNT_ENUM_COPY( BAM, INGRESS_MESSAGE_REJECTED, ctx->metrics.ingress_message_rejected_cnt );
   FD_MCNT_ENUM_COPY( BAM, OUTBOUND_ENQUEUE_OUTCOME,  ctx->metrics.outbound_enqueue_outcome_cnt );
   FD_MCNT_ENUM_COPY( BAM, STREAM_TRANSITION,      ctx->metrics.stream_transition_cnt     );
   FD_MCNT_ENUM_COPY( BAM, LEADER_PENDING_DROPPED, ctx->metrics.leader_pending_dropped_cnt );
+  FD_MCNT_SET( BAM, LEADER_PENDING_REPLACED,      ctx->metrics.leader_pending_replaced_cnt );
   FD_MCNT_ENUM_COPY( BAM, SLOT_INGRESS_RESULT,       ctx->metrics.slot_ingress_result_cnt );
   FD_MCNT_ENUM_COPY( BAM, SLOT_INGRESS_TRANSACTIONS, ctx->metrics.slot_ingress_transactions_cnt );
   FD_MCNT_ENUM_COPY( BAM, LEADER_SLOT_END_STATUS,     ctx->metrics.leader_slot_end_status_cnt );
@@ -98,6 +118,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SAMPLE,    (ulong)ctx->rtt->latest_rtt   );
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SMOOTHED,  (ulong)ctx->rtt->smoothed_rtt );
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_DEVIATION, (ulong)ctx->rtt->var_rtt      );
+  FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_VALID,     (ulong)ctx->rtt->is_rtt_valid );
   FD_MGAUGE_SET( BAM, FEEDBACK_QUEUE_DEPTH, (ulong)ctx->feedback_queue_depth );
   FD_MGAUGE_SET( BAM, ENABLED,              (ulong)ctx->enabled );
   FD_MGAUGE_SET( BAM, HEALTHY,              (ulong)healthy );
@@ -106,8 +127,10 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, LEADER_STATE_TICK,    (ulong)ctx->bam_leader_state.tick );
   FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT_END_NANOS,
                  ctx->bam_leader_state.slot_end_ns>0L ? (ulong)ctx->bam_leader_state.slot_end_ns : 0UL );
-  FD_MHIST_COPY( BAM, SLOT_INGRESS_FIRST_BEFORE_END_NANOS, ctx->metrics.slot_ingress_first_before_end_nanos );
-  FD_MHIST_COPY( BAM, SLOT_INGRESS_FIRST_AFTER_END_NANOS,  ctx->metrics.slot_ingress_first_after_end_nanos );
+  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_RECORDED,       current_slot_first_ingress_recorded );
+  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_SLOT_END_KNOWN, current_slot_first_ingress_slot_end_known );
+  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_DISTANCE_NANOS, current_slot_first_ingress_distance_nanos );
+  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_AFTER_END,      current_slot_first_ingress_after_end );
   FD_MHIST_COPY( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
   FD_MHIST_COPY( BAM, SCHEDULER_PONG_ENQUEUE_NANOS, ctx->metrics.scheduler_pong_enqueue_nanos );
 
@@ -124,7 +147,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
 
 static inline void
 fd_bam_record_leader_slot_end( fd_bam_tile_t *               ctx,
-                               fd_plugin_bam_update_status_t status,
+                               fd_plugin_bam_update_status_t status_fallback,
                                fd_bam_leader_state_t const * leader_state,
                                long                          now_ns ) {
   ulong status_idx;
@@ -132,6 +155,22 @@ fd_bam_record_leader_slot_end( fd_bam_tile_t *               ctx,
                    !leader_state->slot_end_ns ||
                    now_ns < leader_state->slot_end_ns ||
                    ctx->leader_slot_end_last_slot == leader_state->slot ) ) return;
+
+  fd_plugin_bam_update_status_t status = status_fallback;
+  if( FD_LIKELY( ctx->bam_status_history_cnt ) ) {
+    for( ulong i=0UL; i<ctx->bam_status_history_cnt; i++ ) {
+      ulong idx = ( ctx->bam_status_history_next - 1UL - i ) & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
+      fd_bam_status_history_t const * entry = &ctx->bam_status_history[ idx ];
+      if( FD_LIKELY( entry->ts_ns <= leader_state->slot_end_ns ) ) {
+        status = entry->status;
+        break;
+      }
+      if( FD_UNLIKELY( i+1UL == ctx->bam_status_history_cnt ) ) {
+        ulong oldest_idx = ( ctx->bam_status_history_next - ctx->bam_status_history_cnt ) & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
+        status = ctx->bam_status_history[ oldest_idx ].status;
+      }
+    }
+  }
 
   switch( status ) {
   case FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED:            status_idx = FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_DISABLED_IDX;            break;
@@ -603,9 +642,15 @@ fd_bam_tile_publish_gui_update(
   update->failure_config_decode = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONFIG_DECODE_IDX ];
   update->failure_scheduler_envelope_decode = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ];
   update->failure_request_failed = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ];
-  update->failure_transport = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ];
+  update->failure_transport =
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_RESOLVE_IDX ] +
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ] +
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_IO_IDX ];
   update->failure_unsupported_version = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ];
-  update->failure_timeout = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TIMEOUT_IDX ];
+  update->failure_timeout =
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_TIMEOUT_IDX ] +
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_KEEPALIVE_TIMEOUT_IDX ] +
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_BUILDER_HEARTBEAT_TIMEOUT_IDX ];
   update->ingress_multi_message_received = ctx->metrics.ingress_multi_message_received_cnt;
   update->ingress_batch_commit_attempt = ctx->metrics.ingress_batch_commit_attempt_cnt;
   update->ingress_batch_published = ctx->metrics.ingress_batch_published_cnt;
@@ -613,8 +658,8 @@ fd_bam_tile_publish_gui_update(
   update->ingress_batch_rejected_empty_batch = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_BATCH_IDX ];
   update->ingress_batch_rejected_vote_transaction = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_VOTE_TRANSACTION_IDX ];
   update->ingress_batch_rejected_non_revert_multi_packet = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ];
-  update->ingress_batch_rejected_empty_message = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_MESSAGE_IDX ];
-  update->ingress_batch_rejected_overflow_message = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ];
+  update->ingress_message_rejected_empty_message = ctx->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_EMPTY_MESSAGE_IDX ];
+  update->ingress_message_rejected_overflow_message = ctx->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ];
 
   ulong tspub = fd_frag_meta_ts_comp( fd_bam_now() );
   fd_stem_publish(
@@ -1200,6 +1245,11 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_status_plugin = ctx->bam_status_recent;
   ctx->bam_status_counted = ctx->bam_status_recent;
   ctx->bam_status_logged = ctx->bam_status_recent;
+  ctx->bam_status_history_next = 0UL;
+  ctx->bam_status_history_cnt  = 0UL;
+  ctx->bam_status_history[ 0 ] = (fd_bam_status_history_t){ .ts_ns = fd_bam_now(), .status = ctx->bam_status_recent };
+  ctx->bam_status_history_next = 1UL & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
+  ctx->bam_status_history_cnt  = 1UL;
   ctx->last_bam_status_log_nanos = fd_log_wallclock();
   ctx->gui_dirty = 1U;
 
@@ -1231,12 +1281,6 @@ unprivileged_init( fd_topo_t *      topo,
     fd_memset( &ctx->slot_ingress_timing[ i ], 0, sizeof(ctx->slot_ingress_timing[ i ]) );
   }
 
-  fd_histf_new( ctx->metrics.slot_ingress_first_before_end_nanos,
-                FD_MHIST_MIN( BAM, SLOT_INGRESS_FIRST_BEFORE_END_NANOS ),
-                FD_MHIST_MAX( BAM, SLOT_INGRESS_FIRST_BEFORE_END_NANOS ) );
-  fd_histf_new( ctx->metrics.slot_ingress_first_after_end_nanos,
-                FD_MHIST_MIN( BAM, SLOT_INGRESS_FIRST_AFTER_END_NANOS ),
-                FD_MHIST_MAX( BAM, SLOT_INGRESS_FIRST_AFTER_END_NANOS ) );
   fd_histf_new( ctx->metrics.builder_heartbeat_arrival_delta_nanos,
                 FD_MHIST_MIN( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ),
                 FD_MHIST_MAX( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ) );

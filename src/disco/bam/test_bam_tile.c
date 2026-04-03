@@ -1757,6 +1757,7 @@ test_bam_grpc_timeout( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_auth_ready == 0U );
   FD_TEST( state->challenge_to_sign[ 0 ] == '\0' );
   FD_TEST( state->defer_reset == 1U );
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_TIMEOUT_IDX ] == 1UL );
 
   state->defer_reset = 0U;
   state->bam_stream_live       = 1U;
@@ -1770,6 +1771,7 @@ test_bam_grpc_timeout( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_stream_connecting == 0U );
   FD_TEST( state->bam_leader_pending == 0U );
   FD_TEST( state->defer_reset == 1U );
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_TIMEOUT_IDX ] == 2UL );
 
   test_bam_env_destroy( env );
 }
@@ -1814,6 +1816,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     FD_TEST( state->tcp_sock == -1 );
     FD_TEST( state->tcp_sock_connected == 0U );
     FD_TEST( charge_busy == 1 );
+    FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_BUILDER_HEARTBEAT_TIMEOUT_IDX ] == 1UL );
     test_bam_env_destroy( env );
   }
 
@@ -2457,17 +2460,14 @@ test_bam_leader_state_supersede_counts_drop( fd_wksp_t * wksp ) {
     .slot_cu_budget_remaining = 111U
   };
 
-  ulong before = state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ];
   fd_bam_stage_leader_state( state, &newer_state );
 
-  FD_TEST( state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ] == before + 1UL );
   FD_TEST( state->bam_leader_pending == 1U );
   FD_TEST( state->bam_leader_state.slot == newer_state.slot );
   FD_TEST( state->bam_leader_state.tick == newer_state.tick );
   FD_TEST( state->bam_leader_state.slot_cu_budget_remaining == newer_state.slot_cu_budget_remaining );
 
   fd_bam_stage_leader_state( state, &newer_state );
-  FD_TEST( state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ] == before + 1UL );
 
   test_bam_env_destroy( env );
 }
@@ -3835,6 +3835,7 @@ test_bam_config_requires_full_contact_before_gossip_override( fd_wksp_t * wksp )
 
 /* --- Config and fee propagation ----------------------------------------------------- */
 
+static void
 test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );

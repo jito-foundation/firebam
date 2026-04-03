@@ -2257,8 +2257,8 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   gui->bam.ingress_batch_rejected_empty_batch = update->ingress_batch_rejected_empty_batch;
   gui->bam.ingress_batch_rejected_vote_transaction = update->ingress_batch_rejected_vote_transaction;
   gui->bam.ingress_batch_rejected_non_revert_multi_packet = update->ingress_batch_rejected_non_revert_multi_packet;
-  gui->bam.ingress_batch_rejected_empty_message = update->ingress_batch_rejected_empty_message;
-  gui->bam.ingress_batch_rejected_overflow_message = update->ingress_batch_rejected_overflow_message;
+  gui->bam.ingress_message_rejected_empty_message = update->ingress_message_rejected_empty_message;
+  gui->bam.ingress_message_rejected_overflow_message = update->ingress_message_rejected_overflow_message;
 
   fd_gui_printf_bam( gui );
   fd_http_server_ws_broadcast( gui->http );

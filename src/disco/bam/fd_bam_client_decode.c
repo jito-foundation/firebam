@@ -633,7 +633,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       FD_LOG_WARNING(( "MultipleAtomicTxnBatch exceeded max batch count (%u>%u)",
                        seen_batch_count + 1U,
                        FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ));
-      ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
+      ctx->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
       decoded_multi->batch_cnt = seen_batch_count;
       decoded_multi->has_err_result = 1;
       decoded_multi->err_result = (fd_bam_bundle_result_t){
@@ -667,7 +667,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 
   if( FD_UNLIKELY( seen_batch_count == 0U ) ) {
     FD_LOG_WARNING(( "MultipleAtomicTxnBatch contained no AtomicTxnBatch entries" ));
-    ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_MESSAGE_IDX ]++;
+    ctx->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_EMPTY_MESSAGE_IDX ]++;
     bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
     decoded_multi->has_err_result = 1;
     decoded_multi->err_result = (fd_bam_bundle_result_t){
@@ -703,7 +703,7 @@ fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ct
 
   if( FD_UNLIKELY( decoded_multi->has_err_result ) ) {
     /* Reject counters are recorded at the decode site where err_result was staged
-       (overflow/empty wrapper) so the reason taxonomy remains accurate. */
+       (overflow/empty wrapper) so the batch/message taxonomy remains accurate. */
     fd_bam_enqueue_result( ctx, &decoded_multi->err_result );
     ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
   }
@@ -788,7 +788,7 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
 /* Decodes bam_api.SchedulerResponse (versioned envelope) using a two-phase
    stage/commit flow. Envelope decode failures and unsupported versions bump
    bam_failure, while handled AtomicTxnBatch rejects stay in
-   bam_ingress_batch_rejected. */
+   bam_ingress_batch_rejected or bam_ingress_message_rejected. */
 void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
                                   void const *    data,

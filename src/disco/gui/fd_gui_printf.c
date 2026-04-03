@@ -518,8 +518,8 @@ fd_gui_printf_bam( fd_gui_t * gui ) {
       jsonp_ulong(  gui->http, "ingress_batch_rejected_empty_batch", gui->bam.ingress_batch_rejected_empty_batch );
       jsonp_ulong(  gui->http, "ingress_batch_rejected_vote_transaction", gui->bam.ingress_batch_rejected_vote_transaction );
       jsonp_ulong(  gui->http, "ingress_batch_rejected_non_revert_multi_packet", gui->bam.ingress_batch_rejected_non_revert_multi_packet );
-      jsonp_ulong(  gui->http, "ingress_batch_rejected_empty_message", gui->bam.ingress_batch_rejected_empty_message );
-      jsonp_ulong(  gui->http, "ingress_batch_rejected_overflow_message", gui->bam.ingress_batch_rejected_overflow_message );
+      jsonp_ulong(  gui->http, "ingress_message_rejected_empty_message", gui->bam.ingress_message_rejected_empty_message );
+      jsonp_ulong(  gui->http, "ingress_message_rejected_overflow_message", gui->bam.ingress_message_rejected_overflow_message );
     jsonp_close_object( gui->http );
   jsonp_close_envelope( gui->http );
 }
