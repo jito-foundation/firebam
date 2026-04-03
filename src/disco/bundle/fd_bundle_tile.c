@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fd_bundle_tile_private.h"
+#include "../bam/fd_bam_types.h"
 #include "../metrics/fd_metrics.h"
 #include "../topo/fd_topo.h"
 #include "../keyguard/fd_keyload.h"
@@ -80,7 +81,8 @@ metrics_write( fd_bundle_tile_t * ctx ) {
 
 void
 fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
-  _Bool bam_override = ctx->bam_status_fseq && fd_fseq_query( ctx->bam_status_fseq );
+  ulong bam_status = ctx->bam_status_fseq ? fd_fseq_query( ctx->bam_status_fseq ) : 0UL;
+  _Bool bam_override = !!( bam_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   if( FD_UNLIKELY( bam_override!=ctx->bam_override_active ) ) {
     ctx->bam_override_active = bam_override;
     if( bam_override ) {
@@ -455,7 +457,7 @@ unprivileged_init( fd_topo_t *      topo,
   if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
     ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
     if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "bundle tile missing bam_status fseq" ));
-    ctx->bam_override_active = fd_fseq_query( ctx->bam_status_fseq )!=0UL;
+    ctx->bam_override_active = !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   } else {
     ctx->bam_status_fseq = NULL;
   }
