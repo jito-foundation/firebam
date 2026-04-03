@@ -922,6 +922,37 @@ populate_test_vectors( fd_tile_test_ctx_t * test_ctx FD_PARAM_UNUSED ) {
   }
 }
 
+static int
+insert_pending_bam_test_txn( fd_pack_ctx_t * ctx,
+                             ulong           txn_idx,
+                             uint            seq_id,
+                             ulong           blockhash_slot,
+                             ulong           max_schedule_slot ) {
+  fd_txn_p_t txnp[1];
+  fd_memcpy( txnp, &txn_scratch[ txn_idx ], sizeof(fd_txn_p_t) );
+  txnp->source_tpu          = FD_TXN_M_TPU_SOURCE_BAM;
+  txnp->bam.seq_id          = seq_id;
+  txnp->bam.batch_idx       = 0U;
+  txnp->bam.revert_on_error = 0U;
+  txnp->blockhash_slot      = blockhash_slot;
+
+  fd_txn_e_t * spot = fd_pack_insert_txn_init( ctx->pack );
+  fd_memcpy( spot->txnp, txnp, sizeof(fd_txn_p_t) );
+
+  ulong deleted = 0UL;
+  int result = fd_pack_insert_txn_fini( ctx->pack, spot, blockhash_slot, &deleted );
+  FD_TEST( deleted==0UL );
+  if( FD_LIKELY( result>=0 ) ) {
+    pack_tile_track_pending_bam_work( ctx,
+                                      txnp->payload + 1UL,
+                                      seq_id,
+                                      max_schedule_slot,
+                                      blockhash_slot,
+                                      1U );
+  }
+  return result;
+}
+
 /* Mock priviledged_init(...).
    Setup sign-in link, sign-out link, and keyswitch for cranking. */
 static void
@@ -1092,14 +1123,86 @@ main( int     argc,
   mock_privileged_init( &config->topo, pack_tile );
   unprivileged_init(    &config->topo, pack_tile );
 
+  *ctx->bank_current[ 0 ] = ULONG_MAX;
+  unprivileged_init( &config->topo, pack_tile );
+  ctx->bam_result_out.idx = ULONG_MAX;
+  FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==0UL );
+  FD_TEST( insert_pending_bam_test_txn( ctx, 0UL, 41U, 100UL, 100UL )>=0 );
+  FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==1UL );
+  FD_TEST( ctx->bam_pending_work_cnt==1UL );
+  metrics_write( ctx );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_PENDING_WORK_COUNT )==1UL );
+  FD_TEST( FD_MCNT_GET( PACK, BAM_WORK_REJECTED_PRE_PENDING_SINGLE_OUTSIDE_SLOT )==0UL );
+  FD_TEST( FD_MCNT_GET( PACK, BAM_PENDING_WORK_EVICTED_SINGLE_OUTSIDE_SLOT )==0UL );
+  pack_tile_evict_invalid_pending_bam_work( ctx, NULL, 101UL );
+  FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==0UL );
+  FD_TEST( ctx->bam_pending_work_cnt==0UL );
+  FD_TEST( ctx->bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX ]==1UL );
+  FD_TEST( ctx->bam_work_rejected_pre_pending_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX ]==0UL );
+  FD_TEST( ctx->bam_pending_work_evicted_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX ]==1UL );
+  metrics_write( ctx );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_PENDING_WORK_COUNT )==0UL );
+  FD_TEST( FD_MCNT_GET( PACK, BAM_WORK_INVALIDATED_SINGLE_OUTSIDE_SLOT )==1UL );
+  FD_TEST( FD_MCNT_GET( PACK, BAM_WORK_REJECTED_PRE_PENDING_SINGLE_OUTSIDE_SLOT )==0UL );
+  FD_TEST( FD_MCNT_GET( PACK, BAM_PENDING_WORK_EVICTED_SINGLE_OUTSIDE_SLOT )==1UL );
+
+  *ctx->bank_current[ 0 ] = ULONG_MAX;
+  unprivileged_init( &config->topo, pack_tile );
+  ctx->bam_result_out.idx = ULONG_MAX;
+  FD_TEST( insert_pending_bam_test_txn( ctx, 1UL, 42U, 100UL, 100UL )>=0 );
+  FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==1UL );
+  FD_TEST( ctx->bam_pending_work_cnt==1UL );
+  ctx->leader_slot = 1UL;
+  fd_txn_p_t scheduled_bam[1];
+  fd_memset( scheduled_bam, 0, sizeof(scheduled_bam) );
+  scheduled_bam->source_tpu   = FD_TXN_M_TPU_SOURCE_BAM;
+  scheduled_bam->bam.seq_id   = 42U;
+  pack_tile_drop_scheduled_pending_bam_work( ctx, scheduled_bam, 1UL, 0L );
+  FD_TEST( ctx->bam_pending_work_cnt==0UL );
+  FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==1UL );
+  FD_TEST( ctx->bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX ]==0UL );
+  FD_TEST( ctx->bam_work_rejected_pre_pending_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX ]==0UL );
+  FD_TEST( ctx->bam_pending_work_evicted_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX ]==0UL );
+  metrics_write( ctx );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_PENDING_WORK_COUNT )==0UL );
+  FD_TEST( FD_MCNT_GET( PACK, BAM_WORK_REJECTED_PRE_PENDING_SINGLE_OUTSIDE_SLOT )==0UL );
+  FD_TEST( FD_MCNT_GET( PACK, BAM_PENDING_WORK_EVICTED_SINGLE_OUTSIDE_SLOT )==0UL );
+
+  *ctx->bank_current[ 0 ] = ULONG_MAX;
+  unprivileged_init( &config->topo, pack_tile );
+  ctx->bam_leader_out.idx = ULONG_MAX;
+  ctx->leader_slot        = 123UL;
+  ctx->slot_end_ns        = 1000L;
+  ctx->bam_current_slot_fresh = 0U;
+  (void)pack_tile_bam_recent_slot_prepare( ctx, ctx->leader_slot );
+  pack_tile_note_first_bam_insert( ctx, NULL, 900L, 122UL );
+  FD_TEST( ctx->bam_current_slot_fresh==0U );
+  pack_tile_note_first_bam_insert( ctx, NULL, 950L, 123UL );
+  fd_memset( scheduled_bam, 0, sizeof(scheduled_bam) );
+  scheduled_bam->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
+  pack_tile_drop_scheduled_pending_bam_work( ctx, scheduled_bam, 1UL, 920L );
+  pack_tile_drop_scheduled_pending_bam_work( ctx, scheduled_bam, 1UL, 980L );
+  FD_TEST( ctx->bam_current_slot_fresh==1U );
+  pack_bam_recent_slot_t const * recent_slot = &ctx->bam_recent_slot[ 123UL & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
+  FD_TEST( recent_slot->valid );
+  FD_TEST( recent_slot->slot == 123UL );
+  FD_TEST( recent_slot->first_insert_recorded == 1U );
+  FD_TEST( recent_slot->first_insert_minus_slot_end_ns == -100L );
+  FD_TEST( recent_slot->first_schedule_recorded == 1U );
+  FD_TEST( recent_slot->first_schedule_minus_slot_end_ns == -80L );
+  metrics_write( ctx );
+  ulong recent_idx = 123UL & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_RECENT_SLOT_VALID ) + recent_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_RECENT_SLOT_SLOT ) + recent_idx ] == 123UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_FIRST_INSERT_RECORDED ) + recent_idx ] == 1UL );
+  FD_TEST( (long)fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_FIRST_INSERT_MINUS_SLOT_END_NS ) + recent_idx ] == -100L );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_FIRST_SCHEDULE_RECORDED ) + recent_idx ] == 1UL );
+  FD_TEST( (long)fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_FIRST_SCHEDULE_MINUS_SLOT_END_NS ) + recent_idx ] == -80L );
+
 #if FD_PACK_USE_EXTRA_STORAGE
   FD_TEST( extra_txn_deq_empty( ctx->extra_txn_deq ) );
-  ulong saved_bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_CNT ];
-  fd_memcpy( saved_bam_work_invalidated_cnt, ctx->bam_work_invalidated_cnt, sizeof(saved_bam_work_invalidated_cnt) );
-  ulong saved_highest_observed_slot = ctx->highest_observed_slot;
-  ulong saved_leader_slot           = ctx->leader_slot;
-  ulong saved_bam_result_out_idx    = ctx->bam_result_out.idx;
-
+  *ctx->bank_current[ 0 ] = ULONG_MAX;
+  unprivileged_init( &config->topo, pack_tile );
   ctx->highest_observed_slot = 200UL;
   ctx->leader_slot           = ULONG_MAX;
   ctx->bam_result_out.idx    = ULONG_MAX;
@@ -1113,13 +1216,16 @@ main( int     argc,
 
   FD_TEST( insert_from_extra( ctx, NULL ) == -1 );
   FD_TEST( extra_txn_deq_empty( ctx->extra_txn_deq ) );
+  FD_TEST( ctx->bam_pending_work_cnt==0UL );
   FD_TEST( ctx->bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_BLOCKHASH_EXPIRED_IDX ] ==
-           saved_bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_BLOCKHASH_EXPIRED_IDX ] + 1UL );
-
-  fd_memcpy( ctx->bam_work_invalidated_cnt, saved_bam_work_invalidated_cnt, sizeof(saved_bam_work_invalidated_cnt) );
-  ctx->highest_observed_slot = saved_highest_observed_slot;
-  ctx->leader_slot           = saved_leader_slot;
-  ctx->bam_result_out.idx    = saved_bam_result_out_idx;
+           1UL );
+  FD_TEST( ctx->bam_work_rejected_pre_pending_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_BLOCKHASH_EXPIRED_IDX ] ==
+           1UL );
+  FD_TEST( ctx->bam_pending_work_evicted_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_BLOCKHASH_EXPIRED_IDX ]==0UL );
+  metrics_write( ctx );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_PENDING_WORK_COUNT )==0UL );
+  FD_TEST( FD_MCNT_GET( PACK, BAM_WORK_REJECTED_PRE_PENDING_SINGLE_BLOCKHASH_EXPIRED )==1UL );
+  FD_TEST( FD_MCNT_GET( PACK, BAM_PENDING_WORK_EVICTED_SINGLE_BLOCKHASH_EXPIRED )==0UL );
 #endif
 
   /* resolv-pack link */

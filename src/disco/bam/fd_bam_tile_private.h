@@ -56,6 +56,7 @@ struct fd_bam_metrics {
   ulong builder_heartbeats_decoded_cnt;
   ulong healthy_connects_cnt;
   ulong healthy_disconnects_cnt;
+  ulong override_without_fresh_work_cnt;
 
   ulong failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_CNT ];
 
@@ -81,12 +82,18 @@ typedef struct fd_bam_metrics fd_bam_metrics_t;
 typedef struct {
   ulong slot;
   long  first_rx_ts_ns;
+  long  slot_end_ns;
   ulong txn_before_slot_end;
   ulong txn_after_slot_end;
   uchar first_rx_after_slot_end;
   uchar summary_emitted;
   uchar valid;
 } fd_bam_slot_ingress_timing_t;
+
+typedef struct {
+  ulong slot;
+  long  slot_end_ns;
+} fd_bam_recent_slot_meta_t;
 
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
@@ -230,6 +237,7 @@ struct fd_bam_tile {
   uint                  bam_config_inflight    : 1;      /* true while GetBuilderConfig GRPC call is pending */
   uint                  bam_config_received    : 1;      /* set after a valid ConfigResponse lands on the current connection */
   uint                  bam_leader_pending     : 1;      /* set when a coalesced leader snapshot awaits send; not durable like bam_results */
+  ulong                 override_without_fresh_last_slot; /* last slot counted in bam_override_without_fresh_work */
 
   /* Error backoff */
   fd_rng_t rng[1];                                /* RNG used to randomize reconnects */
@@ -242,10 +250,11 @@ struct fd_bam_tile {
   fd_bam_out_ctx_t    verify_out;                    /* Output ring for transaction verification */
   fd_bam_out_ctx_t    plugin_out;                    /* Output ring for plugin status updates */
   fd_bam_out_ctx_t    gossip_out;       /* Stem output buffer used for BAM gossip updates (Full firedancer, not Frankendncer) */
-  ulong *             bam_status_fseq; /* Shared latch written with BAM status (0=inactive,1=active) TODO: track connection health state? */
+  ulong *             bam_status_fseq; /* Shared latch written with BAM status bits (bit 0 = override active, bit 1 = current-slot fresh work observed) */
 
   /* App metrics */
   fd_bam_metrics_t metrics;                         /* Tile-local counters flushed to metrics */
+  fd_bam_recent_slot_meta_t recent_slot_meta[ FD_BAM_SLOT_INGRESS_TIMING_CNT ];
 
   /* Check engine light */
   fd_plugin_bam_update_status_t bam_status_recent;  /* most recently observed 'check engine light' */ //TODO: update this for bam
@@ -293,17 +302,33 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
   ctx->feedback_queue_depth = (ushort)( ctx->feedback_queue_depth + 1U );
 }
 
-/* Leader state is latest-value-wins control information: keep only one
-   pending snapshot and count superseded unsent updates. */
 FD_FN_UNUSED static inline void
 fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
   if( FD_UNLIKELY( ctx->bam_leader_pending &&
-                   0!=memcmp( &ctx->bam_leader_state, state, sizeof(fd_bam_leader_state_t) ) ) ) {
+                   !fd_bam_leader_state_eq( &ctx->bam_leader_state, state ) ) ) {
     ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ]++;
+  }
+  if( FD_LIKELY( state->slot_end_ns ) ) {
+    ulong idx = state->slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL );
+    ctx->recent_slot_meta[ idx ] = (fd_bam_recent_slot_meta_t){
+      .slot        = state->slot,
+      .slot_end_ns = state->slot_end_ns,
+    };
+
+    fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ idx ];
+    entry->slot_end_ns = state->slot_end_ns;
   }
   ctx->bam_leader_state = *state;
   ctx->bam_leader_pending = 1U;
+}
+
+FD_FN_PURE static inline _Bool
+fd_bam_current_slot_fresh( fd_bam_tile_t const * ctx,
+                           long                   now_ns ) {
+  return !!( ctx->bam_leader_state.slot_end_ns &&
+             now_ns < ctx->bam_leader_state.slot_end_ns &&
+             ctx->bam_leader_state.current_slot_fresh );
 }
 
 /* Define 'request_ctx' IDs to identify different types of gRPC calls */

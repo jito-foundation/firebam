@@ -1,4 +1,5 @@
 #include "fd_quic_tile.h"
+#include "../bam/fd_bam_types.h"
 #include "../metrics/fd_metrics.h"
 #include "../stem/fd_stem.h"
 #include "../topo/fd_topo.h"
@@ -117,7 +118,8 @@ before_credit( fd_quic_ctx_t *     ctx,
 
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
     _Bool bam_override_prev = ctx->bam_override_active;
-    _Bool bam_override = fd_fseq_query( ctx->bam_status_fseq )!=0UL;
+    ulong bam_status = fd_fseq_query( ctx->bam_status_fseq );
+    _Bool bam_override = !!( bam_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
     if( FD_UNLIKELY( bam_override && ctx->quic->metrics.conn_alloc_cnt ) ) {
       fd_quic_t *       quic      = ctx->quic;
       fd_quic_state_t * quic_state = fd_quic_get_state( quic );
@@ -657,7 +659,7 @@ unprivileged_init( fd_topo_t *      topo,
   if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
     ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
     if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "quic tile missing bam_status fseq" ));
-    ctx->bam_override_active = fd_fseq_query( ctx->bam_status_fseq )!=0UL;
+    ctx->bam_override_active = !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   } else {
     ctx->bam_status_fseq = NULL;
   }

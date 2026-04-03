@@ -57,10 +57,13 @@ fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
                                              fd_bam_slot_ingress_timing_t * entry,
                                              ulong                          current_leader_slot ) {
   if( FD_UNLIKELY( !( ctx->dump_bam_txns || ctx->dump_bam_first_slot_txn ) || entry->summary_emitted ) ) return;
+  long first_rx_minus_slot_end_ns = 0L;
+  if( FD_UNLIKELY( entry->first_rx_ts_ns && entry->slot_end_ns ) ) first_rx_minus_slot_end_ns = entry->first_rx_ts_ns - entry->slot_end_ns;
 
-  FD_LOG_NOTICE(( "BAM slot ingress summary: slot=%lu first_rx_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
+  FD_LOG_NOTICE(( "BAM slot ingress summary: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
                   entry->slot,
                   entry->first_rx_ts_ns,
+                  first_rx_minus_slot_end_ns,
                   (uint)entry->first_rx_after_slot_end,
                   entry->txn_before_slot_end,
                   entry->txn_after_slot_end,
@@ -73,6 +76,8 @@ fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx ) {
   ulong valid[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
   ulong slot[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
   ulong first_rx_ts[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
+  ulong first_rx_minus_slot_end_valid[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
+  ulong first_rx_minus_slot_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
   ulong first_rx_after_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
   ulong before_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
   ulong after_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
@@ -81,9 +86,12 @@ fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx ) {
     fd_bam_slot_ingress_timing_t const * entry = &ctx->slot_ingress_timing[ i ];
     if( FD_UNLIKELY( !entry->valid ) ) continue;
 
+    _Bool has_first_rx_minus_slot_end = entry->first_rx_ts_ns && entry->slot_end_ns;
     valid[ i ]              = 1UL;
     slot[ i ]               = entry->slot;
     if( FD_LIKELY( entry->first_rx_ts_ns>0L ) ) first_rx_ts[ i ] = (ulong)entry->first_rx_ts_ns;
+    first_rx_minus_slot_end_valid[ i ] = (ulong)has_first_rx_minus_slot_end;
+    if( FD_LIKELY( has_first_rx_minus_slot_end ) ) first_rx_minus_slot_end[ i ] = (ulong)( entry->first_rx_ts_ns - entry->slot_end_ns );
     first_rx_after_end[ i ] = (ulong)entry->first_rx_after_slot_end;
     before_end[ i ]         = entry->txn_before_slot_end;
     after_end[ i ]          = entry->txn_after_slot_end;
@@ -92,6 +100,8 @@ fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_VALID,                    valid              );
   FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_SLOT,                     slot               );
   FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_TIMESTAMP_NANOS, first_rx_ts        );
+  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_VALID, first_rx_minus_slot_end_valid );
+  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_NS, first_rx_minus_slot_end );
   FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_AFTER_SLOT_END,  first_rx_after_end );
   FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_TXNS_BEFORE_SLOT_END,     before_end         );
   FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_TXNS_AFTER_SLOT_END,      after_end          );
@@ -99,6 +109,8 @@ fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx ) {
 
 static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
+  long now_ns = fd_log_wallclock();
+  _Bool current_slot_fresh = fd_bam_current_slot_fresh( ctx, now_ns );
   FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.transaction_published_cnt          );
   FD_MCNT_SET( BAM, ATOMIC_BATCH_PUBLISHED,  ctx->metrics.atomic_batch_published_cnt );
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_results_dropped_cnt   );
@@ -108,6 +120,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, BUILDER_HEARTBEATS_DECODED,    ctx->metrics.builder_heartbeats_decoded_cnt       );
   FD_MCNT_SET( BAM, HEALTHY_CONNECTS,              ctx->metrics.healthy_connects_cnt      );
   FD_MCNT_SET( BAM, HEALTHY_DISCONNECTS,           ctx->metrics.healthy_disconnects_cnt   );
+  FD_MCNT_SET( BAM, OVERRIDE_WITHOUT_FRESH_WORK,   ctx->metrics.override_without_fresh_work_cnt );
   FD_MCNT_ENUM_COPY( BAM, FAILURE,          ctx->metrics.failure_cnt               );
   FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_RECEIVED,         ctx->metrics.ingress_multi_message_received_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
@@ -122,6 +135,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_DEVIATION, (ulong)ctx->rtt->var_rtt      );
   FD_MGAUGE_SET( BAM, FEEDBACK_QUEUE_DEPTH, (ulong)ctx->feedback_queue_depth );
   FD_MGAUGE_SET( BAM, ENABLED,      (ulong)ctx->enabled );
+  FD_MGAUGE_SET( BAM, CURRENT_SLOT_FRESH,   (ulong)current_slot_fresh );
   fd_bam_export_slot_ingress_timing_metrics( ctx );
 
   FD_MHIST_COPY( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
@@ -365,7 +379,19 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     ctx->last_bam_status_log_nanos = now_ns;
   }
 
+  fd_bam_leader_state_t const * leader_state = &ctx->bam_leader_state;
   _Bool use_bam = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+  _Bool current_slot_fresh = use_bam && fd_bam_current_slot_fresh( ctx, now_ns );
+  _Bool count_override_without_fresh =
+      use_bam &&
+      leader_state->slot_end_ns &&
+      now_ns >= leader_state->slot_end_ns &&
+      !leader_state->current_slot_fresh &&
+      ctx->override_without_fresh_last_slot != leader_state->slot;
+  if( FD_UNLIKELY( count_override_without_fresh ) ) {
+    ctx->metrics.override_without_fresh_work_cnt++;
+    ctx->override_without_fresh_last_slot = leader_state->slot;
+  }
   _Bool tpu_update_pending = ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ) |
                             ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
   if( FD_UNLIKELY( ctx->bam_status_recent != status || tpu_update_pending ) ) {
@@ -378,7 +404,12 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
        duties.  fd_bam_client_status only returns CONNECTED once the
        transport, auth, and scheduler stream are fully live, else
        immediately release the TPU back to default Firedancer behaviour */
-    fd_fseq_update( ctx->bam_status_fseq, (ulong)use_bam );
+    ulong bam_status =
+        fd_ulong_if( use_bam, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE, 0UL ) |
+        fd_ulong_if( current_slot_fresh,
+                     FD_BAM_STATUS_FSEQ_CURRENT_SLOT_FRESH,
+                     0UL );
+    fd_fseq_update( ctx->bam_status_fseq, bam_status );
   }
 
   if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch ) == FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
@@ -966,6 +997,7 @@ privileged_init( fd_topo_t *      topo,
   }
 
   memset( ctx, 0, sizeof(fd_bam_tile_t) );
+  ctx->override_without_fresh_last_slot = ULONG_MAX;
   ctx->grpc_client_mem = grpc_mem;
   ctx->grpc_buf_max    = tile->bam.buf_sz;
   ctx->tcp_sock        = -1;

@@ -59,7 +59,22 @@ typedef struct {
   ulong slot;
   uint  tick;
   uint  slot_cu_budget_remaining;
+  long  slot_end_ns;
+  uint  current_slot_fresh;
 } fd_bam_leader_state_t;
+
+FD_FN_PURE static inline _Bool
+fd_bam_leader_state_eq( fd_bam_leader_state_t const * a,
+                        fd_bam_leader_state_t const * b ) {
+  return !!( a->slot                     == b->slot                     &&
+             a->tick                     == b->tick                     &&
+             a->slot_cu_budget_remaining == b->slot_cu_budget_remaining &&
+             a->slot_end_ns              == b->slot_end_ns              &&
+             a->current_slot_fresh       == b->current_slot_fresh );
+}
+
+#define FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE    (1UL<<0)
+#define FD_BAM_STATUS_FSEQ_CURRENT_SLOT_FRESH (1UL<<1)
 
 typedef struct {
   fd_ip4_port_t tpu;     /* TPU socket advertised by BAM (net order) */

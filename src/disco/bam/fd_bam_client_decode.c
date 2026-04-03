@@ -447,17 +447,22 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch ) {
   ulong resolved_slot = fd_bam_resolve_batch_slot( ctx, batch );
-  fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ resolved_slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL ) ];
-  if( FD_UNLIKELY( !entry->valid ) ) {
-    fd_memset( entry, 0, sizeof(*entry) );
-    entry->slot  = resolved_slot;
-    entry->valid = 1U;
-  } else if( FD_UNLIKELY( entry->slot!=resolved_slot ) ) {
+  ulong idx = resolved_slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL );
+  fd_bam_recent_slot_meta_t const * meta = &ctx->recent_slot_meta[ idx ];
+  long slot_end_ns = 0L;
+  if( FD_UNLIKELY( meta->slot_end_ns && meta->slot==resolved_slot ) ) slot_end_ns = meta->slot_end_ns;
+  if( FD_LIKELY( resolved_slot==ctx->bam_leader_state.slot ) ) slot_end_ns = ctx->bam_leader_state.slot_end_ns;
+
+  fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ idx ];
+  if( FD_UNLIKELY( entry->valid && entry->slot!=resolved_slot ) ) {
     fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, ctx->bam_leader_state.slot );
     fd_memset( entry, 0, sizeof(*entry) );
+  }
+  if( FD_UNLIKELY( !entry->valid ) ) {
     entry->slot  = resolved_slot;
     entry->valid = 1U;
   }
+  if( FD_UNLIKELY( slot_end_ns ) ) entry->slot_end_ns = slot_end_ns;
 
   _Bool after_slot_end = resolved_slot && resolved_slot < ctx->bam_leader_state.slot;
   if( FD_UNLIKELY( !entry->txn_before_slot_end && !entry->txn_after_slot_end ) ) {
@@ -471,6 +476,8 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   if( FD_UNLIKELY( fd_bam_should_dump_batch( ctx, batch ) ) ) {
     char * msg = fd_bam_dump_log_buf;
     ulong  off = 0UL;
+    long   first_rx_minus_slot_end_ns = 0L;
+    if( FD_UNLIKELY( entry->first_rx_ts_ns && entry->slot_end_ns ) ) first_rx_minus_slot_end_ns = entry->first_rx_ts_ns - entry->slot_end_ns;
 
     /* Emit one NOTICE record per bundle so unrelated logs cannot split txn details apart. */
     off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
@@ -490,9 +497,10 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                             &state->packets[ i ] );
     }
     off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
-                               "\nslot_timing: slot=%lu first_rx_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
+                               "\nslot_timing: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
                                resolved_slot,
                                entry->first_rx_ts_ns,
+                               first_rx_minus_slot_end_ns,
                                (uint)entry->first_rx_after_slot_end,
                                entry->txn_before_slot_end,
                                entry->txn_after_slot_end,

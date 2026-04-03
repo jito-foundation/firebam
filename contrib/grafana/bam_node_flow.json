@@ -2843,7 +2843,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM work invalidated by slot/blockhash revalidation in pack, grouped by pack_bam_work_invalid_reason across single transactions and fully assembled bundles.",
+      "description": "Rate (events/sec) of BAM work invalidated by slot/blockhash revalidation in pack, grouped by pack_bam_work_invalid_reason across single transactions and fully assembled bundles. This is the superset counter: it includes both pre-pending rejects and post-acceptance evictions.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2904,8 +2904,595 @@
           "refId": "A"
         }
       ],
-      "title": "Pack BAM Work Invalidated (by reason)",
+      "title": "Pack BAM Work Invalidated (superset, by reason)",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of BAM pending-work items that were accepted into pack, remained in the pending-work tracker, and were later evicted by slot/blockhash revalidation, grouped by pack_bam_work_invalid_reason. This is the post-acceptance subset of pack_bam_work_invalidated.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.000001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 109
+      },
+      "id": 35,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pack_bam_work_invalid_reason) (rate(pack_bam_pending_work_evicted{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{pack_bam_work_invalid_reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pack BAM Pending Work Evicted (post-acceptance, by reason)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Current count of BAM work items that have been accepted into pack and are still tracked in pack's pending-work set, before schedule handoff or cleanup.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 109
+      },
+      "id": 36,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(pack_bam_pending_work_count{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "pending work",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pack BAM Pending Work Count",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of BAM transactions or fully assembled BAM bundles rejected by slot/blockhash revalidation before they were ever accepted into pack's pending-work tracker, grouped by pack_bam_work_invalid_reason.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.000001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 117
+      },
+      "id": 37,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pack_bam_work_invalid_reason) (rate(pack_bam_work_rejected_pre_pending{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{pack_bam_work_invalid_reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pack BAM Rejected Pre-Pending (by reason)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Current BAM freshness state for the active slot. bam_current_slot_fresh is 1 while the local leader slot is still open and pack has already accepted at least one current-slot BAM work item before slot end; otherwise 0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "index": 0,
+                  "text": "Not Fresh"
+                },
+                "1": {
+                  "index": 1,
+                  "text": "Fresh"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 20,
+        "y": 117
+      },
+      "id": 38,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "max(bam_current_slot_fresh{instance=~\"$instance\"})",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Current Slot Fresh",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (events/sec) of leader slots that ended while BAM healthy override remained active but no current-slot BAM work was accepted before slot end.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.000001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 12,
+        "y": 117
+      },
+      "id": 39,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-20781422371.patch2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(bam_override_without_fresh_work{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "override without fresh work",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Override Without Fresh Work",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Instantaneous signed nanosecond delta from first BAM ingress to slot end for the highest resolved slot currently present in the BAM slot-ingress timing ring. Positive means ingress was after slot end.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "ns"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 125
+      },
+      "id": 40,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "topk by (instance, kind, kind_id) (1, bam_slot_ingress_timing_slot{instance=~\"$instance\"} * bam_slot_ingress_timing_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, bam_slot_ingress_timing_idx) group_left() (bam_slot_ingress_timing_first_rx_minus_slot_end_ns{instance=~\"$instance\"} * bam_slot_ingress_timing_first_rx_minus_slot_end_valid{instance=~\"$instance\"})",
+          "instant": true,
+          "legendFormat": "first rx minus slot end",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Latest BAM Ingress vs Slot End",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Instantaneous signed nanosecond delta from first BAM acceptance into pack to slot end for the highest leader slot currently present in pack's recent-slot timing ring. Positive means pack first accepted BAM work after slot end.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "ns"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 125
+      },
+      "id": 41,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() (pack_bam_first_insert_minus_slot_end_ns{instance=~\"$instance\"} * pack_bam_first_insert_recorded{instance=~\"$instance\"})",
+          "instant": true,
+          "legendFormat": "first insert minus slot end",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Latest Pack Insert vs Slot End",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Instantaneous signed nanosecond delta from first BAM schedule handoff to slot end for the highest leader slot currently present in pack's recent-slot timing ring. Positive means pack first scheduled BAM work after slot end.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "ns"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 125
+      },
+      "id": 42,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() (pack_bam_first_schedule_minus_slot_end_ns{instance=~\"$instance\"} * pack_bam_first_schedule_recorded{instance=~\"$instance\"})",
+          "instant": true,
+          "legendFormat": "first schedule minus slot end",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Latest Pack Schedule vs Slot End",
+      "type": "stat"
     }
   ],
   "preload": false,
@@ -2961,6 +3548,6 @@
   "timezone": "utc",
   "title": "Firedancer BAM Node Flow",
   "uid": "bamnodeflow",
-  "version": 14,
+  "version": 15,
   "weekStart": ""
 }

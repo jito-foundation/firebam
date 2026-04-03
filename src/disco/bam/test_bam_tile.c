@@ -443,7 +443,12 @@ test_bam_slot_ingress_timing_tracks_resolved_slot_and_late_arrival( fd_wksp_t * 
 
   uchar protobuf[ 4096 ];
 
-  state->bam_leader_state.slot = 100UL;
+  state->bam_leader_state.slot        = 100UL;
+  state->bam_leader_state.slot_end_ns = 1500L;
+  state->recent_slot_meta[ 100UL & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL ) ] = (fd_bam_recent_slot_meta_t){
+    .slot        = 100UL,
+    .slot_end_ns = 1500L,
+  };
   g_clock = 1000L;
   size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( &batch, 1UL, protobuf, sizeof(protobuf) );
   fd_bam_client_grpc_rx_msg( state,
@@ -455,13 +460,20 @@ test_bam_slot_ingress_timing_tracks_resolved_slot_and_late_arrival( fd_wksp_t * 
   FD_TEST( entry->valid );
   FD_TEST( entry->slot == 100UL );
   FD_TEST( entry->first_rx_ts_ns == 1000L );
+  FD_TEST( entry->slot_end_ns == 1500L );
+  FD_TEST( entry->first_rx_ts_ns - entry->slot_end_ns == -500L );
   FD_TEST( entry->first_rx_after_slot_end == 0U );
   FD_TEST( entry->txn_before_slot_end == 1UL );
   FD_TEST( entry->txn_after_slot_end == 0UL );
 
   batch.seq_id = 78U;
   batch.max_schedule_slot = 100UL;
-  state->bam_leader_state.slot = 101UL;
+  state->bam_leader_state.slot        = 101UL;
+  state->bam_leader_state.slot_end_ns = 2500L;
+  state->recent_slot_meta[ 101UL & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL ) ] = (fd_bam_recent_slot_meta_t){
+    .slot        = 101UL,
+    .slot_end_ns = 2500L,
+  };
   g_clock = 2000L;
   protobuf_sz = test_bam_encode_scheduler_multi_batch_response( &batch, 1UL, protobuf, sizeof(protobuf) );
   fd_bam_client_grpc_rx_msg( state,
@@ -473,6 +485,8 @@ test_bam_slot_ingress_timing_tracks_resolved_slot_and_late_arrival( fd_wksp_t * 
   FD_TEST( entry->valid );
   FD_TEST( entry->slot == 100UL );
   FD_TEST( entry->first_rx_ts_ns == 1000L );
+  FD_TEST( entry->slot_end_ns == 1500L );
+  FD_TEST( entry->first_rx_ts_ns - entry->slot_end_ns == -500L );
   FD_TEST( entry->first_rx_after_slot_end == 0U );
   FD_TEST( entry->txn_before_slot_end == 1UL );
   FD_TEST( entry->txn_after_slot_end == 1UL );
@@ -491,6 +505,7 @@ test_bam_slot_ingress_timing_metrics_export( fd_wksp_t * wksp ) {
   state->slot_ingress_timing[ 3UL ] = (fd_bam_slot_ingress_timing_t){
     .slot                    = 123UL,
     .first_rx_ts_ns          = 456L,
+    .slot_end_ns             = 500L,
     .txn_before_slot_end     = 7UL,
     .txn_after_slot_end      = 2UL,
     .first_rx_after_slot_end = 1U,
@@ -518,6 +533,8 @@ test_bam_slot_ingress_timing_metrics_export( fd_wksp_t * wksp ) {
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_VALID ) + 3UL ] == 1UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_SLOT ) + 3UL ] == 123UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_TIMESTAMP_NANOS ) + 3UL ] == 456UL );
+  FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_VALID ) + 3UL ] == 1UL );
+  FD_TEST( (long)fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_NS ) + 3UL ] == -44L );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_AFTER_SLOT_END ) + 3UL ] == 1UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_TXNS_BEFORE_SLOT_END ) + 3UL ] == 7UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_TXNS_AFTER_SLOT_END ) + 3UL ] == 2UL );
@@ -525,6 +542,8 @@ test_bam_slot_ingress_timing_metrics_export( fd_wksp_t * wksp ) {
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_VALID ) + 5UL ] == 0UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_SLOT ) + 5UL ] == 0UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_TIMESTAMP_NANOS ) + 5UL ] == 0UL );
+  FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_VALID ) + 5UL ] == 0UL );
+  FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_NS ) + 5UL ] == 0UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_AFTER_SLOT_END ) + 5UL ] == 0UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_TXNS_BEFORE_SLOT_END ) + 5UL ] == 0UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_TXNS_AFTER_SLOT_END ) + 5UL ] == 0UL );
@@ -532,7 +551,65 @@ test_bam_slot_ingress_timing_metrics_export( fd_wksp_t * wksp ) {
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_VALID ) + 7UL ] == 1UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_SLOT ) + 7UL ] == 0UL );
   FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_TIMESTAMP_NANOS ) + 7UL ] == 0UL );
+  FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_VALID ) + 7UL ] == 0UL );
+  FD_TEST( fd_metrics_tl[ MIDX(GAUGE, BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_NS ) + 7UL ] == 0UL );
 
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_freshness_status_bits_and_override_counter( fd_wksp_t * wksp ) {
+  fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL, 0UL ) );
+
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+  test_bam_env_mock_conn_empty( env );
+  test_bam_env_mock_h2_hs( state );
+  test_bam_env_inject_config_response( state );
+
+  long now = fd_bam_now();
+  state->bam_last_builder_heartbeat_ns   = now;
+  state->bam_last_validator_heartbeat_ns = now;
+  state->bam_stream_live                 = 1U;
+  state->bam_status_recent               = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+
+  fd_keyswitch_t keyswitch = {0};
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  state->keyswitch = &keyswitch;
+
+  uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  fd_memset( fseq_mem, 0, sizeof(fseq_mem) );
+  void * fseq_shmem = fd_fseq_new( fseq_mem, 0UL );
+  FD_TEST( fseq_shmem );
+  ulong * fseq = fd_fseq_join( fseq_shmem );
+  FD_TEST( fseq );
+  state->bam_status_fseq = fseq;
+
+  state->bam_leader_state = (fd_bam_leader_state_t){
+    .slot               = 42UL,
+    .slot_end_ns        = fd_log_wallclock() - 1L,
+    .current_slot_fresh = 0U,
+  };
+  fd_bam_tile_housekeeping( state );
+  FD_TEST( state->metrics.override_without_fresh_work_cnt == 1UL );
+  FD_TEST( fd_fseq_query( fseq ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+
+  fd_bam_tile_housekeeping( state );
+  FD_TEST( state->metrics.override_without_fresh_work_cnt == 1UL );
+
+  state->bam_leader_state = (fd_bam_leader_state_t){
+    .slot               = 43UL,
+    .slot_end_ns        = fd_log_wallclock() + (long)1e9,
+    .current_slot_fresh = 1U,
+  };
+  fd_bam_tile_housekeeping( state );
+  FD_TEST( fd_fseq_query( fseq ) == ( FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE | FD_BAM_STATUS_FSEQ_CURRENT_SLOT_FRESH ) );
+
+  FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
+  FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
+  state->bam_status_fseq = NULL;
+  state->keyswitch = NULL;
   test_bam_env_destroy( env );
 }
 
@@ -4185,6 +4262,7 @@ main( int     argc,
   test_bam_dump_bam_first_slot_txn_gate( wksp );
   test_bam_slot_ingress_timing_tracks_resolved_slot_and_late_arrival( wksp );
   test_bam_slot_ingress_timing_metrics_export( wksp );
+  test_bam_freshness_status_bits_and_override_counter( wksp );
   test_bam_slot_ingress_timing_summary_format_and_gate( wksp );
   test_bam_slot_ingress_timing_summary_on_leader_slot_advance( wksp );
   test_bam_slot_ingress_timing_summary_on_overwrite( wksp );
