@@ -246,6 +246,12 @@ fd_bam_try_agave_update_tpu( fd_bam_tile_t * ctx,
   }
 
   if( FD_UNLIKELY( current_tpu.l==tpu.l && current_tpu_fwd.l==tpu_fwd.l ) ) {
+    FD_LOG_NOTICE(( "TPU addresses already match desired %s state: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                    use_bam ? "BAM" : "default",
+                    FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                    fd_ushort_bswap( tpu.port ),
+                    FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                    fd_ushort_bswap( tpu_fwd.port ) ));
     ctx->tpu_update_state = desired_applied;
     return 0;
   }

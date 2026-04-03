@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "fd_bam_tile_private.h"
 #include "../../util/cstr/fd_cstr.h"
+#include "../../util/io/fd_io.h"
 #include "../../util/log/fd_log.h"
 
 #include <ctype.h>
@@ -16,6 +17,7 @@
 
 #define FD_BAM_ADMIN_RPC_REQ_MAX       (512UL)
 #define FD_BAM_ADMIN_RPC_RESP_MAX      (4096UL)
+#define FD_BAM_ADMIN_RPC_LOG_RESP_MAX  (256UL)
 #define FD_BAM_ADMIN_RPC_POLL_MS       (250)
 #define FD_BAM_ADMIN_RPC_MAX_POLLS     (4)
 #define FD_BAM_ADMIN_RPC_SLEEP_AFTER_SET_NS ((long)2e6)
@@ -111,15 +113,29 @@ fd_bam_admin_rpc_request( char const * admin_rpc_path,
     struct sockaddr_un un;
   } addr = { .un = { .sun_family = AF_UNIX } };
   ulong path_len = strnlen( admin_rpc_path, sizeof(addr.un.sun_path) );
-  if( FD_UNLIKELY( !path_len || path_len>=sizeof(addr.un.sun_path) ) ) return -1;
+  if( FD_UNLIKELY( !path_len || path_len>=sizeof(addr.un.sun_path) ) ) {
+    FD_LOG_WARNING(( "BAM admin RPC request rejected: invalid Unix socket path `%s`", admin_rpc_path ));
+    return -1;
+  }
   fd_memcpy( addr.un.sun_path, admin_rpc_path, path_len );
   addr.un.sun_path[ path_len ] = '\0';
 
   int fd = socket( AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0 );
-  if( FD_UNLIKELY( fd<0 ) ) return -1;
+  if( FD_UNLIKELY( fd<0 ) ) {
+    int err = errno;
+    FD_LOG_WARNING(( "BAM admin RPC socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC) failed for `%s` (%i-%s)",
+                     admin_rpc_path, err, fd_io_strerror( err ) ));
+    return -1;
+  }
 
   int rc = -1;
-  if( FD_UNLIKELY( connect( fd, &addr.sa, (socklen_t)( offsetof( struct sockaddr_un, sun_path ) + path_len + 1UL ) ) ) ) goto out;
+  char const * fail_phase = NULL;
+  int          fail_errno = 0;
+  if( FD_UNLIKELY( connect( fd, &addr.sa, (socklen_t)( offsetof( struct sockaddr_un, sun_path ) + path_len + 1UL ) ) ) ) {
+    fail_phase = "connect";
+    fail_errno = errno;
+    goto out;
+  }
 
   ulong request_len = strlen( request );
   ulong request_off = 0UL;
@@ -127,6 +143,8 @@ fd_bam_admin_rpc_request( char const * admin_rpc_path,
     ssize_t wr = write( fd, request+request_off, request_len-request_off );
     if( FD_UNLIKELY( wr<0 ) ) {
       if( errno==EINTR ) continue;
+      fail_phase = "write";
+      fail_errno = errno;
       goto out;
     }
     request_off += (ulong)wr;
@@ -135,7 +153,11 @@ fd_bam_admin_rpc_request( char const * admin_rpc_path,
   /* jsonrpc-ipc-server expects a live bidirectional stream while it
      processes the request.  Half-closing the write side causes the
      server to terminate the session without sending a response. */
-  if( FD_UNLIKELY( fcntl( fd, F_SETFL, O_NONBLOCK ) ) ) goto out;
+  if( FD_UNLIKELY( fcntl( fd, F_SETFL, O_NONBLOCK ) ) ) {
+    fail_phase = "fcntl(F_SETFL,O_NONBLOCK)";
+    fail_errno = errno;
+    goto out;
+  }
 
   ulong response_len = 0UL;
   response[ 0 ] = '\0';
@@ -147,12 +169,17 @@ fd_bam_admin_rpc_request( char const * admin_rpc_path,
         poll_idx--;
         continue;
       }
+      fail_phase = "ppoll";
+      fail_errno = errno;
       goto out;
     }
     if( FD_UNLIKELY( !poll_rc ) ) continue;
 
     for(;;) {
-      if( FD_UNLIKELY( response_len+1UL>=response_max ) ) goto out;
+      if( FD_UNLIKELY( response_len+1UL>=response_max ) ) {
+        fail_phase = "response overflow";
+        goto out;
+      }
       ssize_t rd = read( fd, response+response_len, response_max-response_len-1UL );
       if( FD_LIKELY( rd>0 ) ) {
         response_len += (ulong)rd;
@@ -167,11 +194,20 @@ fd_bam_admin_rpc_request( char const * admin_rpc_path,
       if( FD_LIKELY( !rd ) ) break;
       if( errno==EINTR ) continue;
       if( errno==EAGAIN || errno==EWOULDBLOCK ) break;
+      fail_phase = "read";
+      fail_errno = errno;
       goto out;
     }
   }
+  fail_phase = "waiting for a complete response";
 
 out:
+  if( FD_UNLIKELY( rc && fail_phase ) ) {
+    if( FD_LIKELY( fail_errno ) ) FD_LOG_WARNING(( "BAM admin RPC request failed while %s on `%s` (%i-%s)",
+                                                   fail_phase, admin_rpc_path, fail_errno, fd_io_strerror( fail_errno ) ));
+    else                          FD_LOG_WARNING(( "BAM admin RPC request failed while %s on `%s`",
+                                                   fail_phase, admin_rpc_path ));
+  }
   close( fd );
   return rc;
 }
@@ -184,8 +220,13 @@ fd_bam_admin_rpc_get_contact_info( char const *    admin_rpc_path,
   if( FD_UNLIKELY( fd_bam_admin_rpc_request( admin_rpc_path,
                                              "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"contactInfo\",\"params\":[]}\n",
                                              response,
-                                             sizeof(response) ) ||
-                   strstr( response, "\"error\"" ) ) ) return -1;
+                                             sizeof(response) ) ) ) return -1;
+  if( FD_UNLIKELY( strstr( response, "\"error\"" ) ) ) {
+    FD_LOG_WARNING(( "BAM admin RPC contactInfo returned error response: %.*s",
+                     (int)fd_ulong_min( strnlen( response, sizeof(response) ), FD_BAM_ADMIN_RPC_LOG_RESP_MAX ),
+                     response ));
+    return -1;
+  }
 
   char socket_cstr[ 2 ][ sizeof("255.255.255.255:65535") ];
   fd_ip4_port_t socket[ 2 ] = {0};
@@ -216,9 +257,30 @@ fd_bam_admin_rpc_set_public_tpu( char const *        admin_rpc_path,
                                             (uint)( 2UL+i ),
                                             method,
                                             FD_IP4_ADDR_FMT_ARGS( socket.addr ),
-                                            fd_ushort_bswap( socket.port ) ) ) ) return -1;
-    if( FD_UNLIKELY( fd_bam_admin_rpc_request( admin_rpc_path, request, response, sizeof(response) ) ||
-                     strstr( response, "\"error\"" ) ) ) return -1;
+                                            fd_ushort_bswap( socket.port ) ) ) ) {
+      FD_LOG_WARNING(( "BAM admin RPC failed to format %s request for target=" FD_IP4_ADDR_FMT ":%hu",
+                       method,
+                       FD_IP4_ADDR_FMT_ARGS( socket.addr ),
+                       fd_ushort_bswap( socket.port ) ));
+      return -1;
+    }
+    if( FD_UNLIKELY( fd_bam_admin_rpc_request( admin_rpc_path, request, response, sizeof(response) ) ) ) {
+      FD_LOG_WARNING(( "BAM admin RPC %s request failed for target=" FD_IP4_ADDR_FMT ":%hu via `%s`",
+                       method,
+                       FD_IP4_ADDR_FMT_ARGS( socket.addr ),
+                       fd_ushort_bswap( socket.port ),
+                       admin_rpc_path ));
+      return -1;
+    }
+    if( FD_UNLIKELY( strstr( response, "\"error\"" ) ) ) {
+      FD_LOG_WARNING(( "BAM admin RPC %s returned error for target=" FD_IP4_ADDR_FMT ":%hu: %.*s",
+                       method,
+                       FD_IP4_ADDR_FMT_ARGS( socket.addr ),
+                       fd_ushort_bswap( socket.port ),
+                       (int)fd_ulong_min( strnlen( response, sizeof(response) ), FD_BAM_ADMIN_RPC_LOG_RESP_MAX ),
+                       response ));
+      return -1;
+    }
 
     if( !i ) {
       /* Agave refreshes contact-info on each setter.  A short delay avoids
