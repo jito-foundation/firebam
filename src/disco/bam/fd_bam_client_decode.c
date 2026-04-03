@@ -448,30 +448,40 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       bam_types_AtomicTxnBatch const * batch ) {
   ulong resolved_slot = fd_bam_resolve_batch_slot( ctx, batch );
   ulong idx = resolved_slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL );
-  fd_bam_recent_slot_meta_t const * meta = &ctx->recent_slot_meta[ idx ];
-  long slot_end_ns = 0L;
-  if( FD_UNLIKELY( meta->slot_end_ns && meta->slot==resolved_slot ) ) slot_end_ns = meta->slot_end_ns;
-  if( FD_LIKELY( resolved_slot==ctx->bam_leader_state.slot ) ) slot_end_ns = ctx->bam_leader_state.slot_end_ns;
+  fd_bam_recent_slot_meta_t * meta = &ctx->recent_slot_meta[ idx ];
+  long rx_ts_ns = fd_bam_now();
+  long slot_end_ns = ( resolved_slot==ctx->bam_leader_state.slot ) ? ctx->bam_leader_state.slot_end_ns : 0L;
+  if( FD_UNLIKELY( !slot_end_ns && meta->slot==resolved_slot ) ) slot_end_ns = meta->slot_end_ns;
 
   fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ idx ];
   if( FD_UNLIKELY( entry->valid && entry->slot!=resolved_slot ) ) {
-    fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, ctx->bam_leader_state.slot );
-    fd_memset( entry, 0, sizeof(*entry) );
+    fd_bam_slot_ingress_timing_t * prev_entry = ( meta->slot==entry->slot ) ? entry : NULL;
+    fd_bam_finalize_slot_ingress_rollup( ctx,
+                                         meta,
+                                         prev_entry,
+                                         ctx->bam_leader_state.slot );
   }
   if( FD_UNLIKELY( !entry->valid ) ) {
     entry->slot  = resolved_slot;
     entry->valid = 1U;
   }
-  if( FD_UNLIKELY( slot_end_ns ) ) entry->slot_end_ns = slot_end_ns;
+  if( FD_UNLIKELY( slot_end_ns ) ) {
+    entry->slot_end_ns = slot_end_ns;
+    entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > slot_end_ns );
+  }
 
-  _Bool after_slot_end = resolved_slot && resolved_slot < ctx->bam_leader_state.slot;
-  if( FD_UNLIKELY( !entry->txn_before_slot_end && !entry->txn_after_slot_end ) ) {
-    entry->first_rx_ts_ns          = fd_bam_now();
+  _Bool have_slot_end = !!entry->slot_end_ns;
+  _Bool after_slot_end = have_slot_end
+    ? rx_ts_ns > entry->slot_end_ns
+    : !!( resolved_slot && resolved_slot < ctx->bam_leader_state.slot );
+  if( FD_UNLIKELY( !entry->txn_before_slot_end && !entry->txn_after_slot_end && !entry->txn_unknown_slot_end ) ) {
+    entry->first_rx_ts_ns          = rx_ts_ns;
     entry->first_rx_after_slot_end = (uchar)after_slot_end;
   }
 
-  if( FD_LIKELY( !after_slot_end ) ) entry->txn_before_slot_end += state->packet_cnt;
-  else                               entry->txn_after_slot_end  += state->packet_cnt;
+  if( FD_UNLIKELY( !have_slot_end ) ) entry->txn_unknown_slot_end += state->packet_cnt;
+  else if( FD_LIKELY( !after_slot_end ) ) entry->txn_before_slot_end += state->packet_cnt;
+  else                                     entry->txn_after_slot_end  += state->packet_cnt;
 
   if( FD_UNLIKELY( fd_bam_should_dump_batch( ctx, batch ) ) ) {
     char * msg = fd_bam_dump_log_buf;
@@ -497,13 +507,14 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                             &state->packets[ i ] );
     }
     off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
-                               "\nslot_timing: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
+                               "\nslot_timing: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
                                resolved_slot,
                                entry->first_rx_ts_ns,
                                first_rx_minus_slot_end_ns,
                                (uint)entry->first_rx_after_slot_end,
                                entry->txn_before_slot_end,
                                entry->txn_after_slot_end,
+                               entry->txn_unknown_slot_end,
                                ctx->bam_leader_state.slot );
     FD_LOG_NOTICE(( "%s", msg ));
   }
@@ -843,7 +854,10 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
         FD_LOG_WARNING(( "Failed to send BAM scheduler pong (id=%u)", decoded_v0.ping_id ));
       } else {
-        fd_bam_client_sample_scheduler_ping_response( ctx, rx_ts_ns );
+        ulong rx_ts_u = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
+        long  now_ns  = fd_bam_now();
+        ulong now_u   = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
+        fd_histf_sample( ctx->metrics.scheduler_pong_enqueue_nanos, fd_ulong_sat_sub( now_u, rx_ts_u ) );
       }
     }
     break;

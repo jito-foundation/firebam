@@ -27,9 +27,6 @@
 /* Provided by fdctl/firedancer version.c */
 extern char const fdctl_version_string[];
 
-FD_STATIC_ASSERT( FD_BAM_SLOT_INGRESS_TIMING_CNT==FD_METRICS_ENUM_BAM_SLOT_INGRESS_TIMING_IDX_CNT,
-                  bam_slot_ingress_timing_metric_enum_matches_ring );
-
 FD_FN_CONST static ulong
 scratch_align( void ) {
   return fd_ulong_max( fd_ulong_max( alignof(fd_bam_tile_t), fd_grpc_client_align() ), fd_alloc_align() );
@@ -60,59 +57,22 @@ fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
   long first_rx_minus_slot_end_ns = 0L;
   if( FD_UNLIKELY( entry->first_rx_ts_ns && entry->slot_end_ns ) ) first_rx_minus_slot_end_ns = entry->first_rx_ts_ns - entry->slot_end_ns;
 
-  FD_LOG_NOTICE(( "BAM slot ingress summary: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
+  FD_LOG_NOTICE(( "BAM slot ingress summary: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
                   entry->slot,
                   entry->first_rx_ts_ns,
                   first_rx_minus_slot_end_ns,
                   (uint)entry->first_rx_after_slot_end,
                   entry->txn_before_slot_end,
                   entry->txn_after_slot_end,
+                  entry->txn_unknown_slot_end,
                   current_leader_slot ));
   entry->summary_emitted = 1U;
 }
 
-void
-fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx ) {
-  ulong valid[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong slot[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong first_rx_ts[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong first_rx_minus_slot_end_valid[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong first_rx_minus_slot_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong first_rx_after_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong before_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong after_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-
-  for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ ) {
-    fd_bam_slot_ingress_timing_t const * entry = &ctx->slot_ingress_timing[ i ];
-    if( FD_UNLIKELY( !entry->valid ) ) continue;
-
-    _Bool has_first_rx_minus_slot_end = entry->first_rx_ts_ns && entry->slot_end_ns;
-    valid[ i ]              = 1UL;
-    slot[ i ]               = entry->slot;
-    if( FD_LIKELY( entry->first_rx_ts_ns>0L ) ) first_rx_ts[ i ] = (ulong)entry->first_rx_ts_ns;
-    first_rx_minus_slot_end_valid[ i ] = (ulong)has_first_rx_minus_slot_end;
-    if( FD_LIKELY( has_first_rx_minus_slot_end ) ) first_rx_minus_slot_end[ i ] = (ulong)( entry->first_rx_ts_ns - entry->slot_end_ns );
-    first_rx_after_end[ i ] = (ulong)entry->first_rx_after_slot_end;
-    before_end[ i ]         = entry->txn_before_slot_end;
-    after_end[ i ]          = entry->txn_after_slot_end;
-  }
-
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_VALID,                    valid              );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_SLOT,                     slot               );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_TIMESTAMP_NANOS, first_rx_ts        );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_VALID, first_rx_minus_slot_end_valid );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_NS, first_rx_minus_slot_end );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_AFTER_SLOT_END,  first_rx_after_end );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_TXNS_BEFORE_SLOT_END,     before_end         );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_TXNS_AFTER_SLOT_END,      after_end          );
-}
-
 static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
-  long now_ns = fd_log_wallclock();
-  _Bool current_slot_fresh = fd_bam_current_slot_fresh( ctx, now_ns );
   fd_plugin_bam_update_status_t bundle_status = fd_bam_client_status( ctx );
-  _Bool fallback_suppressed = bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+  _Bool healthy = bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.transaction_published_cnt          );
   FD_MCNT_SET( BAM, ATOMIC_BATCH_PUBLISHED,  ctx->metrics.atomic_batch_published_cnt );
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_results_dropped_cnt   );
@@ -122,7 +82,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, BUILDER_HEARTBEATS_DECODED,    ctx->metrics.builder_heartbeats_decoded_cnt       );
   FD_MCNT_SET( BAM, HEALTHY_CONNECTS,              ctx->metrics.healthy_connects_cnt      );
   FD_MCNT_SET( BAM, HEALTHY_DISCONNECTS,           ctx->metrics.healthy_disconnects_cnt   );
-  FD_MCNT_SET( BAM, OVERRIDE_WITHOUT_FRESH_WORK,   ctx->metrics.override_without_fresh_work_cnt );
   FD_MCNT_ENUM_COPY( BAM, FAILURE,          ctx->metrics.failure_cnt               );
   FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_RECEIVED,         ctx->metrics.ingress_multi_message_received_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
@@ -131,24 +90,26 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_ENUM_COPY( BAM, OUTBOUND_ENQUEUE_OUTCOME,  ctx->metrics.outbound_enqueue_outcome_cnt );
   FD_MCNT_ENUM_COPY( BAM, STREAM_TRANSITION,      ctx->metrics.stream_transition_cnt     );
   FD_MCNT_ENUM_COPY( BAM, LEADER_PENDING_DROPPED, ctx->metrics.leader_pending_dropped_cnt );
+  FD_MCNT_ENUM_COPY( BAM, SLOT_INGRESS_RESULT,       ctx->metrics.slot_ingress_result_cnt );
+  FD_MCNT_ENUM_COPY( BAM, SLOT_INGRESS_TRANSACTIONS, ctx->metrics.slot_ingress_transactions_cnt );
+  FD_MCNT_ENUM_COPY( BAM, LEADER_SLOT_END_STATUS,     ctx->metrics.leader_slot_end_status_cnt );
+  FD_MCNT_ENUM_COPY( BAM, HEALTHY_LEADER_SLOT_RESULT, ctx->metrics.healthy_leader_slot_result_cnt );
 
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SAMPLE,    (ulong)ctx->rtt->latest_rtt   );
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SMOOTHED,  (ulong)ctx->rtt->smoothed_rtt );
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_DEVIATION, (ulong)ctx->rtt->var_rtt      );
   FD_MGAUGE_SET( BAM, FEEDBACK_QUEUE_DEPTH, (ulong)ctx->feedback_queue_depth );
   FD_MGAUGE_SET( BAM, ENABLED,              (ulong)ctx->enabled );
-  FD_MGAUGE_SET( BAM, HEALTHY,              (ulong)fallback_suppressed );
+  FD_MGAUGE_SET( BAM, HEALTHY,              (ulong)healthy );
   FD_MGAUGE_SET( BAM, STREAM_LIVE,          (ulong)ctx->bam_stream_live );
-  FD_MGAUGE_SET( BAM, CURRENT_SLOT_FRESH,   (ulong)current_slot_fresh );
-  FD_MGAUGE_SET( BAM, FALLBACK_SUPPRESSED,  (ulong)fallback_suppressed );
   FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT,    ctx->bam_leader_state.slot==ULONG_MAX ? 0UL : ctx->bam_leader_state.slot );
   FD_MGAUGE_SET( BAM, LEADER_STATE_TICK,    (ulong)ctx->bam_leader_state.tick );
   FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT_END_NANOS,
                  ctx->bam_leader_state.slot_end_ns>0L ? (ulong)ctx->bam_leader_state.slot_end_ns : 0UL );
-  fd_bam_export_slot_ingress_timing_metrics( ctx );
-
+  FD_MHIST_COPY( BAM, SLOT_INGRESS_FIRST_BEFORE_END_NANOS, ctx->metrics.slot_ingress_first_before_end_nanos );
+  FD_MHIST_COPY( BAM, SLOT_INGRESS_FIRST_AFTER_END_NANOS,  ctx->metrics.slot_ingress_first_after_end_nanos );
   FD_MHIST_COPY( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
-  FD_MHIST_COPY( BAM, SCHEDULER_PING_RESPONSE_NANOS, ctx->metrics.scheduler_ping_response_nanos );
+  FD_MHIST_COPY( BAM, SCHEDULER_PONG_ENQUEUE_NANOS, ctx->metrics.scheduler_pong_enqueue_nanos );
 
   fd_wksp_t * wksp = fd_wksp_containing( ctx );
   fd_wksp_usage_t usage[1];
@@ -159,6 +120,36 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, HEAP_SIZE,       usage->total_sz );
   FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->free_sz  );
 
+}
+
+static inline void
+fd_bam_record_leader_slot_end( fd_bam_tile_t *               ctx,
+                               fd_plugin_bam_update_status_t status,
+                               fd_bam_leader_state_t const * leader_state,
+                               long                          now_ns ) {
+  ulong status_idx;
+  if( FD_UNLIKELY( leader_state->slot==ULONG_MAX ||
+                   !leader_state->slot_end_ns ||
+                   now_ns < leader_state->slot_end_ns ||
+                   ctx->leader_slot_end_last_slot == leader_state->slot ) ) return;
+
+  switch( status ) {
+  case FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED:            status_idx = FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_DISABLED_IDX;            break;
+  case FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED:        status_idx = FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_DISCONNECTED_IDX;        break;
+  case FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING:          status_idx = FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_CONNECTING_IDX;          break;
+  case FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY: status_idx = FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_CONNECTED_UNHEALTHY_IDX; break;
+  case FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY:   status_idx = FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_CONNECTED_HEALTHY_IDX;   break;
+  default: FD_LOG_ERR(( "unknown BAM status code %u", (uint)status ));
+  }
+
+  ctx->metrics.leader_slot_end_status_cnt[ status_idx ]++;
+  if( FD_LIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) {
+    ulong result_idx = leader_state->current_slot_fresh
+      ? FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_V_FRESH_WORK_IDX
+      : FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_V_NO_FRESH_WORK_IDX;
+    ctx->metrics.healthy_leader_slot_result_cnt[ result_idx ]++;
+  }
+  ctx->leader_slot_end_last_slot = leader_state->slot;
 }
 
 /* Updates Frankendancer Agave's ContactInfo TPU advertisement over the
@@ -393,18 +384,9 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   }
 
   fd_bam_leader_state_t const * leader_state = &ctx->bam_leader_state;
+  fd_bam_record_leader_slot_end( ctx, status, leader_state, now_ns );
   _Bool use_bam = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   _Bool current_slot_fresh = use_bam && fd_bam_current_slot_fresh( ctx, now_ns );
-  _Bool count_override_without_fresh =
-      use_bam &&
-      leader_state->slot_end_ns &&
-      now_ns >= leader_state->slot_end_ns &&
-      !leader_state->current_slot_fresh &&
-      ctx->override_without_fresh_last_slot != leader_state->slot;
-  if( FD_UNLIKELY( count_override_without_fresh ) ) {
-    ctx->metrics.override_without_fresh_work_cnt++;
-    ctx->override_without_fresh_last_slot = leader_state->slot;
-  }
   _Bool tpu_update_pending = ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ) |
                             ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
   if( FD_UNLIKELY( ctx->bam_status_recent != status || tpu_update_pending ) ) {
@@ -525,7 +507,20 @@ bam_after_frag( fd_bam_tile_t *     ctx,
       FD_LOG_WARNING(( "Unexpected in_idx=%lu for staged BAM leader state", in_idx ));
       break;
     }
-    fd_bam_stage_leader_state( ctx, (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->pack_leader_in.mem, ctx->frag_staged_chunk ) );
+    fd_bam_leader_state_t const * leader_state = (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->pack_leader_in.mem, ctx->frag_staged_chunk );
+    fd_bam_leader_state_t const * prev_leader_state = &ctx->bam_leader_state;
+    if( FD_LIKELY( prev_leader_state->slot!=ULONG_MAX &&
+                   prev_leader_state->slot!=leader_state->slot &&
+                   prev_leader_state->slot_end_ns ) ) {
+      long now_ns = fd_log_wallclock();
+      if( FD_LIKELY( now_ns >= prev_leader_state->slot_end_ns || leader_state->slot > prev_leader_state->slot ) ) {
+        fd_bam_record_leader_slot_end( ctx,
+                                       fd_bam_client_status( ctx ),
+                                       prev_leader_state,
+                                       fd_long_max( now_ns, prev_leader_state->slot_end_ns ) );
+      }
+    }
+    fd_bam_stage_leader_state( ctx, leader_state );
     break;
   default:
     /* Unknown staged kind (e.g. memory corruption) is ignored to avoid
@@ -1015,7 +1010,7 @@ privileged_init( fd_topo_t *      topo,
   }
 
   memset( ctx, 0, sizeof(fd_bam_tile_t) );
-  ctx->override_without_fresh_last_slot = ULONG_MAX;
+  ctx->leader_slot_end_last_slot = ULONG_MAX;
   ctx->grpc_client_mem = grpc_mem;
   ctx->grpc_buf_max    = tile->bam.buf_sz;
   ctx->tcp_sock        = -1;
@@ -1229,12 +1224,23 @@ unprivileged_init( fd_topo_t *      topo,
   fd_grpc_client_set_version( ctx->grpc_client, fdctl_version_string, strlen( fdctl_version_string ) );
   fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
 
+  for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ ) {
+    ctx->recent_slot_meta[ i ].slot = ULONG_MAX;
+    fd_memset( &ctx->slot_ingress_timing[ i ], 0, sizeof(ctx->slot_ingress_timing[ i ]) );
+  }
+
+  fd_histf_new( ctx->metrics.slot_ingress_first_before_end_nanos,
+                FD_MHIST_MIN( BAM, SLOT_INGRESS_FIRST_BEFORE_END_NANOS ),
+                FD_MHIST_MAX( BAM, SLOT_INGRESS_FIRST_BEFORE_END_NANOS ) );
+  fd_histf_new( ctx->metrics.slot_ingress_first_after_end_nanos,
+                FD_MHIST_MIN( BAM, SLOT_INGRESS_FIRST_AFTER_END_NANOS ),
+                FD_MHIST_MAX( BAM, SLOT_INGRESS_FIRST_AFTER_END_NANOS ) );
   fd_histf_new( ctx->metrics.builder_heartbeat_arrival_delta_nanos,
                 FD_MHIST_MIN( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ),
                 FD_MHIST_MAX( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ) );
-  fd_histf_new( ctx->metrics.scheduler_ping_response_nanos,
-      FD_MHIST_MIN( BAM, SCHEDULER_PING_RESPONSE_NANOS ),
-      FD_MHIST_MAX( BAM, SCHEDULER_PING_RESPONSE_NANOS ) );
+  fd_histf_new( ctx->metrics.scheduler_pong_enqueue_nanos,
+      FD_MHIST_MIN( BAM, SCHEDULER_PONG_ENQUEUE_NANOS ),
+      FD_MHIST_MAX( BAM, SCHEDULER_PONG_ENQUEUE_NANOS ) );
 }
 
 static ulong

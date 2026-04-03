@@ -518,15 +518,6 @@ fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
   out->reason.generic_invalid.message[ sizeof(out->reason.generic_invalid.message)-1UL ] = '\0';
 }
 
-void
-fd_bam_client_sample_scheduler_ping_response( fd_bam_tile_t * ctx,
-                                              long            ping_start_ns ) {
-  ulong ping_start_u = fd_ulong_if( ping_start_ns >= 0L, (ulong)ping_start_ns, 0UL );
-  long  now_ns       = fd_bam_now();
-  ulong now_u        = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
-  fd_histf_sample( ctx->metrics.scheduler_ping_response_nanos, fd_ulong_sat_sub( now_u, ping_start_u ) );
-}
-
 static void
 fd_bam_request_auth_challenge( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;

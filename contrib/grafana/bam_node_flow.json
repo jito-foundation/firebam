@@ -301,7 +301,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Current fallback suppression state (bam_fallback_suppressed). Max across the selected instance(s) returns 1 when at least one BAM client is currently suppressing QUIC and bundle fallback, 0 otherwise.",
+      "description": "Current BAM healthy takeover state. Max across the selected instance(s) returns 1 when at least one BAM client is healthy enough to own TPU ingress, 0 otherwise.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -313,11 +313,11 @@
               "options": {
                 "0": {
                   "index": 0,
-                  "text": "Allowed"
+                  "text": "Unhealthy"
                 },
                 "1": {
                   "index": 1,
-                  "text": "Suppressed"
+                  "text": "Healthy"
                 }
               },
               "type": "value"
@@ -378,14 +378,14 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "max(bam_fallback_suppressed{instance=~\"$instance\"})",
+          "expr": "max(bam_healthy{instance=~\"$instance\"})",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
           "refId": "A"
         }
       ],
-      "title": "BAM Fallback Suppressed",
+      "title": "BAM Healthy",
       "type": "stat"
     },
     {
@@ -393,7 +393,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Raw BAM control gauges over time. Compare bam_healthy, bam_stream_live, bam_fallback_suppressed, and bam_current_slot_fresh directly to see whether BAM suppressed fallback before fresh current-slot work arrived.",
+      "description": "Raw BAM control gauges over time. Compare bam_healthy and bam_stream_live directly to see when BAM became healthy enough to own TPU ingress.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -478,30 +478,6 @@
           "legendFormat": "stream live",
           "range": true,
           "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "bam_fallback_suppressed{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "fallback suppressed",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "bam_current_slot_fresh{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "current slot fresh",
-          "range": true,
-          "refId": "D"
         }
       ],
       "title": "BAM Control Timeline",
@@ -526,7 +502,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Healthy connection lifecycle and keepalive acknowledgment activity. bam_healthy_connects and bam_healthy_disconnects count transitions into and out of bam_healthy transport/auth/config/heartbeat health; current-slot freshness is tracked separately. bam_keepalive_acks counts HTTP/2 keepalive PING acknowledgments received from the BAM node.",
+      "description": "Healthy connection lifecycle and keepalive acknowledgment activity. bam_healthy_connects and bam_healthy_disconnects count transitions into and out of bam_healthy transport/auth/config/heartbeat health; slot-end outcomes are tracked separately by bam_healthy_leader_slot_result. bam_keepalive_acks counts HTTP/2 keepalive PING acknowledgments received from the BAM node.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1494,7 +1470,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Scheduler Ping to Pong response-latency distribution inside the BAM client, measured from Ping receive callback to successful Pong send completion.",
+      "description": "Scheduler Ping-to-Pong enqueue latency inside the BAM client, measured from Ping receive callback to successful Pong enqueue. This is local processing and enqueue time, not network RTT.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1582,7 +1558,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(bam_scheduler_ping_response_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(bam_scheduler_pong_enqueue_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p50",
           "range": true,
@@ -1594,7 +1570,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(bam_scheduler_ping_response_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(bam_scheduler_pong_enqueue_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p95",
           "range": true,
@@ -1606,7 +1582,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(bam_scheduler_ping_response_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(bam_scheduler_pong_enqueue_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p99",
           "range": true,
@@ -1618,14 +1594,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bam_scheduler_ping_response_nanos_sum{instance=~\"$instance\"}[$__rate_interval])) / sum by (instance) (rate(bam_scheduler_ping_response_nanos_count{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(bam_scheduler_pong_enqueue_nanos_sum{instance=~\"$instance\"}[$__rate_interval])) / sum by (instance) (rate(bam_scheduler_pong_enqueue_nanos_count{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Mean",
           "range": true,
           "refId": "D"
         }
       ],
-      "title": "BAM Scheduler Ping Response Delay",
+      "title": "BAM Scheduler Pong Enqueue Delay",
       "type": "timeseries"
     },
     {
@@ -3117,14 +3093,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (pack_bam_work_invalid_reason) (rate(pack_bam_work_invalidated{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (pack_bam_work_invalid_reason) (rate(pack_bam_work_rejected_pre_pending{instance=~\"$instance\"}[$__rate_interval]) + rate(pack_bam_pending_work_evicted{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "{{pack_bam_work_invalid_reason}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Pack BAM Work Invalidated (superset, by reason)",
+      "title": "Pack BAM Work Revalidation (derived superset, by reason)",
       "type": "timeseries"
     },
     {
@@ -3132,7 +3108,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM pending-work items that were accepted into pack, remained in the pending-work tracker, and were later evicted by slot/blockhash revalidation, grouped by pack_bam_work_invalid_reason. This is the post-acceptance subset of pack_bam_work_invalidated.",
+      "description": "Rate (events/sec) of BAM pending-work items that were accepted into pack, remained in the pending-work tracker, and were later evicted by slot/blockhash revalidation, grouped by pack_bam_work_invalid_reason. This is the post-acceptance subset of the derived rejects-plus-evictions superset panel above.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3336,28 +3312,13 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Current BAM freshness state for the active slot. bam_current_slot_fresh is 1 while the local leader slot is still open and pack has already accepted at least one current-slot BAM work item before slot end; otherwise 0.",
+      "description": "Rate (slots/sec) of healthy BAM-owned leader slots that ended after fresh current-slot BAM work arrived before slot end.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "thresholds"
           },
           "decimals": 0,
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "index": 0,
-                  "text": "Not Fresh"
-                },
-                "1": {
-                  "index": 1,
-                  "text": "Fresh"
-                }
-              },
-              "type": "value"
-            }
-          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -3375,7 +3336,7 @@
               }
             ]
           },
-          "unit": "short"
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -3413,14 +3374,14 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "max(bam_current_slot_fresh{instance=~\"$instance\"})",
+          "expr": "sum(rate(bam_healthy_leader_slot_result{instance=~\"$instance\",bam_healthy_leader_slot_result=\"fresh_work\"}[$__rate_interval]))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
           "refId": "A"
         }
       ],
-      "title": "BAM Current Slot Fresh",
+      "title": "Healthy BAM Fresh Slot Rate",
       "type": "stat"
     },
     {
@@ -3428,7 +3389,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of leader slots that ended while bam_fallback_suppressed remained active but bam_current_slot_fresh never became 1 before slot end.",
+      "description": "Rate (slots/sec) of healthy BAM-owned leader slots that ended without fresh current-slot BAM work arriving before slot end.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3482,14 +3443,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(bam_override_without_fresh_work{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(bam_healthy_leader_slot_result{instance=~\"$instance\",bam_healthy_leader_slot_result=\"no_fresh_work\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "override without fresh work",
+          "legendFormat": "healthy no-fresh slot",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "BAM Override Without Fresh Work",
+      "title": "Healthy BAM No-Fresh Slot Rate",
       "type": "timeseries"
     },
     {
@@ -3497,229 +3458,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Instantaneous signed nanosecond delta from first BAM ingress to slot end for the highest resolved slot currently present in the BAM slot-ingress timing ring. Positive means ingress was after slot end.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "ns"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 125
-      },
-      "id": 40,
-      "maxDataPoints": 1,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.0-21914300000.patch8",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "topk by (instance, kind, kind_id) (1, bam_slot_ingress_timing_slot{instance=~\"$instance\"} * bam_slot_ingress_timing_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, bam_slot_ingress_timing_idx) group_left() (bam_slot_ingress_timing_first_rx_minus_slot_end_ns{instance=~\"$instance\"} * bam_slot_ingress_timing_first_rx_minus_slot_end_valid{instance=~\"$instance\"})",
-          "instant": true,
-          "legendFormat": "first rx minus slot end",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Latest BAM Ingress vs Slot End",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Instantaneous signed nanosecond delta from first BAM acceptance into pack to slot end for the highest leader slot currently present in pack's recent-slot timing ring. Positive means pack first accepted BAM work after slot end.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "ns"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 125
-      },
-      "id": 41,
-      "maxDataPoints": 1,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.0-21914300000.patch8",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() (pack_bam_first_insert_minus_slot_end_ns{instance=~\"$instance\"} * pack_bam_first_insert_recorded{instance=~\"$instance\"})",
-          "instant": true,
-          "legendFormat": "first insert minus slot end",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Latest Pack Insert vs Slot End",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Instantaneous signed nanosecond delta from first BAM schedule handoff to slot end for the highest leader slot currently present in pack's recent-slot timing ring. Positive means pack first scheduled BAM work after slot end.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "ns"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 125
-      },
-      "id": 42,
-      "maxDataPoints": 1,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.0-21914300000.patch8",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() (pack_bam_first_schedule_minus_slot_end_ns{instance=~\"$instance\"} * pack_bam_first_schedule_recorded{instance=~\"$instance\"})",
-          "instant": true,
-          "legendFormat": "first schedule minus slot end",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Latest Pack Schedule vs Slot End",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Current BAM slot-funnel item counts for the highest valid slot currently present in pack's recent-slot ring. The panel joins the latest slot selector with the per-stage slot-funnel gauges so one bad slot can be categorized as received, accepted, rejected pre-pending, still pending, evicted post-pending, scheduled, or landed.",
+      "description": "Rate (events/sec) of finalized BAM slot-ingress rollups, grouped by whether the first ingress for a slot arrived before slot end, after slot end, never arrived, or lacked a known slot_end_ns.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3735,7 +3474,7 @@
               }
             ]
           },
-          "unit": "short"
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -3743,9 +3482,9 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 133
+        "y": 125
       },
-      "id": 45,
+      "id": 49,
       "options": {
         "legend": {
           "calcs": [
@@ -3769,86 +3508,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_received_items{instance=~\"$instance\"}",
+          "expr": "sum by (bam_slot_ingress_result) (rate(bam_slot_ingress_result{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "received",
+          "legendFormat": "{{bam_slot_ingress_result}}",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_accepted_items{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "accepted",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_rejected_pre_pending_items{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "rejected pre-pending",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_pending_items{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "pending",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_evicted_post_pending_items{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "evicted post-pending",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_scheduled_items{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "scheduled",
-          "range": true,
-          "refId": "F"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_landed_items{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "landed",
-          "range": true,
-          "refId": "G"
         }
       ],
-      "title": "Pack Slot Funnel (Latest Slot, Items)",
+      "title": "BAM Slot Ingress Results",
       "type": "timeseries"
     },
     {
@@ -3856,7 +3523,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Current BAM slot-funnel transaction counts for the highest valid slot currently present in pack's recent-slot ring. This is the transaction-count companion to the latest-slot item funnel panel.",
+      "description": "Rate (transactions/sec) in finalized BAM slot-ingress rollups, grouped by whether counted ingress transactions were before slot end, after slot end, or lacked a known slot_end_ns.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3872,7 +3539,137 @@
               }
             ]
           },
-          "unit": "short"
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 125
+      },
+      "id": 50,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (bam_slot_ingress_txn_timing) (rate(bam_slot_ingress_transactions{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{bam_slot_ingress_txn_timing}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Slot Ingress Transactions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (items/sec) of BAM work observed at each pack lifecycle stage. Multi-transaction BAM bundles count as one item, so this shows work-item flow rather than per-transaction volume.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 133
+      },
+      "id": 51,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pack_bam_work_stage) (rate(pack_bam_work_items{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{pack_bam_work_stage}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pack BAM Work Items by Stage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (transactions/sec) of BAM transactions observed at each pack lifecycle stage. This complements the work-item panel by showing transaction-level flow through the same stages.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -3882,7 +3679,7 @@
         "x": 12,
         "y": 133
       },
-      "id": 46,
+      "id": 52,
       "options": {
         "legend": {
           "calcs": [
@@ -3906,86 +3703,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_received_txns{instance=~\"$instance\"}",
+          "expr": "sum by (pack_bam_work_stage) (rate(pack_bam_work_transactions{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "received",
+          "legendFormat": "{{pack_bam_work_stage}}",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_accepted_txns{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "accepted",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_rejected_pre_pending_txns{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "rejected pre-pending",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_pending_txns{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "pending",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_evicted_post_pending_txns{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "evicted post-pending",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_scheduled_txns{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "scheduled",
-          "range": true,
-          "refId": "F"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_landed_txns{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "landed",
-          "range": true,
-          "refId": "G"
         }
       ],
-      "title": "Pack Slot Funnel (Latest Slot, Txns)",
+      "title": "Pack BAM Transactions by Stage",
       "type": "timeseries"
     },
     {
@@ -4153,146 +3878,6 @@
       ],
       "title": "Slot Timing Assumptions",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Highest seq_id currently present in pack's recent-seq ring with a non-zero first schedule timestamp. This is the firebam-only correlation key for the paired receive-to-schedule delay panel.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 149
-      },
-      "id": 49,
-      "maxDataPoints": 1,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.0-21914300000.patch8",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_seq_seq_id{instance=~\"$instance\"} * pack_bam_recent_seq_valid{instance=~\"$instance\"} * (pack_bam_seq_first_schedule_timestamp_nanos{instance=~\"$instance\"} > bool 0))",
-          "instant": true,
-          "legendFormat": "latest scheduled seq",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Latest Scheduled BAM Seq",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Instantaneous nanosecond delta from first BAM receive inside firebam to first pack schedule handoff for the highest seq_id currently present in pack's recent-seq ring with a non-zero first schedule timestamp.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "ns"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 149
-      },
-      "id": 50,
-      "maxDataPoints": 1,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.0-21914300000.patch8",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_seq_seq_id{instance=~\"$instance\"} * pack_bam_recent_seq_valid{instance=~\"$instance\"} * (pack_bam_seq_first_schedule_timestamp_nanos{instance=~\"$instance\"} > bool 0)) * on(instance, kind, kind_id, pack_bam_recent_seq_idx) group_left() (pack_bam_seq_first_schedule_timestamp_nanos{instance=~\"$instance\"} - pack_bam_seq_first_rx_timestamp_nanos{instance=~\"$instance\"})",
-          "instant": true,
-          "legendFormat": "schedule minus first rx",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Latest Seq Rx -> Schedule Delay",
-      "type": "stat"
     }
   ],
   "preload": false,

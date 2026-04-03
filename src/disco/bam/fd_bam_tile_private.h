@@ -56,7 +56,6 @@ struct fd_bam_metrics {
   ulong builder_heartbeats_decoded_cnt;
   ulong healthy_connects_cnt;
   ulong healthy_disconnects_cnt;
-  ulong override_without_fresh_work_cnt;
 
   ulong failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_CNT ];
 
@@ -71,9 +70,15 @@ struct fd_bam_metrics {
   ulong outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_CNT ];
   ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
   ulong leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
+  ulong slot_ingress_result_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_CNT ];
+  ulong slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_CNT ];
+  ulong leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_CNT ];
+  ulong healthy_leader_slot_result_cnt[ FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_CNT ];
 
+  fd_histf_t slot_ingress_first_before_end_nanos[1];
+  fd_histf_t slot_ingress_first_after_end_nanos[1];
   fd_histf_t builder_heartbeat_arrival_delta_nanos[1];
-  fd_histf_t scheduler_ping_response_nanos[1];
+  fd_histf_t scheduler_pong_enqueue_nanos[1];
 };
 
 typedef struct fd_bam_metrics fd_bam_metrics_t;
@@ -85,6 +90,7 @@ typedef struct {
   long  slot_end_ns;
   ulong txn_before_slot_end;
   ulong txn_after_slot_end;
+  ulong txn_unknown_slot_end;
   uchar first_rx_after_slot_end;
   uchar summary_emitted;
   uchar valid;
@@ -237,7 +243,7 @@ struct fd_bam_tile {
   uint                  bam_config_inflight    : 1;      /* true while GetBuilderConfig GRPC call is pending */
   uint                  bam_config_received    : 1;      /* set after a valid ConfigResponse lands on the current connection */
   uint                  bam_leader_pending     : 1;      /* set when a coalesced leader snapshot awaits send; not durable like bam_results */
-  ulong                 override_without_fresh_last_slot; /* last slot counted in bam_override_without_fresh_work */
+  ulong                 leader_slot_end_last_slot;        /* last leader slot whose slot-end outcome counters were recorded */
 
   /* Error backoff */
   fd_rng_t rng[1];                                /* RNG used to randomize reconnects */
@@ -302,6 +308,64 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
   ctx->feedback_queue_depth = (ushort)( ctx->feedback_queue_depth + 1U );
 }
 
+void
+fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
+                                             fd_bam_slot_ingress_timing_t * entry,
+                                             ulong                          current_leader_slot );
+
+FD_FN_UNUSED static inline void
+fd_bam_finalize_slot_ingress_rollup( fd_bam_tile_t *                ctx,
+                                     fd_bam_recent_slot_meta_t *     meta,
+                                     fd_bam_slot_ingress_timing_t *  entry,
+                                     ulong                           current_leader_slot ) {
+  if( FD_UNLIKELY( meta->slot==ULONG_MAX ) ) return;
+
+  long slot_end_ns = meta->slot_end_ns;
+  if( FD_UNLIKELY( !entry || !entry->valid ) ) {
+    ctx->metrics.slot_ingress_result_cnt[ slot_end_ns
+      ? FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_NO_INGRESS_IDX
+      : FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNKNOWN_SLOT_END_IDX ]++;
+    meta->slot        = ULONG_MAX;
+    meta->slot_end_ns = 0L;
+    return;
+  }
+
+  ulong tx_before  = entry->txn_before_slot_end;
+  ulong tx_after   = entry->txn_after_slot_end;
+  ulong tx_unknown = entry->txn_unknown_slot_end;
+  ulong result_idx;
+
+  if( entry->slot_end_ns ) slot_end_ns = entry->slot_end_ns;
+  fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, current_leader_slot );
+
+  if( FD_UNLIKELY( !entry->first_rx_ts_ns ) ) {
+    result_idx = slot_end_ns
+      ? FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_NO_INGRESS_IDX
+      : FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNKNOWN_SLOT_END_IDX;
+  } else if( FD_UNLIKELY( !slot_end_ns ) ) {
+    result_idx = FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNKNOWN_SLOT_END_IDX;
+    tx_unknown += tx_before + tx_after;
+    tx_before   = 0UL;
+    tx_after    = 0UL;
+  } else if( FD_LIKELY( entry->first_rx_ts_ns<=slot_end_ns ) ) {
+    result_idx = FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_BEFORE_END_IDX;
+    fd_histf_sample( ctx->metrics.slot_ingress_first_before_end_nanos,
+                     fd_ulong_sat_sub( (ulong)slot_end_ns, (ulong)entry->first_rx_ts_ns ) );
+  } else {
+    result_idx = FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_AFTER_END_IDX;
+    fd_histf_sample( ctx->metrics.slot_ingress_first_after_end_nanos,
+                     fd_ulong_sat_sub( (ulong)entry->first_rx_ts_ns, (ulong)slot_end_ns ) );
+  }
+
+  ctx->metrics.slot_ingress_result_cnt[ result_idx ]++;
+  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_BEFORE_END_IDX ]      += tx_before;
+  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_AFTER_END_IDX ]       += tx_after;
+  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_UNKNOWN_SLOT_END_IDX ] += tx_unknown;
+  fd_memset( entry, 0, sizeof(*entry) );
+  meta->slot        = ULONG_MAX;
+  meta->slot_end_ns = 0L;
+}
+
 FD_FN_UNUSED static inline void
 fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
@@ -311,13 +375,24 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
   }
   if( FD_LIKELY( state->slot_end_ns ) ) {
     ulong idx = state->slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL );
+    fd_bam_recent_slot_meta_t * meta = &ctx->recent_slot_meta[ idx ];
+    fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ idx ];
+    if( FD_UNLIKELY( meta->slot!=ULONG_MAX && meta->slot!=state->slot ) ) {
+      fd_bam_slot_ingress_timing_t * prev_entry = ( entry->valid && entry->slot==meta->slot ) ? entry : NULL;
+      fd_bam_finalize_slot_ingress_rollup( ctx,
+                                           meta,
+                                           prev_entry,
+                                           ctx->bam_leader_state.slot );
+    }
     ctx->recent_slot_meta[ idx ] = (fd_bam_recent_slot_meta_t){
       .slot        = state->slot,
       .slot_end_ns = state->slot_end_ns,
     };
 
-    fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ idx ];
-    entry->slot_end_ns = state->slot_end_ns;
+    if( FD_LIKELY( entry->valid && entry->slot==state->slot ) ) {
+      entry->slot_end_ns = state->slot_end_ns;
+      entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > state->slot_end_ns );
+    }
   }
   ctx->bam_leader_state = *state;
   ctx->bam_leader_pending = 1U;
@@ -345,14 +420,6 @@ FD_PROTOTYPES_BEGIN
 
 long
 fd_bam_now( void );
-
-void
-fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
-                                             fd_bam_slot_ingress_timing_t * entry,
-                                             ulong                          current_leader_slot );
-
-void
-fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx );
 
 /* Admin-RPC helpers used by Frankendancer BAM mode.  The low-level
    request hook is weak so unit tests can override it without touching
@@ -495,10 +562,6 @@ fd_bam_tile_publish_txn(
     uchar              batch_cnt,
     uchar              revert_on_error,
     uint               source_ipv4 );
-
-void
-fd_bam_client_sample_scheduler_ping_response( fd_bam_tile_t * ctx,
-                                              long            ping_start_ns );
 
 void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
