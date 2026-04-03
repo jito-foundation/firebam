@@ -27,9 +27,6 @@
 /* Provided by fdctl/firedancer version.c */
 extern char const fdctl_version_string[];
 
-FD_STATIC_ASSERT( FD_BAM_SLOT_INGRESS_TIMING_CNT==FD_METRICS_ENUM_BAM_SLOT_INGRESS_TIMING_IDX_CNT,
-                  bam_slot_ingress_timing_metric_enum_matches_ring );
-
 FD_FN_CONST static ulong
 scratch_align( void ) {
   return fd_ulong_max( fd_ulong_max( alignof(fd_bam_tile_t), fd_grpc_client_align() ), fd_alloc_align() );
@@ -60,86 +57,80 @@ fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
   long first_rx_minus_slot_end_ns = 0L;
   if( FD_UNLIKELY( entry->first_rx_ts_ns && entry->slot_end_ns ) ) first_rx_minus_slot_end_ns = entry->first_rx_ts_ns - entry->slot_end_ns;
 
-  FD_LOG_NOTICE(( "BAM slot ingress summary: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
+  FD_LOG_NOTICE(( "BAM slot ingress summary: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
                   entry->slot,
                   entry->first_rx_ts_ns,
                   first_rx_minus_slot_end_ns,
                   (uint)entry->first_rx_after_slot_end,
                   entry->txn_before_slot_end,
                   entry->txn_after_slot_end,
+                  entry->txn_unknown_slot_end,
                   current_leader_slot ));
   entry->summary_emitted = 1U;
 }
 
-void
-fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx ) {
-  ulong valid[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong slot[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong first_rx_ts[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong first_rx_minus_slot_end_valid[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong first_rx_minus_slot_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong first_rx_after_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong before_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-  ulong after_end[ FD_BAM_SLOT_INGRESS_TIMING_CNT ] = {0};
-
-  for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ ) {
-    fd_bam_slot_ingress_timing_t const * entry = &ctx->slot_ingress_timing[ i ];
-    if( FD_UNLIKELY( !entry->valid ) ) continue;
-
-    _Bool has_first_rx_minus_slot_end = entry->first_rx_ts_ns && entry->slot_end_ns;
-    valid[ i ]              = 1UL;
-    slot[ i ]               = entry->slot;
-    if( FD_LIKELY( entry->first_rx_ts_ns>0L ) ) first_rx_ts[ i ] = (ulong)entry->first_rx_ts_ns;
-    first_rx_minus_slot_end_valid[ i ] = (ulong)has_first_rx_minus_slot_end;
-    if( FD_LIKELY( has_first_rx_minus_slot_end ) ) first_rx_minus_slot_end[ i ] = (ulong)( entry->first_rx_ts_ns - entry->slot_end_ns );
-    first_rx_after_end[ i ] = (ulong)entry->first_rx_after_slot_end;
-    before_end[ i ]         = entry->txn_before_slot_end;
-    after_end[ i ]          = entry->txn_after_slot_end;
-  }
-
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_VALID,                    valid              );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_SLOT,                     slot               );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_TIMESTAMP_NANOS, first_rx_ts        );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_VALID, first_rx_minus_slot_end_valid );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_MINUS_SLOT_END_NS, first_rx_minus_slot_end );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_FIRST_RX_AFTER_SLOT_END,  first_rx_after_end );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_TXNS_BEFORE_SLOT_END,     before_end         );
-  FD_MGAUGE_ENUM_COPY( BAM, SLOT_INGRESS_TIMING_TXNS_AFTER_SLOT_END,      after_end          );
-}
-
 static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
-  long now_ns = fd_log_wallclock();
-  _Bool current_slot_fresh = fd_bam_current_slot_fresh( ctx, now_ns );
+  fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
+  _Bool healthy = status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+  ulong current_slot_first_ingress_recorded       = 0UL;
+  ulong current_slot_first_ingress_slot_end_known = 0UL;
+  ulong current_slot_first_ingress_distance_nanos = 0UL;
+  ulong current_slot_first_ingress_after_end      = 0UL;
+  ulong leader_slot = ctx->bam_leader_state.slot;
+  fd_bam_slot_ingress_timing_t const * entry =
+      leader_slot==ULONG_MAX ? NULL : fd_bam_slot_ingress_timing_query_const( ctx, leader_slot );
+  if( FD_LIKELY( entry && entry->first_rx_ts_ns ) ) {
+    current_slot_first_ingress_recorded = 1UL;
+    long slot_end_ns = entry->slot_end_ns ? entry->slot_end_ns : ctx->bam_leader_state.slot_end_ns;
+    if( FD_LIKELY( slot_end_ns ) ) {
+      long delta = entry->first_rx_ts_ns - slot_end_ns;
+      current_slot_first_ingress_slot_end_known = 1UL;
+      current_slot_first_ingress_distance_nanos = fd_long_abs( delta );
+      current_slot_first_ingress_after_end      = (ulong)( delta>0L );
+    }
+  }
   FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.transaction_published_cnt          );
   FD_MCNT_SET( BAM, ATOMIC_BATCH_PUBLISHED,  ctx->metrics.atomic_batch_published_cnt );
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_results_dropped_cnt   );
   FD_MCNT_SET( BAM, INGRESS_PACKET_OVERSIZE, ctx->metrics.ingress_packet_oversize_cnt );
   FD_MCNT_SET( BAM, KEEPALIVE_ACKS,          ctx->metrics.keepalive_acks_cnt           );
-  FD_MCNT_SET( BAM, VALIDATOR_HEARTBEATS_ENQUEUED, ctx->metrics.validator_heartbeats_enqueued_cnt       );
   FD_MCNT_SET( BAM, BUILDER_HEARTBEATS_DECODED,    ctx->metrics.builder_heartbeats_decoded_cnt       );
   FD_MCNT_SET( BAM, HEALTHY_CONNECTS,              ctx->metrics.healthy_connects_cnt      );
   FD_MCNT_SET( BAM, HEALTHY_DISCONNECTS,           ctx->metrics.healthy_disconnects_cnt   );
-  FD_MCNT_SET( BAM, OVERRIDE_WITHOUT_FRESH_WORK,   ctx->metrics.override_without_fresh_work_cnt );
   FD_MCNT_ENUM_COPY( BAM, FAILURE,          ctx->metrics.failure_cnt               );
   FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_RECEIVED,         ctx->metrics.ingress_multi_message_received_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_PUBLISHED,                ctx->metrics.ingress_batch_published_cnt );
   FD_MCNT_ENUM_COPY( BAM, INGRESS_BATCH_REJECTED, ctx->metrics.ingress_batch_rejected_cnt );
+  FD_MCNT_ENUM_COPY( BAM, INGRESS_MESSAGE_REJECTED, ctx->metrics.ingress_message_rejected_cnt );
   FD_MCNT_ENUM_COPY( BAM, OUTBOUND_ENQUEUE_OUTCOME,  ctx->metrics.outbound_enqueue_outcome_cnt );
   FD_MCNT_ENUM_COPY( BAM, STREAM_TRANSITION,      ctx->metrics.stream_transition_cnt     );
   FD_MCNT_ENUM_COPY( BAM, LEADER_PENDING_DROPPED, ctx->metrics.leader_pending_dropped_cnt );
+  FD_MCNT_SET( BAM, LEADER_PENDING_REPLACED,      ctx->metrics.leader_pending_replaced_cnt );
+  FD_MCNT_ENUM_COPY( BAM, SLOT_INGRESS_RESULT,       ctx->metrics.slot_ingress_result_cnt );
+  FD_MCNT_ENUM_COPY( BAM, SLOT_INGRESS_TRANSACTIONS, ctx->metrics.slot_ingress_transactions_cnt );
+  FD_MCNT_ENUM_COPY( BAM, LEADER_SLOT_END_STATUS,     ctx->metrics.leader_slot_end_status_cnt );
+  FD_MCNT_ENUM_COPY( BAM, HEALTHY_LEADER_SLOT_RESULT, ctx->metrics.healthy_leader_slot_result_cnt );
 
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SAMPLE,    (ulong)ctx->rtt->latest_rtt   );
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SMOOTHED,  (ulong)ctx->rtt->smoothed_rtt );
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_DEVIATION, (ulong)ctx->rtt->var_rtt      );
+  FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_VALID,     (ulong)ctx->rtt->is_rtt_valid );
   FD_MGAUGE_SET( BAM, FEEDBACK_QUEUE_DEPTH, (ulong)ctx->feedback_queue_depth );
-  FD_MGAUGE_SET( BAM, ENABLED,      (ulong)ctx->enabled );
-  FD_MGAUGE_SET( BAM, CURRENT_SLOT_FRESH,   (ulong)current_slot_fresh );
-  fd_bam_export_slot_ingress_timing_metrics( ctx );
-
+  FD_MGAUGE_SET( BAM, ENABLED,              (ulong)ctx->enabled );
+  FD_MGAUGE_SET( BAM, HEALTHY,              (ulong)healthy );
+  FD_MGAUGE_SET( BAM, STREAM_LIVE,          (ulong)ctx->bam_stream_live );
+  FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT,    ctx->bam_leader_state.slot==ULONG_MAX ? 0UL : ctx->bam_leader_state.slot );
+  FD_MGAUGE_SET( BAM, LEADER_STATE_TICK,    (ulong)ctx->bam_leader_state.tick );
+  FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT_END_NANOS,
+                 ctx->bam_leader_state.slot_end_ns>0L ? (ulong)ctx->bam_leader_state.slot_end_ns : 0UL );
+  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_RECORDED,       current_slot_first_ingress_recorded );
+  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_SLOT_END_KNOWN, current_slot_first_ingress_slot_end_known );
+  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_DISTANCE_NANOS, current_slot_first_ingress_distance_nanos );
+  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_AFTER_END,      current_slot_first_ingress_after_end );
   FD_MHIST_COPY( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
-  FD_MHIST_COPY( BAM, SCHEDULER_PING_RESPONSE_NANOS, ctx->metrics.scheduler_ping_response_nanos );
+  FD_MHIST_COPY( BAM, SCHEDULER_PONG_ENQUEUE_NANOS, ctx->metrics.scheduler_pong_enqueue_nanos );
 
   fd_wksp_t * wksp = fd_wksp_containing( ctx );
   fd_wksp_usage_t usage[1];
@@ -150,163 +141,45 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, HEAP_SIZE,       usage->total_sz );
   FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->free_sz  );
 
-  fd_plugin_bam_update_status_t bundle_status = fd_bam_client_status( ctx );
-  FD_MGAUGE_SET( BAM, HEALTHY, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 }
 
-/* Updates Frankendancer Agave's ContactInfo TPU advertisement over the
-   admin RPC Unix socket.
-Return:
-- 0 on success (including when no update is required because the
-  desired TPU mode is already applied).
-- Non-zero on failure (admin RPC unavailable, apply failure, or
-  readback mismatch).
-  On failure, ctx->tpu_update_state is set to a PENDING_* value so
-  housekeeping will retry later. */
-static int
-fd_bam_try_agave_update_tpu( fd_bam_tile_t * ctx,
-                             _Bool           use_bam ) {
-  fd_bam_tpu_update_state_t desired_applied = use_bam
-    ? FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM
-    : FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT;
-  fd_bam_tpu_update_state_t desired_pending = use_bam
-    ? FD_BAM_TPU_UPDATE_STATE_PENDING_BAM
-    : FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT;
-  if( FD_LIKELY( ctx->tpu_update_state == desired_applied ) ) return 0;
+static inline void
+fd_bam_record_leader_slot_end( fd_bam_tile_t *               ctx,
+                               fd_plugin_bam_update_status_t status_fallback,
+                               fd_bam_leader_state_t const * leader_state,
+                               long                          now_ns ) {
+  if( FD_UNLIKELY( leader_state->slot==ULONG_MAX ||
+                   !leader_state->slot_end_ns ||
+                   now_ns < leader_state->slot_end_ns ||
+                   ctx->leader_slot_end_last_slot == leader_state->slot ) ) return;
 
-  if( FD_UNLIKELY( !ctx->admin_rpc_path[0] ) ) {
-    ctx->tpu_update_state = desired_applied;
-    return 0;
-  }
-
-  fd_ip4_port_t current_tpu     = (fd_ip4_port_t){0};
-  fd_ip4_port_t current_tpu_fwd = (fd_ip4_port_t){0};
-  int current_rc = fd_bam_admin_rpc_get_contact_info( ctx->admin_rpc_path, &current_tpu, &current_tpu_fwd );
-  if( FD_UNLIKELY( current_rc ) ) {
-    ctx->tpu_update_state = desired_pending;
-    return -1;
-  }
-
-  _Bool have_default_tpu = !!( ctx->default_tpu.addr     &&
-                               ctx->default_tpu.port     &&
-                               ctx->default_tpu_fwd.addr &&
-                               ctx->default_tpu_fwd.port );
-
-  /* Cache the non-BAM TPU to restore it if BAM is disabled/disconnects.
-   * This can't be done in init() since agave takes a long time to start. */
-  if( FD_UNLIKELY( !have_default_tpu ) ) {
-    if( FD_UNLIKELY( !current_tpu.addr || !current_tpu_fwd.addr || !current_tpu.port || !current_tpu_fwd.port ) ) {
-      FD_LOG_WARNING(( "Failed to cache default TPU, invalid ip/port. tpu=" FD_IP4_ADDR_FMT ":%hu, tpu_fwd=" FD_IP4_ADDR_FMT ":%hu)",
-                       FD_IP4_ADDR_FMT_ARGS( current_tpu.addr ), fd_ushort_bswap( current_tpu.port ),
-                       FD_IP4_ADDR_FMT_ARGS( current_tpu_fwd.addr ), fd_ushort_bswap( current_tpu_fwd.port ) ) );
-    } else if( FD_UNLIKELY( current_tpu.l==ctx->bam_tpu.l &&
-                            current_tpu_fwd.l==ctx->bam_tpu_fwd.l ) ) {
-      if( FD_LIKELY( ctx->configured_default_tpu.addr &&
-                     ctx->configured_default_tpu.port &&
-                     ( ctx->configured_default_tpu.l!=ctx->bam_tpu.l ||
-                       ctx->configured_default_tpu.l!=ctx->bam_tpu_fwd.l ) ) ) {
-        ctx->default_tpu     = ctx->configured_default_tpu;
-        ctx->default_tpu_fwd = ctx->configured_default_tpu;
-        have_default_tpu     = true;
-        FD_LOG_NOTICE(( "Using configured default TPU addresses because current admin RPC readback already matches BAM TPU: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
-                        FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu.addr ),
-                        fd_ushort_bswap( ctx->default_tpu.port ),
-                        FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu_fwd.addr ),
-                        fd_ushort_bswap( ctx->default_tpu_fwd.port ) ));
-      } else {
-        FD_LOG_WARNING(( "Default TPU cache deferred because current admin RPC readback already matches BAM TPU and no safe C-side default TPU advert is available" ));
+  fd_plugin_bam_update_status_t status = status_fallback;
+  if( FD_LIKELY( ctx->bam_status_history_cnt ) ) {
+    ulong oldest_idx = ( ctx->bam_status_history_next - ctx->bam_status_history_cnt ) & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
+    status = ctx->bam_status_history[ oldest_idx ].status;
+    for( ulong i=0UL; i<ctx->bam_status_history_cnt; i++ ) {
+      ulong idx = ( ctx->bam_status_history_next - 1UL - i ) & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
+      fd_bam_status_history_t const * entry = &ctx->bam_status_history[ idx ];
+      if( FD_LIKELY( entry->ts_ns <= leader_state->slot_end_ns ) ) {
+        status = entry->status;
+        break;
       }
-    } else {
-      ctx->default_tpu     = current_tpu;
-      ctx->default_tpu_fwd = current_tpu_fwd;
-      have_default_tpu     = true;
-      FD_LOG_NOTICE(( "Agave default TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
-                      FD_IP4_ADDR_FMT_ARGS( current_tpu.addr ), fd_ushort_bswap( current_tpu.port ),
-                      FD_IP4_ADDR_FMT_ARGS( current_tpu_fwd.addr ), fd_ushort_bswap( current_tpu_fwd.port ) ));
     }
   }
 
-  fd_ip4_port_t tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
-  fd_ip4_port_t tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
-
-  if( FD_UNLIKELY( !use_bam && !have_default_tpu ) ) {
-    FD_LOG_WARNING(( "Attempted to revert TPU before agave finished initializing" ));
-    ctx->tpu_update_state = desired_pending;
-    return -1;
+  ulong status_idx = (ulong)status;
+  if( FD_UNLIKELY( status_idx >= FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_CNT ) ) {
+    FD_LOG_ERR(( "unknown BAM status code %u", (uint)status ));
   }
 
-  if( FD_UNLIKELY( !tpu.addr || !tpu.port || !tpu_fwd.addr || !tpu_fwd.port ) ) {
-    FD_LOG_WARNING(( "Failed to update TPU addresses: target incomplete tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                     FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                     fd_ushort_bswap( tpu.port ),
-                     FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                     fd_ushort_bswap( tpu_fwd.port ) ));
-    ctx->tpu_update_state = desired_pending;
-    return -1;
+  ctx->metrics.leader_slot_end_status_cnt[ status_idx ]++;
+  if( FD_LIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) {
+    ulong result_idx = leader_state->current_slot_fresh
+      ? FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_V_FRESH_WORK_IDX
+      : FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_V_NO_FRESH_WORK_IDX;
+    ctx->metrics.healthy_leader_slot_result_cnt[ result_idx ]++;
   }
-
-  if( FD_UNLIKELY( current_tpu.l==tpu.l && current_tpu_fwd.l==tpu_fwd.l ) ) {
-    FD_LOG_NOTICE(( "TPU addresses already match desired %s state: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                    use_bam ? "BAM" : "default",
-                    FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                    fd_ushort_bswap( tpu.port ),
-                    FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                    fd_ushort_bswap( tpu_fwd.port ) ));
-    ctx->tpu_update_state = desired_applied;
-    return 0;
-  }
-
-  FD_LOG_NOTICE(( "Prepare to set TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, use_bam: %d", // FIXME: change to INFO level
-                  FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                  fd_ushort_bswap( tpu.port ),
-                  FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                  fd_ushort_bswap( tpu_fwd.port ),
-                  use_bam ));
-
-  int set_rc = fd_bam_admin_rpc_set_public_tpu( ctx->admin_rpc_path, tpu, tpu_fwd );
-  if( FD_UNLIKELY( set_rc ) ) {
-    FD_LOG_WARNING(( "Failed to update TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                     FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                     fd_ushort_bswap( tpu.port ),
-                     FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                     fd_ushort_bswap( tpu_fwd.port ) ));
-    ctx->tpu_update_state = desired_pending;
-    return set_rc;
-  }
-
-  fd_ip4_port_t readback_tpu     = (fd_ip4_port_t){0};
-  fd_ip4_port_t readback_tpu_fwd = (fd_ip4_port_t){0};
-  int readback_rc = fd_bam_admin_rpc_get_contact_info( ctx->admin_rpc_path, &readback_tpu, &readback_tpu_fwd );
-  if( FD_LIKELY( !readback_rc && readback_tpu.l==tpu.l && readback_tpu_fwd.l==tpu_fwd.l ) ) {
-    FD_LOG_NOTICE(( "Updated TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu", // FIXME: change to INFO level
-                    FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                    fd_ushort_bswap( tpu.port ),
-                    FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                    fd_ushort_bswap( tpu_fwd.port ) ));
-    ctx->tpu_update_state = desired_applied;
-    return 0;
-  }
-
-  if( FD_UNLIKELY( readback_rc ) ) {
-    FD_LOG_WARNING(( "Failed to verify TPU addresses after apply: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                     FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                     fd_ushort_bswap( tpu.port ),
-                     FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                     fd_ushort_bswap( tpu_fwd.port ) ));
-  } else {
-    FD_LOG_WARNING(( "Failed to verify TPU addresses after apply: expected tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, readback tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                     FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                     fd_ushort_bswap( tpu.port ),
-                     FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                     fd_ushort_bswap( tpu_fwd.port ),
-                     FD_IP4_ADDR_FMT_ARGS( readback_tpu.addr ),
-                     fd_ushort_bswap( readback_tpu.port ),
-                     FD_IP4_ADDR_FMT_ARGS( readback_tpu_fwd.addr ),
-                     fd_ushort_bswap( readback_tpu_fwd.port ) ));
-  }
-
-  ctx->tpu_update_state = desired_pending;
-  return -1;
+  ctx->leader_slot_end_last_slot = leader_state->slot;
 }
 
 // Updates ContactInfo to BAM or default TPU based on use_bam
@@ -314,7 +187,135 @@ void
 fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                       fd_stem_context_t * stem,
                       _Bool use_bam) {
-  (void)fd_bam_try_agave_update_tpu( ctx, use_bam );
+  fd_bam_tpu_update_state_t desired_applied = use_bam
+    ? FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM
+    : FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT;
+  fd_bam_tpu_update_state_t desired_pending = use_bam
+    ? FD_BAM_TPU_UPDATE_STATE_PENDING_BAM
+    : FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT;
+
+  if( FD_UNLIKELY( ctx->tpu_update_state != desired_applied ) ) {
+    if( FD_UNLIKELY( !ctx->admin_rpc_path[0] ) ) {
+      ctx->tpu_update_state = desired_applied;
+    } else {
+      fd_ip4_port_t current_tpu     = (fd_ip4_port_t){0};
+      fd_ip4_port_t current_tpu_fwd = (fd_ip4_port_t){0};
+      int current_rc = fd_bam_admin_rpc_get_contact_info( ctx->admin_rpc_path, &current_tpu, &current_tpu_fwd );
+      if( FD_UNLIKELY( current_rc ) ) {
+        ctx->tpu_update_state = desired_pending;
+      } else {
+        _Bool have_default_tpu = !!( ctx->default_tpu.addr     &&
+                                     ctx->default_tpu.port     &&
+                                     ctx->default_tpu_fwd.addr &&
+                                     ctx->default_tpu_fwd.port );
+
+        /* Cache the non-BAM TPU to restore it if BAM is disabled/disconnects.
+           This can't be done in init() since agave takes a long time to start. */
+        if( FD_UNLIKELY( !have_default_tpu ) ) {
+          if( FD_UNLIKELY( !current_tpu.addr || !current_tpu_fwd.addr || !current_tpu.port || !current_tpu_fwd.port ) ) {
+            FD_LOG_WARNING(( "Failed to cache default TPU, invalid ip/port. tpu=" FD_IP4_ADDR_FMT ":%hu, tpu_fwd=" FD_IP4_ADDR_FMT ":%hu)",
+                             FD_IP4_ADDR_FMT_ARGS( current_tpu.addr ), fd_ushort_bswap( current_tpu.port ),
+                             FD_IP4_ADDR_FMT_ARGS( current_tpu_fwd.addr ), fd_ushort_bswap( current_tpu_fwd.port ) ) );
+          } else if( FD_UNLIKELY( current_tpu.l==ctx->bam_tpu.l &&
+                                  current_tpu_fwd.l==ctx->bam_tpu_fwd.l ) ) {
+            if( FD_LIKELY( ctx->configured_default_tpu.addr &&
+                           ctx->configured_default_tpu.port &&
+                           ( ctx->configured_default_tpu.l!=ctx->bam_tpu.l ||
+                             ctx->configured_default_tpu.l!=ctx->bam_tpu_fwd.l ) ) ) {
+              ctx->default_tpu     = ctx->configured_default_tpu;
+              ctx->default_tpu_fwd = ctx->configured_default_tpu;
+              have_default_tpu     = true;
+              FD_LOG_NOTICE(( "Using configured default TPU addresses because current admin RPC readback already matches BAM TPU: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
+                              FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu.addr ),
+                              fd_ushort_bswap( ctx->default_tpu.port ),
+                              FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu_fwd.addr ),
+                              fd_ushort_bswap( ctx->default_tpu_fwd.port ) ));
+            } else {
+              FD_LOG_WARNING(( "Default TPU cache deferred because current admin RPC readback already matches BAM TPU and no safe C-side default TPU advert is available" ));
+            }
+          } else {
+            ctx->default_tpu     = current_tpu;
+            ctx->default_tpu_fwd = current_tpu_fwd;
+            have_default_tpu     = true;
+            FD_LOG_NOTICE(( "Agave default TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
+                            FD_IP4_ADDR_FMT_ARGS( current_tpu.addr ), fd_ushort_bswap( current_tpu.port ),
+                            FD_IP4_ADDR_FMT_ARGS( current_tpu_fwd.addr ), fd_ushort_bswap( current_tpu_fwd.port ) ));
+          }
+        }
+
+        fd_ip4_port_t tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
+        fd_ip4_port_t tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
+
+        if( FD_UNLIKELY( !use_bam && !have_default_tpu ) ) {
+          FD_LOG_WARNING(( "Attempted to revert TPU before agave finished initializing" ));
+          ctx->tpu_update_state = desired_pending;
+        } else if( FD_UNLIKELY( !tpu.addr || !tpu.port || !tpu_fwd.addr || !tpu_fwd.port ) ) {
+          FD_LOG_WARNING(( "Failed to update TPU addresses: target incomplete tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                           FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                           fd_ushort_bswap( tpu.port ),
+                           FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                           fd_ushort_bswap( tpu_fwd.port ) ));
+          ctx->tpu_update_state = desired_pending;
+        } else if( FD_UNLIKELY( current_tpu.l==tpu.l && current_tpu_fwd.l==tpu_fwd.l ) ) {
+          FD_LOG_NOTICE(( "TPU addresses already match desired %s state: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                          use_bam ? "BAM" : "default",
+                          FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                          fd_ushort_bswap( tpu.port ),
+                          FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                          fd_ushort_bswap( tpu_fwd.port ) ));
+          ctx->tpu_update_state = desired_applied;
+        } else {
+          FD_LOG_NOTICE(( "Prepare to set TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, use_bam: %d", /* FIXME: change to INFO level */
+                          FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                          fd_ushort_bswap( tpu.port ),
+                          FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                          fd_ushort_bswap( tpu_fwd.port ),
+                          use_bam ));
+
+          int set_rc = fd_bam_admin_rpc_set_public_tpu( ctx->admin_rpc_path, tpu, tpu_fwd );
+          if( FD_UNLIKELY( set_rc ) ) {
+            FD_LOG_WARNING(( "Failed to update TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                             FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                             fd_ushort_bswap( tpu.port ),
+                             FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                             fd_ushort_bswap( tpu_fwd.port ) ));
+            ctx->tpu_update_state = desired_pending;
+          } else {
+            fd_ip4_port_t readback_tpu     = (fd_ip4_port_t){0};
+            fd_ip4_port_t readback_tpu_fwd = (fd_ip4_port_t){0};
+            int readback_rc = fd_bam_admin_rpc_get_contact_info( ctx->admin_rpc_path, &readback_tpu, &readback_tpu_fwd );
+            if( FD_LIKELY( !readback_rc && readback_tpu.l==tpu.l && readback_tpu_fwd.l==tpu_fwd.l ) ) {
+              FD_LOG_NOTICE(( "Updated TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu", /* FIXME: change to INFO level */
+                              FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                              fd_ushort_bswap( tpu.port ),
+                              FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                              fd_ushort_bswap( tpu_fwd.port ) ));
+              ctx->tpu_update_state = desired_applied;
+            } else {
+              if( FD_UNLIKELY( readback_rc ) ) {
+                FD_LOG_WARNING(( "Failed to verify TPU addresses after apply: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                                 FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                                 fd_ushort_bswap( tpu.port ),
+                                 FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                                 fd_ushort_bswap( tpu_fwd.port ) ));
+              } else {
+                FD_LOG_WARNING(( "Failed to verify TPU addresses after apply: expected tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, readback tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                                 FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                                 fd_ushort_bswap( tpu.port ),
+                                 FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                                 fd_ushort_bswap( tpu_fwd.port ),
+                                 FD_IP4_ADDR_FMT_ARGS( readback_tpu.addr ),
+                                 fd_ushort_bswap( readback_tpu.port ),
+                                 FD_IP4_ADDR_FMT_ARGS( readback_tpu_fwd.addr ),
+                                 fd_ushort_bswap( readback_tpu_fwd.port ) ));
+              }
+              ctx->tpu_update_state = desired_pending;
+            }
+          }
+        }
+      }
+    }
+  }
 
   if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
   fd_ip4_port_t tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
@@ -360,14 +361,20 @@ enum {
 void
 fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   fd_bam_tile_handle_ctrl( ctx );
-  if( FD_UNLIKELY( ctx->dump_bam_txns || ctx->dump_bam_first_slot_txn ) ) {
-    for( uchar i=0; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ ) {
+  long now_ns = fd_log_wallclock();
+  ulong leader_slot = ctx->bam_leader_state.slot;
+  if( FD_LIKELY( leader_slot!=ULONG_MAX ) ) {
+    for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ ) {
       fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ i ];
-      if( FD_LIKELY( !entry->valid || entry->summary_emitted || ctx->bam_leader_state.slot<=entry->slot ) ) continue;
-      fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, ctx->bam_leader_state.slot );
+      if( FD_LIKELY( !entry->valid ) ) continue;
+      if( FD_LIKELY( leader_slot<=entry->slot ) ) continue;
+      if( FD_UNLIKELY( !entry->summary_emitted ) ) {
+        fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, leader_slot );
+      }
+      if( FD_LIKELY( leader_slot-entry->slot<FD_BAM_SLOT_INGRESS_RETENTION_SLOTS ) ) continue;
+      fd_bam_finalize_slot_ingress_rollup( ctx, entry, leader_slot );
     }
   }
-  long now_ns          = fd_log_wallclock();
 
   if( FD_LIKELY( ctx->plugin_out.mem ) ) {
     long next_gui_refresh = ctx->last_gui_publish_nanos + (long)5e9;
@@ -386,18 +393,9 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   }
 
   fd_bam_leader_state_t const * leader_state = &ctx->bam_leader_state;
+  fd_bam_record_leader_slot_end( ctx, status, leader_state, now_ns );
   _Bool use_bam = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   _Bool current_slot_fresh = use_bam && fd_bam_current_slot_fresh( ctx, now_ns );
-  _Bool count_override_without_fresh =
-      use_bam &&
-      leader_state->slot_end_ns &&
-      now_ns >= leader_state->slot_end_ns &&
-      !leader_state->current_slot_fresh &&
-      ctx->override_without_fresh_last_slot != leader_state->slot;
-  if( FD_UNLIKELY( count_override_without_fresh ) ) {
-    ctx->metrics.override_without_fresh_work_cnt++;
-    ctx->override_without_fresh_last_slot = leader_state->slot;
-  }
   _Bool tpu_update_pending = ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ) |
                             ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
   if( FD_UNLIKELY( ctx->bam_status_recent != status || tpu_update_pending ) ) {
@@ -518,7 +516,20 @@ bam_after_frag( fd_bam_tile_t *     ctx,
       FD_LOG_WARNING(( "Unexpected in_idx=%lu for staged BAM leader state", in_idx ));
       break;
     }
-    fd_bam_stage_leader_state( ctx, (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->pack_leader_in.mem, ctx->frag_staged_chunk ) );
+    fd_bam_leader_state_t const * leader_state = (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->pack_leader_in.mem, ctx->frag_staged_chunk );
+    fd_bam_leader_state_t const * prev_leader_state = &ctx->bam_leader_state;
+    if( FD_LIKELY( prev_leader_state->slot!=ULONG_MAX &&
+                   prev_leader_state->slot!=leader_state->slot &&
+                   prev_leader_state->slot_end_ns ) ) {
+      long now_ns = fd_log_wallclock();
+      if( FD_LIKELY( now_ns >= prev_leader_state->slot_end_ns || leader_state->slot > prev_leader_state->slot ) ) {
+        fd_bam_record_leader_slot_end( ctx,
+                                       fd_bam_client_status( ctx ),
+                                       prev_leader_state,
+                                       fd_long_max( now_ns, prev_leader_state->slot_end_ns ) );
+      }
+    }
+    fd_bam_stage_leader_state( ctx, leader_state );
     break;
   default:
     /* Unknown staged kind (e.g. memory corruption) is ignored to avoid
@@ -538,19 +549,34 @@ fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
   bam_after_frag( ctx, in_idx, 0UL, 0UL, sz, 0UL, 0UL, NULL );
 }
 
+void
+fd_bam_test_metrics_write( fd_bam_tile_t * ctx ) {
+  metrics_write( ctx );
+}
+
 static void
-fd_bam_tile_publish_gui_update(
-    fd_bam_tile_t *  ctx,
-    fd_stem_context_t * stem
-) {
+after_credit( fd_bam_tile_t *  ctx,
+              fd_stem_context_t * stem,
+              int *               opt_poll_in,
+              int *               charge_busy ) {
+  (void)opt_poll_in;
+  if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
+  fd_bam_client_step( ctx, charge_busy );
+
+  if( FD_UNLIKELY( !ctx->plugin_out.mem ) ) return;
+  if( FD_LIKELY( !ctx->gui_dirty && ctx->bam_status_recent == ctx->bam_status_plugin ) ) return;
+
   fd_plugin_msg_bam_update_t * update =
       fd_chunk_to_laddr( ctx->plugin_out.mem, ctx->plugin_out.chunk );
+  fd_bam_metrics_t const * metrics = &ctx->metrics;
+  ulong const * failure_cnt = metrics->failure_cnt;
+  ulong const * ingress_batch_rejected_cnt = metrics->ingress_batch_rejected_cnt;
+  ulong const * ingress_message_rejected_cnt = metrics->ingress_message_rejected_cnt;
   memset( update, 0, sizeof(fd_plugin_msg_bam_update_t) );
 
   strlcpy( update->name, "bam", sizeof( update->name ));
 
   if( FD_LIKELY( ctx->server_fqdn_len && ctx->server_tcp_port ) ) {
-    /* Deliberately silently truncates */
     snprintf( update->url, sizeof( update->url ), "%s://%.*s:%u",
               ctx->is_ssl ? "https" : "http",
               (int)ctx->server_fqdn_len,
@@ -559,8 +585,6 @@ fd_bam_tile_publish_gui_update(
   }
 
   strlcpy( update->sni, ctx->server_sni, sizeof( update->sni ) );
-
-  /* Format IPv4 string */
   snprintf( update->ip_cstr, sizeof( update->ip_cstr ),
             FD_IP4_ADDR_FMT,
             FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ) );
@@ -581,31 +605,38 @@ fd_bam_tile_publish_gui_update(
 
   update->status_code  = ctx->bam_status_recent;
   update->enabled = ctx->enabled;
-
-  /* Propagate metrics to the GUI so operators can see health without scraping a Prom endpoint. */
   update->keepalive_rtt_sample    = ctx->rtt->latest_rtt;
   update->keepalive_rtt_smoothed  = ctx->rtt->smoothed_rtt;
   update->keepalive_rtt_deviation = ctx->rtt->var_rtt;
   update->feedback_queue_depth = ctx->feedback_queue_depth;
-  update->validator_heartbeats_enqueued = ctx->metrics.validator_heartbeats_enqueued_cnt;
-  update->builder_heartbeats_decoded = ctx->metrics.builder_heartbeats_decoded_cnt;
-  update->transaction_published  = ctx->metrics.transaction_published_cnt;
-  update->atomic_batch_published = ctx->metrics.atomic_batch_published_cnt;
-  update->ingress_packet_oversize = ctx->metrics.ingress_packet_oversize_cnt;
-  update->failure_decode = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ];
-  update->failure_request_failed = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ];
-  update->failure_transport = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ];
-  update->failure_unsupported_version = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ];
-  update->failure_timeout = ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TIMEOUT_IDX ];
-  update->ingress_multi_message_received = ctx->metrics.ingress_multi_message_received_cnt;
-  update->ingress_batch_commit_attempt = ctx->metrics.ingress_batch_commit_attempt_cnt;
-  update->ingress_batch_published = ctx->metrics.ingress_batch_published_cnt;
-  update->ingress_batch_rejected_invalid_batch = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ];
-  update->ingress_batch_rejected_empty_batch = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_BATCH_IDX ];
-  update->ingress_batch_rejected_vote_transaction = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_VOTE_TRANSACTION_IDX ];
-  update->ingress_batch_rejected_non_revert_multi_packet = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ];
-  update->ingress_batch_rejected_empty_message = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_MESSAGE_IDX ];
-  update->ingress_batch_rejected_overflow_message = ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ];
+  update->validator_heartbeats_enqueued =
+      metrics->outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_HEARTBEAT_ENQUEUED_IDX ];
+  update->builder_heartbeats_decoded = metrics->builder_heartbeats_decoded_cnt;
+  update->transaction_published  = metrics->transaction_published_cnt;
+  update->atomic_batch_published = metrics->atomic_batch_published_cnt;
+  update->ingress_packet_oversize = metrics->ingress_packet_oversize_cnt;
+  update->failure_auth_challenge_decode = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_AUTH_CHALLENGE_DECODE_IDX ];
+  update->failure_config_decode = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONFIG_DECODE_IDX ];
+  update->failure_scheduler_envelope_decode = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ];
+  update->failure_request_failed = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ];
+  update->failure_transport =
+      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_RESOLVE_IDX ] +
+      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ] +
+      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_IO_IDX ];
+  update->failure_unsupported_version = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ];
+  update->failure_timeout =
+      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_TIMEOUT_IDX ] +
+      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_KEEPALIVE_TIMEOUT_IDX ] +
+      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_BUILDER_HEARTBEAT_TIMEOUT_IDX ];
+  update->ingress_multi_message_received = metrics->ingress_multi_message_received_cnt;
+  update->ingress_batch_commit_attempt = metrics->ingress_batch_commit_attempt_cnt;
+  update->ingress_batch_published = metrics->ingress_batch_published_cnt;
+  update->ingress_batch_rejected_invalid_batch = ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ];
+  update->ingress_batch_rejected_empty_batch = ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_BATCH_IDX ];
+  update->ingress_batch_rejected_vote_transaction = ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_VOTE_TRANSACTION_IDX ];
+  update->ingress_batch_rejected_non_revert_multi_packet = ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ];
+  update->ingress_message_rejected_empty_message = ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_EMPTY_MESSAGE_IDX ];
+  update->ingress_message_rejected_overflow_message = ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ];
 
   ulong tspub = fd_frag_meta_ts_comp( fd_bam_now() );
   fd_stem_publish(
@@ -614,31 +645,15 @@ fd_bam_tile_publish_gui_update(
       FD_PLUGIN_MSG_BAM_UPDATE,
       ctx->plugin_out.chunk,
       sizeof(fd_plugin_msg_bam_update_t),
-      0UL, /* ctl */
-      0UL, /* seq */
+      0UL,
+      0UL,
       tspub
   );
   ctx->last_gui_publish_nanos = fd_log_wallclock();
   ctx->plugin_out.chunk = fd_dcache_compact_next( ctx->plugin_out.chunk, sizeof(fd_plugin_msg_bam_update_t), ctx->plugin_out.chunk0, ctx->plugin_out.wmark );
-}
-
-static void
-after_credit( fd_bam_tile_t *  ctx,
-              fd_stem_context_t * stem,
-              int *               opt_poll_in,
-              int *               charge_busy ) {
-  (void)opt_poll_in;
-  if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
-  fd_bam_client_step( ctx, charge_busy );
-
-  if( ctx->plugin_out.mem ) {
-    if( FD_UNLIKELY( ctx->gui_dirty || ctx->bam_status_recent != ctx->bam_status_plugin ) ) {
-      fd_bam_tile_publish_gui_update( ctx, stem );
-      ctx->bam_status_plugin = ctx->bam_status_recent;
-      ctx->gui_dirty = 0U;
-      *charge_busy = 1;
-    }
-  }
+  ctx->bam_status_plugin = ctx->bam_status_recent;
+  ctx->gui_dirty = 0U;
+  *charge_busy = 1;
 }
 
 static int
@@ -1003,7 +1018,7 @@ privileged_init( fd_topo_t *      topo,
   }
 
   memset( ctx, 0, sizeof(fd_bam_tile_t) );
-  ctx->override_without_fresh_last_slot = ULONG_MAX;
+  ctx->leader_slot_end_last_slot = ULONG_MAX;
   ctx->grpc_client_mem = grpc_mem;
   ctx->grpc_buf_max    = tile->bam.buf_sz;
   ctx->tcp_sock        = -1;
@@ -1191,6 +1206,11 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_status_plugin = ctx->bam_status_recent;
   ctx->bam_status_counted = ctx->bam_status_recent;
   ctx->bam_status_logged = ctx->bam_status_recent;
+  ctx->bam_status_history_next = 0UL;
+  ctx->bam_status_history_cnt  = 0UL;
+  ctx->bam_status_history[ 0 ] = (fd_bam_status_history_t){ .ts_ns = fd_bam_now(), .status = ctx->bam_status_recent };
+  ctx->bam_status_history_next = 1UL & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
+  ctx->bam_status_history_cnt  = 1UL;
   ctx->last_bam_status_log_nanos = fd_log_wallclock();
   ctx->gui_dirty = 1U;
 
@@ -1217,12 +1237,15 @@ unprivileged_init( fd_topo_t *      topo,
   fd_grpc_client_set_version( ctx->grpc_client, fdctl_version_string, strlen( fdctl_version_string ) );
   fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
 
+  for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ )
+    fd_memset( &ctx->slot_ingress_timing[ i ], 0, sizeof(ctx->slot_ingress_timing[ i ]) );
+
   fd_histf_new( ctx->metrics.builder_heartbeat_arrival_delta_nanos,
                 FD_MHIST_MIN( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ),
                 FD_MHIST_MAX( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ) );
-  fd_histf_new( ctx->metrics.scheduler_ping_response_nanos,
-      FD_MHIST_MIN( BAM, SCHEDULER_PING_RESPONSE_NANOS ),
-      FD_MHIST_MAX( BAM, SCHEDULER_PING_RESPONSE_NANOS ) );
+  fd_histf_new( ctx->metrics.scheduler_pong_enqueue_nanos,
+      FD_MHIST_MIN( BAM, SCHEDULER_PONG_ENQUEUE_NANOS ),
+      FD_MHIST_MAX( BAM, SCHEDULER_PONG_ENQUEUE_NANOS ) );
 }
 
 static ulong

@@ -447,37 +447,49 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch ) {
   ulong resolved_slot = fd_bam_resolve_batch_slot( ctx, batch );
-  ulong idx = resolved_slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL );
-  fd_bam_recent_slot_meta_t const * meta = &ctx->recent_slot_meta[ idx ];
-  long slot_end_ns = 0L;
-  if( FD_UNLIKELY( meta->slot_end_ns && meta->slot==resolved_slot ) ) slot_end_ns = meta->slot_end_ns;
-  if( FD_LIKELY( resolved_slot==ctx->bam_leader_state.slot ) ) slot_end_ns = ctx->bam_leader_state.slot_end_ns;
+  ulong leader_slot = ctx->bam_leader_state.slot;
+  long rx_ts_ns = fd_bam_now();
+  long slot_end_ns = ( resolved_slot==leader_slot ) ? ctx->bam_leader_state.slot_end_ns : 0L;
+  fd_bam_slot_ingress_timing_t * entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, resolved_slot, leader_slot );
+  if( FD_LIKELY( entry ) ) {
+    if( FD_UNLIKELY( slot_end_ns ) ) {
+      entry->slot_end_ns = slot_end_ns;
+      entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > slot_end_ns );
+    }
 
-  fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ idx ];
-  if( FD_UNLIKELY( entry->valid && entry->slot!=resolved_slot ) ) {
-    fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, ctx->bam_leader_state.slot );
-    fd_memset( entry, 0, sizeof(*entry) );
-  }
-  if( FD_UNLIKELY( !entry->valid ) ) {
-    entry->slot  = resolved_slot;
-    entry->valid = 1U;
-  }
-  if( FD_UNLIKELY( slot_end_ns ) ) entry->slot_end_ns = slot_end_ns;
+    _Bool have_slot_end = !!entry->slot_end_ns;
+    _Bool first_observation = !( entry->txn_before_slot_end |
+                                 entry->txn_after_slot_end  |
+                                 entry->txn_unknown_slot_end );
+    _Bool after_slot_end = have_slot_end
+      ? rx_ts_ns > entry->slot_end_ns
+      : !!( resolved_slot && resolved_slot < leader_slot );
+    if( FD_UNLIKELY( first_observation ) ) {
+      entry->first_rx_ts_ns          = rx_ts_ns;
+      entry->first_rx_after_slot_end = (uchar)after_slot_end;
+    }
 
-  _Bool after_slot_end = resolved_slot && resolved_slot < ctx->bam_leader_state.slot;
-  if( FD_UNLIKELY( !entry->txn_before_slot_end && !entry->txn_after_slot_end ) ) {
-    entry->first_rx_ts_ns          = fd_bam_now();
-    entry->first_rx_after_slot_end = (uchar)after_slot_end;
+    ulong * txn_bucket = !have_slot_end
+      ? &entry->txn_unknown_slot_end
+      : after_slot_end
+        ? &entry->txn_after_slot_end
+        : &entry->txn_before_slot_end;
+    *txn_bucket += state->packet_cnt;
   }
-
-  if( FD_LIKELY( !after_slot_end ) ) entry->txn_before_slot_end += state->packet_cnt;
-  else                               entry->txn_after_slot_end  += state->packet_cnt;
 
   if( FD_UNLIKELY( fd_bam_should_dump_batch( ctx, batch ) ) ) {
     char * msg = fd_bam_dump_log_buf;
     ulong  off = 0UL;
+    fd_bam_slot_ingress_timing_t const empty_entry = {0};
+    fd_bam_slot_ingress_timing_t const * timing = entry ? entry : &empty_entry;
+    long   first_rx_ts_ns = timing->first_rx_ts_ns;
+    long   tracked_slot_end_ns = timing->slot_end_ns ? timing->slot_end_ns : slot_end_ns;
     long   first_rx_minus_slot_end_ns = 0L;
-    if( FD_UNLIKELY( entry->first_rx_ts_ns && entry->slot_end_ns ) ) first_rx_minus_slot_end_ns = entry->first_rx_ts_ns - entry->slot_end_ns;
+    ulong  txn_before_slot_end = timing->txn_before_slot_end;
+    ulong  txn_after_slot_end = timing->txn_after_slot_end;
+    ulong  txn_unknown_slot_end = timing->txn_unknown_slot_end;
+    uint   first_rx_after_slot_end = (uint)timing->first_rx_after_slot_end;
+    if( FD_UNLIKELY( first_rx_ts_ns && tracked_slot_end_ns ) ) first_rx_minus_slot_end_ns = first_rx_ts_ns - tracked_slot_end_ns;
 
     /* Emit one NOTICE record per bundle so unrelated logs cannot split txn details apart. */
     off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
@@ -497,14 +509,15 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                             &state->packets[ i ] );
     }
     off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
-                               "\nslot_timing: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu current_leader_slot=%lu",
+                               "\nslot_timing: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
                                resolved_slot,
-                               entry->first_rx_ts_ns,
+                               first_rx_ts_ns,
                                first_rx_minus_slot_end_ns,
-                               (uint)entry->first_rx_after_slot_end,
-                               entry->txn_before_slot_end,
-                               entry->txn_after_slot_end,
-                               ctx->bam_leader_state.slot );
+                               first_rx_after_slot_end,
+                               txn_before_slot_end,
+                               txn_after_slot_end,
+                               txn_unknown_slot_end,
+                               leader_slot );
     FD_LOG_NOTICE(( "%s", msg ));
   }
 
@@ -562,7 +575,6 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
     uchar deser_index  = decoded->state.has_deser_err
                        ? decoded->state.deser_index
                        : decoded->state.packet_cnt;
-    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
     char const * err = PB_GET_ERROR( stream );
     FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)", err ));
@@ -615,12 +627,15 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       fd_bam_decoded_batch_t overflow_batch;
       _Bool const ok = fd_bam_decode_batch( ctx, &substream, &overflow_batch );
       pb_close_string_substream( stream, &substream );
-      if( FD_UNLIKELY( !ok ) ) return 0;
+      if( FD_UNLIKELY( !ok ) ) {
+        decoded_multi->batch_cnt = 0U;
+        return 1;
+      }
 
       FD_LOG_WARNING(( "MultipleAtomicTxnBatch exceeded max batch count (%u>%u)",
                        seen_batch_count + 1U,
                        FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ));
-      ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
+      ctx->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
       decoded_multi->batch_cnt = seen_batch_count;
       decoded_multi->has_err_result = 1;
       decoded_multi->err_result = (fd_bam_bundle_result_t){
@@ -638,7 +653,14 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 
     _Bool const ok = fd_bam_decode_batch( ctx, &substream, &decoded_multi->batches[ seen_batch_count ] );
     pb_close_string_substream( stream, &substream );
-    if( FD_UNLIKELY( !ok ) ) return 0;
+    if( FD_UNLIKELY( !ok ) ) {
+      /* Invalid AtomicTxnBatch decode is already metered and its
+         not-committed result is already enqueued at the batch layer. Do not
+         bubble it up as a scheduler-envelope failure. Drop any earlier staged
+         batches so the message cannot partially publish. */
+      decoded_multi->batch_cnt = 0U;
+      return 1;
+    }
     seen_batch_count++;
   }
 
@@ -647,7 +669,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 
   if( FD_UNLIKELY( seen_batch_count == 0U ) ) {
     FD_LOG_WARNING(( "MultipleAtomicTxnBatch contained no AtomicTxnBatch entries" ));
-    ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_MESSAGE_IDX ]++;
+    ctx->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_EMPTY_MESSAGE_IDX ]++;
     bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
     decoded_multi->has_err_result = 1;
     decoded_multi->err_result = (fd_bam_bundle_result_t){
@@ -683,7 +705,7 @@ fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ct
 
   if( FD_UNLIKELY( decoded_multi->has_err_result ) ) {
     /* Reject counters are recorded at the decode site where err_result was staged
-       (overflow/empty wrapper) so the reason taxonomy remains accurate. */
+       (overflow/empty wrapper) so the batch/message taxonomy remains accurate. */
     fd_bam_enqueue_result( ctx, &decoded_multi->err_result );
     ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
   }
@@ -766,8 +788,9 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
 }
 
 /* Decodes bam_api.SchedulerResponse (versioned envelope) using a two-phase
-   stage/commit flow. On decode failure or unsupported version it bumps metrics
-   and may request a reset; otherwise it commits the staged versioned payload. */
+   stage/commit flow. Envelope decode failures and unsupported versions bump
+   bam_failure, while handled AtomicTxnBatch rejects stay in
+   bam_ingress_batch_rejected or bam_ingress_message_rejected. */
 void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
                                   void const *    data,
@@ -811,7 +834,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ]++;
       ctx->defer_reset = 1;
     } else {
-      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ]++;
       FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) missing version" ));
     }
     return;
@@ -843,7 +866,10 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
         FD_LOG_WARNING(( "Failed to send BAM scheduler pong (id=%u)", decoded_v0.ping_id ));
       } else {
-        fd_bam_client_sample_scheduler_ping_response( ctx, rx_ts_ns );
+        ulong rx_ts_u = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
+        long  now_ns  = fd_bam_now();
+        ulong now_u   = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
+        fd_histf_sample( ctx->metrics.scheduler_pong_enqueue_nanos, fd_ulong_sat_sub( now_u, rx_ts_u ) );
       }
     }
     break;
@@ -853,6 +879,6 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   return;
 
 fail:
-  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
+  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ]++;
   FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) failed (%s)", PB_GET_ERROR( &istream ) ));
 }

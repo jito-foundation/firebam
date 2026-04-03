@@ -504,7 +504,9 @@ fd_gui_printf_bam( fd_gui_t * gui ) {
       jsonp_ulong(  gui->http, "transaction_published",         gui->bam.transaction_published );
       jsonp_ulong(  gui->http, "atomic_batch_published", gui->bam.atomic_batch_published );
       jsonp_ulong(  gui->http, "ingress_packet_oversize", gui->bam.ingress_packet_oversize );
-      jsonp_ulong(  gui->http, "failure_decode",       gui->bam.failure_decode );
+      jsonp_ulong(  gui->http, "failure_auth_challenge_decode", gui->bam.failure_auth_challenge_decode );
+      jsonp_ulong(  gui->http, "failure_config_decode", gui->bam.failure_config_decode );
+      jsonp_ulong(  gui->http, "failure_scheduler_envelope_decode", gui->bam.failure_scheduler_envelope_decode );
       jsonp_ulong(  gui->http, "failure_request_failed", gui->bam.failure_request_failed );
       jsonp_ulong(  gui->http, "failure_transport",    gui->bam.failure_transport );
       jsonp_ulong(  gui->http, "failure_unsupported_version", gui->bam.failure_unsupported_version );
@@ -516,8 +518,8 @@ fd_gui_printf_bam( fd_gui_t * gui ) {
       jsonp_ulong(  gui->http, "ingress_batch_rejected_empty_batch", gui->bam.ingress_batch_rejected_empty_batch );
       jsonp_ulong(  gui->http, "ingress_batch_rejected_vote_transaction", gui->bam.ingress_batch_rejected_vote_transaction );
       jsonp_ulong(  gui->http, "ingress_batch_rejected_non_revert_multi_packet", gui->bam.ingress_batch_rejected_non_revert_multi_packet );
-      jsonp_ulong(  gui->http, "ingress_batch_rejected_empty_message", gui->bam.ingress_batch_rejected_empty_message );
-      jsonp_ulong(  gui->http, "ingress_batch_rejected_overflow_message", gui->bam.ingress_batch_rejected_overflow_message );
+      jsonp_ulong(  gui->http, "ingress_message_rejected_empty_message", gui->bam.ingress_message_rejected_empty_message );
+      jsonp_ulong(  gui->http, "ingress_message_rejected_overflow_message", gui->bam.ingress_message_rejected_overflow_message );
     jsonp_close_object( gui->http );
   jsonp_close_envelope( gui->http );
 }

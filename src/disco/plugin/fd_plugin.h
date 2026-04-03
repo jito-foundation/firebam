@@ -146,7 +146,9 @@ typedef struct {
   ulong  transaction_published;        /* Transactions published from BAM to verify */
   ulong  atomic_batch_published;       /* revert_on_error AtomicTxnBatch entries published to verify */
   ulong  ingress_packet_oversize;      /* BAM packets over local MTU */
-  ulong  failure_decode;               /* Local protobuf/envelope decode failures */
+  ulong  failure_auth_challenge_decode; /* AuthChallengeResponse protobuf/validation failures */
+  ulong  failure_config_decode;        /* ConfigResponse protobuf decode failures */
+  ulong  failure_scheduler_envelope_decode; /* SchedulerResponse envelope/protobuf decode failures */
   ulong  failure_request_failed;       /* HTTP/gRPC request failures */
   ulong  failure_transport;            /* DNS/socket/connect/I/O failures */
   ulong  failure_unsupported_version;  /* Unsupported BAM scheduler-response versions */
@@ -158,8 +160,8 @@ typedef struct {
   ulong  ingress_batch_rejected_empty_batch;
   ulong  ingress_batch_rejected_vote_transaction;
   ulong  ingress_batch_rejected_non_revert_multi_packet;
-  ulong  ingress_batch_rejected_empty_message;
-  ulong  ingress_batch_rejected_overflow_message;
+  ulong  ingress_message_rejected_empty_message;
+  ulong  ingress_message_rejected_overflow_message;
 } fd_plugin_msg_bam_update_t;
 
 #endif /* HEADER_fd_src_disco_plugin_fd_plugin_h */

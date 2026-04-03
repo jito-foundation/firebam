@@ -68,8 +68,7 @@ typedef enum {
   FD_BAM_LEADER_PENDING_DROP_CLIENT_RESET = 0,    /* dropped by full client reset */
   FD_BAM_LEADER_PENDING_DROP_REQUEST_FAILED,      /* dropped when stream request fails */
   FD_BAM_LEADER_PENDING_DROP_STREAM_ENDED,        /* dropped when stream ends */
-  FD_BAM_LEADER_PENDING_DROP_STREAM_TIMEOUT,      /* dropped when stream times out */
-  FD_BAM_LEADER_PENDING_DROP_SUPERSEDED,          /* dropped because a newer leader-state update replaced it */
+  FD_BAM_LEADER_PENDING_DROP_STREAM_TIMEOUT       /* dropped when stream times out */
 } fd_bam_leader_pending_drop_reason_t;
 
 static inline void
@@ -100,9 +99,6 @@ fd_bam_drop_pending_leader_state( fd_bam_tile_t *                       ctx,
     break;
   case FD_BAM_LEADER_PENDING_DROP_STREAM_TIMEOUT:
     ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_TIMEOUT_IDX ]++;
-    break;
-  case FD_BAM_LEADER_PENDING_DROP_SUPERSEDED:
-    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ]++;
     break;
   default:
     break;
@@ -199,7 +195,7 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
   int err = fd_getaddrinfo( ctx->server_fqdn, &hints, &res, &pscratch, sizeof(scratch) );
   if( FD_UNLIKELY( err ) ) {
     fd_bam_client_reset( ctx );
-    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_RESOLVE_IDX ]++;
     FD_LOG_WARNING(( "fd_getaddrinfo `%s` failed (%d-%s); backing off for %.3f ms",
                      ctx->server_fqdn, err, fd_gai_strerror( err ), fd_bam_client_retry_ms( ctx ) ));
     return;
@@ -240,7 +236,7 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
   if( FD_LIKELY( connect_err ) ) {
     if( FD_UNLIKELY( connect_err != EINPROGRESS ) ) {
       fd_bam_client_reset( ctx );
-      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ]++;
       FD_LOG_WARNING(( "connect(tcp_sock," FD_IP4_ADDR_FMT ":%u) failed (%i-%s) (fqdn=%s sni=%.*s); retrying in %.3f ms",
                        FD_IP4_ADDR_FMT_ARGS( ip4_addr ), ctx->server_tcp_port,
                        connect_err, fd_io_strerror( connect_err ),
@@ -312,6 +308,7 @@ fd_bam_tile_publish_bundle_txn(
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
+    .scheduler_arrival_tspub = (uint)fd_frag_meta_ts_comp( fd_tickcount() ),
     .block_engine   = {0},
     .bam = {
       .max_schedule_slot = ctx->bundle_max_schedule_slot,
@@ -354,6 +351,7 @@ fd_bam_tile_publish_txn(
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
+    .scheduler_arrival_tspub = (uint)fd_frag_meta_ts_comp( fd_tickcount() ),
     .block_engine   = {0},
     .bam = {
       .max_schedule_slot = max_schedule_slot,
@@ -403,126 +401,6 @@ fd_bam_encode_batch_results_cb( pb_ostream_t *          stream,
   if( FD_UNLIKELY( !ctx || !ctx->atomic_res ) ) return false;
   if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
   return pb_encode_submessage( stream, bam_types_AtomicTxnBatchResult_fields, ctx->atomic_res );
-}
-
-static void
-fd_bam_fill_not_committed( bam_types_NotCommitted *           out,
-                           fd_bam_bundle_result_t const *     res ) {
-  *out = (bam_types_NotCommitted)bam_types_NotCommitted_init_default;
-
-  switch( res->bundle_err ) {
-  case FD_BAM_BUNDLE_ERR_NONE:
-    break;
-  case FD_BAM_BUNDLE_ERR_DESER:
-    if( FD_UNLIKELY( res->deser_reason > _bam_types_DeserializationErrorReason_MAX ) ) {
-      out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
-      snprintf( out->reason.generic_invalid.message,
-                sizeof(out->reason.generic_invalid.message),
-                "invalid deserialization error %u",
-                res->deser_reason );
-      return;
-    }
-    out->which_reason                        = bam_types_NotCommitted_deserialization_error_tag;
-    out->reason.deserialization_error.index  = res->deser_index;
-    out->reason.deserialization_error.reason = (bam_types_DeserializationErrorReason)res->deser_reason;
-    return;
-  case FD_BAM_BUNDLE_ERR_GENERIC_INVALID:
-    out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
-    if( FD_UNLIKELY( res->generic_invalid_reason==FD_BAM_ERR_GENERIC_INVALID_NONE ||
-                     res->generic_invalid_reason>=FD_BAM_ERR_GENERIC_INVALID_CNT ||
-                     !FD_BAM_ERR_GENERIC_INVALID_STRINGS[ res->generic_invalid_reason ] ) ) {
-      snprintf( out->reason.generic_invalid.message,
-                sizeof(out->reason.generic_invalid.message),
-                "invalid generic-invalid reason %u",
-                res->generic_invalid_reason );
-      return;
-    }
-    strlcpy( out->reason.generic_invalid.message,
-             FD_BAM_ERR_GENERIC_INVALID_STRINGS[ res->generic_invalid_reason ],
-             sizeof(out->reason.generic_invalid.message) );
-    return;
-  default:
-    FD_LOG_WARNING(( "Invalid error type %u, value out of range.", res->bundle_err ));
-    out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
-    snprintf( out->reason.generic_invalid.message,
-              sizeof(out->reason.generic_invalid.message),
-              "invalid bundle error %u",
-              res->bundle_err );
-    return;
-  }
-
-  if( FD_UNLIKELY( res->scheduling_error != FD_BAM_SCHED_ERR_NONE ) ) {
-    if( FD_LIKELY( res->scheduling_error <= _bam_types_SchedulingError_MAX ) ) {
-      out->which_reason                 = bam_types_NotCommitted_scheduling_error_tag;
-      out->reason.scheduling_error      = (bam_types_SchedulingError)res->scheduling_error;
-    } else {
-      out->which_reason                 = bam_types_NotCommitted_generic_invalid_tag;
-      snprintf( out->reason.generic_invalid.message,
-                sizeof(out->reason.generic_invalid.message),
-                FD_BAM_ERR_FMT_INVALID_SCHEDULING_ERROR,
-                res->scheduling_error );
-    }
-    return;
-  }
-
-  for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
-    if( FD_UNLIKELY( !res->sanitize_success[ i ] ) ) {
-      out->which_reason                             = bam_types_NotCommitted_deserialization_error_tag;
-      out->reason.deserialization_error.index       = i;
-      out->reason.deserialization_error.reason      = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
-      return;
-    }
-  }
-
-  if( FD_UNLIKELY( res->transaction_err_count ) ) {
-    /* Prefer reporting the "real" failing index over CommitCancelled
-       (used for atomicity cascade) to match bam_spec.md semantics. */
-    uchar err_idx = 0U;
-    _Bool found_non_cancelled = 0;
-    for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
-      if( FD_LIKELY( res->transaction_err[ i ] != bam_types_TransactionErrorReason_COMMIT_CANCELLED ) ) {
-        err_idx = i;
-        found_non_cancelled = 1;
-        break;
-      }
-    }
-
-    /* For reverted atomic bundles, all-COMMIT_CANCELLED should surface as
-       POH_TIMEOUT fallback when no primary reason is available. */
-    if( FD_UNLIKELY( !found_non_cancelled && res->bundle_txn_cnt>1U ) ) {
-      out->which_reason = bam_types_NotCommitted_scheduling_error_tag;
-      out->reason.scheduling_error = bam_types_SchedulingError_POH_TIMEOUT;
-      return;
-    }
-
-    if( FD_LIKELY( res->transaction_err[ err_idx ] < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
-      out->which_reason                      = bam_types_NotCommitted_transaction_error_tag;
-      out->reason.transaction_error.index    = err_idx;
-      out->reason.transaction_error.reason   = res->transaction_err[ err_idx ];
-    } else {
-      out->which_reason                      = bam_types_NotCommitted_generic_invalid_tag;
-      snprintf( out->reason.generic_invalid.message,
-                sizeof(out->reason.generic_invalid.message),
-                FD_BAM_ERR_FMT_TRANSACTION_ERROR,
-                res->transaction_err[ err_idx ] );
-    }
-    return;
-  }
-
-  out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
-  strlcpy( out->reason.generic_invalid.message,
-           FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED,
-           sizeof(out->reason.generic_invalid.message) );
-  out->reason.generic_invalid.message[ sizeof(out->reason.generic_invalid.message)-1UL ] = '\0';
-}
-
-void
-fd_bam_client_sample_scheduler_ping_response( fd_bam_tile_t * ctx,
-                                              long            ping_start_ns ) {
-  ulong ping_start_u = fd_ulong_if( ping_start_ns >= 0L, (ulong)ping_start_ns, 0UL );
-  long  now_ns       = fd_bam_now();
-  ulong now_u        = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
-  fd_histf_sample( ctx->metrics.scheduler_ping_response_nanos, fd_ulong_sat_sub( now_u, ping_start_u ) );
 }
 
 static void
@@ -612,9 +490,9 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   return 1;
 }
 
-/* Decodes bam_api.ConfigResponse. On protobuf failure it increments decode
-   metrics and returns early; otherwise it updates cached BAM config in place
-   and applies builder config atomically (all-or-nothing). */
+/* Decodes bam_api.ConfigResponse. On protobuf failure it increments the
+   config-decode failure metric and returns early; otherwise it updates cached
+   BAM config in place and applies builder config atomically (all-or-nothing). */
 static void
 fd_bam_handle_config( fd_bam_tile_t * ctx,
                       void const *    protobuf,
@@ -622,7 +500,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   pb_istream_t istream = pb_istream_from_buffer( protobuf, protobuf_sz );
   if( FD_UNLIKELY( !pb_decode( &istream, &bam_api_ConfigResponse_msg, &resp ) ) ) {
-    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONFIG_DECODE_IDX ]++;
     FD_LOG_WARNING(( "Protobuf decode of (bam_api.ConfigResponse) failed" ));
     return;
   }
@@ -800,11 +678,12 @@ fd_bam_send_heartbeat( fd_bam_tile_t * ctx,
   bam_types_ValidatorHeartBeat hb = bam_types_ValidatorHeartBeat_init_default;
   hb.time_sent_microseconds = (ulong)fd_long_max(now / 1000, 0);
   msg.versioned_msg.v0.msg.heart_beat = hb;
-  if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
-    return;
-  }
-  ctx->bam_last_validator_heartbeat_ns = now;
-  ctx->metrics.validator_heartbeats_enqueued_cnt++;
+  int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
+  if( FD_LIKELY( send_res ) ) ctx->bam_last_validator_heartbeat_ns = now;
+  ctx->metrics.outbound_enqueue_outcome_cnt[
+      send_res
+      ? FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_HEARTBEAT_ENQUEUED_IDX
+      : FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_HEARTBEAT_ENQUEUE_FAIL_IDX ]++;
 }
 
 static int
@@ -826,7 +705,108 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
     atomic_res.result.committed.transaction_results.arg          = &encode_ctx;
   } else {
     atomic_res.which_result = bam_types_AtomicTxnBatchResult_not_committed_tag;
-    fd_bam_fill_not_committed( &atomic_res.result.not_committed, res );
+    bam_types_NotCommitted * out = &atomic_res.result.not_committed;
+    *out = (bam_types_NotCommitted)bam_types_NotCommitted_init_default;
+
+    switch( res->bundle_err ) {
+    case FD_BAM_BUNDLE_ERR_NONE:
+      break;
+    case FD_BAM_BUNDLE_ERR_DESER:
+      if( FD_UNLIKELY( res->deser_reason > _bam_types_DeserializationErrorReason_MAX ) ) {
+        out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+        snprintf( out->reason.generic_invalid.message,
+                  sizeof(out->reason.generic_invalid.message),
+                  "invalid deserialization error %u",
+                  res->deser_reason );
+        break;
+      }
+      out->which_reason                        = bam_types_NotCommitted_deserialization_error_tag;
+      out->reason.deserialization_error.index  = res->deser_index;
+      out->reason.deserialization_error.reason = (bam_types_DeserializationErrorReason)res->deser_reason;
+      break;
+    case FD_BAM_BUNDLE_ERR_GENERIC_INVALID:
+      out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+      if( FD_UNLIKELY( res->generic_invalid_reason==FD_BAM_ERR_GENERIC_INVALID_NONE ||
+                       res->generic_invalid_reason>=FD_BAM_ERR_GENERIC_INVALID_CNT ||
+                       !FD_BAM_ERR_GENERIC_INVALID_STRINGS[ res->generic_invalid_reason ] ) ) {
+        snprintf( out->reason.generic_invalid.message,
+                  sizeof(out->reason.generic_invalid.message),
+                  "invalid generic-invalid reason %u",
+                  res->generic_invalid_reason );
+        break;
+      }
+      strlcpy( out->reason.generic_invalid.message,
+               FD_BAM_ERR_GENERIC_INVALID_STRINGS[ res->generic_invalid_reason ],
+               sizeof(out->reason.generic_invalid.message) );
+      break;
+    default:
+      FD_LOG_WARNING(( "Invalid error type %u, value out of range.", res->bundle_err ));
+      out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+      snprintf( out->reason.generic_invalid.message,
+                sizeof(out->reason.generic_invalid.message),
+                "invalid bundle error %u",
+                res->bundle_err );
+      break;
+    }
+
+    if( FD_UNLIKELY( !out->which_reason && res->scheduling_error != FD_BAM_SCHED_ERR_NONE ) ) {
+      if( FD_LIKELY( res->scheduling_error <= _bam_types_SchedulingError_MAX ) ) {
+        out->which_reason            = bam_types_NotCommitted_scheduling_error_tag;
+        out->reason.scheduling_error = (bam_types_SchedulingError)res->scheduling_error;
+      } else {
+        out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+        snprintf( out->reason.generic_invalid.message,
+                  sizeof(out->reason.generic_invalid.message),
+                  FD_BAM_ERR_FMT_INVALID_SCHEDULING_ERROR,
+                  res->scheduling_error );
+      }
+    }
+
+    if( FD_UNLIKELY( !out->which_reason ) ) {
+      for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
+        if( FD_UNLIKELY( !res->sanitize_success[ i ] ) ) {
+          out->which_reason                        = bam_types_NotCommitted_deserialization_error_tag;
+          out->reason.deserialization_error.index  = i;
+          out->reason.deserialization_error.reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+          break;
+        }
+      }
+    }
+
+    if( FD_UNLIKELY( !out->which_reason && res->transaction_err_count ) ) {
+      uchar err_idx = 0U;
+      _Bool found_non_cancelled = 0;
+      for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
+        if( FD_LIKELY( res->transaction_err[ i ] != bam_types_TransactionErrorReason_COMMIT_CANCELLED ) ) {
+          err_idx = i;
+          found_non_cancelled = 1;
+          break;
+        }
+      }
+
+      if( FD_UNLIKELY( !found_non_cancelled && res->bundle_txn_cnt>1U ) ) {
+        out->which_reason            = bam_types_NotCommitted_scheduling_error_tag;
+        out->reason.scheduling_error = bam_types_SchedulingError_POH_TIMEOUT;
+      } else if( FD_LIKELY( res->transaction_err[ err_idx ] < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
+        out->which_reason                    = bam_types_NotCommitted_transaction_error_tag;
+        out->reason.transaction_error.index  = err_idx;
+        out->reason.transaction_error.reason = res->transaction_err[ err_idx ];
+      } else {
+        out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+        snprintf( out->reason.generic_invalid.message,
+                  sizeof(out->reason.generic_invalid.message),
+                  FD_BAM_ERR_FMT_TRANSACTION_ERROR,
+                  res->transaction_err[ err_idx ] );
+      }
+    }
+
+    if( FD_UNLIKELY( !out->which_reason ) ) {
+      out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+      strlcpy( out->reason.generic_invalid.message,
+               FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED,
+               sizeof(out->reason.generic_invalid.message) );
+      out->reason.generic_invalid.message[ sizeof(out->reason.generic_invalid.message)-1UL ] = '\0';
+    }
   }
 
   bam_types_MultipleAtomicTxnBatchResult multi = bam_types_MultipleAtomicTxnBatchResult_init_default;
@@ -839,12 +819,12 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
   msg.versioned_msg.v0.which_msg                 = bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag;
   msg.versioned_msg.v0.msg.multiple_atomic_txn_batch_result = multi;
 
-  if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
-    ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_ENQUEUE_FAIL_IDX ]++;
-    return 0;
-  }
-  ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_ENQUEUED_IDX ]++;
-  return 1;
+  int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
+  ctx->metrics.outbound_enqueue_outcome_cnt[
+      send_res
+      ? FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_ENQUEUED_IDX
+      : FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_ENQUEUE_FAIL_IDX ]++;
+  return send_res;
 }
 
 static int
@@ -865,13 +845,11 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
   msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_leader_state_tag;
   msg.versioned_msg.v0.msg.leader_state = ls;
 
-  const int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
-  if( FD_UNLIKELY( !send_res ) ) {
-    ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUE_FAIL_IDX ]++;
-  } else {
-    ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUED_IDX ]++;
-  }
-
+  int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
+  ctx->metrics.outbound_enqueue_outcome_cnt[
+      send_res
+      ? FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUED_IDX
+      : FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUE_FAIL_IDX ]++;
   return send_res;
 }
 
@@ -1019,7 +997,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
         FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
         ctx->server_tcp_port,
         fd_bam_client_retry_ms( ctx ) ));
-      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ]++;
       fd_bam_client_reset( ctx );
       *charge_busy = 1;
       return;
@@ -1035,7 +1013,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
           ctx->server_tcp_port,
           fd_bam_client_retry_ms( ctx ) ));
         fd_bam_client_reset( ctx );
-        ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
+        ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ]++;
         *charge_busy = 1;
         return;
       }
@@ -1073,7 +1051,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
                      fd_bam_client_retry_ms( ctx ) ));
     ctx->keepalive->inflight = 0;
     fd_bam_client_reset( ctx );
-    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TIMEOUT_IDX ]++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_KEEPALIVE_TIMEOUT_IDX ]++;
     *charge_busy = 1;
     return;
   }
@@ -1090,7 +1068,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
       fd_bam_client_retry_ms( ctx ) ));
     ctx->keepalive->inflight = 0;
     fd_bam_client_reset( ctx );
-    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TIMEOUT_IDX ]++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_BUILDER_HEARTBEAT_TIMEOUT_IDX ]++;
     *charge_busy = 1;
     return;
   }
@@ -1103,7 +1081,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
                      ctx->server_tcp_port,
                      fd_bam_client_retry_ms( ctx ) ));
     fd_bam_client_reset( ctx );
-    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_IO_IDX ]++;
     *charge_busy = 1;
     return;
   }
@@ -1126,14 +1104,35 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   *charge_busy |= fd_bam_client_step_reconnect( ctx, io_ts );
 }
 
-static void
-fd_bam_client_log_status( fd_bam_tile_t *              ctx,
-                          fd_plugin_bam_update_status_t status ) {
-  // TODO: connected/disconnected state should handle healthy and unhealthy versions
+void
+fd_bam_client_step( fd_bam_tile_t * ctx,
+                       int *              charge_busy ) {
+  /* Edge-trigger logging with rate limiting */
+  fd_bam_client_step1( ctx, charge_busy );
+  fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   int const healthy_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-  int const healthy_before = ( ctx->bam_status_logged == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-
+  int const healthy_before = ( ctx->bam_status_counted == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  if( FD_UNLIKELY( status != ctx->bam_status_counted ) ) {
+    long ts_ns = fd_bam_now();
+    if( FD_UNLIKELY( !ctx->bam_status_history_cnt ) ) {
+      ctx->bam_status_history[ 0 ] = (fd_bam_status_history_t){ .ts_ns = ts_ns, .status = status };
+      ctx->bam_status_history_next = 1UL & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
+      ctx->bam_status_history_cnt  = 1UL;
+    } else {
+      ulong last_idx = ( ctx->bam_status_history_next - 1UL ) & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
+      if( FD_UNLIKELY( ctx->bam_status_history[ last_idx ].status != status ) ) {
+        ctx->bam_status_history[ ctx->bam_status_history_next ] = (fd_bam_status_history_t){ .ts_ns = ts_ns, .status = status };
+        ctx->bam_status_history_next = ( ctx->bam_status_history_next + 1UL ) & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
+        ctx->bam_status_history_cnt  = fd_ulong_min( ctx->bam_status_history_cnt + 1UL, (ulong)FD_BAM_STATUS_HISTORY_CNT );
+      }
+    }
+  }
   if( FD_UNLIKELY( healthy_now != healthy_before ) ) {
+    if( healthy_now ) ctx->metrics.healthy_connects_cnt++;
+    else              ctx->metrics.healthy_disconnects_cnt++;
+  }
+  ctx->bam_status_counted = status;
+  if( FD_UNLIKELY( healthy_now != ( ctx->bam_status_logged == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) ) {
     long ts = fd_log_wallclock();
     if( FD_LIKELY( ts-(ctx->last_bam_status_log_nanos) >= (long)1e6 ) ) {
       if( healthy_now ) {
@@ -1155,22 +1154,6 @@ fd_bam_client_log_status( fd_bam_tile_t *              ctx,
   }
 }
 
-void
-fd_bam_client_step( fd_bam_tile_t * ctx,
-                       int *              charge_busy ) {
-  /* Edge-trigger logging with rate limiting */
-  fd_bam_client_step1( ctx, charge_busy );
-  fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
-  int const healthy_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-  int const healthy_before = ( ctx->bam_status_counted == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-  if( FD_UNLIKELY( healthy_now != healthy_before ) ) {
-    if( healthy_now ) ctx->metrics.healthy_connects_cnt++;
-    else              ctx->metrics.healthy_disconnects_cnt++;
-  }
-  ctx->bam_status_counted = status;
-  fd_bam_client_log_status( ctx, status );
-}
-
 static void
 fd_bam_client_grpc_conn_established( void * app_ctx ) {
   (void)app_ctx;
@@ -1188,7 +1171,7 @@ fd_bam_client_grpc_conn_dead( void * app_ctx,
                 ctx->server_fqdn,
                 FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
                 ctx->server_tcp_port ));
-  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TRANSPORT_IDX ]++;
+  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_IO_IDX ]++;
   ctx->defer_reset = 1;
 }
 
@@ -1230,7 +1213,7 @@ fd_bam_client_grpc_rx_msg(
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
     if( FD_UNLIKELY( !fd_bam_handle_auth_challenge( ctx, protobuf, protobuf_sz ) ) ) {
-      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_DECODE_IDX ]++;
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_AUTH_CHALLENGE_DECODE_IDX ]++;
       fd_bam_tile_backoff( ctx, fd_bam_now() );
     }
     break;
@@ -1331,7 +1314,7 @@ fd_bam_client_grpc_rx_timeout(
   (void)deadline_kind;
   FD_LOG_WARNING(( "Request timed out: %s", fd_bam_request_ctx_cstr( request_ctx ) ));
   fd_bam_tile_t * ctx = app_ctx;
-  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_TIMEOUT_IDX ]++;
+  ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_TIMEOUT_IDX ]++;
   ctx->defer_reset = 1;
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:

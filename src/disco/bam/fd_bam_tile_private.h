@@ -52,11 +52,9 @@ struct fd_bam_metrics {
   ulong feedback_results_dropped_cnt;
   ulong ingress_packet_oversize_cnt;
   ulong keepalive_acks_cnt;
-  ulong validator_heartbeats_enqueued_cnt;
   ulong builder_heartbeats_decoded_cnt;
   ulong healthy_connects_cnt;
   ulong healthy_disconnects_cnt;
-  ulong override_without_fresh_work_cnt;
 
   ulong failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_CNT ];
 
@@ -66,34 +64,43 @@ struct fd_bam_metrics {
   ulong ingress_batch_commit_attempt_cnt;
   ulong ingress_batch_published_cnt;
   ulong ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_CNT ];
+  ulong ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_CNT ];
 
   /* Enum counters staged locally and flushed during housekeeping. */
   ulong outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_CNT ];
   ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
   ulong leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
+  ulong leader_pending_replaced_cnt;
+  ulong slot_ingress_result_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_CNT ];
+  ulong slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_CNT ];
+  ulong leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_CNT ];
+  ulong healthy_leader_slot_result_cnt[ FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_CNT ];
 
   fd_histf_t builder_heartbeat_arrival_delta_nanos[1];
-  fd_histf_t scheduler_ping_response_nanos[1];
+  fd_histf_t scheduler_pong_enqueue_nanos[1];
 };
 
 typedef struct fd_bam_metrics fd_bam_metrics_t;
 
-#define FD_BAM_SLOT_INGRESS_TIMING_CNT 32
+#define FD_BAM_SLOT_INGRESS_TIMING_CNT 128UL
+#define FD_BAM_SLOT_INGRESS_RETENTION_SLOTS 2UL
 typedef struct {
   ulong slot;
   long  first_rx_ts_ns;
   long  slot_end_ns;
   ulong txn_before_slot_end;
   ulong txn_after_slot_end;
+  ulong txn_unknown_slot_end;
   uchar first_rx_after_slot_end;
   uchar summary_emitted;
   uchar valid;
 } fd_bam_slot_ingress_timing_t;
 
+#define FD_BAM_STATUS_HISTORY_CNT 16
 typedef struct {
-  ulong slot;
-  long  slot_end_ns;
-} fd_bam_recent_slot_meta_t;
+  long                          ts_ns;
+  fd_plugin_bam_update_status_t status;
+} fd_bam_status_history_t;
 
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
@@ -112,8 +119,8 @@ typedef struct {
      dedupe, both paths can immediately invoke admin RPC updates back-to-back.
 
    How it is used:
-   - fd_bam_try_agave_update_tpu() compares the desired "applied" state
-     (BAM vs default TPU) to ctx->tpu_update_state.  If it already matches,
+   - fd_bam_gossip_update() compares the desired "applied" state
+     (BAM vs default TPU) to ctx->tpu_update_state. If it already matches,
      it skips the admin RPC update, preventing duplicate updates.
    - On failure (admin RPC unavailable, apply failure, or readback mismatch),
      it records a PENDING_* state so fd_bam_tile_housekeeping() will retry later.
@@ -237,7 +244,7 @@ struct fd_bam_tile {
   uint                  bam_config_inflight    : 1;      /* true while GetBuilderConfig GRPC call is pending */
   uint                  bam_config_received    : 1;      /* set after a valid ConfigResponse lands on the current connection */
   uint                  bam_leader_pending     : 1;      /* set when a coalesced leader snapshot awaits send; not durable like bam_results */
-  ulong                 override_without_fresh_last_slot; /* last slot counted in bam_override_without_fresh_work */
+  ulong                 leader_slot_end_last_slot;        /* last leader slot whose slot-end outcome counters were recorded */
 
   /* Error backoff */
   fd_rng_t rng[1];                                /* RNG used to randomize reconnects */
@@ -254,13 +261,15 @@ struct fd_bam_tile {
 
   /* App metrics */
   fd_bam_metrics_t metrics;                         /* Tile-local counters flushed to metrics */
-  fd_bam_recent_slot_meta_t recent_slot_meta[ FD_BAM_SLOT_INGRESS_TIMING_CNT ];
 
   /* Check engine light */
   fd_plugin_bam_update_status_t bam_status_recent;  /* most recently observed 'check engine light' */ //TODO: update this for bam
   fd_plugin_bam_update_status_t bam_status_plugin;  /* last 'plugin' update written */
   fd_plugin_bam_update_status_t bam_status_counted; /* last status used for healthy-edge counters */
   fd_plugin_bam_update_status_t bam_status_logged;  /* last logged bundle status */
+  ulong bam_status_history_next;                    /* ring write index for BAM status transition history */
+  ulong bam_status_history_cnt;                     /* number of populated BAM status transition records */
+  fd_bam_status_history_t bam_status_history[ FD_BAM_STATUS_HISTORY_CNT ];
   long  last_bam_status_log_nanos;
   long  last_gui_publish_nanos;
   uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
@@ -302,22 +311,106 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
   ctx->feedback_queue_depth = (ushort)( ctx->feedback_queue_depth + 1U );
 }
 
+void
+fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
+                                             fd_bam_slot_ingress_timing_t * entry,
+                                             ulong                          current_leader_slot );
+
+FD_FN_UNUSED static inline void
+fd_bam_finalize_slot_ingress_rollup( fd_bam_tile_t *                ctx,
+                                     fd_bam_slot_ingress_timing_t *  entry,
+                                     ulong                           current_leader_slot ) {
+  if( FD_UNLIKELY( !entry->valid ) ) return;
+
+  ulong tx_before  = entry->txn_before_slot_end;
+  ulong tx_after   = entry->txn_after_slot_end;
+  ulong tx_unknown = entry->txn_unknown_slot_end;
+  ulong result_idx = FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNKNOWN_SLOT_END_IDX;
+
+  fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, current_leader_slot );
+
+  if( FD_UNLIKELY( !entry->first_rx_ts_ns ) ) {
+    result_idx = entry->slot_end_ns
+      ? FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_NO_INGRESS_IDX
+      : FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNKNOWN_SLOT_END_IDX;
+  } else if( FD_UNLIKELY( !entry->slot_end_ns ) ) {
+    tx_unknown += tx_before + tx_after;
+    tx_before   = 0UL;
+    tx_after    = 0UL;
+  } else {
+    result_idx = entry->first_rx_ts_ns<=entry->slot_end_ns
+      ? FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_BEFORE_END_IDX
+      : FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_AFTER_END_IDX;
+  }
+
+  ctx->metrics.slot_ingress_result_cnt[ result_idx ]++;
+  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_BEFORE_END_IDX ]      += tx_before;
+  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_AFTER_END_IDX ]       += tx_after;
+  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_UNKNOWN_SLOT_END_IDX ] += tx_unknown;
+  fd_memset( entry, 0, sizeof(*entry) );
+}
+
+FD_FN_UNUSED static inline fd_bam_slot_ingress_timing_t const *
+fd_bam_slot_ingress_timing_query_const( fd_bam_tile_t const * ctx,
+                                        ulong                 slot ) {
+  ulong start = slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL );
+  for( ulong probe=0UL; probe<FD_BAM_SLOT_INGRESS_TIMING_CNT; probe++ ) {
+    fd_bam_slot_ingress_timing_t const * entry = &ctx->slot_ingress_timing[ ( start + probe ) & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL ) ];
+    if( FD_UNLIKELY( !entry->valid ) ) continue;
+    if( FD_LIKELY( entry->slot==slot ) ) return entry;
+  }
+  return NULL;
+}
+
+FD_FN_UNUSED static inline fd_bam_slot_ingress_timing_t *
+fd_bam_slot_ingress_timing_query_or_insert( fd_bam_tile_t * ctx,
+                                            ulong           slot,
+                                            ulong           current_leader_slot ) {
+  ulong start = slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL );
+  fd_bam_slot_ingress_timing_t * free_entry = NULL;
+  fd_bam_slot_ingress_timing_t * aged_entry = NULL;
+  for( ulong probe=0UL; probe<FD_BAM_SLOT_INGRESS_TIMING_CNT; probe++ ) {
+    fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ ( start + probe ) & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL ) ];
+    if( FD_UNLIKELY( !entry->valid ) ) {
+      if( FD_UNLIKELY( !free_entry ) ) free_entry = entry;
+      continue;
+    }
+
+    if( FD_LIKELY( entry->slot==slot ) ) return entry;
+    if( FD_UNLIKELY( current_leader_slot!=ULONG_MAX &&
+                     entry->slot<current_leader_slot &&
+                     current_leader_slot-entry->slot>=FD_BAM_SLOT_INGRESS_RETENTION_SLOTS &&
+                     ( !aged_entry || entry->slot<aged_entry->slot ) ) ) {
+      aged_entry = entry;
+    }
+  }
+
+  if( FD_UNLIKELY( !free_entry ) ) {
+    if( FD_UNLIKELY( !aged_entry ) ) {
+      FD_LOG_WARNING(( "BAM slot-ingress timing table full while tracking slot %lu", slot ));
+      return NULL;
+    }
+    fd_bam_finalize_slot_ingress_rollup( ctx, aged_entry, current_leader_slot );
+    free_entry = aged_entry;
+  }
+
+  *free_entry = (fd_bam_slot_ingress_timing_t){ .slot = slot, .valid = 1U };
+  return free_entry;
+}
+
 FD_FN_UNUSED static inline void
 fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
   if( FD_UNLIKELY( ctx->bam_leader_pending &&
                    !fd_bam_leader_state_eq( &ctx->bam_leader_state, state ) ) ) {
-    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_SUPERSEDED_IDX ]++;
+    ctx->metrics.leader_pending_replaced_cnt++;
   }
   if( FD_LIKELY( state->slot_end_ns ) ) {
-    ulong idx = state->slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL );
-    ctx->recent_slot_meta[ idx ] = (fd_bam_recent_slot_meta_t){
-      .slot        = state->slot,
-      .slot_end_ns = state->slot_end_ns,
-    };
-
-    fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ idx ];
-    entry->slot_end_ns = state->slot_end_ns;
+    fd_bam_slot_ingress_timing_t * entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, state->slot, state->slot );
+    if( FD_LIKELY( entry ) ) {
+      entry->slot_end_ns = state->slot_end_ns;
+      entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > state->slot_end_ns );
+    }
   }
   ctx->bam_leader_state = *state;
   ctx->bam_leader_pending = 1U;
@@ -345,14 +438,6 @@ FD_PROTOTYPES_BEGIN
 
 long
 fd_bam_now( void );
-
-void
-fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
-                                             fd_bam_slot_ingress_timing_t * entry,
-                                             ulong                          current_leader_slot );
-
-void
-fd_bam_export_slot_ingress_timing_metrics( fd_bam_tile_t * ctx );
 
 /* Admin-RPC helpers used by Frankendancer BAM mode.  The low-level
    request hook is weak so unit tests can override it without touching
@@ -495,10 +580,6 @@ fd_bam_tile_publish_txn(
     uchar              batch_cnt,
     uchar              revert_on_error,
     uint               source_ipv4 );
-
-void
-fd_bam_client_sample_scheduler_ping_response( fd_bam_tile_t * ctx,
-                                              long            ping_start_ns );
 
 void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
