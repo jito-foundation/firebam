@@ -111,6 +111,8 @@ static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
   long now_ns = fd_log_wallclock();
   _Bool current_slot_fresh = fd_bam_current_slot_fresh( ctx, now_ns );
+  fd_plugin_bam_update_status_t bundle_status = fd_bam_client_status( ctx );
+  _Bool fallback_suppressed = bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.transaction_published_cnt          );
   FD_MCNT_SET( BAM, ATOMIC_BATCH_PUBLISHED,  ctx->metrics.atomic_batch_published_cnt );
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_results_dropped_cnt   );
@@ -134,8 +136,15 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_SMOOTHED,  (ulong)ctx->rtt->smoothed_rtt );
   FD_MGAUGE_SET( BAM, KEEPALIVE_RTT_DEVIATION, (ulong)ctx->rtt->var_rtt      );
   FD_MGAUGE_SET( BAM, FEEDBACK_QUEUE_DEPTH, (ulong)ctx->feedback_queue_depth );
-  FD_MGAUGE_SET( BAM, ENABLED,      (ulong)ctx->enabled );
+  FD_MGAUGE_SET( BAM, ENABLED,              (ulong)ctx->enabled );
+  FD_MGAUGE_SET( BAM, HEALTHY,              (ulong)fallback_suppressed );
+  FD_MGAUGE_SET( BAM, STREAM_LIVE,          (ulong)ctx->bam_stream_live );
   FD_MGAUGE_SET( BAM, CURRENT_SLOT_FRESH,   (ulong)current_slot_fresh );
+  FD_MGAUGE_SET( BAM, FALLBACK_SUPPRESSED,  (ulong)fallback_suppressed );
+  FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT,    ctx->bam_leader_state.slot==ULONG_MAX ? 0UL : ctx->bam_leader_state.slot );
+  FD_MGAUGE_SET( BAM, LEADER_STATE_TICK,    (ulong)ctx->bam_leader_state.tick );
+  FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT_END_NANOS,
+                 ctx->bam_leader_state.slot_end_ns>0L ? (ulong)ctx->bam_leader_state.slot_end_ns : 0UL );
   fd_bam_export_slot_ingress_timing_metrics( ctx );
 
   FD_MHIST_COPY( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
@@ -150,8 +159,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, HEAP_SIZE,       usage->total_sz );
   FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->free_sz  );
 
-  fd_plugin_bam_update_status_t bundle_status = fd_bam_client_status( ctx );
-  FD_MGAUGE_SET( BAM, HEALTHY, bundle_status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 }
 
 /* Updates Frankendancer Agave's ContactInfo TPU advertisement over the
@@ -536,6 +543,11 @@ fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
                                   ulong           sz ) {
   bam_during_frag( ctx, in_idx, 0UL, 0UL, chunk, sz, 0UL );
   bam_after_frag( ctx, in_idx, 0UL, 0UL, sz, 0UL, 0UL, NULL );
+}
+
+void
+fd_bam_test_metrics_write( fd_bam_tile_t * ctx ) {
+  metrics_write( ctx );
 }
 
 static void

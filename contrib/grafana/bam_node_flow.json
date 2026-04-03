@@ -117,7 +117,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Current BAM client health (bam_healthy). Max across the selected instance(s) returns 1 when at least one BAM client is fully connected, authenticated, configured, and heartbeat healthy, 0 when none are.",
+      "description": "Current BAM transport/auth/config/heartbeat health (bam_healthy). Max across the selected instance(s) returns 1 when at least one BAM client is healthy in that sense; it does not imply current-slot BAM freshness.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -209,7 +209,191 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "bam_healthy is a boolean gauge: 1 when the BAM client is fully connected, authenticated, configured, and heartbeat healthy, 0 otherwise. This panel uses min_over_time over $__rate_interval so any unhealthy sample marks the interval as 0.",
+      "description": "Current BAM scheduler stream live state (bam_stream_live). Max across the selected instance(s) returns 1 when at least one BAM scheduler gRPC stream is established and live, 0 otherwise.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "index": 0,
+                  "text": "Down"
+                },
+                "1": {
+                  "index": 1,
+                  "text": "Live"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 2,
+        "x": 4,
+        "y": 0
+      },
+      "id": 43,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "max(bam_stream_live{instance=~\"$instance\"})",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Stream Live",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Current fallback suppression state (bam_fallback_suppressed). Max across the selected instance(s) returns 1 when at least one BAM client is currently suppressing QUIC and bundle fallback, 0 otherwise.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "index": 0,
+                  "text": "Allowed"
+                },
+                "1": {
+                  "index": 1,
+                  "text": "Suppressed"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 2,
+        "x": 6,
+        "y": 0
+      },
+      "id": 44,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "max(bam_fallback_suppressed{instance=~\"$instance\"})",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Fallback Suppressed",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Raw BAM control gauges over time. Compare bam_healthy, bam_stream_live, bam_fallback_suppressed, and bam_current_slot_fresh directly to see whether BAM suppressed fallback before fresh current-slot work arrived.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -248,8 +432,8 @@
       },
       "gridPos": {
         "h": 3,
-        "w": 20,
-        "x": 4,
+        "w": 16,
+        "x": 8,
         "y": 0
       },
       "id": 1,
@@ -277,14 +461,50 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "min_over_time(bam_healthy{instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "bam_healthy{instance=~\"$instance\"}",
           "instant": false,
-          "legendFormat": ".",
+          "legendFormat": "healthy",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "bam_stream_live{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "stream live",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "bam_fallback_suppressed{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "fallback suppressed",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "bam_current_slot_fresh{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "current slot fresh",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "BAM Health Timeline",
+      "title": "BAM Control Timeline",
       "transparent": true,
       "type": "status-history"
     },
@@ -306,7 +526,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Healthy connection lifecycle and keepalive acknowledgment activity. bam_healthy_connects and bam_healthy_disconnects count transitions into and out of CONNECTED_HEALTHY; bam_keepalive_acks counts HTTP/2 keepalive PING acknowledgments received from the BAM node.",
+      "description": "Healthy connection lifecycle and keepalive acknowledgment activity. bam_healthy_connects and bam_healthy_disconnects count transitions into and out of bam_healthy transport/auth/config/heartbeat health; current-slot freshness is tracked separately. bam_keepalive_acks counts HTTP/2 keepalive PING acknowledgments received from the BAM node.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3208,7 +3428,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of leader slots that ended while BAM healthy override remained active but no current-slot BAM work was accepted before slot end.",
+      "description": "Rate (events/sec) of leader slots that ended while bam_fallback_suppressed remained active but bam_current_slot_fresh never became 1 before slot end.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3492,6 +3712,586 @@
         }
       ],
       "title": "Latest Pack Schedule vs Slot End",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Current BAM slot-funnel item counts for the highest valid slot currently present in pack's recent-slot ring. The panel joins the latest slot selector with the per-stage slot-funnel gauges so one bad slot can be categorized as received, accepted, rejected pre-pending, still pending, evicted post-pending, scheduled, or landed.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 133
+      },
+      "id": 45,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_received_items{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "received",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_accepted_items{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "accepted",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_rejected_pre_pending_items{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "rejected pre-pending",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_pending_items{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "pending",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_evicted_post_pending_items{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "evicted post-pending",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_scheduled_items{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "scheduled",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_landed_items{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "landed",
+          "range": true,
+          "refId": "G"
+        }
+      ],
+      "title": "Pack Slot Funnel (Latest Slot, Items)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Current BAM slot-funnel transaction counts for the highest valid slot currently present in pack's recent-slot ring. This is the transaction-count companion to the latest-slot item funnel panel.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 133
+      },
+      "id": 46,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_received_txns{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "received",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_accepted_txns{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "accepted",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_rejected_pre_pending_txns{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "rejected pre-pending",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_pending_txns{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "pending",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_evicted_post_pending_txns{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "evicted post-pending",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_scheduled_txns{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "scheduled",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_slot_slot{instance=~\"$instance\"} * pack_bam_recent_slot_valid{instance=~\"$instance\"}) * on(instance, kind, kind_id, pack_bam_recent_slot_idx) group_left() pack_bam_slot_funnel_landed_txns{instance=~\"$instance\"}",
+          "instant": false,
+          "legendFormat": "landed",
+          "range": true,
+          "refId": "G"
+        }
+      ],
+      "title": "Pack Slot Funnel (Latest Slot, Txns)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Current leader-slot signals that BAM forwards and pack currently believes. bam_leader_state_slot and bam_leader_state_tick come from pack->bam leader-state snapshots; pack_leader_slot is pack's local leader slot gauge.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 141
+      },
+      "id": 47,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (instance) (bam_leader_state_slot{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "bam leader state slot",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (instance) (pack_leader_slot{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "pack leader slot",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (instance) (bam_leader_state_tick{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "bam leader state tick",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Leader Slot Signals",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Cross-check active slot timing assumptions. bam_leader_state_slot_end_nanos minus pack_leader_slot_end_nanos should stay near zero; replay_slot_duration_nanos gives the current local slot-length scale for interpreting that delta.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ns"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 141
+      },
+      "id": 48,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (instance) (bam_leader_state_slot_end_nanos{instance=~\"$instance\"}) - max by (instance) (pack_leader_slot_end_nanos{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "bam - pack slot_end_ns",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (instance) (replay_slot_duration_nanos{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "replay slot duration",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Slot Timing Assumptions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Highest seq_id currently present in pack's recent-seq ring with a non-zero first schedule timestamp. This is the firebam-only correlation key for the paired receive-to-schedule delay panel.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 149
+      },
+      "id": 49,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_seq_seq_id{instance=~\"$instance\"} * pack_bam_recent_seq_valid{instance=~\"$instance\"} * (pack_bam_seq_first_schedule_timestamp_nanos{instance=~\"$instance\"} > bool 0))",
+          "instant": true,
+          "legendFormat": "latest scheduled seq",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Latest Scheduled BAM Seq",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Instantaneous nanosecond delta from first BAM receive inside firebam to first pack schedule handoff for the highest seq_id currently present in pack's recent-seq ring with a non-zero first schedule timestamp.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ns"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 149
+      },
+      "id": 50,
+      "maxDataPoints": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "topk by (instance, kind, kind_id) (1, pack_bam_recent_seq_seq_id{instance=~\"$instance\"} * pack_bam_recent_seq_valid{instance=~\"$instance\"} * (pack_bam_seq_first_schedule_timestamp_nanos{instance=~\"$instance\"} > bool 0)) * on(instance, kind, kind_id, pack_bam_recent_seq_idx) group_left() (pack_bam_seq_first_schedule_timestamp_nanos{instance=~\"$instance\"} - pack_bam_seq_first_rx_timestamp_nanos{instance=~\"$instance\"})",
+          "instant": true,
+          "legendFormat": "schedule minus first rx",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Latest Seq Rx -> Schedule Delay",
       "type": "stat"
     }
   ],

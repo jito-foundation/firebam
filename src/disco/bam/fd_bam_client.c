@@ -312,6 +312,7 @@ fd_bam_tile_publish_bundle_txn(
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
+    .scheduler_arrival_tspub = (uint)fd_frag_meta_ts_comp( fd_tickcount() ),
     .block_engine   = {0},
     .bam = {
       .max_schedule_slot = ctx->bundle_max_schedule_slot,
@@ -354,6 +355,7 @@ fd_bam_tile_publish_txn(
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
+    .scheduler_arrival_tspub = (uint)fd_frag_meta_ts_comp( fd_tickcount() ),
     .block_engine   = {0},
     .bam = {
       .max_schedule_slot = max_schedule_slot,

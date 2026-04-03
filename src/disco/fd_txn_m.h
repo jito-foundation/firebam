@@ -29,8 +29,9 @@ struct fd_txn_m {
      source_ipv4 is in big endian. */
   uint     source_ipv4;
   uchar    source_tpu;
+  uint     scheduler_arrival_tspub; /* Compact local tickcount timestamp for when the scheduler-side source first published this txn. 0 means unknown. */
 
-  /* 7 bytes of padding here */
+  /* 3 bytes of padding here */
 
   struct {
     /* If the transaction is part of a bundle, the bundle_id will be

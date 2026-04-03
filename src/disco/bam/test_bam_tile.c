@@ -22,6 +22,9 @@ fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
                                   ulong           chunk,
                                   ulong           sz );
 
+extern void
+fd_bam_test_metrics_write( fd_bam_tile_t * ctx );
+
 /* Applies a BAM fee configuration to the pack crank state. Updates
    tip-receiver destinations stored in |crank3| and |crank2| and writes
    a clamped copy of commission_bps into |crank3| when a new version is
@@ -339,6 +342,7 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( first->source_tpu    == FD_TXN_M_TPU_SOURCE_BAM );
   FD_TEST( first->bam.seq_id    == 0U );
   FD_TEST( first->bam.txn_cnt == 1UL );
+  FD_TEST( first->scheduler_arrival_tspub != 0U );
 
   test_bam_env_destroy( env );
 }
@@ -594,17 +598,31 @@ test_bam_freshness_status_bits_and_override_counter( fd_wksp_t * wksp ) {
   fd_bam_tile_housekeeping( state );
   FD_TEST( state->metrics.override_without_fresh_work_cnt == 1UL );
   FD_TEST( fd_fseq_query( fseq ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  fd_bam_test_metrics_write( state );
+  FD_TEST( FD_MGAUGE_GET( BAM, HEALTHY ) == 1UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, STREAM_LIVE ) == 1UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, FALLBACK_SUPPRESSED ) == 1UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_SLOT_FRESH ) == 0UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, LEADER_STATE_SLOT ) == 42UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, LEADER_STATE_TICK ) == 0UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, LEADER_STATE_SLOT_END_NANOS ) == (ulong)state->bam_leader_state.slot_end_ns );
 
   fd_bam_tile_housekeeping( state );
   FD_TEST( state->metrics.override_without_fresh_work_cnt == 1UL );
 
   state->bam_leader_state = (fd_bam_leader_state_t){
     .slot               = 43UL,
+    .tick               = 7U,
     .slot_end_ns        = fd_log_wallclock() + (long)1e9,
     .current_slot_fresh = 1U,
   };
   fd_bam_tile_housekeeping( state );
   FD_TEST( fd_fseq_query( fseq ) == ( FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE | FD_BAM_STATUS_FSEQ_CURRENT_SLOT_FRESH ) );
+  fd_bam_test_metrics_write( state );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_SLOT_FRESH ) == 1UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, LEADER_STATE_SLOT ) == 43UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, LEADER_STATE_TICK ) == 7UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, LEADER_STATE_SLOT_END_NANOS ) == (ulong)state->bam_leader_state.slot_end_ns );
 
   FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
   FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );

@@ -943,9 +943,12 @@ insert_pending_bam_test_txn( fd_pack_ctx_t * ctx,
   int result = fd_pack_insert_txn_fini( ctx->pack, spot, blockhash_slot, &deleted );
   FD_TEST( deleted==0UL );
   if( FD_LIKELY( result>=0 ) ) {
+    ulong slot = pack_tile_bam_funnel_slot( ctx, max_schedule_slot );
+    pack_tile_note_bam_accepted( ctx, slot, 1UL, 1UL );
     pack_tile_track_pending_bam_work( ctx,
                                       txnp->payload + 1UL,
                                       seq_id,
+                                      slot,
                                       max_schedule_slot,
                                       blockhash_slot,
                                       1U );
@@ -1132,6 +1135,11 @@ main( int     argc,
   FD_TEST( ctx->bam_pending_work_cnt==1UL );
   metrics_write( ctx );
   FD_TEST( FD_MGAUGE_GET( PACK, BAM_PENDING_WORK_COUNT )==1UL );
+  ulong slot100_idx = 100UL & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_ACCEPTED_ITEMS ) + slot100_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_ACCEPTED_TXNS ) + slot100_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_PENDING_ITEMS ) + slot100_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_PENDING_TXNS ) + slot100_idx ] == 1UL );
   FD_TEST( FD_MCNT_GET( PACK, BAM_WORK_REJECTED_PRE_PENDING_SINGLE_OUTSIDE_SLOT )==0UL );
   FD_TEST( FD_MCNT_GET( PACK, BAM_PENDING_WORK_EVICTED_SINGLE_OUTSIDE_SLOT )==0UL );
   pack_tile_evict_invalid_pending_bam_work( ctx, NULL, 101UL );
@@ -1145,6 +1153,10 @@ main( int     argc,
   FD_TEST( FD_MCNT_GET( PACK, BAM_WORK_INVALIDATED_SINGLE_OUTSIDE_SLOT )==1UL );
   FD_TEST( FD_MCNT_GET( PACK, BAM_WORK_REJECTED_PRE_PENDING_SINGLE_OUTSIDE_SLOT )==0UL );
   FD_TEST( FD_MCNT_GET( PACK, BAM_PENDING_WORK_EVICTED_SINGLE_OUTSIDE_SLOT )==1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_PENDING_ITEMS ) + slot100_idx ] == 0UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_PENDING_TXNS ) + slot100_idx ] == 0UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_EVICTED_POST_PENDING_ITEMS ) + slot100_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_EVICTED_POST_PENDING_TXNS ) + slot100_idx ] == 1UL );
 
   *ctx->bank_current[ 0 ] = ULONG_MAX;
   unprivileged_init( &config->topo, pack_tile );
@@ -1160,6 +1172,9 @@ main( int     argc,
   pack_tile_drop_scheduled_pending_bam_work( ctx, scheduled_bam, 1UL, 0L );
   FD_TEST( ctx->bam_pending_work_cnt==0UL );
   FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==1UL );
+  FD_TEST( ctx->bam_scheduled_work_cnt==1UL );
+  pack_tile_note_bam_landed_sig( ctx, txn_scratch[ 1UL ].payload + 1UL );
+  FD_TEST( ctx->bam_scheduled_work_cnt==0UL );
   FD_TEST( ctx->bam_work_invalidated_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX ]==0UL );
   FD_TEST( ctx->bam_work_rejected_pre_pending_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX ]==0UL );
   FD_TEST( ctx->bam_pending_work_evicted_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX ]==0UL );
@@ -1167,6 +1182,10 @@ main( int     argc,
   FD_TEST( FD_MGAUGE_GET( PACK, BAM_PENDING_WORK_COUNT )==0UL );
   FD_TEST( FD_MCNT_GET( PACK, BAM_WORK_REJECTED_PRE_PENDING_SINGLE_OUTSIDE_SLOT )==0UL );
   FD_TEST( FD_MCNT_GET( PACK, BAM_PENDING_WORK_EVICTED_SINGLE_OUTSIDE_SLOT )==0UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_SCHEDULED_ITEMS ) + slot100_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_SCHEDULED_TXNS ) + slot100_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_LANDED_ITEMS ) + slot100_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_LANDED_TXNS ) + slot100_idx ] == 1UL );
 
   *ctx->bank_current[ 0 ] = ULONG_MAX;
   unprivileged_init( &config->topo, pack_tile );
@@ -1175,6 +1194,26 @@ main( int     argc,
   ctx->slot_end_ns        = 1000L;
   ctx->bam_current_slot_fresh = 0U;
   (void)pack_tile_bam_recent_slot_prepare( ctx, ctx->leader_slot );
+  pack_tile_note_bam_received( ctx, 123UL, 3UL, 5UL );
+  pack_tile_note_bam_accepted( ctx, 123UL, 2UL, 3UL );
+  pack_tile_note_bam_rejected_pre_pending( ctx, 123UL, 1UL, 2UL );
+  pack_tile_bam_recent_slot_add_pending( ctx, 123UL, 2UL, 3UL );
+  pack_bam_recent_slot_t * funnel_slot = pack_tile_bam_recent_slot_prepare( ctx, 123UL );
+  funnel_slot->evicted_post_pending_items += 1UL;
+  funnel_slot->evicted_post_pending_txns  += 1UL;
+  pack_tile_bam_recent_slot_sub_pending( ctx, 123UL, 1UL, 1UL );
+  funnel_slot->scheduled_items += 1UL;
+  funnel_slot->scheduled_txns  += 2UL;
+  pack_tile_bam_recent_slot_sub_pending( ctx, 123UL, 1UL, 2UL );
+  pack_tile_note_bam_landed( ctx, 123UL, 1UL, 2UL );
+  ulong recent_seq_idx = 77UL & ( FD_PACK_BAM_RECENT_SEQ_CNT - 1UL );
+  pack_bam_recent_seq_t * recent_seq = &ctx->bam_recent_seq[ recent_seq_idx ];
+  *recent_seq = (pack_bam_recent_seq_t){
+    .slot                 = 123UL,
+    .first_rx_ts_ns       = 910L,
+    .first_schedule_ts_ns = 930L,
+    .seq_id               = 77U
+  };
   pack_tile_note_first_bam_insert( ctx, NULL, 900L, 122UL );
   FD_TEST( ctx->bam_current_slot_fresh==0U );
   pack_tile_note_first_bam_insert( ctx, NULL, 950L, 123UL );
@@ -1184,7 +1223,6 @@ main( int     argc,
   pack_tile_drop_scheduled_pending_bam_work( ctx, scheduled_bam, 1UL, 980L );
   FD_TEST( ctx->bam_current_slot_fresh==1U );
   pack_bam_recent_slot_t const * recent_slot = &ctx->bam_recent_slot[ 123UL & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
-  FD_TEST( recent_slot->valid );
   FD_TEST( recent_slot->slot == 123UL );
   FD_TEST( recent_slot->first_insert_recorded == 1U );
   FD_TEST( recent_slot->first_insert_minus_slot_end_ns == -100L );
@@ -1192,12 +1230,33 @@ main( int     argc,
   FD_TEST( recent_slot->first_schedule_minus_slot_end_ns == -80L );
   metrics_write( ctx );
   ulong recent_idx = 123UL & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL );
+  FD_TEST( FD_MGAUGE_GET( PACK, LEADER_SLOT ) == 123UL );
+  FD_TEST( FD_MGAUGE_GET( PACK, LEADER_SLOT_END_NANOS ) == 1000UL );
   FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_RECENT_SLOT_VALID ) + recent_idx ] == 1UL );
   FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_RECENT_SLOT_SLOT ) + recent_idx ] == 123UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_RECEIVED_ITEMS ) + recent_idx ] == 3UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_RECEIVED_TXNS ) + recent_idx ] == 5UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_ACCEPTED_ITEMS ) + recent_idx ] == 2UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_ACCEPTED_TXNS ) + recent_idx ] == 3UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_REJECTED_PRE_PENDING_ITEMS ) + recent_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_REJECTED_PRE_PENDING_TXNS ) + recent_idx ] == 2UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_PENDING_ITEMS ) + recent_idx ] == 0UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_PENDING_TXNS ) + recent_idx ] == 0UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_EVICTED_POST_PENDING_ITEMS ) + recent_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_EVICTED_POST_PENDING_TXNS ) + recent_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_SCHEDULED_ITEMS ) + recent_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_SCHEDULED_TXNS ) + recent_idx ] == 2UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_LANDED_ITEMS ) + recent_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_LANDED_TXNS ) + recent_idx ] == 2UL );
   FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_FIRST_INSERT_RECORDED ) + recent_idx ] == 1UL );
   FD_TEST( (long)fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_FIRST_INSERT_MINUS_SLOT_END_NS ) + recent_idx ] == -100L );
   FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_FIRST_SCHEDULE_RECORDED ) + recent_idx ] == 1UL );
   FD_TEST( (long)fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_FIRST_SCHEDULE_MINUS_SLOT_END_NS ) + recent_idx ] == -80L );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_RECENT_SEQ_VALID ) + recent_seq_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_RECENT_SEQ_SEQ_ID ) + recent_seq_idx ] == 77UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_RECENT_SEQ_SLOT ) + recent_seq_idx ] == 123UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SEQ_FIRST_RX_TIMESTAMP_NANOS ) + recent_seq_idx ] == 910UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SEQ_FIRST_SCHEDULE_TIMESTAMP_NANOS ) + recent_seq_idx ] == 930UL );
 
 #if FD_PACK_USE_EXTRA_STORAGE
   FD_TEST( extra_txn_deq_empty( ctx->extra_txn_deq ) );
@@ -1213,6 +1272,7 @@ main( int     argc,
   extra->txn.txnp->bam.seq_id    = 77U;
   extra->txn.txnp->blockhash_slot = 39UL;
   extra->bam_max_schedule_slot   = 200UL;
+  extra->bam_funnel_slot         = 200UL;
 
   FD_TEST( insert_from_extra( ctx, NULL ) == -1 );
   FD_TEST( extra_txn_deq_empty( ctx->extra_txn_deq ) );
@@ -1226,6 +1286,9 @@ main( int     argc,
   FD_TEST( FD_MGAUGE_GET( PACK, BAM_PENDING_WORK_COUNT )==0UL );
   FD_TEST( FD_MCNT_GET( PACK, BAM_WORK_REJECTED_PRE_PENDING_SINGLE_BLOCKHASH_EXPIRED )==1UL );
   FD_TEST( FD_MCNT_GET( PACK, BAM_PENDING_WORK_EVICTED_SINGLE_BLOCKHASH_EXPIRED )==0UL );
+  ulong slot200_idx = 200UL & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_REJECTED_PRE_PENDING_ITEMS ) + slot200_idx ] == 1UL );
+  FD_TEST( fd_metrics_tl[ MIDX( GAUGE, PACK, BAM_SLOT_FUNNEL_REJECTED_PRE_PENDING_TXNS ) + slot200_idx ] == 1UL );
 #endif
 
   /* resolv-pack link */
