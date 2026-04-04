@@ -71,6 +71,7 @@ fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
 
 static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
+  fd_grpc_client_metrics_t const * grpc_metrics = ctx->grpc_metrics;
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   _Bool healthy = status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   ulong current_slot_first_ingress_recorded       = 0UL;
@@ -98,6 +99,16 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, BUILDER_HEARTBEATS_DECODED,    ctx->metrics.builder_heartbeats_decoded_cnt       );
   FD_MCNT_SET( BAM, HEALTHY_CONNECTS,              ctx->metrics.healthy_connects_cnt      );
   FD_MCNT_SET( BAM, HEALTHY_DISCONNECTS,           ctx->metrics.healthy_disconnects_cnt   );
+  FD_MCNT_SET( BAM, GRPC_WAKEUPS,                  grpc_metrics->wakeup_cnt );
+  FD_MCNT_SET( BAM, GRPC_STREAM_ERRORS,            grpc_metrics->stream_err_cnt );
+  FD_MCNT_SET( BAM, GRPC_CONNECTION_ERRORS,        grpc_metrics->conn_err_cnt );
+  FD_MCNT_SET( BAM, GRPC_STREAM_CHUNKS_TX,         grpc_metrics->stream_chunks_tx_cnt );
+  FD_MCNT_SET( BAM, GRPC_STREAM_CHUNKS_TX_BYTES,   grpc_metrics->stream_chunks_tx_bytes );
+  FD_MCNT_SET( BAM, GRPC_STREAM_CHUNKS_RX,         grpc_metrics->stream_chunks_rx_cnt );
+  FD_MCNT_SET( BAM, GRPC_STREAM_CHUNKS_RX_BYTES,   grpc_metrics->stream_chunks_rx_bytes );
+  FD_MCNT_SET( BAM, GRPC_REQUESTS_SENT,            grpc_metrics->requests_sent );
+  FD_MCNT_SET( BAM, GRPC_RX_WAIT_NANOS,            (ulong)fd_long_max( grpc_metrics->rx_wait_ticks_cum, 0L ) );
+  FD_MCNT_SET( BAM, GRPC_TX_WAIT_NANOS,            (ulong)fd_long_max( grpc_metrics->tx_wait_ticks_cum, 0L ) );
   FD_MCNT_ENUM_COPY( BAM, FAILURE,          ctx->metrics.failure_cnt               );
   FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_RECEIVED,         ctx->metrics.ingress_multi_message_received_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
@@ -121,6 +132,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, ENABLED,              (ulong)ctx->enabled );
   FD_MGAUGE_SET( BAM, HEALTHY,              (ulong)healthy );
   FD_MGAUGE_SET( BAM, STREAM_LIVE,          (ulong)ctx->bam_stream_live );
+  FD_MGAUGE_SET( BAM, GRPC_STREAMS_ACTIVE,  (ulong)fd_long_max( grpc_metrics->streams_active, 0L ) );
   FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT,    ctx->bam_leader_state.slot==ULONG_MAX ? 0UL : ctx->bam_leader_state.slot );
   FD_MGAUGE_SET( BAM, LEADER_STATE_TICK,    (ulong)ctx->bam_leader_state.tick );
   FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT_END_NANOS,

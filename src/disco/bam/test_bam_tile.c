@@ -612,6 +612,43 @@ test_bam_freshness_status_bits( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_grpc_metrics_export( fd_wksp_t * wksp ) {
+  fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL, 0UL ) );
+
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  state->grpc_metrics->wakeup_cnt            = 11UL;
+  state->grpc_metrics->stream_err_cnt        = 12UL;
+  state->grpc_metrics->conn_err_cnt          = 13UL;
+  state->grpc_metrics->stream_chunks_tx_cnt  = 14UL;
+  state->grpc_metrics->stream_chunks_tx_bytes= 15UL;
+  state->grpc_metrics->stream_chunks_rx_cnt  = 16UL;
+  state->grpc_metrics->stream_chunks_rx_bytes= 17UL;
+  state->grpc_metrics->requests_sent         = 18UL;
+  state->grpc_metrics->streams_active        = 3L;
+  state->grpc_metrics->rx_wait_ticks_cum     = 19L;
+  state->grpc_metrics->tx_wait_ticks_cum     = 20L;
+
+  fd_bam_test_metrics_write( state );
+
+  FD_TEST( FD_MCNT_GET( BAM, GRPC_WAKEUPS ) == 11UL );
+  FD_TEST( FD_MCNT_GET( BAM, GRPC_STREAM_ERRORS ) == 12UL );
+  FD_TEST( FD_MCNT_GET( BAM, GRPC_CONNECTION_ERRORS ) == 13UL );
+  FD_TEST( FD_MCNT_GET( BAM, GRPC_STREAM_CHUNKS_TX ) == 14UL );
+  FD_TEST( FD_MCNT_GET( BAM, GRPC_STREAM_CHUNKS_TX_BYTES ) == 15UL );
+  FD_TEST( FD_MCNT_GET( BAM, GRPC_STREAM_CHUNKS_RX ) == 16UL );
+  FD_TEST( FD_MCNT_GET( BAM, GRPC_STREAM_CHUNKS_RX_BYTES ) == 17UL );
+  FD_TEST( FD_MCNT_GET( BAM, GRPC_REQUESTS_SENT ) == 18UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, GRPC_STREAMS_ACTIVE ) == 3UL );
+  FD_TEST( FD_MCNT_GET( BAM, GRPC_RX_WAIT_NANOS ) == 19UL );
+  FD_TEST( FD_MCNT_GET( BAM, GRPC_TX_WAIT_NANOS ) == 20UL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_slot_ingress_timing_summary_format_and_gate( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -4296,6 +4333,7 @@ main( int     argc,
   test_bam_leader_state_supersede_counts_drop( wksp );
   test_bam_pack_leader_channel_contract( wksp );
   test_bam_pack_result_channel_contract( wksp );
+  test_bam_grpc_metrics_export( wksp );
   test_bam_scheduler_result_publishes_message( wksp );
   test_bam_scheduler_result_committed_with_execution_error_publishes_message( wksp );
   test_bam_scheduler_result_not_committed_publishes_message( wksp );

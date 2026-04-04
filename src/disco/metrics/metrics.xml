@@ -470,6 +470,17 @@ metric introduced.
     <counter name="KeepaliveAcks" summary="Cumulative number of HTTP/2 keepalive PING acknowledgments received from the BAM node" />
     <counter name="HealthyConnects" summary="Cumulative number of transitions into BAM CONNECTED_HEALTHY state" />
     <counter name="HealthyDisconnects" summary="Cumulative number of transitions out of BAM CONNECTED_HEALTHY state" />
+    <counter name="GrpcWakeups" summary="Cumulative number of times the BAM gRPC client was polled for I/O" />
+    <counter name="GrpcStreamErrors" summary="Cumulative number of survivable BAM gRPC stream errors, including out-of-memory and decode failures" />
+    <counter name="GrpcConnectionErrors" summary="Cumulative number of BAM gRPC connection errors that terminated the connection" />
+    <counter name="GrpcStreamChunksTx" summary="Cumulative number of BAM gRPC DATA frames carrying outbound request bytes" />
+    <counter name="GrpcStreamChunksTxBytes" summary="Cumulative number of outbound BAM gRPC request payload bytes carried in DATA frames" />
+    <counter name="GrpcStreamChunksRx" summary="Cumulative number of BAM gRPC DATA frames carrying inbound response bytes" />
+    <counter name="GrpcStreamChunksRxBytes" summary="Cumulative number of inbound BAM gRPC response payload bytes carried in DATA frames" />
+    <counter name="GrpcRequestsSent" summary="Cumulative number of BAM gRPC requests whose request body finished sending" />
+    <gauge name="GrpcStreamsActive" summary="Current number of BAM gRPC streams that are not closed" />
+    <counter name="GrpcRxWaitNanos" converter="nanoseconds" summary="Cumulative BAM gRPC inbound wait time while HTTP/2 frames and messages were partially received (nanoseconds)" />
+    <counter name="GrpcTxWaitNanos" converter="nanoseconds" summary="Cumulative BAM gRPC outbound wait time while requests were queued or flow-controlled before handoff to TCP (nanoseconds)" />
     <counter name="IngressMultiMessageReceived" summary="Cumulative number of multiple_atomic_txn_batch messages decoded from BAM ingress" />
     <counter name="IngressBatchCommitAttempt" summary="Cumulative number of AtomicTxnBatch entries that entered BAM validate/commit" />
     <counter name="IngressBatchPublished" summary="Cumulative number of AtomicTxnBatch entries successfully published to verify" />
@@ -667,6 +678,12 @@ metric introduced.
   <int value="6" name="Landed" label="BAM work observed as landed for the current pack leader slot" />
 </enum>
 
+<enum name="PackBamFirstEventResult">
+  <int value="0" name="NoEvent" label="No BAM event of this kind was observed before the leader slot finished" />
+  <int value="1" name="BeforeEnd" label="The first BAM event of this kind was observed at or before slot end" />
+  <int value="2" name="AfterEnd" label="The first BAM event of this kind was observed after slot end" />
+</enum>
+
 <tile name="pack">
     <histogram name="ScheduleMicroblockDurationSeconds" min="0.00000001" max="0.1" converter="seconds">
         <summary>Duration of scheduling one microblock</summary>
@@ -718,6 +735,14 @@ metric introduced.
     <gauge name="BamPendingWorkCount" summary="Current number of BAM work items tracked in pack's pending-work set after acceptance and before scheduling or cleanup" />
     <gauge name="LeaderSlot" summary="Current pack leader slot, or 0 if pack is not the leader" />
     <gauge name="LeaderSlotEndNanos" summary="Current pack leader slot end wallclock timestamp (nanoseconds), or 0 if pack is not the leader" />
+    <counter name="BamLeaderSlotFirstInsertResult" enum="PackBamFirstEventResult" summary="Cumulative number of pack leader slots finalized with no BAM insert, a first BAM insert before slot end, or a first BAM insert after slot end" />
+    <counter name="BamLeaderSlotFirstScheduleResult" enum="PackBamFirstEventResult" summary="Cumulative number of pack leader slots finalized with no BAM schedule, a first BAM schedule before slot end, or a first BAM schedule after slot end" />
+    <histogram name="BamLeaderSlotFirstInsertDistanceNanos" min="0" max="10000000000">
+        <summary>Absolute distance in nanoseconds between slot_end_ns and the first BAM insert observed for a finalized pack leader slot. Sampled once per slot only when an insert was observed.</summary>
+    </histogram>
+    <histogram name="BamLeaderSlotFirstScheduleDistanceNanos" min="0" max="10000000000">
+        <summary>Absolute distance in nanoseconds between slot_end_ns and the first BAM schedule observed for a finalized pack leader slot. Sampled once per slot only when a schedule was observed.</summary>
+    </histogram>
     <gauge name="BamCurrentLeaderSlotWorkItems" enum="PackBamCurrentLeaderSlotState" summary="Per-current-pack-leader-slot BAM work-item counts from pack's recent-slot tracker. Exported as 0 when pack is not leader or no BAM work has been recorded for the current leader slot." />
     <gauge name="BamCurrentLeaderSlotWorkTransactions" enum="PackBamCurrentLeaderSlotState" summary="Per-current-pack-leader-slot BAM transaction counts from pack's recent-slot tracker. Exported as 0 when pack is not leader or no BAM work has been recorded for the current leader slot." />
     <histogram name="BamSeqRxToFirstScheduleNanos" min="0" max="10000000000">
