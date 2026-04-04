@@ -75,9 +75,10 @@ struct fd_bam_metrics {
   ulong slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_CNT ];
   ulong leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_CNT ];
   ulong healthy_leader_slot_result_cnt[ FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_CNT ];
+  ulong scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_CNT ];
 
   fd_histf_t builder_heartbeat_arrival_delta_nanos[1];
-  fd_histf_t scheduler_pong_enqueue_nanos[1];
+  fd_histf_t scheduler_pong_send_nanos[1];
 };
 
 typedef struct fd_bam_metrics fd_bam_metrics_t;
@@ -340,27 +341,27 @@ fd_bam_finalize_slot_ingress_rollup( fd_bam_tile_t *                ctx,
   ulong tx_before  = entry->txn_before_slot_end;
   ulong tx_after   = entry->txn_after_slot_end;
   ulong tx_unknown = entry->txn_unknown_slot_end;
-  ulong result_idx = FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNKNOWN_SLOT_END_IDX;
+  ulong result_idx = entry->slot_end_ns
+    ? FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_NO_INGRESS_IDX
+    : FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNKNOWN_SLOT_END_IDX;
 
   fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, current_leader_slot );
 
-  if( FD_UNLIKELY( !entry->first_rx_ts_ns ) ) {
-    result_idx = entry->slot_end_ns
-      ? FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_NO_INGRESS_IDX
-      : FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNKNOWN_SLOT_END_IDX;
-  } else if( FD_UNLIKELY( !entry->slot_end_ns ) ) {
-    tx_unknown += tx_before + tx_after;
-    tx_before   = 0UL;
-    tx_after    = 0UL;
-  } else {
-    result_idx = entry->first_rx_ts_ns<=entry->slot_end_ns
-      ? FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_BEFORE_END_IDX
-      : FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_AFTER_END_IDX;
+  if( FD_LIKELY( entry->first_rx_ts_ns ) ) {
+    if( FD_UNLIKELY( !entry->slot_end_ns ) ) {
+      tx_unknown += tx_before + tx_after;
+      tx_before   = 0UL;
+      tx_after    = 0UL;
+    } else {
+      result_idx = entry->first_rx_ts_ns<=entry->slot_end_ns
+        ? FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_BEFORE_END_IDX
+        : FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_AFTER_END_IDX;
+    }
   }
 
   ctx->metrics.slot_ingress_result_cnt[ result_idx ]++;
-  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_BEFORE_END_IDX ]      += tx_before;
-  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_AFTER_END_IDX ]       += tx_after;
+  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_BEFORE_END_IDX ]       += tx_before;
+  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_AFTER_END_IDX ]        += tx_after;
   ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_UNKNOWN_SLOT_END_IDX ] += tx_unknown;
   fd_memset( entry, 0, sizeof(*entry) );
 }
@@ -371,8 +372,7 @@ fd_bam_slot_ingress_timing_query_const( fd_bam_tile_t const * ctx,
   ulong start = slot & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL );
   for( ulong probe=0UL; probe<FD_BAM_SLOT_INGRESS_TIMING_CNT; probe++ ) {
     fd_bam_slot_ingress_timing_t const * entry = &ctx->slot_ingress_timing[ ( start + probe ) & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL ) ];
-    if( FD_UNLIKELY( !entry->valid ) ) continue;
-    if( FD_LIKELY( entry->slot==slot ) ) return entry;
+    if( FD_LIKELY( entry->valid && entry->slot==slot ) ) return entry;
   }
   return NULL;
 }
@@ -386,17 +386,16 @@ fd_bam_slot_ingress_timing_query_or_insert( fd_bam_tile_t * ctx,
   fd_bam_slot_ingress_timing_t * aged_entry = NULL;
   for( ulong probe=0UL; probe<FD_BAM_SLOT_INGRESS_TIMING_CNT; probe++ ) {
     fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ ( start + probe ) & ( FD_BAM_SLOT_INGRESS_TIMING_CNT - 1UL ) ];
-    if( FD_UNLIKELY( !entry->valid ) ) {
-      if( FD_UNLIKELY( !free_entry ) ) free_entry = entry;
-      continue;
-    }
-
-    if( FD_LIKELY( entry->slot==slot ) ) return entry;
-    if( FD_UNLIKELY( current_leader_slot!=ULONG_MAX &&
-                     entry->slot<current_leader_slot &&
-                     current_leader_slot-entry->slot>=FD_BAM_SLOT_INGRESS_RETENTION_SLOTS &&
-                     ( !aged_entry || entry->slot<aged_entry->slot ) ) ) {
-      aged_entry = entry;
+    if( FD_LIKELY( entry->valid ) ) {
+      if( FD_LIKELY( entry->slot==slot ) ) return entry;
+      if( FD_UNLIKELY( current_leader_slot!=ULONG_MAX &&
+                       entry->slot<current_leader_slot &&
+                       current_leader_slot-entry->slot>=FD_BAM_SLOT_INGRESS_RETENTION_SLOTS &&
+                       ( !aged_entry || entry->slot<aged_entry->slot ) ) ) {
+        aged_entry = entry;
+      }
+    } else if( FD_UNLIKELY( !free_entry ) ) {
+      free_entry = entry;
     }
   }
 
@@ -414,31 +413,12 @@ fd_bam_slot_ingress_timing_query_or_insert( fd_bam_tile_t * ctx,
 }
 
 FD_FN_UNUSED static inline void
-fd_bam_record_unresolved_slot_ingress( fd_bam_tile_t * ctx,
-                                       long            rx_ts_ns,
-                                       ulong           txn_cnt ) {
-  if( FD_UNLIKELY( !txn_cnt ) ) return;
-  if( FD_UNLIKELY( !ctx->unresolved_slot_ingress.valid ||
-                   rx_ts_ns < ctx->unresolved_slot_ingress.first_rx_ts_ns ) ) {
-    ctx->unresolved_slot_ingress.first_rx_ts_ns = rx_ts_ns;
-  }
-  ctx->unresolved_slot_ingress.txn_unknown_slot_end += txn_cnt;
-  ctx->unresolved_slot_ingress.valid = 1U;
-}
+fd_bam_finalize_unresolved_slot_ingress_rollup( fd_bam_tile_t * ctx ) {
+  if( FD_UNLIKELY( !ctx->unresolved_slot_ingress.valid ) ) return;
 
-FD_FN_UNUSED static inline void
-fd_bam_resolve_unresolved_slot_ingress( fd_bam_tile_t *                ctx,
-                                        fd_bam_slot_ingress_timing_t * entry ) {
-  if( FD_UNLIKELY( !ctx->unresolved_slot_ingress.valid || !entry ) ) return;
-
-  if( FD_UNLIKELY( !entry->first_rx_ts_ns ||
-                   ctx->unresolved_slot_ingress.first_rx_ts_ns < entry->first_rx_ts_ns ) ) {
-    entry->first_rx_ts_ns = ctx->unresolved_slot_ingress.first_rx_ts_ns;
-  }
-  entry->txn_unknown_slot_end += ctx->unresolved_slot_ingress.txn_unknown_slot_end;
-  if( FD_LIKELY( entry->slot_end_ns && entry->first_rx_ts_ns ) ) {
-    entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > entry->slot_end_ns );
-  }
+  ctx->metrics.slot_ingress_result_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNRESOLVED_SLOT_IDX ]++;
+  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_UNRESOLVED_SLOT_IDX ] +=
+      ctx->unresolved_slot_ingress.txn_unknown_slot_end;
   ctx->unresolved_slot_ingress = (fd_bam_unresolved_slot_ingress_timing_t){0};
 }
 
@@ -449,17 +429,19 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                    !fd_bam_leader_state_eq( &ctx->bam_leader_state, state ) ) ) {
     ctx->metrics.leader_pending_replaced_cnt++;
   }
-  if( FD_LIKELY( state->slot!=ULONG_MAX &&
-                 ( state->slot_end_ns || ctx->unresolved_slot_ingress.valid ) ) ) {
-    fd_bam_slot_ingress_timing_t * entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, state->slot, state->slot );
-    if( FD_LIKELY( entry ) ) {
-      if( FD_LIKELY( state->slot_end_ns ) ) {
-        entry->slot_end_ns = state->slot_end_ns;
-        entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > state->slot_end_ns );
-      }
-      fd_bam_resolve_unresolved_slot_ingress( ctx, entry );
-    }
+  if( FD_UNLIKELY( ctx->unresolved_slot_ingress.valid ) ) {
+    fd_bam_finalize_unresolved_slot_ingress_rollup( ctx );
   }
+
+  fd_bam_slot_ingress_timing_t * entry =
+      ( state->slot!=ULONG_MAX && state->slot_end_ns )
+      ? fd_bam_slot_ingress_timing_query_or_insert( ctx, state->slot, state->slot )
+      : NULL;
+  if( FD_LIKELY( entry ) ) {
+    entry->slot_end_ns = state->slot_end_ns;
+    entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > state->slot_end_ns );
+  }
+
   ctx->bam_leader_state = *state;
   ctx->bam_leader_pending = 1U;
 }

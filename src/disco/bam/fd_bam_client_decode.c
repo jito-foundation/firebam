@@ -445,13 +445,21 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   ulong leader_slot = ctx->bam_leader_state.slot;
   long rx_ts_ns = state->ingress_rx_ts_ns;
   long slot_end_ns = state->ingress_slot_end_ns;
+  uchar packet_cnt = state->packet_cnt;
   uint scheduler_arrival_tspub = state->ingress_rx_tspub;
   if( FD_UNLIKELY( !slot_end_ns && resolved_slot==leader_slot ) ) {
     slot_end_ns = ctx->bam_leader_state.slot_end_ns;
   }
   fd_bam_slot_ingress_timing_t * entry = NULL;
   if( FD_UNLIKELY( resolved_slot==ULONG_MAX ) ) {
-    fd_bam_record_unresolved_slot_ingress( ctx, rx_ts_ns, state->packet_cnt );
+    if( FD_LIKELY( packet_cnt ) ) {
+      if( FD_UNLIKELY( !ctx->unresolved_slot_ingress.valid ||
+                       rx_ts_ns < ctx->unresolved_slot_ingress.first_rx_ts_ns ) ) {
+        ctx->unresolved_slot_ingress.first_rx_ts_ns = rx_ts_ns;
+      }
+      ctx->unresolved_slot_ingress.txn_unknown_slot_end += packet_cnt;
+      ctx->unresolved_slot_ingress.valid = 1U;
+    }
   } else {
     entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, resolved_slot, leader_slot );
   }
@@ -478,7 +486,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
       : after_slot_end
         ? &entry->txn_after_slot_end
         : &entry->txn_before_slot_end;
-    *txn_bucket += state->packet_cnt;
+    *txn_bucket += packet_cnt;
   }
 
   if( FD_UNLIKELY( fd_bam_should_dump_batch( ctx, resolved_slot ) ) ) {
@@ -500,16 +508,16 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                "BAM rx bundle: seq_id=%u max_schedule_slot=%lu txns=%u mode=%s dispatch=%s\n",
                                batch->seq_id,
                                batch->max_schedule_slot,
-                               (uint)state->packet_cnt,
+                               (uint)packet_cnt,
                                state->revert_on_error ? "atomic" : "independent",
                                state->revert_on_error ? "bundle" : "fanout" );
-    for( uchar i=0U; i<state->packet_cnt; i++ ) {
+    for( uchar i=0U; i<packet_cnt; i++ ) {
       if( FD_UNLIKELY( i ) ) off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off, "\n" );
       off = fd_bam_dump_append_inbound_txn( msg,
                                             FD_BAM_DUMP_LOG_BUF_SZ,
                                             off,
                                             i,
-                                            state->packet_cnt,
+                                            packet_cnt,
                                             &state->packets[ i ] );
     }
     off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
@@ -529,25 +537,25 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     ctx->bundle_seq                = batch->seq_id;
     ctx->bundle_max_schedule_slot  = batch->max_schedule_slot;
 
-    for( uchar i=0; i<state->packet_cnt; i++ ) {
+    for( uchar i=0; i<packet_cnt; i++ ) {
       fd_bam_tile_publish_bundle_txn( ctx,
                                       state->packets[i].data.bytes,
                                       (ushort)state->packets[i].data.size,
-                                      state->packet_cnt,
+                                      packet_cnt,
                                       i,
                                       scheduler_arrival_tspub,
                                       0 );
     }
     ctx->metrics.atomic_batch_published_cnt++;
   } else {
-    for( uchar i=0; i<state->packet_cnt; i++ ) {
+    for( uchar i=0; i<packet_cnt; i++ ) {
       fd_bam_tile_publish_txn( ctx,
                                state->packets[i].data.bytes,
                                state->packets[i].data.size,
                                batch->max_schedule_slot,
                                batch->seq_id,
                                i,
-                               state->packet_cnt,
+                               packet_cnt,
                                state->revert_on_error,
                                scheduler_arrival_tspub,
                                0 );
@@ -907,25 +915,33 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
     fd_bam_commit_multiple_atomic_txn_batch( ctx, &decoded_v0.multi );
     ctx->bam_last_builder_activity_ns = rx_ts_ns;
     break;
-  case FD_BAM_V0_STAGED_PING:
+  case FD_BAM_V0_STAGED_PING: {
     /* Scheduler proto Ping is only a latency probe. It must be answered on
        the protobuf stream, but it does not refresh the builder-activity
        watchdog or HTTP/2 keepalive state. */
+    ulong outcome_idx = FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_NO_LIVE_STREAM_IDX;
     if( FD_LIKELY( ctx->bam_stream && ctx->bam_stream_live ) ) {
       bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
       msg.which_versioned_msg        = bam_api_SchedulerMessage_v0_tag;
       msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_pong_tag;
       msg.versioned_msg.v0.msg.pong.id = decoded_v0.ping_id;
-      if( FD_UNLIKELY( !fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 ) ) ) {
+
+      ulong rx_ts_u = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
+      long  now_ns  = fd_bam_now();
+      ulong now_u   = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
+      fd_histf_sample( ctx->metrics.scheduler_pong_send_nanos, fd_ulong_sat_sub( now_u, rx_ts_u ) );
+
+      outcome_idx =
+          fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 )
+          ? FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX
+          : FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX;
+      if( FD_UNLIKELY( outcome_idx==FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX ) ) {
         FD_LOG_WARNING(( "Failed to send BAM scheduler pong (id=%u)", decoded_v0.ping_id ));
-      } else {
-        ulong rx_ts_u = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
-        long  now_ns  = fd_bam_now();
-        ulong now_u   = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
-        fd_histf_sample( ctx->metrics.scheduler_pong_enqueue_nanos, fd_ulong_sat_sub( now_u, rx_ts_u ) );
       }
     }
+    ctx->metrics.scheduler_pong_send_outcome_cnt[ outcome_idx ]++;
     break;
+  }
   default:
     break;
   }

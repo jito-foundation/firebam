@@ -490,9 +490,9 @@ test_bam_env_create( test_bam_env_t * env,
   fd_histf_new( state->metrics.builder_heartbeat_arrival_delta_nanos,
       FD_MHIST_MIN( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ),
       FD_MHIST_MAX( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ) );
-  fd_histf_new( state->metrics.scheduler_pong_enqueue_nanos,
-      FD_MHIST_MIN( BAM, SCHEDULER_PONG_ENQUEUE_NANOS ),
-      FD_MHIST_MAX( BAM, SCHEDULER_PONG_ENQUEUE_NANOS ) );
+  fd_histf_new( state->metrics.scheduler_pong_send_nanos,
+      FD_MHIST_MIN( BAM, SCHEDULER_PONG_SEND_NANOS ),
+      FD_MHIST_MAX( BAM, SCHEDULER_PONG_SEND_NANOS ) );
   return env;
 }
 

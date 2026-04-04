@@ -527,21 +527,23 @@ test_bam_slot_ingress_timing_defers_unresolved_default_slot_until_leader_state( 
 
   fd_bam_slot_ingress_timing_t const * entry = fd_bam_slot_ingress_timing_query_const( state, 200UL );
   FD_TEST( entry );
-  FD_TEST( entry->first_rx_ts_ns == 1000L );
+  FD_TEST( entry->first_rx_ts_ns == 0L );
   FD_TEST( entry->slot_end_ns == 1500L );
-  FD_TEST( entry->txn_unknown_slot_end == 1UL );
+  FD_TEST( entry->txn_unknown_slot_end == 0UL );
   FD_TEST( entry->txn_before_slot_end == 0UL );
   FD_TEST( entry->txn_after_slot_end == 0UL );
   FD_TEST( entry->first_rx_after_slot_end == 0U );
   FD_TEST( !state->unresolved_slot_ingress.valid );
+  FD_TEST( state->metrics.slot_ingress_result_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNRESOLVED_SLOT_IDX ] == 1UL );
+  FD_TEST( state->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_UNRESOLVED_SLOT_IDX ] == 1UL );
 
   fd_bam_test_metrics_write( state );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_NO_INGRESS ) == 0UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_NO_INGRESS ) == 1UL );
   FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_SLOT_END_UNKNOWN ) == 0UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_BEFORE_END ) == 1UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_BEFORE_END ) == 0UL );
   FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AT_END ) == 0UL );
   FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AFTER_END ) == 0UL );
-  FD_TEST( (long)FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS ) == -500L );
+  FD_TEST( (long)FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS ) == LONG_MIN );
 
   state->bam_leader_state = (fd_bam_leader_state_t){ .slot = 201UL };
   fd_bam_test_metrics_write( state );
@@ -2462,7 +2464,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     state->metrics.keepalive_acks_cnt       = 0UL;
     state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] = 0UL;
     state->defer_reset                = 0U;
-    ulong ping_samples_before         = test_hist_total_cnt( state->metrics.scheduler_pong_enqueue_nanos );
+    ulong ping_samples_before         = test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos );
     ulong latency_samples_before      = test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos );
 
     uint32_t ping_id = 0x00c0ffeeU;
@@ -2484,9 +2486,12 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     FD_TEST( state->metrics.builder_heartbeats_decoded_cnt == 0UL );
     FD_TEST( state->metrics.keepalive_acks_cnt == 0UL );
     FD_TEST( state->bam_last_builder_activity_ns == builder_ts );
-    FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_enqueue_nanos ) == ping_samples_before + 1UL );
+    FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos ) == ping_samples_before + 1UL );
     FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == latency_samples_before );
-    FD_TEST( fd_histf_sum( state->metrics.scheduler_pong_enqueue_nanos ) == 0UL );
+    FD_TEST( fd_histf_sum( state->metrics.scheduler_pong_send_nanos ) == 0UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_NO_LIVE_STREAM_IDX ] == 0UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] == 1UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX ] == 0UL );
 
     test_bam_decoded_message_t decoded;
     test_bam_decode_last_message( state, &decoded );
@@ -2525,13 +2530,47 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
 
     FD_TEST( state->bam_last_builder_activity_ns == g_clock - FD_BAM_ACTIVITY_TIMEOUT_NS - (long)1e8 );
     FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
-    FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_enqueue_nanos ) == 1UL );
+    FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos ) == 1UL );
     FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 0UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_NO_LIVE_STREAM_IDX ] == 0UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] == 1UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX ] == 0UL );
 
     int charge_busy = 0;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock == -1 );
     FD_TEST( charge_busy == 1 );
+
+    test_bam_env_destroy( env );
+  }
+
+  {
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    test_bam_env_mock_conn( env );
+    fd_bam_tile_t * state = env->state;
+
+    g_clock = (long)11e9;
+    state->bam_last_builder_activity_ns = g_clock - (long)1e8;
+
+    uchar protobuf[64];
+    bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
+    resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
+    resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_ping_tag;
+    resp.versioned_msg.v0.resp.ping.id = 9U;
+
+    pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, sizeof(protobuf) );
+    FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
+    fd_bam_client_grpc_rx_msg( state,
+                               protobuf,
+                               ostream.bytes_written,
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+    FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos ) == 0UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_NO_LIVE_STREAM_IDX ] == 1UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] == 0UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX ] == 0UL );
+    FD_TEST( state->bam_last_builder_activity_ns == g_clock - (long)1e8 );
 
     test_bam_env_destroy( env );
   }
