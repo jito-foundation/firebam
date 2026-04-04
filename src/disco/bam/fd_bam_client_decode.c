@@ -273,25 +273,20 @@ fd_bam_dump_append_inbound_txn( char *                   msg,
 }
 
 static inline ulong
-fd_bam_resolve_batch_slot( fd_bam_tile_t const *             ctx,
-                           bam_types_AtomicTxnBatch const *  batch ) {
+fd_bam_resolve_batch_slot( bam_types_AtomicTxnBatch const * batch,
+                           ulong                            leader_slot_at_rx ) {
   ulong resolved_slot = batch->max_schedule_slot;
   if( FD_UNLIKELY( resolved_slot==FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ) ) {
-    resolved_slot = ctx->bam_leader_state.slot;
+    resolved_slot = leader_slot_at_rx;
   }
   return resolved_slot;
 }
 
 int
-fd_bam_should_dump_batch( fd_bam_tile_t *               ctx,
-                          bam_types_AtomicTxnBatch const * batch ) {
+fd_bam_should_dump_batch( fd_bam_tile_t * ctx,
+                          ulong           resolved_slot ) {
   if( FD_UNLIKELY( !!ctx->dump_bam_txns ) ) return 1;
   if( FD_LIKELY( !ctx->dump_bam_first_slot_txn ) ) return 0;
-
-  /* Scheduler batches often leave max_schedule_slot at the default sentinel.
-     Fall back to the current leader-state slot so "first per slot" groups by
-     the actual slot boundary instead of collapsing into one lifetime bucket. */
-  ulong resolved_slot = fd_bam_resolve_batch_slot( ctx, batch );
 
   if( FD_LIKELY( ctx->dump_bam_last_slot_valid && ctx->dump_bam_last_slot==resolved_slot ) ) return 0;
 
@@ -446,10 +441,14 @@ void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch ) {
-  ulong resolved_slot = fd_bam_resolve_batch_slot( ctx, batch );
+  ulong resolved_slot = state->ingress_resolved_slot;
   ulong leader_slot = ctx->bam_leader_state.slot;
-  long rx_ts_ns = fd_bam_now();
-  long slot_end_ns = ( resolved_slot==leader_slot ) ? ctx->bam_leader_state.slot_end_ns : 0L;
+  long rx_ts_ns = state->ingress_rx_ts_ns;
+  long slot_end_ns = state->ingress_slot_end_ns;
+  uint scheduler_arrival_tspub = state->ingress_rx_tspub;
+  if( FD_UNLIKELY( !slot_end_ns && resolved_slot==leader_slot ) ) {
+    slot_end_ns = ctx->bam_leader_state.slot_end_ns;
+  }
   fd_bam_slot_ingress_timing_t * entry = NULL;
   if( FD_UNLIKELY( resolved_slot==ULONG_MAX ) ) {
     fd_bam_record_unresolved_slot_ingress( ctx, rx_ts_ns, state->packet_cnt );
@@ -482,7 +481,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     *txn_bucket += state->packet_cnt;
   }
 
-  if( FD_UNLIKELY( fd_bam_should_dump_batch( ctx, batch ) ) ) {
+  if( FD_UNLIKELY( fd_bam_should_dump_batch( ctx, resolved_slot ) ) ) {
     char * msg = fd_bam_dump_log_buf;
     ulong  off = 0UL;
     fd_bam_slot_ingress_timing_t const empty_entry = {0};
@@ -536,6 +535,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                       (ushort)state->packets[i].data.size,
                                       state->packet_cnt,
                                       i,
+                                      scheduler_arrival_tspub,
                                       0 );
     }
     ctx->metrics.atomic_batch_published_cnt++;
@@ -549,6 +549,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                i,
                                state->packet_cnt,
                                state->revert_on_error,
+                               scheduler_arrival_tspub,
                                0 );
     }
   }
@@ -562,6 +563,10 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
 static _Bool
 fd_bam_decode_batch( fd_bam_tile_t *          ctx,
                      pb_istream_t *           stream,
+                     long                     rx_ts_ns,
+                     uint                     rx_tspub,
+                     ulong                    leader_slot_at_rx,
+                     long                     leader_slot_end_ns_at_rx,
                      fd_bam_decoded_batch_t * decoded ) {
   fd_memset( decoded, 0, sizeof(fd_bam_decoded_batch_t) );
   decoded->state.ctx          = ctx;
@@ -597,6 +602,14 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
     return 0;
   }
 
+  decoded->state.ingress_resolved_slot = fd_bam_resolve_batch_slot( &decoded->batch, leader_slot_at_rx );
+  decoded->state.ingress_rx_ts_ns      = rx_ts_ns;
+  decoded->state.ingress_rx_tspub      = rx_tspub;
+  decoded->state.ingress_slot_end_ns   =
+      decoded->state.ingress_resolved_slot==leader_slot_at_rx
+      ? leader_slot_end_ns_at_rx
+      : 0L;
+
   return 1;
 }
 
@@ -607,6 +620,10 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
 static int
 fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
                                          pb_istream_t *   stream,
+                                         long            rx_ts_ns,
+                                         uint            rx_tspub,
+                                         ulong           leader_slot_at_rx,
+                                         long            leader_slot_end_ns_at_rx,
                                          fd_bam_decoded_multi_batch_t * decoded_multi ) {
   fd_memset( decoded_multi, 0, sizeof(fd_bam_decoded_multi_batch_t) );
 
@@ -630,7 +647,13 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 
     if( FD_UNLIKELY( seen_batch_count >= FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ) ) {
       fd_bam_decoded_batch_t overflow_batch;
-      _Bool const ok = fd_bam_decode_batch( ctx, &substream, &overflow_batch );
+      _Bool const ok = fd_bam_decode_batch( ctx,
+                                            &substream,
+                                            rx_ts_ns,
+                                            rx_tspub,
+                                            leader_slot_at_rx,
+                                            leader_slot_end_ns_at_rx,
+                                            &overflow_batch );
       pb_close_string_substream( stream, &substream );
       if( FD_UNLIKELY( !ok ) ) {
         decoded_multi->batch_cnt = 0U;
@@ -656,7 +679,13 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       return 1;
     }
 
-    _Bool const ok = fd_bam_decode_batch( ctx, &substream, &decoded_multi->batches[ seen_batch_count ] );
+    _Bool const ok = fd_bam_decode_batch( ctx,
+                                          &substream,
+                                          rx_ts_ns,
+                                          rx_tspub,
+                                          leader_slot_at_rx,
+                                          leader_slot_end_ns_at_rx,
+                                          &decoded_multi->batches[ seen_batch_count ] );
     pb_close_string_substream( stream, &substream );
     if( FD_UNLIKELY( !ok ) ) {
       /* Invalid AtomicTxnBatch decode is already metered and its
@@ -723,6 +752,10 @@ fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ct
 static int
 fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
                                      pb_istream_t *   stream,
+                                     long             rx_ts_ns,
+                                     uint             rx_tspub,
+                                     ulong            leader_slot_at_rx,
+                                     long             leader_slot_end_ns_at_rx,
                                      fd_bam_decoded_v0_t * decoded_v0 ) {
   fd_memset( decoded_v0, 0, sizeof(fd_bam_decoded_v0_t) );
 
@@ -757,7 +790,13 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
       pb_istream_t substream;
       if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return 0;
       fd_bam_decoded_multi_batch_t decoded_multi;
-      int ok = fd_bam_decode_multiple_atomic_txn_batch( ctx, &substream, &decoded_multi );
+      int ok = fd_bam_decode_multiple_atomic_txn_batch( ctx,
+                                                        &substream,
+                                                        rx_ts_ns,
+                                                        rx_tspub,
+                                                        leader_slot_at_rx,
+                                                        leader_slot_end_ns_at_rx,
+                                                        &decoded_multi );
       pb_close_string_substream( stream, &substream );
       if( FD_UNLIKELY( !ok ) ) return 0;
       ctx->metrics.ingress_multi_message_received_cnt++;
@@ -800,8 +839,11 @@ void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
                                   void const *    data,
                                   ulong           data_sz,
-                                  long            rx_ts_ns ) {
+                                  long            rx_ts_ns,
+                                  uint            rx_tspub ) {
   pb_istream_t istream = pb_istream_from_buffer( data, data_sz );
+  ulong leader_slot_at_rx = ctx->bam_leader_state.slot;
+  long  leader_slot_end_ns_at_rx = ctx->bam_leader_state.slot_end_ns;
 
   uint32_t      tag;
   pb_wire_type_t wire_type;
@@ -825,7 +867,13 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
     pb_istream_t substream;
     if( FD_UNLIKELY( !pb_make_string_substream( &istream, &substream ) ) ) goto fail;
     fd_bam_decoded_v0_t staged_v0;
-    int ok = fd_bam_decode_scheduler_response_v0( ctx, &substream, &staged_v0 );
+    int ok = fd_bam_decode_scheduler_response_v0( ctx,
+                                                  &substream,
+                                                  rx_ts_ns,
+                                                  rx_tspub,
+                                                  leader_slot_at_rx,
+                                                  leader_slot_end_ns_at_rx,
+                                                  &staged_v0 );
     pb_close_string_substream( &istream, &substream );
     if( FD_UNLIKELY( !ok ) ) goto fail;
     decoded_v0 = staged_v0;
@@ -847,7 +895,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
 
   switch( decoded_v0.kind ) {
   case FD_BAM_V0_STAGED_HEARTBEAT:
-    ctx->bam_last_builder_heartbeat_ns = rx_ts_ns;
+    ctx->bam_last_builder_activity_ns = rx_ts_ns;
     if( FD_LIKELY( decoded_v0.heartbeat_time_sent_microseconds ) ) {
       ulong tsorig_ns = decoded_v0.heartbeat_time_sent_microseconds * 1000UL;
       ulong rx_ts_u   = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
@@ -857,11 +905,11 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
     break;
   case FD_BAM_V0_STAGED_MULTI:
     fd_bam_commit_multiple_atomic_txn_batch( ctx, &decoded_v0.multi );
-    ctx->bam_last_builder_heartbeat_ns = rx_ts_ns;
+    ctx->bam_last_builder_activity_ns = rx_ts_ns;
     break;
   case FD_BAM_V0_STAGED_PING:
     /* Scheduler proto Ping is only a latency probe. It must be answered on
-       the protobuf stream, but it does not refresh the builder-heartbeat
+       the protobuf stream, but it does not refresh the builder-activity
        watchdog or HTTP/2 keepalive state. */
     if( FD_LIKELY( ctx->bam_stream && ctx->bam_stream_live ) ) {
       bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;

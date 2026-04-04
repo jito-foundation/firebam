@@ -15,7 +15,7 @@
 #define FD_METRICS_GAUGE_BAM_HEALTHY_OFF  (17UL)
 #define FD_METRICS_GAUGE_BAM_HEALTHY_NAME "bam_healthy"
 #define FD_METRICS_GAUGE_BAM_HEALTHY_TYPE (FD_METRICS_TYPE_GAUGE)
-#define FD_METRICS_GAUGE_BAM_HEALTHY_DESC "Boolean gauge: 1 when the BAM client transport, auth, config, scheduler stream, and heartbeat checks are healthy; otherwise 0. This does not imply that fresh work for the current leader slot has arrived yet."
+#define FD_METRICS_GAUGE_BAM_HEALTHY_DESC "Boolean gauge: 1 when the BAM client transport, auth, config, scheduler stream, and builder-activity checks are healthy; otherwise 0. This does not imply that fresh work for the current leader slot has arrived yet."
 #define FD_METRICS_GAUGE_BAM_HEALTHY_CVT  (FD_METRICS_CONVERTER_NONE)
 
 #define FD_METRICS_GAUGE_BAM_STREAM_LIVE_OFF  (18UL)
@@ -89,18 +89,18 @@
 #define FD_METRICS_COUNTER_BAM_FAILURE_UNSUPPORTED_VERSION_OFF (34UL)
 #define FD_METRICS_COUNTER_BAM_FAILURE_REQUEST_TIMEOUT_OFF (35UL)
 #define FD_METRICS_COUNTER_BAM_FAILURE_KEEPALIVE_TIMEOUT_OFF (36UL)
-#define FD_METRICS_COUNTER_BAM_FAILURE_BUILDER_HEARTBEAT_TIMEOUT_OFF (37UL)
+#define FD_METRICS_COUNTER_BAM_FAILURE_BUILDER_ACTIVITY_TIMEOUT_OFF (37UL)
 
 #define FD_METRICS_GAUGE_BAM_HEAP_SIZE_OFF  (38UL)
 #define FD_METRICS_GAUGE_BAM_HEAP_SIZE_NAME "bam_heap_size"
 #define FD_METRICS_GAUGE_BAM_HEAP_SIZE_TYPE (FD_METRICS_TYPE_GAUGE)
-#define FD_METRICS_GAUGE_BAM_HEAP_SIZE_DESC "Total workspace capacity reserved for the BAM tile (bytes)"
+#define FD_METRICS_GAUGE_BAM_HEAP_SIZE_DESC "Total workspace capacity reserved for the BAM tile (bytes). Sampled at most once per second to avoid repeated workspace scans."
 #define FD_METRICS_GAUGE_BAM_HEAP_SIZE_CVT  (FD_METRICS_CONVERTER_NONE)
 
 #define FD_METRICS_GAUGE_BAM_HEAP_FREE_BYTES_OFF  (39UL)
 #define FD_METRICS_GAUGE_BAM_HEAP_FREE_BYTES_NAME "bam_heap_free_bytes"
 #define FD_METRICS_GAUGE_BAM_HEAP_FREE_BYTES_TYPE (FD_METRICS_TYPE_GAUGE)
-#define FD_METRICS_GAUGE_BAM_HEAP_FREE_BYTES_DESC "Estimated free capacity in the BAM tile workspace heap (bytes)"
+#define FD_METRICS_GAUGE_BAM_HEAP_FREE_BYTES_DESC "Estimated free capacity in the BAM tile workspace heap (bytes). Sampled at most once per second to avoid repeated workspace scans."
 #define FD_METRICS_GAUGE_BAM_HEAP_FREE_BYTES_CVT  (FD_METRICS_CONVERTER_NONE)
 
 #define FD_METRICS_COUNTER_BAM_KEEPALIVE_ACKS_OFF  (40UL)
@@ -274,7 +274,7 @@
 #define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_RESULT_OFF  (78UL)
 #define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_RESULT_NAME "bam_slot_ingress_result"
 #define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_RESULT_TYPE (FD_METRICS_TYPE_COUNTER)
-#define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_RESULT_DESC "Cumulative number of BAM slot-ingress records finalized after they aged out of the local retention window, bucketed by first ingress relative to slot end"
+#define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_RESULT_DESC "Cumulative number of BAM slot-ingress records finalized after they aged out of the local retention window, bucketed by the first scheduler-receive callback for that slot relative to slot end"
 #define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_RESULT_CVT  (FD_METRICS_CONVERTER_NONE)
 #define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_RESULT_CNT  (4UL)
 
@@ -286,7 +286,7 @@
 #define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_TRANSACTIONS_OFF  (82UL)
 #define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_TRANSACTIONS_NAME "bam_slot_ingress_transactions"
 #define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_TRANSACTIONS_TYPE (FD_METRICS_TYPE_COUNTER)
-#define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_TRANSACTIONS_DESC "Cumulative number of BAM ingress transactions counted in finalized per-slot ingress rollups, bucketed as before-end or after-end only when slot_end_ns was known at observation time, else unknown"
+#define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_TRANSACTIONS_DESC "Cumulative number of BAM ingress transactions counted in finalized per-slot ingress rollups using scheduler-receive callback timestamps, bucketed as before-end or after-end only when slot_end_ns was known at observation time, else unknown"
 #define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_TRANSACTIONS_CVT  (FD_METRICS_CONVERTER_NONE)
 #define FD_METRICS_COUNTER_BAM_SLOT_INGRESS_TRANSACTIONS_CNT  (3UL)
 
@@ -347,31 +347,26 @@
 #define FD_METRICS_GAUGE_BAM_FEEDBACK_QUEUE_DEPTH_DESC "Current number of BAM feedback results buffered for send"
 #define FD_METRICS_GAUGE_BAM_FEEDBACK_QUEUE_DEPTH_CVT  (FD_METRICS_CONVERTER_NONE)
 
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_RECORDED_OFF  (97UL)
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_RECORDED_NAME "bam_current_leader_slot_first_ingress_recorded"
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_RECORDED_TYPE (FD_METRICS_TYPE_GAUGE)
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_RECORDED_DESC "Boolean gauge: 1 when BAM has observed at least one ingress transaction for the current leader slot, 0 otherwise"
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_RECORDED_CVT  (FD_METRICS_CONVERTER_NONE)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_OFF  (97UL)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_NAME "bam_current_leader_slot_first_ingress_state"
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_TYPE (FD_METRICS_TYPE_GAUGE)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_DESC "One-hot state for the current leader slot's first observed scheduler-receive callback relative to slot end. Exactly one enum bucket is exported as 1 for the current local view; all others are 0."
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_CVT  (FD_METRICS_CONVERTER_NONE)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_CNT  (5UL)
 
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_SLOT_END_KNOWN_OFF  (98UL)
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_SLOT_END_KNOWN_NAME "bam_current_leader_slot_first_ingress_slot_end_known"
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_SLOT_END_KNOWN_TYPE (FD_METRICS_TYPE_GAUGE)
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_SLOT_END_KNOWN_DESC "Boolean gauge: 1 when slot_end_ns is known for the current leader slot's first observed BAM ingress, 0 otherwise"
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_SLOT_END_KNOWN_CVT  (FD_METRICS_CONVERTER_NONE)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_NO_INGRESS_OFF (97UL)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_SLOT_END_UNKNOWN_OFF (98UL)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_BEFORE_END_OFF (99UL)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AT_END_OFF (100UL)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AFTER_END_OFF (101UL)
 
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_DISTANCE_NANOS_OFF  (99UL)
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_DISTANCE_NANOS_NAME "bam_current_leader_slot_first_ingress_distance_nanos"
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_DISTANCE_NANOS_TYPE (FD_METRICS_TYPE_GAUGE)
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_DISTANCE_NANOS_DESC "Absolute distance in nanoseconds between the current leader slot's slot_end_ns and its first observed BAM ingress. Exported as 0 until a first ingress has been observed and slot_end_ns is known"
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_DISTANCE_NANOS_CVT  (FD_METRICS_CONVERTER_NONE)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS_OFF  (102UL)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS_NAME "bam_current_leader_slot_first_ingress_minus_slot_end_nanos"
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS_TYPE (FD_METRICS_TYPE_GAUGE)
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS_DESC "Signed nanosecond delta between the current leader slot's first observed scheduler-receive callback and slot_end_ns. Negative means before slot end, 0 means exactly at slot end, positive means after slot end, and LONG_MIN means no first ingress has been observed yet or slot_end_ns is still unknown."
+#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS_CVT  (FD_METRICS_CONVERTER_SIGNED_NONE)
 
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_AFTER_END_OFF  (100UL)
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_AFTER_END_NAME "bam_current_leader_slot_first_ingress_after_end"
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_AFTER_END_TYPE (FD_METRICS_TYPE_GAUGE)
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_AFTER_END_DESC "Boolean gauge: 1 when the current leader slot's first observed BAM ingress arrived after slot end, 0 when it arrived before slot end or the relation is not yet known"
-#define FD_METRICS_GAUGE_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_AFTER_END_CVT  (FD_METRICS_CONVERTER_NONE)
-
-#define FD_METRICS_HISTOGRAM_BAM_BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS_OFF  (101UL)
+#define FD_METRICS_HISTOGRAM_BAM_BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS_OFF  (103UL)
 #define FD_METRICS_HISTOGRAM_BAM_BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS_NAME "bam_builder_heartbeat_arrival_delta_nanos"
 #define FD_METRICS_HISTOGRAM_BAM_BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS_TYPE (FD_METRICS_TYPE_HISTOGRAM)
 #define FD_METRICS_HISTOGRAM_BAM_BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS_DESC "Distribution of remote BuilderHeartBeat timestamp to local scheduler-stream receive callback delta (nanoseconds); includes clock offset and is intended only for relative trend analysis"
@@ -379,7 +374,7 @@
 #define FD_METRICS_HISTOGRAM_BAM_BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS_MIN  (10000UL)
 #define FD_METRICS_HISTOGRAM_BAM_BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS_MAX  (100000000UL)
 
-#define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_ENQUEUE_NANOS_OFF  (118UL)
+#define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_ENQUEUE_NANOS_OFF  (120UL)
 #define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_ENQUEUE_NANOS_NAME "bam_scheduler_pong_enqueue_nanos"
 #define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_ENQUEUE_NANOS_TYPE (FD_METRICS_TYPE_HISTOGRAM)
 #define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_ENQUEUE_NANOS_DESC "Distribution of local BAM scheduler Ping-to-Pong enqueue turnaround from scheduler-message receive callback to successful Pong enqueue (nanoseconds). This is local processing and enqueue latency, not network RTT."
@@ -387,7 +382,7 @@
 #define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_ENQUEUE_NANOS_MIN  (1UL)
 #define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_ENQUEUE_NANOS_MAX  (100000000UL)
 
-#define FD_METRICS_BAM_TOTAL (87UL)
+#define FD_METRICS_BAM_TOTAL (89UL)
 extern const fd_metrics_meta_t FD_METRICS_BAM[FD_METRICS_BAM_TOTAL];
 
 #endif /* HEADER_fd_src_disco_metrics_generated_fd_metrics_bam_h */

@@ -5,6 +5,7 @@
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../ballet/nanopb/pb_decode.h"
 #include "../bundle/fd_bundle_crank.h"
+#include <limits.h>
 
 static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL, 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
 
@@ -390,35 +391,29 @@ test_bam_dump_bam_first_slot_txn_gate( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
   state->dump_bam_first_slot_txn = 1U;
 
-  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
-
   state->bam_leader_state.slot = 100UL;
-  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
-  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 1 );
+  FD_TEST( fd_bam_should_dump_batch( state, 100UL ) == 1 );
   FD_TEST( state->dump_bam_last_slot_valid == 1U );
   FD_TEST( state->dump_bam_last_slot == 100UL );
-  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 0 );
+  FD_TEST( fd_bam_should_dump_batch( state, 100UL ) == 0 );
 
   state->bam_leader_state.slot = 101UL;
-  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 1 );
+  FD_TEST( fd_bam_should_dump_batch( state, 101UL ) == 1 );
   FD_TEST( state->dump_bam_last_slot == 101UL );
-  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 0 );
+  FD_TEST( fd_bam_should_dump_batch( state, 101UL ) == 0 );
 
-  batch.max_schedule_slot = 222UL;
   state->bam_leader_state.slot = 102UL;
-  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 1 );
+  FD_TEST( fd_bam_should_dump_batch( state, 222UL ) == 1 );
   FD_TEST( state->dump_bam_last_slot == 222UL );
-  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 0 );
+  FD_TEST( fd_bam_should_dump_batch( state, 222UL ) == 0 );
 
-  batch.max_schedule_slot = 0UL;
   state->bam_leader_state.slot = 103UL;
-  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 1 );
+  FD_TEST( fd_bam_should_dump_batch( state, 0UL ) == 1 );
   FD_TEST( state->dump_bam_last_slot == 0UL );
-  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 0 );
+  FD_TEST( fd_bam_should_dump_batch( state, 0UL ) == 0 );
 
   state->dump_bam_txns = 1U;
-  batch.max_schedule_slot = 223UL;
-  FD_TEST( fd_bam_should_dump_batch( state, &batch ) == 1 );
+  FD_TEST( fd_bam_should_dump_batch( state, 223UL ) == 1 );
 
   test_bam_env_destroy( env );
 }
@@ -541,10 +536,21 @@ test_bam_slot_ingress_timing_defers_unresolved_default_slot_until_leader_state( 
   FD_TEST( !state->unresolved_slot_ingress.valid );
 
   fd_bam_test_metrics_write( state );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_RECORDED ) == 1UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_SLOT_END_KNOWN ) == 1UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_DISTANCE_NANOS ) == 500UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_AFTER_END ) == 0UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_NO_INGRESS ) == 0UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_SLOT_END_UNKNOWN ) == 0UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_BEFORE_END ) == 1UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AT_END ) == 0UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AFTER_END ) == 0UL );
+  FD_TEST( (long)FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS ) == -500L );
+
+  state->bam_leader_state = (fd_bam_leader_state_t){ .slot = 201UL };
+  fd_bam_test_metrics_write( state );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_NO_INGRESS ) == 1UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_SLOT_END_UNKNOWN ) == 0UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_BEFORE_END ) == 0UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AT_END ) == 0UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AFTER_END ) == 0UL );
+  FD_TEST( (long)FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS ) == LONG_MIN );
 
   test_bam_env_destroy( env );
 }
@@ -561,7 +567,7 @@ test_bam_freshness_status_bits( fd_wksp_t * wksp ) {
   test_bam_env_inject_config_response( state );
 
   long now = fd_bam_now();
-  state->bam_last_builder_heartbeat_ns   = now;
+  state->bam_last_builder_activity_ns    = now;
   state->bam_stream_live                 = 1U;
   state->bam_status_recent               = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
 
@@ -734,12 +740,18 @@ test_bam_slot_ingress_timing_tracks_hash_collisions( fd_wksp_t * wksp ) {
   bam_types_AtomicTxnBatch batch_a = bam_types_AtomicTxnBatch_init_default;
   batch_a.seq_id = 123U;
   batch_a.max_schedule_slot = 100UL;
+  batch_state.ingress_resolved_slot = 100UL;
+  batch_state.ingress_rx_ts_ns      = 3000L;
+  batch_state.ingress_rx_tspub      = 1U;
   g_clock = 3000L;
   fd_bam_publish_batch( state, &batch_state, &batch_a );
 
   bam_types_AtomicTxnBatch batch_b = bam_types_AtomicTxnBatch_init_default;
   batch_b.seq_id = 124U;
   batch_b.max_schedule_slot = 100UL + FD_BAM_SLOT_INGRESS_TIMING_CNT;
+  batch_state.ingress_resolved_slot = 100UL + FD_BAM_SLOT_INGRESS_TIMING_CNT;
+  batch_state.ingress_rx_ts_ns      = 4444L;
+  batch_state.ingress_rx_tspub      = 2U;
   g_clock = 4444L;
   fd_bam_publish_batch( state, &batch_state, &batch_b );
 
@@ -752,6 +764,45 @@ test_bam_slot_ingress_timing_tracks_hash_collisions( fd_wksp_t * wksp ) {
   FD_TEST( entry_b->first_rx_ts_ns == 4444L );
   FD_TEST( entry_a->txn_unknown_slot_end == 1UL );
   FD_TEST( entry_b->txn_unknown_slot_end == 1UL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_publish_batch_uses_captured_ingress_metadata( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  fd_bam_batch_ctx_t batch_state;
+  fd_memset( &batch_state, 0, sizeof(batch_state) );
+  batch_state.packet_cnt = 1U;
+  batch_state.ingress_resolved_slot = 100UL;
+  batch_state.ingress_rx_ts_ns      = 1000L;
+  batch_state.ingress_slot_end_ns   = 1500L;
+  batch_state.ingress_rx_tspub      = 123456789U;
+  batch_state.packets[ 0 ].data.size = (pb_size_t)bam_dump_txn_fixture_sz;
+  fd_memcpy( batch_state.packets[ 0 ].data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
+
+  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
+  batch.seq_id = 77U;
+  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+
+  state->bam_leader_state.slot        = 101UL;
+  state->bam_leader_state.slot_end_ns = 2500L;
+  g_clock = 2000L;
+  fd_bam_publish_batch( state, &batch_state, &batch );
+
+  fd_bam_slot_ingress_timing_t const * entry = fd_bam_slot_ingress_timing_query_const( state, 100UL );
+  FD_TEST( entry );
+  FD_TEST( entry->first_rx_ts_ns == 1000L );
+  FD_TEST( entry->slot_end_ns == 1500L );
+  FD_TEST( entry->txn_before_slot_end == 1UL );
+  FD_TEST( entry->txn_after_slot_end == 0UL );
+  FD_TEST( entry->txn_unknown_slot_end == 0UL );
+
+  fd_txn_m_t const * first = (fd_txn_m_t const *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
+  FD_TEST( first->scheduler_arrival_tspub == 123456789U );
 
   test_bam_env_destroy( env );
 }
@@ -1881,34 +1932,34 @@ test_bam_heartbeat_env_start( test_bam_env_t * env,
   state->keepalive->ts_deadline = LONG_MAX;
   state->keepalive->inflight   = 0U;
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-  FD_TEST( state->bam_last_builder_heartbeat_ns == g_clock );
+  FD_TEST( state->bam_last_builder_activity_ns == g_clock );
   FD_TEST( state->bam_last_validator_heartbeat_ns == g_clock );
   return state;
 }
 
 static void
 test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
-  /* Test 1: Watchdog drops the connection once the builder heartbeat is stale (>6s) while streams are live. */
+  /* Test 1: Watchdog drops the connection once builder activity is stale (>6s) while streams are live. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e8;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS + (long)1e8;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock == -1 );
     FD_TEST( state->tcp_sock_connected == 0U );
     FD_TEST( charge_busy == 1 );
-    FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_BUILDER_HEARTBEAT_TIMEOUT_IDX ] == 1UL );
+    FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_BUILDER_ACTIVITY_TIMEOUT_IDX ] == 1UL );
     test_bam_env_destroy( env );
   }
 
-  /* Test 2: An uninitialized heartbeat timestamp (0L) should never trip the watchdog. */
+  /* Test 2: An uninitialized builder-activity timestamp (0L) should never trip the watchdog. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
-    state->bam_last_builder_heartbeat_ns = 0L;
+    state->bam_last_builder_activity_ns = 0L;
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e9;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS + (long)1e9;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock >= 0 );
     FD_TEST( state->tcp_sock_connected == 1U );
@@ -1921,7 +1972,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     state->bam_stream_live = 0;
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e9;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS + (long)1e9;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock >= 0 );
     test_bam_env_destroy( env );
@@ -1932,7 +1983,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e6; /* 1ms before timeout */
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)1e6; /* 1ms before timeout */
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock >= 0 );
     test_bam_env_destroy( env );
@@ -1943,7 +1994,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock == -1 );
     FD_TEST( charge_busy == 1 );
@@ -1955,7 +2006,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + 1L;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS + 1L;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock == -1 );
     FD_TEST( charge_busy == 1 );
@@ -1968,7 +2019,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     state->enabled = 0;
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)1e9;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS + (long)1e9;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock >= 0 );
     test_bam_env_destroy( env );
@@ -1977,17 +2028,17 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
 
 static void
 test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
-  /* Uses helper-generated scheduler responses to drive heartbeat timestamping
+  /* Uses helper-generated scheduler responses to drive activity timestamping
      and ensure batches refresh the watchdog deadline. */
 
   /* Heartbeat message updates timestamp and produces one heartbeat-latency sample. */
   {
-    /* Subtest: direct heartbeat bumps the builder heartbeat timestamp. */
+    /* Subtest: direct heartbeat bumps the builder-activity timestamp. */
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     test_bam_send_scheduler_heartbeat( state, 1UL );
     long expected_ts = g_clock;
-    FD_TEST( state->bam_last_builder_heartbeat_ns == expected_ts );
+    FD_TEST( state->bam_last_builder_activity_ns == expected_ts );
     FD_TEST( state->metrics.builder_heartbeats_decoded_cnt == 1UL );
     FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 1UL );
     test_bam_env_destroy( env );
@@ -1999,9 +2050,9 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_t env[1];
    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)2e8;
     test_bam_send_scheduler_heartbeat( state, 1UL );
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)1e8;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock >= 0 );
     test_bam_env_destroy( env );
@@ -2013,9 +2064,9 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)2e8;
     test_bam_send_scheduler_heartbeat( state, 1UL );
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)2e8;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS + (long)2e8;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock == -1 );
     FD_TEST( charge_busy == 1 );
@@ -2029,7 +2080,7 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     test_bam_send_scheduler_bundle( state, 0U, 0 );
     long expected_ts = g_clock;
-    FD_TEST( state->bam_last_builder_heartbeat_ns == expected_ts );
+    FD_TEST( state->bam_last_builder_activity_ns == expected_ts );
     test_bam_env_destroy( env );
   }
 
@@ -2038,9 +2089,9 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)2e8;
     test_bam_send_scheduler_bundle( state, 0U, 0 );
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)1e8;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock >= 0 );
     test_bam_env_destroy( env );
@@ -2051,9 +2102,9 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     int charge_busy = 0;
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)2e8;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)2e8;
     test_bam_send_scheduler_bundle( state, 0U, 0 );
-    g_clock += FD_BAM_HEARTBEAT_TIMEOUT_NS + (long)2e8;
+    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS + (long)2e8;
     fd_bam_client_step( state, &charge_busy );
     FD_TEST( state->tcp_sock == -1 );
     FD_TEST( charge_busy == 1 );
@@ -2069,7 +2120,7 @@ test_bam_client_status( fd_wksp_t * wksp ) {
   test_bam_env_mock_conn_empty( env );
   test_bam_env_mock_h2_hs( state );
   long now = fd_bam_now();
-  state->bam_last_builder_heartbeat_ns   = now;
+  state->bam_last_builder_activity_ns    = now;
   state->bam_last_validator_heartbeat_ns = now;
   state->bam_stream_live                 = 1U;
 
@@ -2100,12 +2151,12 @@ test_bam_client_status( fd_wksp_t * wksp ) {
   fd_bam_tile_t state_backup = *state;
   fd_grpc_client_t client_backup = *state->grpc_client;
 
-  /* Connections should start unhealthy until a heartbeat arrives. */
-  state->bam_last_builder_heartbeat_ns = 0L;
+  /* Connections should start unhealthy until builder activity arrives. */
+  state->bam_last_builder_activity_ns = 0L;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
 
-  /* A stale heartbeat should not report healthy. */
-  state->bam_last_builder_heartbeat_ns = fd_bam_now() - FD_BAM_HEARTBEAT_TIMEOUT_NS;
+  /* Stale builder activity should not report healthy. */
+  state->bam_last_builder_activity_ns = fd_bam_now() - FD_BAM_ACTIVITY_TIMEOUT_NS;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
 
   // verify restore gets us back to HEALTHY
@@ -2126,8 +2177,8 @@ test_bam_client_status( fd_wksp_t * wksp ) {
   *state = state_backup;
   *state->grpc_client = client_backup;
 
-  /* Negative/garbled heartbeat timestamp is treated as UNHEALTHY. */
-  state->bam_last_builder_heartbeat_ns = -1L;
+  /* Negative/garbled builder-activity timestamp is treated as UNHEALTHY. */
+  state->bam_last_builder_activity_ns = -1L;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
   *state = state_backup;
   *state->grpc_client = client_backup;
@@ -2406,7 +2457,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
 
     g_clock = (long)9e9;
     long builder_ts = g_clock - (long)1e8;
-    state->bam_last_builder_heartbeat_ns = builder_ts;
+    state->bam_last_builder_activity_ns = builder_ts;
     state->metrics.builder_heartbeats_decoded_cnt = 0UL;
     state->metrics.keepalive_acks_cnt       = 0UL;
     state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] = 0UL;
@@ -2432,7 +2483,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
     FD_TEST( state->metrics.builder_heartbeats_decoded_cnt == 0UL );
     FD_TEST( state->metrics.keepalive_acks_cnt == 0UL );
-    FD_TEST( state->bam_last_builder_heartbeat_ns == builder_ts );
+    FD_TEST( state->bam_last_builder_activity_ns == builder_ts );
     FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_enqueue_nanos ) == ping_samples_before + 1UL );
     FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == latency_samples_before );
     FD_TEST( fd_histf_sum( state->metrics.scheduler_pong_enqueue_nanos ) == 0UL );
@@ -2455,7 +2506,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     test_bam_prepare_scheduler_stream( state );
 
     g_clock = (long)10e9;
-    state->bam_last_builder_heartbeat_ns = g_clock - FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8;
+    state->bam_last_builder_activity_ns = g_clock - FD_BAM_ACTIVITY_TIMEOUT_NS - (long)1e8;
     test_bam_keepalive_sync( state, g_clock );
     FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
 
@@ -2472,7 +2523,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
                                ostream.bytes_written,
                                FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-    FD_TEST( state->bam_last_builder_heartbeat_ns == g_clock - FD_BAM_HEARTBEAT_TIMEOUT_NS - (long)1e8 );
+    FD_TEST( state->bam_last_builder_activity_ns == g_clock - FD_BAM_ACTIVITY_TIMEOUT_NS - (long)1e8 );
     FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
     FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_enqueue_nanos ) == 1UL );
     FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 0UL );
@@ -4298,6 +4349,7 @@ main( int     argc,
   test_bam_slot_ingress_timing_summary_format_and_gate( wksp );
   test_bam_slot_ingress_timing_summary_on_leader_slot_advance( wksp );
   test_bam_slot_ingress_timing_tracks_hash_collisions( wksp );
+  test_bam_publish_batch_uses_captured_ingress_metadata( wksp );
   test_bam_multiple_batches_forwarded( wksp );
   test_bam_multiple_batches_accept_limit_counts( wksp );
   test_bam_scheduler_truncated_message_dropped( wksp );

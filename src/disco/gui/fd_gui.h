@@ -684,7 +684,8 @@ struct fd_gui {
     float  keepalive_rtt_smoothed;
     float  keepalive_rtt_deviation;
     ushort feedback_queue_depth;
-    ulong  validator_heartbeats_enqueued;
+    ulong  outbound_heartbeat_enqueued;
+    ulong  outbound_heartbeat_enqueue_fail;
     ulong  builder_heartbeats_decoded;
     ulong  transaction_published;
     ulong  atomic_batch_published;
@@ -693,9 +694,13 @@ struct fd_gui {
     ulong  failure_config_decode;
     ulong  failure_scheduler_envelope_decode;
     ulong  failure_request_failed;
-    ulong  failure_transport;
+    ulong  failure_resolve;
+    ulong  failure_connect;
+    ulong  failure_io;
     ulong  failure_unsupported_version;
-    ulong  failure_timeout;
+    ulong  failure_request_timeout;
+    ulong  failure_keepalive_timeout;
+    ulong  failure_builder_activity_timeout;
     ulong  ingress_multi_message_received;
     ulong  ingress_batch_commit_attempt;
     ulong  ingress_batch_published;

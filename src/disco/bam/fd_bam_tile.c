@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <ctype.h> /* isspace */
 #include <dirent.h> /* opendir */
+#include <limits.h> /* LONG_MIN */
 #include <stdio.h> /* snprintf */
 #include <fcntl.h> /* F_SETFL */
 #include <unistd.h> /* close */
@@ -23,6 +24,8 @@
 #include "../../waltz/resolv/fd_netdb.h"
 
 #include "../bundle/generated/fd_bundle_tile_seccomp.h"
+
+#define FD_BAM_HEAP_USAGE_REFRESH_NS ((long)1e9)
 
 /* Provided by fdctl/firedancer version.c */
 extern char const fdctl_version_string[];
@@ -70,27 +73,76 @@ fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
 }
 
 static inline void
+fd_bam_write_ip4_port_cstr( char         dst[ static 22 ],
+                            fd_ip4_port_t ip4_port ) {
+  if( FD_UNLIKELY( !( ip4_port.addr && ip4_port.port ) ) ) return;
+  snprintf( dst, 22UL,
+            FD_IP4_ADDR_FMT ":%hu",
+            FD_IP4_ADDR_FMT_ARGS( ip4_port.addr ),
+            fd_ushort_bswap( ip4_port.port ) );
+}
+
+typedef struct {
+  ulong state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_CNT ];
+  long  minus_slot_end_ns;
+} fd_bam_current_slot_first_ingress_metrics_t;
+
+static inline fd_bam_current_slot_first_ingress_metrics_t
+fd_bam_current_slot_first_ingress_metrics( fd_bam_tile_t const * ctx ) {
+  fd_bam_current_slot_first_ingress_metrics_t metrics = {
+    .state = {0},
+    .minus_slot_end_ns = LONG_MIN
+  };
+  metrics.state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_NO_INGRESS_IDX ] = 1UL;
+
+  ulong leader_slot = ctx->bam_leader_state.slot;
+  if( FD_UNLIKELY( leader_slot==ULONG_MAX ) ) return metrics;
+
+  fd_bam_slot_ingress_timing_t const * entry = fd_bam_slot_ingress_timing_query_const( ctx, leader_slot );
+  if( FD_UNLIKELY( !entry || !entry->first_rx_ts_ns ) ) return metrics;
+
+  long slot_end_ns = entry->slot_end_ns ? entry->slot_end_ns : ctx->bam_leader_state.slot_end_ns;
+  if( FD_UNLIKELY( !slot_end_ns ) ) {
+    metrics.state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_NO_INGRESS_IDX ]       = 0UL;
+    metrics.state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_SLOT_END_UNKNOWN_IDX ] = 1UL;
+    return metrics;
+  }
+
+  long delta = entry->first_rx_ts_ns - slot_end_ns;
+  ulong state_idx = delta<0L ? FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_BEFORE_END_IDX
+                    : delta>0L ? FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_AFTER_END_IDX
+                               : FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_AT_END_IDX;
+  metrics.state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_NO_INGRESS_IDX ] = 0UL;
+  metrics.state[ state_idx ] = 1UL;
+  metrics.minus_slot_end_ns = delta;
+  return metrics;
+}
+
+static inline void
+fd_bam_refresh_heap_usage_cache( fd_bam_tile_t * ctx,
+                                 long            now_ns ) {
+  if( FD_LIKELY( ctx->heap_usage_last_update_ns &&
+                 now_ns - ctx->heap_usage_last_update_ns < FD_BAM_HEAP_USAGE_REFRESH_NS ) ) return;
+
+  fd_wksp_usage_t usage[1];
+  ulong const free_tag = 0UL;
+  if( FD_UNLIKELY( !fd_wksp_usage( ctx->heap_wksp, &free_tag, 1UL, usage ) ) ) {
+    FD_LOG_ERR(( "fd_wksp_usage failed" )); /* unreachable */
+  }
+
+  ctx->heap_size_cached        = usage->total_sz;
+  ctx->heap_free_bytes_cached  = usage->free_sz;
+  ctx->heap_usage_last_update_ns = now_ns;
+}
+
+static inline void
 metrics_write( fd_bam_tile_t * ctx ) {
   fd_grpc_client_metrics_t const * grpc_metrics = ctx->grpc_metrics;
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
+  long now_ns = fd_log_wallclock();
   _Bool healthy = status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
-  ulong current_slot_first_ingress_recorded       = 0UL;
-  ulong current_slot_first_ingress_slot_end_known = 0UL;
-  ulong current_slot_first_ingress_distance_nanos = 0UL;
-  ulong current_slot_first_ingress_after_end      = 0UL;
-  ulong leader_slot = ctx->bam_leader_state.slot;
-  fd_bam_slot_ingress_timing_t const * entry =
-      leader_slot==ULONG_MAX ? NULL : fd_bam_slot_ingress_timing_query_const( ctx, leader_slot );
-  if( FD_LIKELY( entry && entry->first_rx_ts_ns ) ) {
-    current_slot_first_ingress_recorded = 1UL;
-    long slot_end_ns = entry->slot_end_ns ? entry->slot_end_ns : ctx->bam_leader_state.slot_end_ns;
-    if( FD_LIKELY( slot_end_ns ) ) {
-      long delta = entry->first_rx_ts_ns - slot_end_ns;
-      current_slot_first_ingress_slot_end_known = 1UL;
-      current_slot_first_ingress_distance_nanos = fd_long_abs( delta );
-      current_slot_first_ingress_after_end      = (ulong)( delta>0L );
-    }
-  }
+  fd_bam_current_slot_first_ingress_metrics_t current_slot_first_ingress =
+      fd_bam_current_slot_first_ingress_metrics( ctx );
   FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.transaction_published_cnt          );
   FD_MCNT_SET( BAM, ATOMIC_BATCH_PUBLISHED,  ctx->metrics.atomic_batch_published_cnt );
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_results_dropped_cnt   );
@@ -137,21 +189,15 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, LEADER_STATE_TICK,    (ulong)ctx->bam_leader_state.tick );
   FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT_END_NANOS,
                  ctx->bam_leader_state.slot_end_ns>0L ? (ulong)ctx->bam_leader_state.slot_end_ns : 0UL );
-  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_RECORDED,       current_slot_first_ingress_recorded );
-  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_SLOT_END_KNOWN, current_slot_first_ingress_slot_end_known );
-  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_DISTANCE_NANOS, current_slot_first_ingress_distance_nanos );
-  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_AFTER_END,      current_slot_first_ingress_after_end );
+  FD_MGAUGE_ENUM_COPY( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE, current_slot_first_ingress.state );
+  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS,
+                 (ulong)current_slot_first_ingress.minus_slot_end_ns );
   FD_MHIST_COPY( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
   FD_MHIST_COPY( BAM, SCHEDULER_PONG_ENQUEUE_NANOS, ctx->metrics.scheduler_pong_enqueue_nanos );
 
-  fd_wksp_t * wksp = fd_wksp_containing( ctx );
-  fd_wksp_usage_t usage[1];
-  ulong const free_tag = 0UL;
-  if( FD_UNLIKELY( !fd_wksp_usage( wksp, &free_tag, 1UL, usage ) ) ) {
-    FD_LOG_ERR(( "fd_wksp_usage failed" )); /* unreachable */
-  }
-  FD_MGAUGE_SET( BAM, HEAP_SIZE,       usage->total_sz );
-  FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, usage->free_sz  );
+  fd_bam_refresh_heap_usage_cache( ctx, now_ns );
+  FD_MGAUGE_SET( BAM, HEAP_SIZE,       ctx->heap_size_cached       );
+  FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, ctx->heap_free_bytes_cached );
 
 }
 
@@ -601,20 +647,8 @@ after_credit( fd_bam_tile_t *  ctx,
   snprintf( update->ip_cstr, sizeof( update->ip_cstr ),
             FD_IP4_ADDR_FMT,
             FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ) );
-
-  if( FD_LIKELY( ctx->bam_tpu.addr && ctx->bam_tpu.port ) ) {
-    snprintf( update->tpu_cstr, sizeof( update->tpu_cstr ),
-              FD_IP4_ADDR_FMT ":%hu",
-              FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu.addr ),
-              fd_ushort_bswap( ctx->bam_tpu.port ) );
-  }
-
-  if( FD_LIKELY( ctx->bam_tpu_fwd.addr && ctx->bam_tpu_fwd.port ) ) {
-    snprintf( update->tpu_fwd_cstr, sizeof( update->tpu_fwd_cstr ),
-              FD_IP4_ADDR_FMT ":%hu",
-              FD_IP4_ADDR_FMT_ARGS( ctx->bam_tpu_fwd.addr ),
-              fd_ushort_bswap( ctx->bam_tpu_fwd.port ) );
-  }
+  fd_bam_write_ip4_port_cstr( update->tpu_cstr,     ctx->bam_tpu     );
+  fd_bam_write_ip4_port_cstr( update->tpu_fwd_cstr, ctx->bam_tpu_fwd );
 
   update->status_code  = ctx->bam_status_recent;
   update->enabled = ctx->enabled;
@@ -622,8 +656,10 @@ after_credit( fd_bam_tile_t *  ctx,
   update->keepalive_rtt_smoothed  = ctx->rtt->smoothed_rtt;
   update->keepalive_rtt_deviation = ctx->rtt->var_rtt;
   update->feedback_queue_depth = ctx->feedback_queue_depth;
-  update->validator_heartbeats_enqueued =
+  update->outbound_heartbeat_enqueued =
       metrics->outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_HEARTBEAT_ENQUEUED_IDX ];
+  update->outbound_heartbeat_enqueue_fail =
+      metrics->outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_HEARTBEAT_ENQUEUE_FAIL_IDX ];
   update->builder_heartbeats_decoded = metrics->builder_heartbeats_decoded_cnt;
   update->transaction_published  = metrics->transaction_published_cnt;
   update->atomic_batch_published = metrics->atomic_batch_published_cnt;
@@ -632,15 +668,13 @@ after_credit( fd_bam_tile_t *  ctx,
   update->failure_config_decode = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONFIG_DECODE_IDX ];
   update->failure_scheduler_envelope_decode = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ];
   update->failure_request_failed = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ];
-  update->failure_transport =
-      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_RESOLVE_IDX ] +
-      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ] +
-      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_IO_IDX ];
+  update->failure_resolve = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_RESOLVE_IDX ];
+  update->failure_connect = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ];
+  update->failure_io = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_IO_IDX ];
   update->failure_unsupported_version = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ];
-  update->failure_timeout =
-      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_TIMEOUT_IDX ] +
-      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_KEEPALIVE_TIMEOUT_IDX ] +
-      failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_BUILDER_HEARTBEAT_TIMEOUT_IDX ];
+  update->failure_request_timeout = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_TIMEOUT_IDX ];
+  update->failure_keepalive_timeout = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_KEEPALIVE_TIMEOUT_IDX ];
+  update->failure_builder_activity_timeout = failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_BUILDER_ACTIVITY_TIMEOUT_IDX ];
   update->ingress_multi_message_received = metrics->ingress_multi_message_received_cnt;
   update->ingress_batch_commit_attempt = metrics->ingress_batch_commit_attempt_cnt;
   update->ingress_batch_published = metrics->ingress_batch_published_cnt;
@@ -1252,6 +1286,7 @@ unprivileged_init( fd_topo_t *      topo,
   if( FD_UNLIKELY( !ctx->grpc_client ) ) {
     FD_LOG_CRIT(( "fd_grpc_client_new failed" )); /* unreachable */
   }
+  ctx->heap_wksp = fd_wksp_containing( ctx );
   fd_grpc_client_set_version( ctx->grpc_client, fdctl_version_string, strlen( fdctl_version_string ) );
   fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
 

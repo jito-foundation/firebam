@@ -388,7 +388,7 @@ metric introduced.
     <int value="7" name="UnsupportedVersion" label="Unsupported scheduler-response version received from the BAM peer" />
     <int value="8" name="RequestTimeout" label="Auth, config, or scheduler-stream gRPC request timed out" />
     <int value="9" name="KeepaliveTimeout" label="HTTP/2 keepalive PING timed out" />
-    <int value="10" name="BuilderHeartbeatTimeout" label="Builder heartbeat watchdog timed out while the scheduler stream was live" />
+    <int value="10" name="BuilderActivityTimeout" label="Scheduler-stream builder activity watchdog timed out while the scheduler stream was live" />
 </enum>
 
 <enum name="BamIngressBatchRejectReason">
@@ -452,9 +452,17 @@ metric introduced.
     <int value="2" name="UnknownSlotEnd" label="BAM ingress transactions observed while slot_end_ns was unavailable" />
 </enum>
 
+<enum name="BamCurrentLeaderSlotFirstIngressState">
+    <int value="0" name="NoIngress" label="No scheduler-receive callback has been observed yet for the current leader slot" />
+    <int value="1" name="SlotEndUnknown" label="A first scheduler-receive callback was observed for the current leader slot but slot_end_ns is not known yet" />
+    <int value="2" name="BeforeEnd" label="The first scheduler-receive callback observed for the current leader slot arrived before slot end" />
+    <int value="3" name="AtEnd" label="The first scheduler-receive callback observed for the current leader slot arrived exactly at slot end" />
+    <int value="4" name="AfterEnd" label="The first scheduler-receive callback observed for the current leader slot arrived after slot end" />
+</enum>
+
 <tile name="bam">
     <gauge name="Enabled" summary="Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled" />
-    <gauge name="Healthy" summary="Boolean gauge: 1 when the BAM client transport, auth, config, scheduler stream, and heartbeat checks are healthy; otherwise 0. This does not imply that fresh work for the current leader slot has arrived yet." />
+    <gauge name="Healthy" summary="Boolean gauge: 1 when the BAM client transport, auth, config, scheduler stream, and builder-activity checks are healthy; otherwise 0. This does not imply that fresh work for the current leader slot has arrived yet." />
     <gauge name="StreamLive" summary="Boolean gauge: 1 when the BAM scheduler gRPC stream is established and live, 0 otherwise" />
     <gauge name="LeaderStateSlot" summary="Latest validator leader slot carried in pack->bam leader-state snapshots, or 0 if none has been observed yet" />
     <gauge name="LeaderStateTick" summary="Latest validator leader tick carried in pack->bam leader-state snapshots" />
@@ -465,8 +473,8 @@ metric introduced.
     <counter name="IngressPacketOversize" summary="Cumulative number of BAM packets rejected because their declared payload exceeded the local MTU" />
     <counter name="BuilderHeartbeatsDecoded" summary="Cumulative number of builder heartbeat messages successfully decoded from the BAM node" />
     <counter name="Failure" enum="BamFailure" summary="Cumulative number of BAM control-plane or session failures by class. Scheduler payload and AtomicTxnBatch rejects are counted separately in bam_ingress_batch_rejected." />
-    <gauge name="HeapSize" summary="Total workspace capacity reserved for the BAM tile (bytes)" />
-    <gauge name="HeapFreeBytes" summary="Estimated free capacity in the BAM tile workspace heap (bytes)" />
+    <gauge name="HeapSize" summary="Total workspace capacity reserved for the BAM tile (bytes). Sampled at most once per second to avoid repeated workspace scans." />
+    <gauge name="HeapFreeBytes" summary="Estimated free capacity in the BAM tile workspace heap (bytes). Sampled at most once per second to avoid repeated workspace scans." />
     <counter name="KeepaliveAcks" summary="Cumulative number of HTTP/2 keepalive PING acknowledgments received from the BAM node" />
     <counter name="HealthyConnects" summary="Cumulative number of transitions into BAM CONNECTED_HEALTHY state" />
     <counter name="HealthyDisconnects" summary="Cumulative number of transitions out of BAM CONNECTED_HEALTHY state" />
@@ -490,8 +498,8 @@ metric introduced.
     <counter name="StreamTransition" enum="BamStreamTransition" summary="Cumulative number of scheduler stream live-state transitions" />
     <counter name="LeaderPendingDropped" enum="BamLeaderPendingDropReason" summary="Cumulative number of pending leader-state updates cleared before send because the BAM client reset, the scheduler request failed, or the stream ended/timed out" />
     <counter name="LeaderPendingReplaced" summary="Cumulative number of pending leader-state updates replaced by a newer leader-state update before send" />
-    <counter name="SlotIngressResult" enum="BamSlotIngressResult" summary="Cumulative number of BAM slot-ingress records finalized after they aged out of the local retention window, bucketed by first ingress relative to slot end" />
-    <counter name="SlotIngressTransactions" enum="BamSlotIngressTxnTiming" summary="Cumulative number of BAM ingress transactions counted in finalized per-slot ingress rollups, bucketed as before-end or after-end only when slot_end_ns was known at observation time, else unknown" />
+    <counter name="SlotIngressResult" enum="BamSlotIngressResult" summary="Cumulative number of BAM slot-ingress records finalized after they aged out of the local retention window, bucketed by the first scheduler-receive callback for that slot relative to slot end" />
+    <counter name="SlotIngressTransactions" enum="BamSlotIngressTxnTiming" summary="Cumulative number of BAM ingress transactions counted in finalized per-slot ingress rollups using scheduler-receive callback timestamps, bucketed as before-end or after-end only when slot_end_ns was known at observation time, else unknown" />
     <counter name="LeaderSlotEndStatus" enum="BamLeaderSlotEndStatus" summary="Cumulative number of local leader slots whose slot_end_ns was observed and recorded, bucketed by BAM client status at slot end reconstructed from the local BAM status history" />
     <counter name="HealthyLeaderSlotResult" enum="BamHealthyLeaderSlotResult" summary="Cumulative number of local leader slots that reached slot_end_ns while BAM status was CONNECTED_HEALTHY, bucketed by whether fresh current-slot BAM work had arrived before slot end" />
     <gauge name="KeepaliveRttSample" summary="Latest HTTP/2 keepalive round-trip time sample captured at scrape time (nanoseconds)" />
@@ -499,10 +507,8 @@ metric introduced.
     <gauge name="KeepaliveRttDeviation" summary="Smoothed HTTP/2 keepalive RTT variation estimate (nanoseconds)" />
     <gauge name="KeepaliveRttValid" summary="Boolean gauge: 1 after the first HTTP/2 keepalive RTT sample has been observed, 0 before RTT estimates are initialized" />
     <gauge name="FeedbackQueueDepth" summary="Current number of BAM feedback results buffered for send" />
-    <gauge name="CurrentLeaderSlotFirstIngressRecorded" summary="Boolean gauge: 1 when BAM has observed at least one ingress transaction for the current leader slot, 0 otherwise" />
-    <gauge name="CurrentLeaderSlotFirstIngressSlotEndKnown" summary="Boolean gauge: 1 when slot_end_ns is known for the current leader slot's first observed BAM ingress, 0 otherwise" />
-    <gauge name="CurrentLeaderSlotFirstIngressDistanceNanos" summary="Absolute distance in nanoseconds between the current leader slot's slot_end_ns and its first observed BAM ingress. Exported as 0 until a first ingress has been observed and slot_end_ns is known" />
-    <gauge name="CurrentLeaderSlotFirstIngressAfterEnd" summary="Boolean gauge: 1 when the current leader slot's first observed BAM ingress arrived after slot end, 0 when it arrived before slot end or the relation is not yet known" />
+    <gauge name="CurrentLeaderSlotFirstIngressState" enum="BamCurrentLeaderSlotFirstIngressState" summary="One-hot state for the current leader slot's first observed scheduler-receive callback relative to slot end. Exactly one enum bucket is exported as 1 for the current local view; all others are 0." />
+    <gauge name="CurrentLeaderSlotFirstIngressMinusSlotEndNanos" converter="signed_none" summary="Signed nanosecond delta between the current leader slot's first observed scheduler-receive callback and slot_end_ns. Negative means before slot end, 0 means exactly at slot end, positive means after slot end, and LONG_MIN means no first ingress has been observed yet or slot_end_ns is still unknown." />
     <histogram name="BuilderHeartbeatArrivalDeltaNanos" min="10000" max="100000000">
         <summary>Distribution of remote BuilderHeartBeat timestamp to local scheduler-stream receive callback delta (nanoseconds); includes clock offset and is intended only for relative trend analysis</summary>
     </histogram>
@@ -680,8 +686,9 @@ metric introduced.
 
 <enum name="PackBamFirstEventResult">
   <int value="0" name="NoEvent" label="No BAM event of this kind was observed before the leader slot finished" />
-  <int value="1" name="BeforeEnd" label="The first BAM event of this kind was observed at or before slot end" />
-  <int value="2" name="AfterEnd" label="The first BAM event of this kind was observed after slot end" />
+  <int value="1" name="BeforeEnd" label="The first BAM event of this kind was observed before slot end" />
+  <int value="2" name="AtEnd" label="The first BAM event of this kind was observed exactly at slot end" />
+  <int value="3" name="AfterEnd" label="The first BAM event of this kind was observed after slot end" />
 </enum>
 
 <tile name="pack">
@@ -735,18 +742,24 @@ metric introduced.
     <gauge name="BamPendingWorkCount" summary="Current number of BAM work items tracked in pack's pending-work set after acceptance and before scheduling or cleanup" />
     <gauge name="LeaderSlot" summary="Current pack leader slot, or 0 if pack is not the leader" />
     <gauge name="LeaderSlotEndNanos" summary="Current pack leader slot end wallclock timestamp (nanoseconds), or 0 if pack is not the leader" />
-    <counter name="BamLeaderSlotFirstInsertResult" enum="PackBamFirstEventResult" summary="Cumulative number of pack leader slots finalized with no BAM insert, a first BAM insert before slot end, or a first BAM insert after slot end" />
-    <counter name="BamLeaderSlotFirstScheduleResult" enum="PackBamFirstEventResult" summary="Cumulative number of pack leader slots finalized with no BAM schedule, a first BAM schedule before slot end, or a first BAM schedule after slot end" />
-    <histogram name="BamLeaderSlotFirstInsertDistanceNanos" min="0" max="10000000000">
-        <summary>Absolute distance in nanoseconds between slot_end_ns and the first BAM insert observed for a finalized pack leader slot. Sampled once per slot only when an insert was observed.</summary>
+    <counter name="BamLeaderSlotFirstInsertResult" enum="PackBamFirstEventResult" summary="Cumulative number of pack leader slots finalized with no BAM insert, a first BAM insert before slot end, exactly at slot end, or after slot end" />
+    <counter name="BamLeaderSlotFirstScheduleResult" enum="PackBamFirstEventResult" summary="Cumulative number of pack leader slots finalized with no BAM schedule, a first BAM schedule before slot end, exactly at slot end, or after slot end" />
+    <histogram name="BamLeaderSlotFirstInsertBeforeEndDistanceNanos" min="0" max="10000000000">
+        <summary>Distance in nanoseconds from the first BAM insert to slot_end_ns for a finalized pack leader slot when that first insert was observed before slot end. Sampled once per slot only for before-end inserts.</summary>
     </histogram>
-    <histogram name="BamLeaderSlotFirstScheduleDistanceNanos" min="0" max="10000000000">
-        <summary>Absolute distance in nanoseconds between slot_end_ns and the first BAM schedule observed for a finalized pack leader slot. Sampled once per slot only when a schedule was observed.</summary>
+    <histogram name="BamLeaderSlotFirstInsertAfterEndDistanceNanos" min="0" max="10000000000">
+        <summary>Distance in nanoseconds from slot_end_ns to the first BAM insert for a finalized pack leader slot when that first insert was observed after slot end. Sampled once per slot only for after-end inserts.</summary>
+    </histogram>
+    <histogram name="BamLeaderSlotFirstScheduleBeforeEndDistanceNanos" min="0" max="10000000000">
+        <summary>Distance in nanoseconds from the first BAM schedule to slot_end_ns for a finalized pack leader slot when that first schedule was observed before slot end. Sampled once per slot only for before-end schedules.</summary>
+    </histogram>
+    <histogram name="BamLeaderSlotFirstScheduleAfterEndDistanceNanos" min="0" max="10000000000">
+        <summary>Distance in nanoseconds from slot_end_ns to the first BAM schedule for a finalized pack leader slot when that first schedule was observed after slot end. Sampled once per slot only for after-end schedules.</summary>
     </histogram>
     <gauge name="BamCurrentLeaderSlotWorkItems" enum="PackBamCurrentLeaderSlotState" summary="Per-current-pack-leader-slot BAM work-item counts from pack's recent-slot tracker. Exported as 0 when pack is not leader or no BAM work has been recorded for the current leader slot." />
     <gauge name="BamCurrentLeaderSlotWorkTransactions" enum="PackBamCurrentLeaderSlotState" summary="Per-current-pack-leader-slot BAM transaction counts from pack's recent-slot tracker. Exported as 0 when pack is not leader or no BAM work has been recorded for the current leader slot." />
-    <histogram name="BamSeqRxToFirstScheduleNanos" min="0" max="10000000000">
-        <summary>Distribution of BAM scheduler-arrival to first-schedule delay for a sequence id, sampled once on the first schedule event for that sequence (nanoseconds)</summary>
+    <histogram name="BamWorkRxToFirstScheduleNanos" min="0" max="10000000000">
+        <summary>Distribution of BAM scheduler-receive to first-schedule delay for a tracked BAM work item, sampled once on the first schedule event for that work item (nanoseconds)</summary>
     </histogram>
     <gauge name="CusConsumedInBlock" summary="The number of cost units consumed in the current block, or 0 if pack is not currently packing a block" />
     <histogram name="CusScheduled" min="1000000" max="240000000">

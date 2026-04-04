@@ -455,6 +455,7 @@ test_bam_env_create( test_bam_env_t * env,
   state->bank_bam_in_idx        = ULONG_MAX;
   state->pack_bam_leader_in_idx = ULONG_MAX;
   state->pack_bam_result_in_idx = ULONG_MAX;
+  state->heap_wksp       = wksp;
   state->tcp_sock        = -1;
   state->keylog_fd       = -1;
   state->so_rcvbuf       = 4096;
@@ -544,7 +545,7 @@ test_bam_env_mock_conn( test_bam_env_t * env ) {
   test_bam_env_mock_h2_hs( state );
   test_bam_env_inject_config_response( state );
   long now = fd_bam_now();
-  state->bam_last_builder_heartbeat_ns   = now;
+  state->bam_last_builder_activity_ns    = now;
   state->bam_last_validator_heartbeat_ns = now;
   state->bam_stream_live = 1;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );

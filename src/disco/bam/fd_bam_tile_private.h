@@ -18,7 +18,7 @@
 struct fd_bam_tile;
 typedef struct fd_bam_tile fd_bam_tile_t;
 
-#define FD_BAM_HEARTBEAT_TIMEOUT_NS ((long)6e9) /* 6 seconds */
+#define FD_BAM_ACTIVITY_TIMEOUT_NS ((long)6e9) /* 6 seconds */
 #if FD_HAS_OPENSSL
 #include <openssl/ssl.h> /* SSL_CTX */
 #endif
@@ -110,6 +110,10 @@ typedef struct {
 
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
+  ulong               ingress_resolved_slot;                   /* Batch slot attribution fixed at scheduler receive time. */
+  long                ingress_rx_ts_ns;                        /* fd_bam_now() timestamp from the scheduler receive callback. */
+  long                ingress_slot_end_ns;                     /* slot_end_ns snapshot for ingress_resolved_slot when known at receive time, else 0. */
+  uint                ingress_rx_tspub;                        /* Compact fd_tickcount() timestamp from the scheduler receive callback. 0 means unknown. */
   bam_types_Packet    packets[ FD_PACK_MAX_TXN_PER_BUNDLE ];   /* decoded packet cache; indices [0,packet_cnt) valid */
   uchar               packet_cnt;                              /* number of packets collected; [0,FD_PACK_MAX_TXN_PER_BUNDLE) */
   uchar               revert_on_error;                         /* 0/1 value for the most recently collected packet; missing flags default to 0 */
@@ -202,6 +206,10 @@ struct fd_bam_tile {
   fd_grpc_client_t *       grpc_client;           /* Active gRPC client driving HTTP/2 */
   fd_grpc_client_metrics_t grpc_metrics[1];       /* Per-client metrics exported to fd_metrics */
   ulong                    map_seed;              /* Random seed used for header hashing */
+  fd_wksp_t *              heap_wksp;             /* Workspace containing this tile, cached for heap gauges. */
+  ulong                    heap_size_cached;      /* Cached workspace capacity exported to bam_heap_size. */
+  ulong                    heap_free_bytes_cached;/* Cached workspace free bytes exported to bam_heap_free_bytes. */
+  long                     heap_usage_last_update_ns; /* Last fd_wksp_usage sample time (fd_log_wallclock), 0 if never sampled. */
 
   /* ConfigResponse BlockEngineBuilderConfig values */
   uchar builder_pubkey[ 32 ];                     /* Builder identity fetched from BAM */
@@ -232,7 +240,7 @@ struct fd_bam_tile {
 
   /* BAM specific */
   fd_grpc_h2_stream_t * bam_stream;                      /* Current scheduler stream; NULL while unsubscribed or reconnecting */
-  long                  bam_last_builder_heartbeat_ns;   /* fd_bam_now() timestamp of last builder liveness refresh from BuilderHeartBeat or bundle work; scheduler proto Ping is intentionally excluded (0 if none received) */
+  long                  bam_last_builder_activity_ns;    /* fd_bam_now() timestamp of last scheduler-stream liveness refresh from stream start, BuilderHeartBeat, or bundle work; scheduler proto Ping is intentionally excluded (0 if none received) */
   long                  bam_last_validator_heartbeat_ns; /* fd_bam_now() timestamp of last validator heartbeat (0 if never sent) */
   long                  bam_last_config_poll_ns;         /* fd_bam_now() timestamp of last config poll attempt (0 if never polled) */
   ushort                feedback_queue_depth;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
@@ -607,6 +615,7 @@ fd_bam_tile_publish_bundle_txn(
     ushort             txn_sz,
     uchar              bundle_txn_cnt,
     uchar              batch_idx,
+    uint               scheduler_arrival_tspub,
     uint               source_ipv4 );
 
 void
@@ -619,6 +628,7 @@ fd_bam_tile_publish_txn(
     uchar              batch_idx,
     uchar              batch_cnt,
     uchar              revert_on_error,
+    uint               scheduler_arrival_tspub,
     uint               source_ipv4 );
 
 void
@@ -627,14 +637,15 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       bam_types_AtomicTxnBatch const * batch );
 
 int
-fd_bam_should_dump_batch( fd_bam_tile_t *             ctx,
-                          bam_types_AtomicTxnBatch const * batch );
+fd_bam_should_dump_batch( fd_bam_tile_t * ctx,
+                          ulong           resolved_slot );
 
 void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
                                   void const *    data,
                                   ulong           data_sz,
-                                  long            rx_ts_ns );
+                                  long            rx_ts_ns,
+                                  uint            rx_tspub );
 
 /* fd_bam_client_status provides a "check engine light".
 

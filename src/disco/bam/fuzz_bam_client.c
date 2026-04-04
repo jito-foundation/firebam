@@ -445,7 +445,7 @@ bam_fuzz_assert_auth_cleared( fd_bam_tile_t * ctx ) {
 }
 
 /* Minimal status evaluation for the fuzzer: mirrors the healthy/unhealthy
-   heartbeat gate without requiring full transport state.
+   builder-activity gate without requiring full transport state.
    Full version in fd_bam_client_status() of fd_bam_client.c
 */
 
@@ -455,8 +455,8 @@ bam_fuzz_status( fd_bam_tile_t const * ctx ) {
   if( FD_UNLIKELY( !ctx->bam_stream_live ) ) return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   long now = fd_log_wallclock();
   if( FD_UNLIKELY(
-    ( ctx->bam_last_builder_heartbeat_ns<=0L ) ||
-    ( now - ctx->bam_last_builder_heartbeat_ns >= FD_BAM_HEARTBEAT_TIMEOUT_NS ) ) ) {
+    ( ctx->bam_last_builder_activity_ns<=0L ) ||
+    ( now - ctx->bam_last_builder_activity_ns >= FD_BAM_ACTIVITY_TIMEOUT_NS ) ) ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
   }
   return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
@@ -660,7 +660,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   if( stream_ok ) {
     ctx->bam_stream_live = 1U;
     long hb_now = fd_log_wallclock();
-    ctx->bam_last_builder_heartbeat_ns   = hb_now;
+    ctx->bam_last_builder_activity_ns    = hb_now;
     ctx->bam_last_validator_heartbeat_ns = hb_now;
     ctx->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   }

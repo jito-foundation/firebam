@@ -2238,7 +2238,8 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   gui->bam.keepalive_rtt_smoothed  = update->keepalive_rtt_smoothed;
   gui->bam.keepalive_rtt_deviation = update->keepalive_rtt_deviation;
   gui->bam.feedback_queue_depth = update->feedback_queue_depth;
-  gui->bam.validator_heartbeats_enqueued = update->validator_heartbeats_enqueued;
+  gui->bam.outbound_heartbeat_enqueued = update->outbound_heartbeat_enqueued;
+  gui->bam.outbound_heartbeat_enqueue_fail = update->outbound_heartbeat_enqueue_fail;
   gui->bam.builder_heartbeats_decoded = update->builder_heartbeats_decoded;
   gui->bam.transaction_published  = update->transaction_published;
   gui->bam.atomic_batch_published = update->atomic_batch_published;
@@ -2247,9 +2248,13 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   gui->bam.failure_config_decode = update->failure_config_decode;
   gui->bam.failure_scheduler_envelope_decode = update->failure_scheduler_envelope_decode;
   gui->bam.failure_request_failed = update->failure_request_failed;
-  gui->bam.failure_transport = update->failure_transport;
+  gui->bam.failure_resolve = update->failure_resolve;
+  gui->bam.failure_connect = update->failure_connect;
+  gui->bam.failure_io = update->failure_io;
   gui->bam.failure_unsupported_version = update->failure_unsupported_version;
-  gui->bam.failure_timeout = update->failure_timeout;
+  gui->bam.failure_request_timeout = update->failure_request_timeout;
+  gui->bam.failure_keepalive_timeout = update->failure_keepalive_timeout;
+  gui->bam.failure_builder_activity_timeout = update->failure_builder_activity_timeout;
   gui->bam.ingress_multi_message_received = update->ingress_multi_message_received;
   gui->bam.ingress_batch_commit_attempt = update->ingress_batch_commit_attempt;
   gui->bam.ingress_batch_published = update->ingress_batch_published;

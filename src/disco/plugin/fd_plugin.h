@@ -117,13 +117,13 @@ typedef enum {
   FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED            = 0,
   FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED        = 1, // the client has recently failed and is currently backing off from a reconnect attempt
   FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING          = 2, // the client is currently reconnecting.
-  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY = 3, /* all of below conditions met, but didn't receive heartbeat yet
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY = 3, /* all of below conditions met, but no recent builder activity has been observed yet
   - TCP socket is alive
   - SSL session is not in an error state
   - HTTP/2 connection is established (SETTINGS exchange done)
   - gRPC bundle and packet subscriptions are live
   - HTTP/2 PING exchange was done recently */
-    FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY   = 4  /* recently exchanged heartbeats within timeout */
+    FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY   = 4  /* recently observed scheduler-stream builder activity within timeout */
 } fd_plugin_bam_update_status_t;
 
 typedef struct {
@@ -141,7 +141,8 @@ typedef struct {
   float  keepalive_rtt_smoothed;       /* Smoothed HTTP/2 keepalive RTT estimate (ns) */
   float  keepalive_rtt_deviation;      /* Smoothed HTTP/2 keepalive RTT variation estimate (ns) */
   ushort feedback_queue_depth;         /* Pending BAM feedback results */
-  ulong  validator_heartbeats_enqueued; /* Validator heartbeats accepted by gRPC stream_send */
+  ulong  outbound_heartbeat_enqueued;   /* Validator heartbeat messages accepted by gRPC stream_send */
+  ulong  outbound_heartbeat_enqueue_fail; /* Validator heartbeat sends attempted on a live scheduler stream but rejected by gRPC stream_send */
   ulong  builder_heartbeats_decoded;   /* Builder heartbeat messages successfully decoded */
   ulong  transaction_published;        /* Transactions published from BAM to verify */
   ulong  atomic_batch_published;       /* revert_on_error AtomicTxnBatch entries published to verify */
@@ -150,9 +151,13 @@ typedef struct {
   ulong  failure_config_decode;        /* ConfigResponse protobuf decode failures */
   ulong  failure_scheduler_envelope_decode; /* SchedulerResponse envelope/protobuf decode failures */
   ulong  failure_request_failed;       /* HTTP/gRPC request failures */
-  ulong  failure_transport;            /* DNS/socket/connect/I/O failures */
+  ulong  failure_resolve;              /* DNS resolution failures */
+  ulong  failure_connect;              /* TCP connect failures */
+  ulong  failure_io;                   /* TLS, HTTP/2, or stream I/O failures */
   ulong  failure_unsupported_version;  /* Unsupported BAM scheduler-response versions */
-  ulong  failure_timeout;              /* Request/keepalive/heartbeat timeouts */
+  ulong  failure_request_timeout;      /* Auth/config/scheduler gRPC request timeouts */
+  ulong  failure_keepalive_timeout;    /* HTTP/2 keepalive timeout failures */
+  ulong  failure_builder_activity_timeout; /* Scheduler-stream builder-activity watchdog timeouts */
   ulong  ingress_multi_message_received;
   ulong  ingress_batch_commit_attempt;
   ulong  ingress_batch_published;

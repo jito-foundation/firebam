@@ -153,7 +153,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_auth_inflight          = 0;
   ctx->bam_config_inflight        = 0;
   ctx->bam_config_received        = 0;
-  ctx->bam_last_builder_heartbeat_ns = 0L;
+  ctx->bam_last_builder_activity_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
   ctx->bam_last_config_poll_ns    = 0L;
   ctx->unresolved_slot_ingress    = (fd_bam_unresolved_slot_ingress_timing_t){0};
@@ -300,6 +300,7 @@ fd_bam_tile_publish_bundle_txn(
     ushort             txn_sz,  /* <= FD_TXN_MTU */
     uchar              bundle_txn_cnt,
     uchar              batch_idx,
+    uint               scheduler_arrival_tspub,
     uint               source_ipv4
 ) {
   fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
@@ -309,7 +310,7 @@ fd_bam_tile_publish_bundle_txn(
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
-    .scheduler_arrival_tspub = (uint)fd_frag_meta_ts_comp( fd_tickcount() ),
+    .scheduler_arrival_tspub = scheduler_arrival_tspub,
     .block_engine   = {0},
     .bam = {
       .max_schedule_slot = ctx->bundle_max_schedule_slot,
@@ -343,6 +344,7 @@ fd_bam_tile_publish_txn(
     uchar              batch_idx,
     uchar              batch_cnt,
     uchar              revert_on_error,
+    uint               scheduler_arrival_tspub,
     uint               source_ipv4
 ) {
   fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
@@ -352,7 +354,7 @@ fd_bam_tile_publish_txn(
     .txn_t_sz       = 0U,
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
-    .scheduler_arrival_tspub = (uint)fd_frag_meta_ts_comp( fd_tickcount() ),
+    .scheduler_arrival_tspub = scheduler_arrival_tspub,
     .block_engine   = {0},
     .bam = {
       .max_schedule_slot = max_schedule_slot,
@@ -1057,19 +1059,19 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     return;
   }
 
-  /* Did BAM heartbeat time out */
+  /* Did scheduler-stream builder activity time out */
   if( FD_UNLIKELY( ctx->bam_stream_live &&
-                   ctx->bam_last_builder_heartbeat_ns != 0L &&
-                   check_ts - ctx->bam_last_builder_heartbeat_ns >= FD_BAM_HEARTBEAT_TIMEOUT_NS ) ) {
-    FD_LOG_WARNING(( "BAM heartbeat timed out (no heartbeat for %.2f seconds); retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
-      (double)( check_ts - ctx->bam_last_builder_heartbeat_ns )/1e9,
+                   ctx->bam_last_builder_activity_ns != 0L &&
+                   check_ts - ctx->bam_last_builder_activity_ns >= FD_BAM_ACTIVITY_TIMEOUT_NS ) ) {
+    FD_LOG_WARNING(( "BAM builder activity timed out (no scheduler activity for %.2f seconds); retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
+      (double)( check_ts - ctx->bam_last_builder_activity_ns )/1e9,
       ctx->server_fqdn,
       FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
       ctx->server_tcp_port,
       fd_bam_client_retry_ms( ctx ) ));
     ctx->keepalive->inflight = 0;
     fd_bam_client_reset( ctx );
-    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_BUILDER_HEARTBEAT_TIMEOUT_IDX ]++;
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_BUILDER_ACTIVITY_TIMEOUT_IDX ]++;
     *charge_busy = 1;
     return;
   }
@@ -1196,7 +1198,7 @@ fd_bam_client_grpc_rx_start(
     fd_bam_set_stream_live( ctx, 1U );
     ctx->bam_stream_connecting  = 0;
     ctx->bam_last_validator_heartbeat_ns = now;
-    ctx->bam_last_builder_heartbeat_ns   = now;
+    ctx->bam_last_builder_activity_ns    = now;
     break;
   }
   }
@@ -1223,7 +1225,11 @@ fd_bam_client_grpc_rx_msg(
     ctx->bam_config_inflight = 0;
     break;
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
-    fd_bam_handle_scheduler_response( ctx, protobuf, protobuf_sz, rx_ts_ns );
+    fd_bam_handle_scheduler_response( ctx,
+                                      protobuf,
+                                      protobuf_sz,
+                                      rx_ts_ns,
+                                      (uint)fd_frag_meta_ts_comp( fd_tickcount() ) );
     break;
   default:
     FD_LOG_ERR(( "Received unexpected gRPC message (request_ctx=%lu)", request_ctx ));
@@ -1411,8 +1417,8 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
   }
 
   if( FD_UNLIKELY(
-    ( ctx->bam_last_builder_heartbeat_ns<=0L ) ||
-    ( now - ctx->bam_last_builder_heartbeat_ns >= FD_BAM_HEARTBEAT_TIMEOUT_NS ) ) ) {
+    ( ctx->bam_last_builder_activity_ns<=0L ) ||
+    ( now - ctx->bam_last_builder_activity_ns >= FD_BAM_ACTIVITY_TIMEOUT_NS ) ) ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
   }
 
