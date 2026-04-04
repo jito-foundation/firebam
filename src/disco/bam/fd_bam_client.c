@@ -1117,17 +1117,10 @@ fd_bam_client_step( fd_bam_tile_t * ctx,
   int const healthy_before = ( ctx->bam_status_counted == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   if( FD_UNLIKELY( status != ctx->bam_status_counted ) ) {
     long ts_ns = fd_bam_now();
-    if( FD_UNLIKELY( !ctx->bam_status_history_cnt ) ) {
-      ctx->bam_status_history[ 0 ] = (fd_bam_status_history_t){ .ts_ns = ts_ns, .status = status };
-      ctx->bam_status_history_next = 1UL & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
-      ctx->bam_status_history_cnt  = 1UL;
-    } else {
-      ulong last_idx = ( ctx->bam_status_history_next - 1UL ) & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
-      if( FD_UNLIKELY( ctx->bam_status_history[ last_idx ].status != status ) ) {
-        ctx->bam_status_history[ ctx->bam_status_history_next ] = (fd_bam_status_history_t){ .ts_ns = ts_ns, .status = status };
-        ctx->bam_status_history_next = ( ctx->bam_status_history_next + 1UL ) & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
-        ctx->bam_status_history_cnt  = fd_ulong_min( ctx->bam_status_history_cnt + 1UL, (ulong)FD_BAM_STATUS_HISTORY_CNT );
-      }
+    for( ulong i=0UL; i<FD_BAM_LEADER_SLOT_END_TRACKER_CNT; i++ ) {
+      fd_bam_leader_slot_end_tracker_t * tracker = &ctx->leader_slot_end[ i ];
+      if( FD_UNLIKELY( !tracker->valid || tracker->counted || ts_ns>tracker->slot_end_ns ) ) continue;
+      tracker->status_at_end = status;
     }
   }
   if( FD_UNLIKELY( healthy_now != healthy_before ) ) {

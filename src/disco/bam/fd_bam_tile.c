@@ -91,26 +91,23 @@ metrics_write( fd_bam_tile_t * ctx ) {
   long now_ns = fd_log_wallclock();
   ulong current_slot_first_ingress_state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_CNT ] = {0};
   long  current_slot_first_ingress_minus_slot_end_ns = LONG_MIN;
-  current_slot_first_ingress_state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_NO_INGRESS_IDX ] = 1UL;
-
+  ulong current_slot_first_ingress_state_idx = FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_NO_INGRESS_IDX;
   ulong leader_slot = ctx->bam_leader_state.slot;
   fd_bam_slot_ingress_timing_t const * entry =
       leader_slot==ULONG_MAX ? NULL : fd_bam_slot_ingress_timing_query_const( ctx, leader_slot );
   if( FD_LIKELY( entry && entry->first_rx_ts_ns ) ) {
     long slot_end_ns = entry->slot_end_ns ? entry->slot_end_ns : ctx->bam_leader_state.slot_end_ns;
-    ulong state_idx  = FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_SLOT_END_UNKNOWN_IDX;
-
+    current_slot_first_ingress_state_idx = FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_SLOT_END_UNKNOWN_IDX;
     if( FD_LIKELY( slot_end_ns ) ) {
       long delta = entry->first_rx_ts_ns - slot_end_ns;
-      state_idx = delta<0L ? FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_BEFORE_END_IDX
-                : delta>0L ? FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_AFTER_END_IDX
-                           : FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_AT_END_IDX;
+      current_slot_first_ingress_state_idx =
+          delta<0L ? FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_BEFORE_END_IDX
+        : delta>0L ? FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_AFTER_END_IDX
+                   : FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_AT_END_IDX;
       current_slot_first_ingress_minus_slot_end_ns = delta;
     }
-
-    current_slot_first_ingress_state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_NO_INGRESS_IDX ] = 0UL;
-    current_slot_first_ingress_state[ state_idx ] = 1UL;
   }
+  current_slot_first_ingress_state[ current_slot_first_ingress_state_idx ] = 1UL;
   FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.transaction_published_cnt          );
   FD_MCNT_SET( BAM, ATOMIC_BATCH_PUBLISHED,  ctx->metrics.atomic_batch_published_cnt );
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_results_dropped_cnt   );
@@ -179,45 +176,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, HEAP_SIZE,       ctx->heap_size_cached       );
   FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, ctx->heap_free_bytes_cached );
 
-}
-
-static inline void
-fd_bam_record_leader_slot_end( fd_bam_tile_t *               ctx,
-                               fd_plugin_bam_update_status_t status_fallback,
-                               fd_bam_leader_state_t const * leader_state,
-                               long                          now_ns ) {
-  if( FD_UNLIKELY( leader_state->slot==ULONG_MAX ||
-                   !leader_state->slot_end_ns ||
-                   now_ns < leader_state->slot_end_ns ||
-                   ctx->leader_slot_end_last_slot == leader_state->slot ) ) return;
-
-  fd_plugin_bam_update_status_t status = status_fallback;
-  if( FD_LIKELY( ctx->bam_status_history_cnt ) ) {
-    ulong oldest_idx = ( ctx->bam_status_history_next - ctx->bam_status_history_cnt ) & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
-    status = ctx->bam_status_history[ oldest_idx ].status;
-    for( ulong i=0UL; i<ctx->bam_status_history_cnt; i++ ) {
-      ulong idx = ( ctx->bam_status_history_next - 1UL - i ) & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
-      fd_bam_status_history_t const * entry = &ctx->bam_status_history[ idx ];
-      if( FD_LIKELY( entry->ts_ns <= leader_state->slot_end_ns ) ) {
-        status = entry->status;
-        break;
-      }
-    }
-  }
-
-  ulong status_idx = (ulong)status;
-  if( FD_UNLIKELY( status_idx >= FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_CNT ) ) {
-    FD_LOG_ERR(( "unknown BAM status code %u", (uint)status ));
-  }
-
-  ctx->metrics.leader_slot_end_status_cnt[ status_idx ]++;
-  if( FD_LIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) {
-    ulong result_idx = leader_state->current_slot_fresh
-      ? FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_V_FRESH_WORK_IDX
-      : FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_V_NO_FRESH_WORK_IDX;
-    ctx->metrics.healthy_leader_slot_result_cnt[ result_idx ]++;
-  }
-  ctx->leader_slot_end_last_slot = leader_state->slot;
 }
 
 // Updates ContactInfo to BAM or default TPU based on use_bam
@@ -430,8 +388,25 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     ctx->last_bam_status_log_nanos = now_ns;
   }
 
-  fd_bam_leader_state_t const * leader_state = &ctx->bam_leader_state;
-  fd_bam_record_leader_slot_end( ctx, status, leader_state, now_ns );
+  for( ulong i=0UL; i<FD_BAM_LEADER_SLOT_END_TRACKER_CNT; i++ ) {
+    fd_bam_leader_slot_end_tracker_t * tracker = &ctx->leader_slot_end[ i ];
+    if( FD_UNLIKELY( !tracker->valid || tracker->counted || !tracker->slot_end_ns || now_ns<tracker->slot_end_ns ) ) continue;
+
+    ulong status_idx = (ulong)tracker->status_at_end;
+    if( FD_UNLIKELY( status_idx >= FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_CNT ) ) {
+      FD_LOG_ERR(( "unknown BAM status code %u", (uint)tracker->status_at_end ));
+    }
+
+    ctx->metrics.leader_slot_end_status_cnt[ status_idx ]++;
+    if( FD_LIKELY( tracker->status_at_end==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) {
+      ulong result_idx = tracker->fresh_seen_before_end
+        ? FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_V_FRESH_WORK_IDX
+        : FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_V_NO_FRESH_WORK_IDX;
+      ctx->metrics.healthy_leader_slot_result_cnt[ result_idx ]++;
+    }
+    tracker->counted = 1U;
+  }
+
   _Bool use_bam = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   _Bool current_slot_fresh = use_bam && fd_bam_current_slot_fresh( ctx, now_ns );
   _Bool tpu_update_pending = ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ) |
@@ -555,18 +530,6 @@ bam_after_frag( fd_bam_tile_t *     ctx,
       break;
     }
     fd_bam_leader_state_t const * leader_state = (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->pack_leader_in.mem, ctx->frag_staged_chunk );
-    fd_bam_leader_state_t const * prev_leader_state = &ctx->bam_leader_state;
-    if( FD_LIKELY( prev_leader_state->slot!=ULONG_MAX &&
-                   prev_leader_state->slot!=leader_state->slot &&
-                   prev_leader_state->slot_end_ns ) ) {
-      long now_ns = fd_log_wallclock();
-      if( FD_LIKELY( now_ns >= prev_leader_state->slot_end_ns || leader_state->slot > prev_leader_state->slot ) ) {
-        fd_bam_record_leader_slot_end( ctx,
-                                       fd_bam_client_status( ctx ),
-                                       prev_leader_state,
-                                       fd_long_max( now_ns, prev_leader_state->slot_end_ns ) );
-      }
-    }
     fd_bam_stage_leader_state( ctx, leader_state );
     break;
   default:
@@ -1050,7 +1013,6 @@ privileged_init( fd_topo_t *      topo,
   }
 
   memset( ctx, 0, sizeof(fd_bam_tile_t) );
-  ctx->leader_slot_end_last_slot = ULONG_MAX;
   ctx->grpc_client_mem = grpc_mem;
   ctx->grpc_buf_max    = tile->bam.buf_sz;
   ctx->tcp_sock        = -1;
@@ -1238,11 +1200,6 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_status_plugin = ctx->bam_status_recent;
   ctx->bam_status_counted = ctx->bam_status_recent;
   ctx->bam_status_logged = ctx->bam_status_recent;
-  ctx->bam_status_history_next = 0UL;
-  ctx->bam_status_history_cnt  = 0UL;
-  ctx->bam_status_history[ 0 ] = (fd_bam_status_history_t){ .ts_ns = fd_bam_now(), .status = ctx->bam_status_recent };
-  ctx->bam_status_history_next = 1UL & ( FD_BAM_STATUS_HISTORY_CNT - 1UL );
-  ctx->bam_status_history_cnt  = 1UL;
   ctx->last_bam_status_log_nanos = fd_log_wallclock();
   ctx->gui_dirty = 1U;
 

@@ -460,10 +460,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
       ctx->unresolved_slot_ingress.txn_unknown_slot_end += packet_cnt;
       ctx->unresolved_slot_ingress.valid = 1U;
     }
-  } else {
-    entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, resolved_slot, leader_slot );
-  }
-  if( FD_LIKELY( entry ) ) {
+  } else if( FD_LIKELY( ( entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, resolved_slot, leader_slot ) ) ) ) {
     if( FD_UNLIKELY( slot_end_ns ) ) {
       entry->slot_end_ns = slot_end_ns;
       entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > slot_end_ns );
@@ -481,11 +478,10 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
       entry->first_rx_after_slot_end = (uchar)after_slot_end;
     }
 
-    ulong * txn_bucket = !have_slot_end
-      ? &entry->txn_unknown_slot_end
-      : after_slot_end
-        ? &entry->txn_after_slot_end
-        : &entry->txn_before_slot_end;
+    ulong * txn_bucket = &entry->txn_unknown_slot_end;
+    if( FD_LIKELY( have_slot_end ) ) {
+      txn_bucket = after_slot_end ? &entry->txn_after_slot_end : &entry->txn_before_slot_end;
+    }
     *txn_bucket += packet_cnt;
   }
 
@@ -931,11 +927,11 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       ulong now_u   = fd_ulong_if( now_ns >= 0L, (ulong)now_ns, 0UL );
       fd_histf_sample( ctx->metrics.scheduler_pong_send_nanos, fd_ulong_sat_sub( now_u, rx_ts_u ) );
 
-      outcome_idx =
-          fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 )
-          ? FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX
-          : FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX;
-      if( FD_UNLIKELY( outcome_idx==FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX ) ) {
+      int send_ok = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
+      outcome_idx = send_ok
+        ? FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX
+        : FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX;
+      if( FD_UNLIKELY( !send_ok ) ) {
         FD_LOG_WARNING(( "Failed to send BAM scheduler pong (id=%u)", decoded_v0.ping_id ));
       }
     }

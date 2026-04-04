@@ -186,6 +186,23 @@ typedef struct {
 } pack_bam_recent_slot_t;
 
 typedef struct {
+  ulong received_items;
+  ulong received_txns;
+  ulong accepted_items;
+  ulong accepted_txns;
+  ulong rejected_pre_pending_items;
+  ulong rejected_pre_pending_txns;
+  ulong pending_items;
+  ulong pending_txns;
+  ulong evicted_post_pending_items;
+  ulong evicted_post_pending_txns;
+  ulong scheduled_items;
+  ulong scheduled_txns;
+  ulong landed_items;
+  ulong landed_txns;
+} pack_bam_unresolved_work_t;
+
+typedef struct {
   long time;
   ulong sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_CNT ];
 } fd_pack_sched_results_snap_t;
@@ -357,6 +374,7 @@ struct fd_pack_ctx {
   ulong      bam_tracking_rejected_cnt;
   ulong      bam_tracking_rejected_txn_cnt;
   pack_bam_recent_slot_t bam_recent_slot[ FD_PACK_BAM_RECENT_SLOT_CNT ];
+  pack_bam_unresolved_work_t bam_unresolved_work;
   uint       bam_current_slot_fresh;
   uchar      bam_first_insert_seen;
   uchar      bam_first_schedule_seen;
@@ -611,6 +629,7 @@ pack_tile_bam_fresh_slot_for_hint( fd_pack_ctx_t const * ctx,
 static inline pack_bam_recent_slot_t *
 pack_tile_bam_recent_slot_prepare( fd_pack_ctx_t * ctx,
                                    ulong           slot ) {
+  FD_TEST( slot!=ULONG_MAX );
   pack_bam_recent_slot_t * entry = &ctx->bam_recent_slot[ slot & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
   if( FD_LIKELY( entry->slot==slot ) ) return entry;
   *entry = (pack_bam_recent_slot_t){ .slot = slot };
@@ -623,6 +642,11 @@ pack_tile_bam_recent_slot_add_pending( fd_pack_ctx_t * ctx,
                                        ulong           item_cnt,
                                        ulong           txn_cnt ) {
   pack_tile_note_bam_work_stage( ctx, FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_ENTERED_IDX, item_cnt, txn_cnt );
+  if( FD_UNLIKELY( slot==ULONG_MAX ) ) {
+    ctx->bam_unresolved_work.pending_items += item_cnt;
+    ctx->bam_unresolved_work.pending_txns  += txn_cnt;
+    return;
+  }
   pack_bam_recent_slot_t * entry = pack_tile_bam_recent_slot_prepare( ctx, slot );
   entry->pending_items += item_cnt;
   entry->pending_txns  += txn_cnt;
@@ -633,6 +657,11 @@ pack_tile_bam_recent_slot_sub_pending( fd_pack_ctx_t * ctx,
                                        ulong           slot,
                                        ulong           item_cnt,
                                        ulong           txn_cnt ) {
+  if( FD_UNLIKELY( slot==ULONG_MAX ) ) {
+    ctx->bam_unresolved_work.pending_items = fd_ulong_sat_sub( ctx->bam_unresolved_work.pending_items, item_cnt );
+    ctx->bam_unresolved_work.pending_txns  = fd_ulong_sat_sub( ctx->bam_unresolved_work.pending_txns,  txn_cnt  );
+    return;
+  }
   pack_bam_recent_slot_t * entry = pack_tile_bam_recent_slot_prepare( ctx, slot );
   entry->pending_items = fd_ulong_sat_sub( entry->pending_items, item_cnt );
   entry->pending_txns  = fd_ulong_sat_sub( entry->pending_txns,  txn_cnt  );
@@ -644,6 +673,11 @@ pack_tile_note_bam_received( fd_pack_ctx_t * ctx,
                              ulong           item_cnt,
                              ulong           txn_cnt ) {
   pack_tile_note_bam_work_stage( ctx, FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_RECEIVED_IDX, item_cnt, txn_cnt );
+  if( FD_UNLIKELY( slot==ULONG_MAX ) ) {
+    ctx->bam_unresolved_work.received_items += item_cnt;
+    ctx->bam_unresolved_work.received_txns  += txn_cnt;
+    return;
+  }
   pack_bam_recent_slot_t * entry = pack_tile_bam_recent_slot_prepare( ctx, slot );
   entry->received_items += item_cnt;
   entry->received_txns  += txn_cnt;
@@ -655,6 +689,11 @@ pack_tile_note_bam_accepted( fd_pack_ctx_t * ctx,
                              ulong           item_cnt,
                              ulong           txn_cnt ) {
   pack_tile_note_bam_work_stage( ctx, FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_ACCEPTED_IDX, item_cnt, txn_cnt );
+  if( FD_UNLIKELY( slot==ULONG_MAX ) ) {
+    ctx->bam_unresolved_work.accepted_items += item_cnt;
+    ctx->bam_unresolved_work.accepted_txns  += txn_cnt;
+    return;
+  }
   pack_bam_recent_slot_t * entry = pack_tile_bam_recent_slot_prepare( ctx, slot );
   entry->accepted_items += item_cnt;
   entry->accepted_txns  += txn_cnt;
@@ -666,6 +705,11 @@ pack_tile_note_bam_rejected_pre_pending( fd_pack_ctx_t * ctx,
                                          ulong           item_cnt,
                                          ulong           txn_cnt ) {
   pack_tile_note_bam_work_stage( ctx, FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_REJECTED_PRE_PENDING_IDX, item_cnt, txn_cnt );
+  if( FD_UNLIKELY( slot==ULONG_MAX ) ) {
+    ctx->bam_unresolved_work.rejected_pre_pending_items += item_cnt;
+    ctx->bam_unresolved_work.rejected_pre_pending_txns  += txn_cnt;
+    return;
+  }
   pack_bam_recent_slot_t * entry = pack_tile_bam_recent_slot_prepare( ctx, slot );
   entry->rejected_pre_pending_items += item_cnt;
   entry->rejected_pre_pending_txns  += txn_cnt;
@@ -700,6 +744,11 @@ pack_tile_note_bam_landed( fd_pack_ctx_t * ctx,
                            ulong           item_cnt,
                            ulong           txn_cnt ) {
   pack_tile_note_bam_work_stage( ctx, FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_LANDED_IDX, item_cnt, txn_cnt );
+  if( FD_UNLIKELY( slot==ULONG_MAX ) ) {
+    ctx->bam_unresolved_work.landed_items += item_cnt;
+    ctx->bam_unresolved_work.landed_txns  += txn_cnt;
+    return;
+  }
   pack_bam_recent_slot_t * entry = pack_tile_bam_recent_slot_prepare( ctx, slot );
   entry->landed_items += item_cnt;
   entry->landed_txns  += txn_cnt;
@@ -876,8 +925,7 @@ static inline ulong
 pack_tile_bam_funnel_slot( fd_pack_ctx_t const * ctx,
                            ulong                 max_schedule_slot ) {
   if( FD_LIKELY( max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ) ) return max_schedule_slot;
-  ulong slot = pack_tile_bam_best_known_slot( ctx );
-  return fd_ulong_if( slot==ULONG_MAX, 0UL, slot );
+  return pack_tile_bam_best_known_slot( ctx );
 }
 
 static inline pack_tile_bam_invalid_reason_t
@@ -985,9 +1033,14 @@ pack_tile_drop_scheduled_pending_bam_work( fd_pack_ctx_t *    ctx,
     pack_bam_work_t * item = &ctx->bam_work[ work_idx ];
     if( FD_UNLIKELY( item->state!=PACK_BAM_WORK_STATE_PENDING ) ) continue;
 
-    pack_bam_recent_slot_t * item_slot = pack_tile_bam_recent_slot_prepare( ctx, item->slot );
-    item_slot->scheduled_items += 1UL;
-    item_slot->scheduled_txns  += item->txn_cnt;
+    if( FD_UNLIKELY( item->slot==ULONG_MAX ) ) {
+      ctx->bam_unresolved_work.scheduled_items += 1UL;
+      ctx->bam_unresolved_work.scheduled_txns  += item->txn_cnt;
+    } else {
+      pack_bam_recent_slot_t * item_slot = pack_tile_bam_recent_slot_prepare( ctx, item->slot );
+      item_slot->scheduled_items += 1UL;
+      item_slot->scheduled_txns  += item->txn_cnt;
+    }
     pack_tile_note_bam_work_stage( ctx, FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_SCHEDULED_IDX, 1UL, item->txn_cnt );
     pack_tile_bam_recent_slot_sub_pending( ctx, item->slot, 1UL, item->txn_cnt );
     pack_tile_note_bam_first_outcome( ctx,
@@ -1064,9 +1117,14 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t *     ctx,
                                       FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_PENDING_EVICTED_IDX,
                                       item.first_rx_ts_ns,
                                       pack_tile_now_ns( ctx ) );
-    pack_bam_recent_slot_t * item_slot = pack_tile_bam_recent_slot_prepare( ctx, item.slot );
-    item_slot->evicted_post_pending_items += 1UL;
-    item_slot->evicted_post_pending_txns  += item.txn_cnt;
+    if( FD_UNLIKELY( item.slot==ULONG_MAX ) ) {
+      ctx->bam_unresolved_work.evicted_post_pending_items += 1UL;
+      ctx->bam_unresolved_work.evicted_post_pending_txns  += item.txn_cnt;
+    } else {
+      pack_bam_recent_slot_t * item_slot = pack_tile_bam_recent_slot_prepare( ctx, item.slot );
+      item_slot->evicted_post_pending_items += 1UL;
+      item_slot->evicted_post_pending_txns  += item.txn_cnt;
+    }
     pack_tile_bam_recent_slot_sub_pending( ctx, item.slot, 1UL, item.txn_cnt );
 
     ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)(void const *)&item.sig[ 0 ] );
@@ -1333,6 +1391,24 @@ static inline void
 metrics_write( fd_pack_ctx_t * ctx ) {
   ulong bam_current_leader_slot_work_items[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_CNT ] = {0};
   ulong bam_current_leader_slot_work_transactions[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_CNT ] = {0};
+  ulong bam_unresolved_work_items[ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_CNT ] = {
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_RECEIVED_IDX ]             = ctx->bam_unresolved_work.received_items,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_ACCEPTED_IDX ]             = ctx->bam_unresolved_work.accepted_items,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_REJECTED_PRE_PENDING_IDX ] = ctx->bam_unresolved_work.rejected_pre_pending_items,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_PENDING_IDX ]              = ctx->bam_unresolved_work.pending_items,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_EVICTED_POST_PENDING_IDX ] = ctx->bam_unresolved_work.evicted_post_pending_items,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_SCHEDULED_IDX ]            = ctx->bam_unresolved_work.scheduled_items,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_LANDED_IDX ]               = ctx->bam_unresolved_work.landed_items
+  };
+  ulong bam_unresolved_work_transactions[ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_CNT ] = {
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_RECEIVED_IDX ]             = ctx->bam_unresolved_work.received_txns,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_ACCEPTED_IDX ]             = ctx->bam_unresolved_work.accepted_txns,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_REJECTED_PRE_PENDING_IDX ] = ctx->bam_unresolved_work.rejected_pre_pending_txns,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_PENDING_IDX ]              = ctx->bam_unresolved_work.pending_txns,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_EVICTED_POST_PENDING_IDX ] = ctx->bam_unresolved_work.evicted_post_pending_txns,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_SCHEDULED_IDX ]            = ctx->bam_unresolved_work.scheduled_txns,
+    [ FD_METRICS_ENUM_PACK_BAM_UNRESOLVED_STATE_V_LANDED_IDX ]               = ctx->bam_unresolved_work.landed_txns
+  };
   if( FD_LIKELY( ctx->leader_slot!=ULONG_MAX ) ) {
     pack_bam_recent_slot_t const * recent = &ctx->bam_recent_slot[ ctx->leader_slot & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
     if( FD_LIKELY( recent->slot==ctx->leader_slot ) ) {
@@ -1369,6 +1445,8 @@ metrics_write( fd_pack_ctx_t * ctx ) {
   FD_MCNT_ENUM_COPY( PACK, BAM_LEADER_SLOT_FIRST_SCHEDULE_RESULT, ctx->bam_first_schedule_result_cnt );
   FD_MGAUGE_ENUM_COPY( PACK, BAM_CURRENT_LEADER_SLOT_WORK_ITEMS,        bam_current_leader_slot_work_items );
   FD_MGAUGE_ENUM_COPY( PACK, BAM_CURRENT_LEADER_SLOT_WORK_TRANSACTIONS, bam_current_leader_slot_work_transactions );
+  FD_MGAUGE_ENUM_COPY( PACK, BAM_UNRESOLVED_WORK_ITEMS,               bam_unresolved_work_items );
+  FD_MGAUGE_ENUM_COPY( PACK, BAM_UNRESOLVED_WORK_TRANSACTIONS,        bam_unresolved_work_transactions );
   FD_MHIST_COPY(     PACK, BAM_LEADER_SLOT_FIRST_INSERT_BEFORE_END_DISTANCE_NANOS,   ctx->bam_first_insert_before_end_distance_nanos );
   FD_MHIST_COPY(     PACK, BAM_LEADER_SLOT_FIRST_INSERT_AFTER_END_DISTANCE_NANOS,    ctx->bam_first_insert_after_end_distance_nanos );
   FD_MHIST_COPY(     PACK, BAM_LEADER_SLOT_FIRST_SCHEDULE_BEFORE_END_DISTANCE_NANOS, ctx->bam_first_schedule_before_end_distance_nanos );
@@ -2090,7 +2168,7 @@ after_frag( fd_pack_ctx_t *     ctx,
     pack_tile_evict_invalid_pending_bam_work( ctx, stem, ctx->leader_slot );
     for( ulong i=0UL; i<ctx->bam_work_cnt; ) {
       if( FD_UNLIKELY( ctx->bam_work[ i ].state==PACK_BAM_WORK_STATE_SCHEDULED &&
-                       ctx->bam_work[ i ].slot < ctx->leader_slot ) ) {
+                       ( ctx->bam_work[ i ].slot==ULONG_MAX || ctx->bam_work[ i ].slot < ctx->leader_slot ) ) ) {
         (void)pack_tile_bam_work_swap_remove( ctx, i );
         continue;
       }
@@ -2658,6 +2736,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_tracking_rejected_cnt     = 0UL;
   ctx->bam_tracking_rejected_txn_cnt = 0UL;
   for( ulong i=0UL; i<FD_PACK_BAM_RECENT_SLOT_CNT; i++ ) ctx->bam_recent_slot[ i ].slot = ULONG_MAX;
+  ctx->bam_unresolved_work = (pack_bam_unresolved_work_t){0};
   ctx->bam_current_slot_fresh = 0U;
   ctx->bam_first_insert_seen = 0U;
   ctx->bam_first_schedule_seen = 0U;
@@ -2698,6 +2777,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_work_cnt             = 0UL;
   ctx->bam_pending_work_cnt     = 0UL;
   ctx->bam_scheduled_work_cnt   = 0UL;
+  ctx->bam_unresolved_work      = (pack_bam_unresolved_work_t){0};
   ctx->bam_pending_check_slot   = 0UL;
   ctx->last_bam_leader_state.slot = ULONG_MAX;
   memset( ctx->last_sched_metrics,        '\0', sizeof(ctx->last_sched_metrics)        );

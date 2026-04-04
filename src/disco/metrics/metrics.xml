@@ -693,6 +693,16 @@ metric introduced.
   <int value="6" name="Landed" label="BAM work observed as landed for the current pack leader slot" />
 </enum>
 
+<enum name="PackBamUnresolvedState">
+  <int value="0" name="Received" label="BAM work received with unresolved slot attribution" />
+  <int value="1" name="Accepted" label="BAM work accepted into pack with unresolved slot attribution" />
+  <int value="2" name="RejectedPrePending" label="BAM work rejected before pending tracking with unresolved slot attribution" />
+  <int value="3" name="Pending" label="BAM work currently pending in pack with unresolved slot attribution" />
+  <int value="4" name="EvictedPostPending" label="BAM work evicted after pending acceptance with unresolved slot attribution" />
+  <int value="5" name="Scheduled" label="BAM work scheduled with unresolved slot attribution" />
+  <int value="6" name="Landed" label="BAM work observed as landed with unresolved slot attribution" />
+</enum>
+
 <enum name="PackBamWorkFirstOutcome">
   <int value="0" name="RejectedPrePending" label="BAM work was first rejected before entering pack's pending-work tracker" />
   <int value="1" name="TrackingRejected" label="BAM work was accepted into pack but rejected because the tracked-work table was full" />
@@ -775,6 +785,8 @@ metric introduced.
     </histogram>
     <gauge name="BamCurrentLeaderSlotWorkItems" enum="PackBamCurrentLeaderSlotState" summary="Per-current-pack-leader-slot BAM work-item counts from pack's recent-slot tracker. Exported as 0 when pack is not leader or no BAM work has been recorded for the current leader slot." />
     <gauge name="BamCurrentLeaderSlotWorkTransactions" enum="PackBamCurrentLeaderSlotState" summary="Per-current-pack-leader-slot BAM transaction counts from pack's recent-slot tracker. Exported as 0 when pack is not leader or no BAM work has been recorded for the current leader slot." />
+    <gauge name="BamUnresolvedWorkItems" enum="PackBamUnresolvedState" summary="BAM work-item counts in pack's explicit unresolved-slot bucket. Pending is current unresolved pending work; the other states accumulate work that remained unresolved when it passed through each stage." />
+    <gauge name="BamUnresolvedWorkTransactions" enum="PackBamUnresolvedState" summary="BAM transaction counts in pack's explicit unresolved-slot bucket. Pending is current unresolved pending transactions; the other states accumulate transactions that remained unresolved when they passed through each stage." />
     <counter name="BamWorkFirstOutcome" enum="PackBamWorkFirstOutcome" summary="Cumulative number of BAM work items bucketed by their first terminal pack outcome" />
     <histogram name="BamWorkRxToFirstOutcomeNanos" min="0" max="10000000000">
         <summary>Distribution of BAM scheduler-receive to first terminal pack outcome for a BAM work item, sampled once when that work is first rejected, tracking-rejected, pending-evicted, scheduled, or bundle-assembly-abandoned (nanoseconds)</summary>

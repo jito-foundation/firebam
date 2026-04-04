@@ -103,11 +103,15 @@ typedef struct {
   uchar valid;
 } fd_bam_unresolved_slot_ingress_timing_t;
 
-#define FD_BAM_STATUS_HISTORY_CNT 16
+#define FD_BAM_LEADER_SLOT_END_TRACKER_CNT 64UL
 typedef struct {
-  long                          ts_ns;
-  fd_plugin_bam_update_status_t status;
-} fd_bam_status_history_t;
+  ulong                         slot;
+  long                          slot_end_ns;
+  fd_plugin_bam_update_status_t status_at_end;
+  uchar                         fresh_seen_before_end;
+  uchar                         counted;
+  uchar                         valid;
+} fd_bam_leader_slot_end_tracker_t;
 
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
@@ -249,6 +253,7 @@ struct fd_bam_tile {
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_res and bank_bam; preserved across reconnect/reset until flushed */
   fd_bam_leader_state_t  bam_leader_state;               /* Latest pack_bam_ldr snapshot awaiting publication; newer unsent snapshots supersede older ones */
+  fd_bam_leader_slot_end_tracker_t leader_slot_end[ FD_BAM_LEADER_SLOT_END_TRACKER_CNT ]; /* Per-slot metric tracker used to record BAM status and fresh-work state at slot end without relying on transition-history reconstruction. */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
@@ -260,7 +265,6 @@ struct fd_bam_tile {
   uint                  bam_config_inflight    : 1;      /* true while GetBuilderConfig GRPC call is pending */
   uint                  bam_config_received    : 1;      /* set after a valid ConfigResponse lands on the current connection */
   uint                  bam_leader_pending     : 1;      /* set when a coalesced leader snapshot awaits send; not durable like bam_results */
-  ulong                 leader_slot_end_last_slot;        /* last leader slot whose slot-end outcome counters were recorded */
 
   /* Error backoff */
   fd_rng_t rng[1];                                /* RNG used to randomize reconnects */
@@ -283,9 +287,6 @@ struct fd_bam_tile {
   fd_plugin_bam_update_status_t bam_status_plugin;  /* last 'plugin' update written */
   fd_plugin_bam_update_status_t bam_status_counted; /* last status used for healthy-edge counters */
   fd_plugin_bam_update_status_t bam_status_logged;  /* last logged bundle status */
-  ulong bam_status_history_next;                    /* ring write index for BAM status transition history */
-  ulong bam_status_history_cnt;                     /* number of populated BAM status transition records */
-  fd_bam_status_history_t bam_status_history[ FD_BAM_STATUS_HISTORY_CNT ];
   long  last_bam_status_log_nanos;
   long  last_gui_publish_nanos;
   uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
@@ -347,16 +348,14 @@ fd_bam_finalize_slot_ingress_rollup( fd_bam_tile_t *                ctx,
 
   fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, current_leader_slot );
 
-  if( FD_LIKELY( entry->first_rx_ts_ns ) ) {
-    if( FD_UNLIKELY( !entry->slot_end_ns ) ) {
-      tx_unknown += tx_before + tx_after;
-      tx_before   = 0UL;
-      tx_after    = 0UL;
-    } else {
-      result_idx = entry->first_rx_ts_ns<=entry->slot_end_ns
-        ? FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_BEFORE_END_IDX
-        : FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_AFTER_END_IDX;
-    }
+  if( FD_LIKELY( entry->first_rx_ts_ns ) && FD_LIKELY( entry->slot_end_ns ) ) {
+    result_idx = entry->first_rx_ts_ns<=entry->slot_end_ns
+      ? FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_BEFORE_END_IDX
+      : FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_FIRST_AFTER_END_IDX;
+  } else if( FD_UNLIKELY( entry->first_rx_ts_ns ) ) {
+    tx_unknown += tx_before + tx_after;
+    tx_before   = 0UL;
+    tx_after    = 0UL;
   }
 
   ctx->metrics.slot_ingress_result_cnt[ result_idx ]++;
@@ -425,6 +424,7 @@ fd_bam_finalize_unresolved_slot_ingress_rollup( fd_bam_tile_t * ctx ) {
 FD_FN_UNUSED static inline void
 fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
+  _Bool track_slot_end = ( state->slot!=ULONG_MAX && state->slot_end_ns );
   if( FD_UNLIKELY( ctx->bam_leader_pending &&
                    !fd_bam_leader_state_eq( &ctx->bam_leader_state, state ) ) ) {
     ctx->metrics.leader_pending_replaced_cnt++;
@@ -433,13 +433,48 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
     fd_bam_finalize_unresolved_slot_ingress_rollup( ctx );
   }
 
-  fd_bam_slot_ingress_timing_t * entry =
-      ( state->slot!=ULONG_MAX && state->slot_end_ns )
-      ? fd_bam_slot_ingress_timing_query_or_insert( ctx, state->slot, state->slot )
-      : NULL;
+  fd_bam_slot_ingress_timing_t * entry = track_slot_end
+    ? fd_bam_slot_ingress_timing_query_or_insert( ctx, state->slot, state->slot )
+    : NULL;
   if( FD_LIKELY( entry ) ) {
     entry->slot_end_ns = state->slot_end_ns;
     entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > state->slot_end_ns );
+  }
+
+  if( FD_LIKELY( track_slot_end ) ) {
+    fd_bam_leader_slot_end_tracker_t * tracker = NULL;
+    fd_bam_leader_slot_end_tracker_t * free_tracker = NULL;
+    fd_bam_leader_slot_end_tracker_t * counted_tracker = NULL;
+    for( ulong i=0UL; i<FD_BAM_LEADER_SLOT_END_TRACKER_CNT; i++ ) {
+      fd_bam_leader_slot_end_tracker_t * candidate = &ctx->leader_slot_end[ i ];
+      if( FD_UNLIKELY( !candidate->valid ) ) {
+        if( FD_LIKELY( !free_tracker ) ) free_tracker = candidate;
+        continue;
+      }
+      if( FD_LIKELY( candidate->slot==state->slot ) ) {
+        tracker = candidate;
+        break;
+      }
+      if( FD_UNLIKELY( candidate->counted && ( !counted_tracker || candidate->slot<counted_tracker->slot ) ) ) {
+        counted_tracker = candidate;
+      }
+    }
+
+    if( FD_UNLIKELY( !tracker ) ) tracker = free_tracker ? free_tracker : counted_tracker;
+    if( FD_UNLIKELY( !tracker ) ) {
+      FD_LOG_WARNING(( "BAM leader-slot-end tracker table full while tracking slot %lu", state->slot ));
+    } else {
+      if( FD_UNLIKELY( !tracker->valid || tracker->slot!=state->slot ) ) {
+        *tracker = (fd_bam_leader_slot_end_tracker_t){
+          .slot          = state->slot,
+          .slot_end_ns   = state->slot_end_ns,
+          .status_at_end = ctx->bam_status_counted,
+          .valid         = 1U
+        };
+      }
+      tracker->slot_end_ns = state->slot_end_ns;
+      if( FD_LIKELY( !tracker->counted ) ) tracker->fresh_seen_before_end |= (uchar)!!state->current_slot_fresh;
+    }
   }
 
   ctx->bam_leader_state = *state;

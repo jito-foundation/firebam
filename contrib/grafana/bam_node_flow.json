@@ -1659,7 +1659,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -1774,7 +1774,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -1877,7 +1877,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -2016,7 +2016,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -2563,7 +2563,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -2635,7 +2635,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -3022,7 +3022,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -3091,7 +3091,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -3160,7 +3160,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -3295,7 +3295,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -3441,7 +3441,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -3920,7 +3920,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (slots/sec) of finalized local leader slots grouped by BAM client status at slot end. This surfaces bam_leader_slot_end_status, which records the BAM state reconstructed from local status history at each observed slot_end_ns.",
+      "description": "Rate (slots/sec) of finalized local leader slots grouped by BAM client status at slot end. This surfaces bam_leader_slot_end_status, which records the latest BAM state known at or before each observed slot_end_ns from the local per-slot tracker.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4706,7 +4706,7 @@
               },
               {
                 "color": "red",
-                "value": 0.000001
+                "value": 1e-06
               }
             ]
           },
@@ -4771,7 +4771,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Current BAM work-item counts by state for the active pack leader slot. Exported from pack's recent-slot tracker and reset to 0 when pack is not leader or no BAM work has been recorded for the current leader slot.",
+      "description": "Current BAM work-item counts by state for the active pack leader slot. This view is strict to the actual leader slot and excludes BAM work that remained slot-unresolved; see the unresolved panels for that bucket.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4836,7 +4836,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Current BAM transaction counts by state for the active pack leader slot. This complements the work-item panel by showing transaction volume rather than bundle-or-single-item counts.",
+      "description": "Current BAM transaction counts by state for the active pack leader slot. This complements the work-item panel by showing transaction volume rather than bundle-or-single-item counts. It excludes work that remained slot-unresolved; see the unresolved panels for that bucket.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5126,6 +5126,136 @@
       ],
       "title": "Pack BAM Work First Outcomes",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "BAM work-item counts by state for pack's explicit unresolved-slot bucket. Pending is current unresolved pending work; the other series accumulate work that stayed unresolved when it passed each stage.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 213
+      },
+      "id": 69,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance, pack_bam_unresolved_state) (pack_bam_unresolved_work_items{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "{{instance}} {{pack_bam_unresolved_state}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pack Unresolved BAM Work Items",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "BAM transaction counts by state for pack's explicit unresolved-slot bucket. Pending is current unresolved pending transaction volume; the other series accumulate transactions that stayed unresolved when they passed each stage.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 213
+      },
+      "id": 70,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance, pack_bam_unresolved_state) (pack_bam_unresolved_work_transactions{instance=~\"$instance\"})",
+          "instant": false,
+          "legendFormat": "{{instance}} {{pack_bam_unresolved_state}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pack Unresolved BAM Transactions",
+      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -5181,6 +5311,6 @@
   "timezone": "utc",
   "title": "Firedancer BAM Node Flow",
   "uid": "bamnodeflow",
-  "version": 22,
+  "version": 24,
   "weekStart": ""
 }
