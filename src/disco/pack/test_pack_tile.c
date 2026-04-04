@@ -1201,13 +1201,23 @@ main( int     argc,
   FD_TEST( ctx->bam_current_slot_fresh==1U );
   pack_bam_recent_slot_t const * recent_slot = &ctx->bam_recent_slot[ 123UL & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
   FD_TEST( recent_slot->slot == 123UL );
-  FD_TEST( recent_slot->first_insert_recorded == 1U );
-  FD_TEST( recent_slot->first_insert_minus_slot_end_ns == -100L );
-  FD_TEST( recent_slot->first_schedule_recorded == 1U );
-  FD_TEST( recent_slot->first_schedule_minus_slot_end_ns == -80L );
   metrics_write( ctx );
   FD_TEST( FD_MGAUGE_GET( PACK, LEADER_SLOT ) == 123UL );
   FD_TEST( FD_MGAUGE_GET( PACK, LEADER_SLOT_END_NANOS ) == 1000UL );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_ITEMS_RECEIVED ) == recent_slot->received_items );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_ITEMS_ACCEPTED ) == recent_slot->accepted_items );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_ITEMS_REJECTED_PRE_PENDING ) == recent_slot->rejected_pre_pending_items );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_ITEMS_PENDING ) == recent_slot->pending_items );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_ITEMS_EVICTED_POST_PENDING ) == recent_slot->evicted_post_pending_items );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_ITEMS_SCHEDULED ) == recent_slot->scheduled_items );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_ITEMS_LANDED ) == recent_slot->landed_items );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_TRANSACTIONS_RECEIVED ) == recent_slot->received_txns );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_TRANSACTIONS_ACCEPTED ) == recent_slot->accepted_txns );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_TRANSACTIONS_REJECTED_PRE_PENDING ) == recent_slot->rejected_pre_pending_txns );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_TRANSACTIONS_PENDING ) == recent_slot->pending_txns );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_TRANSACTIONS_EVICTED_POST_PENDING ) == recent_slot->evicted_post_pending_txns );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_TRANSACTIONS_SCHEDULED ) == recent_slot->scheduled_txns );
+  FD_TEST( FD_MGAUGE_GET( PACK, BAM_CURRENT_LEADER_SLOT_WORK_TRANSACTIONS_LANDED ) == recent_slot->landed_txns );
 
 #if FD_PACK_USE_EXTRA_STORAGE
   FD_TEST( extra_txn_deq_empty( ctx->extra_txn_deq ) );

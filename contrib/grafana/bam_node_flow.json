@@ -3914,6 +3914,71 @@
       ],
       "title": "Slot Timing Assumptions",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate (slots/sec) of finalized local leader slots grouped by BAM client status at slot end. This surfaces bam_leader_slot_end_status, which records the BAM state reconstructed from local status history at each observed slot_end_ns.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 149
+      },
+      "id": 53,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-21914300000.patch8",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (bam_leader_slot_end_status) (rate(bam_leader_slot_end_status{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{bam_leader_slot_end_status}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "BAM Leader Slot End Status",
+      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -3969,6 +4034,6 @@
   "timezone": "utc",
   "title": "Firedancer BAM Node Flow",
   "uid": "bamnodeflow",
-  "version": 15,
+  "version": 16,
   "weekStart": ""
 }

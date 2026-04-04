@@ -572,6 +572,7 @@ after_credit( fd_bam_tile_t *  ctx,
   ulong const * failure_cnt = metrics->failure_cnt;
   ulong const * ingress_batch_rejected_cnt = metrics->ingress_batch_rejected_cnt;
   ulong const * ingress_message_rejected_cnt = metrics->ingress_message_rejected_cnt;
+  ulong const * leader_slot_end_status_cnt = metrics->leader_slot_end_status_cnt;
   memset( update, 0, sizeof(fd_plugin_msg_bam_update_t) );
 
   strlcpy( update->name, "bam", sizeof( update->name ));
@@ -637,6 +638,11 @@ after_credit( fd_bam_tile_t *  ctx,
   update->ingress_batch_rejected_non_revert_multi_packet = ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ];
   update->ingress_message_rejected_empty_message = ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_EMPTY_MESSAGE_IDX ];
   update->ingress_message_rejected_overflow_message = ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ];
+  update->leader_slot_end_status_disabled = leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_DISABLED_IDX ];
+  update->leader_slot_end_status_disconnected = leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_DISCONNECTED_IDX ];
+  update->leader_slot_end_status_connecting = leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_CONNECTING_IDX ];
+  update->leader_slot_end_status_connected_unhealthy = leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_CONNECTED_UNHEALTHY_IDX ];
+  update->leader_slot_end_status_connected_healthy = leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_CONNECTED_HEALTHY_IDX ];
 
   ulong tspub = fd_frag_meta_ts_comp( fd_bam_now() );
   fd_stem_publish(
@@ -1239,6 +1245,7 @@ unprivileged_init( fd_topo_t *      topo,
 
   for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ )
     fd_memset( &ctx->slot_ingress_timing[ i ], 0, sizeof(ctx->slot_ingress_timing[ i ]) );
+  ctx->unresolved_slot_ingress = (fd_bam_unresolved_slot_ingress_timing_t){0};
 
   fd_histf_new( ctx->metrics.builder_heartbeat_arrival_delta_nanos,
                 FD_MHIST_MIN( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ),

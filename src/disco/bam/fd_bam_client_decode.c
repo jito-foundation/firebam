@@ -450,7 +450,12 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   ulong leader_slot = ctx->bam_leader_state.slot;
   long rx_ts_ns = fd_bam_now();
   long slot_end_ns = ( resolved_slot==leader_slot ) ? ctx->bam_leader_state.slot_end_ns : 0L;
-  fd_bam_slot_ingress_timing_t * entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, resolved_slot, leader_slot );
+  fd_bam_slot_ingress_timing_t * entry = NULL;
+  if( FD_UNLIKELY( resolved_slot==ULONG_MAX ) ) {
+    fd_bam_record_unresolved_slot_ingress( ctx, rx_ts_ns, state->packet_cnt );
+  } else {
+    entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, resolved_slot, leader_slot );
+  }
   if( FD_LIKELY( entry ) ) {
     if( FD_UNLIKELY( slot_end_ns ) ) {
       entry->slot_end_ns = slot_end_ns;
@@ -463,7 +468,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                  entry->txn_unknown_slot_end );
     _Bool after_slot_end = have_slot_end
       ? rx_ts_ns > entry->slot_end_ns
-      : !!( resolved_slot && resolved_slot < leader_slot );
+      : !!( leader_slot!=ULONG_MAX && resolved_slot && resolved_slot < leader_slot );
     if( FD_UNLIKELY( first_observation ) ) {
       entry->first_rx_ts_ns          = rx_ts_ns;
       entry->first_rx_after_slot_end = (uchar)after_slot_end;

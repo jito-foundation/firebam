@@ -183,10 +183,6 @@ typedef struct {
   ulong scheduled_txns;
   ulong landed_items;
   ulong landed_txns;
-  long  first_insert_minus_slot_end_ns;
-  long  first_schedule_minus_slot_end_ns;
-  uchar first_insert_recorded;
-  uchar first_schedule_recorded;
 } pack_bam_recent_slot_t;
 
 typedef struct {
@@ -682,13 +678,7 @@ pack_tile_note_first_bam_insert( fd_pack_ctx_t *     ctx,
                                  ulong               bam_fresh_slot ) {
   if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) return;
 
-  pack_bam_recent_slot_t * entry = pack_tile_bam_recent_slot_prepare( ctx, ctx->leader_slot );
   long insert_minus_slot_end_ns = now_ns - ctx->slot_end_ns;
-  if( FD_UNLIKELY( !entry->first_insert_recorded ) ) {
-    entry->first_insert_recorded = 1U;
-    entry->first_insert_minus_slot_end_ns = insert_minus_slot_end_ns;
-  }
-
   if( FD_LIKELY( ctx->bam_current_slot_fresh || insert_minus_slot_end_ns>=0L || bam_fresh_slot!=ctx->leader_slot ) ) return;
   ctx->bam_current_slot_fresh = 1U;
   pack_tile_publish_bam_leader_state( ctx, stem );
@@ -922,18 +912,11 @@ pack_tile_drop_scheduled_pending_bam_work( fd_pack_ctx_t *    ctx,
                                            fd_txn_p_t const * microblock_dst,
                                            ulong              schedule_cnt,
                                            long               schedule_ns ) {
-  pack_bam_recent_slot_t * recent_slot = pack_tile_bam_recent_slot_prepare( ctx, ctx->leader_slot );
-
+  (void)schedule_ns;
   for( ulong j=0UL; j<schedule_cnt; j++ ) {
     fd_txn_p_t const * txnp = microblock_dst + j;
     if( FD_UNLIKELY( txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
     if( FD_UNLIKELY( txnp->bam.revert_on_error && txnp->bam.batch_idx ) ) continue;
-
-    if( FD_UNLIKELY( !recent_slot->first_schedule_recorded ) ) {
-      long first_schedule_minus_slot_end_ns = schedule_ns - ctx->slot_end_ns;
-      recent_slot->first_schedule_recorded = 1U;
-      recent_slot->first_schedule_minus_slot_end_ns = first_schedule_minus_slot_end_ns;
-    }
 
     ulong work_idx = pack_tile_bam_work_find_by_sig0( ctx, (fd_ed25519_sig_t const *)(txnp->payload + 1UL) );
     if( FD_UNLIKELY( work_idx>=ctx->bam_work_cnt ) ) continue;
@@ -1252,30 +1235,28 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
 
 static inline void
 metrics_write( fd_pack_ctx_t * ctx ) {
-  pack_bam_recent_slot_t const * recent_slot = NULL;
-  ulong first_insert_recorded       = 0UL;
-  ulong first_insert_distance_nanos = 0UL;
-  ulong first_insert_after_end      = 0UL;
-  ulong first_schedule_recorded       = 0UL;
-  ulong first_schedule_distance_nanos = 0UL;
-  ulong first_schedule_after_end      = 0UL;
-
+  ulong bam_current_leader_slot_work_items[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_CNT ] = {0};
+  ulong bam_current_leader_slot_work_transactions[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_CNT ] = {0};
   if( FD_LIKELY( ctx->leader_slot!=ULONG_MAX ) ) {
-    recent_slot = &ctx->bam_recent_slot[ ctx->leader_slot & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
-    if( FD_LIKELY( recent_slot->slot==ctx->leader_slot ) ) {
-      if( FD_LIKELY( recent_slot->first_insert_recorded ) ) {
-        first_insert_recorded       = 1UL;
-        first_insert_distance_nanos = fd_long_abs( recent_slot->first_insert_minus_slot_end_ns );
-        first_insert_after_end      = (ulong)( recent_slot->first_insert_minus_slot_end_ns>0L );
-      }
-      if( FD_LIKELY( recent_slot->first_schedule_recorded ) ) {
-        first_schedule_recorded       = 1UL;
-        first_schedule_distance_nanos = fd_long_abs( recent_slot->first_schedule_minus_slot_end_ns );
-        first_schedule_after_end      = (ulong)( recent_slot->first_schedule_minus_slot_end_ns>0L );
-      }
+    pack_bam_recent_slot_t const * recent = &ctx->bam_recent_slot[ ctx->leader_slot & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
+    if( FD_LIKELY( recent->slot==ctx->leader_slot ) ) {
+      bam_current_leader_slot_work_items[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_RECEIVED_IDX ]             = recent->received_items;
+      bam_current_leader_slot_work_items[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_ACCEPTED_IDX ]             = recent->accepted_items;
+      bam_current_leader_slot_work_items[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_REJECTED_PRE_PENDING_IDX ] = recent->rejected_pre_pending_items;
+      bam_current_leader_slot_work_items[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_PENDING_IDX ]              = recent->pending_items;
+      bam_current_leader_slot_work_items[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_EVICTED_POST_PENDING_IDX ] = recent->evicted_post_pending_items;
+      bam_current_leader_slot_work_items[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_SCHEDULED_IDX ]            = recent->scheduled_items;
+      bam_current_leader_slot_work_items[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_LANDED_IDX ]               = recent->landed_items;
+
+      bam_current_leader_slot_work_transactions[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_RECEIVED_IDX ]             = recent->received_txns;
+      bam_current_leader_slot_work_transactions[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_ACCEPTED_IDX ]             = recent->accepted_txns;
+      bam_current_leader_slot_work_transactions[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_REJECTED_PRE_PENDING_IDX ] = recent->rejected_pre_pending_txns;
+      bam_current_leader_slot_work_transactions[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_PENDING_IDX ]              = recent->pending_txns;
+      bam_current_leader_slot_work_transactions[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_EVICTED_POST_PENDING_IDX ] = recent->evicted_post_pending_txns;
+      bam_current_leader_slot_work_transactions[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_SCHEDULED_IDX ]            = recent->scheduled_txns;
+      bam_current_leader_slot_work_transactions[ FD_METRICS_ENUM_PACK_BAM_CURRENT_LEADER_SLOT_STATE_V_LANDED_IDX ]               = recent->landed_txns;
     }
   }
-
   FD_MCNT_ENUM_COPY( PACK, TRANSACTION_INSERTED,          ctx->insert_result  );
   FD_MCNT_ENUM_COPY( PACK, BAM_BUNDLE_ASSEMBLY_ABANDON,   ctx->bam_bundle_assembly_abandon_cnt );
   FD_MCNT_ENUM_COPY( PACK, BAM_WORK_REJECTED_PRE_PENDING, ctx->bam_work_rejected_pre_pending_cnt );
@@ -1287,12 +1268,8 @@ metrics_write( fd_pack_ctx_t * ctx ) {
   FD_MGAUGE_SET(     PACK, BAM_PENDING_WORK_COUNT,        ctx->bam_pending_work_cnt );
   FD_MGAUGE_SET(     PACK, LEADER_SLOT,                   ctx->leader_slot==ULONG_MAX ? 0UL : ctx->leader_slot );
   FD_MGAUGE_SET(     PACK, LEADER_SLOT_END_NANOS,         ctx->leader_slot==ULONG_MAX ? 0UL : (ulong)ctx->slot_end_ns );
-  FD_MGAUGE_SET(     PACK, BAM_LEADER_SLOT_FIRST_INSERT_RECORDED,       first_insert_recorded );
-  FD_MGAUGE_SET(     PACK, BAM_LEADER_SLOT_FIRST_INSERT_DISTANCE_NANOS, first_insert_distance_nanos );
-  FD_MGAUGE_SET(     PACK, BAM_LEADER_SLOT_FIRST_INSERT_AFTER_END,      first_insert_after_end );
-  FD_MGAUGE_SET(     PACK, BAM_LEADER_SLOT_FIRST_SCHEDULE_RECORDED,       first_schedule_recorded );
-  FD_MGAUGE_SET(     PACK, BAM_LEADER_SLOT_FIRST_SCHEDULE_DISTANCE_NANOS, first_schedule_distance_nanos );
-  FD_MGAUGE_SET(     PACK, BAM_LEADER_SLOT_FIRST_SCHEDULE_AFTER_END,      first_schedule_after_end );
+  FD_MGAUGE_ENUM_COPY( PACK, BAM_CURRENT_LEADER_SLOT_WORK_ITEMS,        bam_current_leader_slot_work_items );
+  FD_MGAUGE_ENUM_COPY( PACK, BAM_CURRENT_LEADER_SLOT_WORK_TRANSACTIONS, bam_current_leader_slot_work_transactions );
   FD_MHIST_COPY(     PACK, BAM_SEQ_RX_TO_FIRST_SCHEDULE_NANOS,              ctx->bam_seq_rx_to_first_schedule_nanos );
   FD_MCNT_ENUM_COPY( PACK, METRIC_TIMING,        ((ulong*)ctx->metric_timing) );
   FD_MCNT_ENUM_COPY( PACK, BUNDLE_CRANK_STATUS,           ctx->crank->metrics );

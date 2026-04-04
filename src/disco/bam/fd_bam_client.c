@@ -156,6 +156,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_last_builder_heartbeat_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
   ctx->bam_last_config_poll_ns    = 0L;
+  ctx->unresolved_slot_ingress    = (fd_bam_unresolved_slot_ingress_timing_t){0};
   /* Preserve any buffered bundle results so they flush once the next
      scheduler stream comes up.  The server expects every dispatched
      bundle to eventually produce a result; dropping them here would lose

@@ -96,6 +96,12 @@ typedef struct {
   uchar valid;
 } fd_bam_slot_ingress_timing_t;
 
+typedef struct {
+  long  first_rx_ts_ns;
+  ulong txn_unknown_slot_end;
+  uchar valid;
+} fd_bam_unresolved_slot_ingress_timing_t;
+
 #define FD_BAM_STATUS_HISTORY_CNT 16
 typedef struct {
   long                          ts_ns;
@@ -219,6 +225,7 @@ struct fd_bam_tile {
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle). */
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
+  fd_bam_unresolved_slot_ingress_timing_t unresolved_slot_ingress; /* Pre-leader-slot ingress staged until a leader snapshot can attribute it to a slot. */
   fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by resolved slot for debug captures. */
   ulong dump_bam_last_slot;                       /* Most recent resolved slot dumped under dump_bam_first_slot_txn */
   uchar dump_bam_last_slot_valid;                 /* Whether dump_bam_last_slot has been initialized */
@@ -399,17 +406,50 @@ fd_bam_slot_ingress_timing_query_or_insert( fd_bam_tile_t * ctx,
 }
 
 FD_FN_UNUSED static inline void
+fd_bam_record_unresolved_slot_ingress( fd_bam_tile_t * ctx,
+                                       long            rx_ts_ns,
+                                       ulong           txn_cnt ) {
+  if( FD_UNLIKELY( !txn_cnt ) ) return;
+  if( FD_UNLIKELY( !ctx->unresolved_slot_ingress.valid ||
+                   rx_ts_ns < ctx->unresolved_slot_ingress.first_rx_ts_ns ) ) {
+    ctx->unresolved_slot_ingress.first_rx_ts_ns = rx_ts_ns;
+  }
+  ctx->unresolved_slot_ingress.txn_unknown_slot_end += txn_cnt;
+  ctx->unresolved_slot_ingress.valid = 1U;
+}
+
+FD_FN_UNUSED static inline void
+fd_bam_resolve_unresolved_slot_ingress( fd_bam_tile_t *                ctx,
+                                        fd_bam_slot_ingress_timing_t * entry ) {
+  if( FD_UNLIKELY( !ctx->unresolved_slot_ingress.valid || !entry ) ) return;
+
+  if( FD_UNLIKELY( !entry->first_rx_ts_ns ||
+                   ctx->unresolved_slot_ingress.first_rx_ts_ns < entry->first_rx_ts_ns ) ) {
+    entry->first_rx_ts_ns = ctx->unresolved_slot_ingress.first_rx_ts_ns;
+  }
+  entry->txn_unknown_slot_end += ctx->unresolved_slot_ingress.txn_unknown_slot_end;
+  if( FD_LIKELY( entry->slot_end_ns && entry->first_rx_ts_ns ) ) {
+    entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > entry->slot_end_ns );
+  }
+  ctx->unresolved_slot_ingress = (fd_bam_unresolved_slot_ingress_timing_t){0};
+}
+
+FD_FN_UNUSED static inline void
 fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
   if( FD_UNLIKELY( ctx->bam_leader_pending &&
                    !fd_bam_leader_state_eq( &ctx->bam_leader_state, state ) ) ) {
     ctx->metrics.leader_pending_replaced_cnt++;
   }
-  if( FD_LIKELY( state->slot_end_ns ) ) {
+  if( FD_LIKELY( state->slot!=ULONG_MAX &&
+                 ( state->slot_end_ns || ctx->unresolved_slot_ingress.valid ) ) ) {
     fd_bam_slot_ingress_timing_t * entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, state->slot, state->slot );
     if( FD_LIKELY( entry ) ) {
-      entry->slot_end_ns = state->slot_end_ns;
-      entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > state->slot_end_ns );
+      if( FD_LIKELY( state->slot_end_ns ) ) {
+        entry->slot_end_ns = state->slot_end_ns;
+        entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > state->slot_end_ns );
+      }
+      fd_bam_resolve_unresolved_slot_ingress( ctx, entry );
     }
   }
   ctx->bam_leader_state = *state;
