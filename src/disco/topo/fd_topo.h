@@ -294,6 +294,7 @@ struct fd_topo_tile {
       int   larger_shred_limits_per_block;
       int   use_consumed_cus;
       int   schedule_strategy;
+      uchar dump_bam_txns : 1;
       struct {
         int   enabled;
         uchar tip_distribution_program_addr[ 32 ];
