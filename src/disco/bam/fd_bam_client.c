@@ -830,7 +830,7 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
   return send_res;
 }
 
-static int
+int
 fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
                           fd_bam_leader_state_t const *  state ) {
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) {

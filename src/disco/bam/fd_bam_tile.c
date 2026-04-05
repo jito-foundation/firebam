@@ -530,7 +530,14 @@ bam_after_frag( fd_bam_tile_t *     ctx,
       break;
     }
     fd_bam_leader_state_t const * leader_state = (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->pack_leader_in.mem, ctx->frag_staged_chunk );
+    ulong const prev_slot = ctx->bam_leader_state.slot;
     fd_bam_stage_leader_state( ctx, leader_state );
+    if( FD_LIKELY( prev_slot!=leader_state->slot &&
+                   ctx->bam_stream &&
+                   ctx->bam_stream_live &&
+                   fd_bam_send_leader_state( ctx, &ctx->bam_leader_state ) ) ) {
+      ctx->bam_leader_pending = 0U;
+    }
     break;
   default:
     /* Unknown staged kind (e.g. memory corruption) is ignored to avoid

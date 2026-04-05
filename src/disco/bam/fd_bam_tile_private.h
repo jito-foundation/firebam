@@ -559,6 +559,10 @@ fd_bam_test_client_step_reconnect( fd_bam_tile_t * ctx,
 int
 fd_bam_test_flush_results( fd_bam_tile_t * ctx );
 
+int
+fd_bam_send_leader_state( fd_bam_tile_t *               ctx,
+                          fd_bam_leader_state_t const * state );
+
 /* fd_bam_tile_backoff is called whenever an error occurs.  Stalls
    forward progress for a randomized amount of time to prevent error
    floods. */

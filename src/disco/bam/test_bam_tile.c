@@ -2684,6 +2684,56 @@ test_bam_pack_leader_channel_contract( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_pack_leader_slot_change_flushes_immediately( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  test_bam_prepare_scheduler_stream( state );
+  state->bam_leader_state = (fd_bam_leader_state_t){
+    .slot = 76UL,
+    .tick = 8U,
+    .slot_cu_budget_remaining = 111U
+  };
+
+  union {
+    fd_bam_leader_state_t leader;
+    uchar                 bytes[ sizeof(fd_bam_leader_state_t) ];
+  } ingress = { .leader = {
+    .slot = 77UL,
+    .tick = 9U,
+    .slot_cu_budget_remaining = 456U
+  } };
+
+  state->pack_bam_leader_in_idx = 3UL;
+  state->pack_leader_in = (fd_bam_in_ctx_t){
+    .mem    = (fd_wksp_t *)ingress.bytes,
+    .chunk0 = 0UL,
+    .wmark  = 0UL
+  };
+
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_leader_in_idx, 0UL, sizeof(fd_bam_leader_state_t) );
+
+  FD_TEST( state->bam_leader_pending == 0U );
+  FD_TEST( state->bam_leader_state.slot == ingress.leader.slot );
+  FD_TEST( state->bam_leader_state.tick == ingress.leader.tick );
+  FD_TEST( state->bam_leader_state.slot_cu_budget_remaining == ingress.leader.slot_cu_budget_remaining );
+  FD_TEST( state->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUED_IDX ] == 1UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.which_versioned_msg == bam_api_SchedulerMessage_v0_tag );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_leader_state_tag );
+  bam_types_LeaderState const * ls = &decoded.msg.versioned_msg.v0.msg.leader_state;
+  FD_TEST( ls->slot == ingress.leader.slot );
+  FD_TEST( ls->tick == ingress.leader.tick );
+  FD_TEST( ls->slot_cu_budget_remaining == ingress.leader.slot_cu_budget_remaining );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_pack_result_channel_contract( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -4423,6 +4473,7 @@ main( int     argc,
   test_bam_scheduler_leader_state_publishes_message( wksp );
   test_bam_leader_state_supersede_counts_drop( wksp );
   test_bam_pack_leader_channel_contract( wksp );
+  test_bam_pack_leader_slot_change_flushes_immediately( wksp );
   test_bam_pack_result_channel_contract( wksp );
   test_bam_grpc_metrics_export( wksp );
   test_bam_scheduler_result_publishes_message( wksp );
