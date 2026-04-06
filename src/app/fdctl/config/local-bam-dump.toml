@@ -1,0 +1,56 @@
+[net]
+provider = "socket"
+
+[tiles.bam]
+enabled = true
+url = "http://127.0.0.1:50055"
+tls_domain_name = ""
+keepalive_interval_millis = 5000
+tls_cert_verify = false
+
+[development.netns]
+enabled = false
+
+[development]
+sandbox = false
+core_dump = true
+
+[development.bam]
+dump_bam_txns = true
+dump_bam_first_slot_txn = false
+
+# reduce ram consumption
+[layout]
+affinity = "0-15"
+net_tile_count = 1
+quic_tile_count = 1
+resolv_tile_count = 1
+verify_tile_count = 1
+bank_tile_count = 1
+shred_tile_count = 1
+agave_affinity = "16-17" # need at least 2 cores for ip echo ping
+
+[tiles.gui]
+enabled = true
+max_http_connections = 8
+max_websocket_connections = 8
+send_buffer_size_mb = 128
+
+[log]
+#level_stderr = "INFO"
+
+# local cluster config
+[consensus]
+identity_path = "/home/{user}/dev/bam/output/ledger/validator-5/node-keypair.json"
+vote_account_path = "/home/{user}/dev/bam/output/ledger/validator-5/vote-keypair.json"
+authorized_voter_paths = ["/home/{user}/dev/bam/output/ledger/validator-5/vote-keypair.json"]
+
+[development.gossip]
+allow_private_address = true
+
+[gossip]
+entrypoints = ["127.0.0.1:8001"]
+port = 18001 # 8001 used by validator 1
+
+[tiles.shred]
+shred_listen_port = 18003 # 8003 used by local cluster
