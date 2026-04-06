@@ -1,11 +1,13 @@
 /* fd_solfuzz_exec.c contains internal executors */
 
 #include "fd_solfuzz_private.h"
+#include "fd_sol_compat.h"
 #include "generated/block.pb.h"
 #include "generated/invoke.pb.h"
 #include "generated/txn.pb.h"
 #include "generated/vm.pb.h"
 #include "generated/elf.pb.h"
+#include "generated/fd_sol_compat_bam.pb.h"
 #include "../fd_executor_err.h"
 #include <assert.h>
 
@@ -386,5 +388,74 @@ fd_solfuzz_pb_vm_interp_fixture( fd_solfuzz_runner_t * runner,
 
   // Cleanup
   pb_release( &fd_exec_test_syscall_fixture_t_msg, fixture );
+  return ok;
+}
+
+static int
+sol_compat_cmp_bam_parse_batch( fd_sol_compat_bam_BamParseResult * expected,
+                                fd_sol_compat_bam_BamParseResult * actual ) {
+  if( expected->valid != actual->valid ) {
+    FD_LOG_WARNING(( "BamParseResult.valid mismatch: expected=%d actual=%d",
+                     expected->valid, actual->valid ));
+    return 0;
+  }
+  if( expected->has_error != actual->has_error ) {
+    FD_LOG_WARNING(( "BamParseResult.has_error mismatch: expected=%d actual=%d",
+                     expected->has_error, actual->has_error ));
+    return 0;
+  }
+  if( expected->has_error ) {
+    if( expected->error.reason != actual->error.reason ) {
+      FD_LOG_WARNING(( "BamParseResult.error.reason mismatch: expected=%d actual=%d",
+                       (int)expected->error.reason, (int)actual->error.reason ));
+      return 0;
+    }
+    if( expected->error.index != actual->error.index ) {
+      FD_LOG_WARNING(( "BamParseResult.error.index mismatch: expected=%u actual=%u",
+                       expected->error.index, actual->error.index ));
+      return 0;
+    }
+  }
+  return 1;
+}
+
+int
+fd_solfuzz_pb_bam_batch_fixture( fd_solfuzz_runner_t * runner,
+                                 uchar const *         in,
+                                 ulong                 in_sz ) {
+  (void)runner;
+
+  // Decode fixture
+  fd_sol_compat_bam_BamBatchFixture fixture[1] = {0};
+  if( !sol_compat_decode_lenient( fixture, in, in_sz, &fd_sol_compat_bam_BamBatchFixture_msg ) ) {
+    FD_LOG_WARNING(( "Invalid bam_batch fixture." ));
+    return 0;
+  }
+
+  int ok = 0;
+
+  // Call compat function with raw input bytes (the serialized AtomicTxnBatch)
+  uchar out_buf[ FD_SOL_COMPAT_BAM_BAMPARSERESULT_SIZE ];
+  ulong out_sz = sizeof(out_buf);
+  if( FD_UNLIKELY( !sol_compat_bam_parse_batch_v1( out_buf, &out_sz,
+                                                    fixture->input.bytes,
+                                                    (ulong)fixture->input.size ) ) ) {
+    FD_LOG_WARNING(( "sol_compat_bam_parse_batch_v1 failed" ));
+    goto cleanup;
+  }
+
+  // Decode actual output
+  fd_sol_compat_bam_BamParseResult actual[1] = {0};
+  if( FD_UNLIKELY( !sol_compat_decode_lenient( actual, out_buf, out_sz,
+                                               &fd_sol_compat_bam_BamParseResult_msg ) ) ) {
+    FD_LOG_WARNING(( "Failed to decode bam_parse_batch output" ));
+    goto cleanup;
+  }
+
+  // Compare actual vs expected
+  ok = sol_compat_cmp_bam_parse_batch( &fixture->output, actual );
+
+cleanup:
+  pb_release( &fd_sol_compat_bam_BamBatchFixture_msg, fixture );
   return ok;
 }

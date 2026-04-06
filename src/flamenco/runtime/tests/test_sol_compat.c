@@ -64,6 +64,8 @@ run_test1( fd_solfuzz_runner_t * runner,
     ok = fd_solfuzz_pb_vm_interp_fixture( runner, buf, file_sz );
   } else if( strstr( path, "/block/" ) != NULL ){
     ok = fd_solfuzz_pb_block_fixture( runner, buf, file_sz );
+  } else if( strstr( path, "/fd_sol_compat_bam/" ) != NULL ) {
+    ok = fd_solfuzz_pb_bam_batch_fixture( runner, buf, file_sz );
   } else {
     FD_LOG_WARNING(( "Unknown test type: %s", path ));
   }

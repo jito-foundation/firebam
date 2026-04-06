@@ -206,6 +206,13 @@ fd_solfuzz_pb_vm_interp_fixture( fd_solfuzz_runner_t * runner,
                                  uchar const *         in,
                                  ulong                 in_sz );
 
+/* BAM Batch Parse */
+
+int
+fd_solfuzz_pb_bam_batch_fixture( fd_solfuzz_runner_t * runner,
+                                 uchar const *         in,
+                                 ulong                 in_sz );
+
 FD_PROTOTYPES_END
 
 #endif /* HEADER_fd_src_flamenco_runtime_tests_fd_solfuzz_h */
