@@ -214,6 +214,8 @@ typedef struct _bam_types_BamConfig {
     bam_types_Socket tpu_sock; /* Socket for the TPU connection */
     bool has_tpu_fwd_sock;
     bam_types_Socket tpu_fwd_sock; /* Socket for the TPU forward connection */
+    pb_size_t shred_sock_count;
+    bam_types_Socket shred_sock[32]; /* Socket(s) for forwarding leader and near-leader shreds */
 } bam_types_BamConfig;
 
 
@@ -282,7 +284,7 @@ extern "C" {
 #define bam_types_TransactionError_init_default  {0, _bam_types_TransactionErrorReason_MIN}
 #define bam_types_TransactionCommittedResult_init_default {0, 0, 0, 0}
 #define bam_types_BlockEngineBuilderConfig_init_default {"", 0}
-#define bam_types_BamConfig_init_default         {"", 0, false, bam_types_Socket_init_default, false, bam_types_Socket_init_default}
+#define bam_types_BamConfig_init_default         {"", 0, false, bam_types_Socket_init_default, false, bam_types_Socket_init_default, 0, {bam_types_Socket_init_default}}
 #define bam_types_AuthProof_init_zero            {"", "", ""}
 #define bam_types_BuilderHeartBeat_init_zero     {0}
 #define bam_types_ValidatorHeartBeat_init_zero   {0}
@@ -305,7 +307,7 @@ extern "C" {
 #define bam_types_TransactionError_init_zero     {0, _bam_types_TransactionErrorReason_MIN}
 #define bam_types_TransactionCommittedResult_init_zero {0, 0, 0, 0}
 #define bam_types_BlockEngineBuilderConfig_init_zero {"", 0}
-#define bam_types_BamConfig_init_zero            {"", 0, false, bam_types_Socket_init_zero, false, bam_types_Socket_init_zero}
+#define bam_types_BamConfig_init_zero            {"", 0, false, bam_types_Socket_init_zero, false, bam_types_Socket_init_zero, 0, {bam_types_Socket_init_zero}}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define bam_types_AuthProof_challenge_to_sign_tag 1
@@ -354,6 +356,7 @@ extern "C" {
 #define bam_types_BamConfig_commission_bps_tag   2
 #define bam_types_BamConfig_tpu_sock_tag         3
 #define bam_types_BamConfig_tpu_fwd_sock_tag     4
+#define bam_types_BamConfig_shred_sock_tag       5
 
 /* Struct field encoding specification for nanopb */
 #define bam_types_AuthProof_FIELDLIST(X, a) \
@@ -502,11 +505,13 @@ X(a, STATIC,   SINGULAR, UINT32,   builder_commission,   2)
 X(a, STATIC,   SINGULAR, STRING,   prio_fee_recipient_pubkey,   1) \
 X(a, STATIC,   SINGULAR, UINT32,   commission_bps,    2) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  tpu_sock,          3) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  tpu_fwd_sock,      4)
+X(a, STATIC,   OPTIONAL, MESSAGE,  tpu_fwd_sock,      4) \
+X(a, STATIC,   REPEATED, MESSAGE,  shred_sock,        5)
 #define bam_types_BamConfig_CALLBACK NULL
 #define bam_types_BamConfig_DEFAULT NULL
 #define bam_types_BamConfig_tpu_sock_MSGTYPE bam_types_Socket
 #define bam_types_BamConfig_tpu_fwd_sock_MSGTYPE bam_types_Socket
+#define bam_types_BamConfig_shred_sock_MSGTYPE bam_types_Socket
 
 extern const pb_msgdesc_t bam_types_AuthProof_msg;
 extern const pb_msgdesc_t bam_types_BuilderHeartBeat_msg;
@@ -565,7 +570,7 @@ extern const pb_msgdesc_t bam_types_BamConfig_msg;
 /* bam_types_Committed_size depends on runtime parameters */
 #define BAM_TYPES_BAM_TYPES_PB_H_MAX_SIZE        bam_types_Packet_size
 #define bam_types_AuthProof_size                 325
-#define bam_types_BamConfig_size                 217
+#define bam_types_BamConfig_size                 2553
 #define bam_types_BlockEngineBuilderConfig_size  71
 #define bam_types_BuilderHeartBeat_size          11
 #define bam_types_DeserializationError_size      8

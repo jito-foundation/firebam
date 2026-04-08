@@ -35,6 +35,7 @@ static char const * const FD_BAM_ERR_GENERIC_INVALID_STRINGS[] = {
 };
 
 #define FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ULONG_MAX
+#define FD_BAM_SHRED_SOCK_MAX          32UL
 
 typedef struct {
   uint  seq_id;            /* Uniquely assigned for a single leader rotation. 0 is valid seq_id. UINT_MAX is never produced. */
@@ -82,6 +83,11 @@ typedef struct {
 } fd_bam_contact_update_t;
 
 typedef struct {
+  ulong         shred_sock_cnt;                       /* Number of active BAM shred receivers. */
+  fd_ip4_port_t shred_sock[ FD_BAM_SHRED_SOCK_MAX ]; /* BAM shred receivers in net order. */
+} fd_bam_shred_update_t;
+
+typedef struct {
   uchar prio_fee_recipient[ 32 ]; /* Decoded priority fee recipient pubkey */
   uint  commission_bps;           /* Validator commission expressed in basis points */
   uint  has_prio_fee_recipient;   /* Non-zero when prio_fee_recipient contains a valid pubkey */
@@ -89,6 +95,7 @@ typedef struct {
 } fd_bam_fee_cfg_t;
 
 #define FD_BAM_STEM_SIG_GOSSIP_UPDATE (0xAB) // randomly assigned
+#define FD_BAM_STEM_SIG_SHRED_UPDATE  (0xAC) // randomly assigned
 
 #define FD_BAM_SCHED_ERR_NONE            USHORT_MAX
 #define FD_BAM_SCHED_ERR_POH_TIMEOUT     bam_types_SchedulingError_POH_TIMEOUT

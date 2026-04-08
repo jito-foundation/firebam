@@ -335,6 +335,46 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                                                   ctx->gossip_out.wmark );
 }
 
+void
+fd_bam_shred_update( fd_bam_tile_t *    ctx,
+                     fd_stem_context_t * stem,
+                     _Bool               use_bam ) {
+  ulong desired_cnt = use_bam ? ctx->bam_shred_sock_cnt : 0UL;
+  if( FD_LIKELY( ctx->published_shred_sock_cnt == desired_cnt &&
+                 ( !desired_cnt ||
+                   0==memcmp( ctx->published_shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) ) ) ) ) {
+    return;
+  }
+
+  ctx->published_shred_sock_cnt = desired_cnt;
+  if( FD_LIKELY( desired_cnt ) ) {
+    fd_memcpy( ctx->published_shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) );
+  }
+
+  FD_LOG_NOTICE(( "Publishing BAM shred receivers active=%u count=%lu", (uint)use_bam, desired_cnt ));
+
+  if( FD_UNLIKELY( !ctx->shred_out.mem ) ) return;
+
+  fd_bam_shred_update_t * msg = fd_chunk_to_laddr( ctx->shred_out.mem, ctx->shred_out.chunk );
+  msg->shred_sock_cnt = desired_cnt;
+  if( FD_LIKELY( desired_cnt ) ) {
+    fd_memcpy( msg->shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) );
+  }
+
+  fd_stem_publish( stem,
+                   ctx->shred_out.idx,
+                   FD_BAM_STEM_SIG_SHRED_UPDATE,
+                   ctx->shred_out.chunk,
+                   sizeof(fd_bam_shred_update_t),
+                   0UL,
+                   0UL,
+                   fd_frag_meta_ts_comp( fd_bam_now() ) );
+  ctx->shred_out.chunk = fd_dcache_compact_next( ctx->shred_out.chunk,
+                                                 sizeof(fd_bam_shred_update_t),
+                                                 ctx->shred_out.chunk0,
+                                                 ctx->shred_out.wmark );
+}
+
 static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
 
 /* Two-phase fragment staging kind.
@@ -411,9 +451,11 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   _Bool current_slot_fresh = use_bam && fd_bam_current_slot_fresh( ctx, now_ns );
   _Bool tpu_update_pending = ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ) |
                             ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
-  if( FD_UNLIKELY( ctx->bam_status_recent != status || tpu_update_pending ) ) {
+  _Bool status_changed = ctx->bam_status_recent != status;
+  if( FD_UNLIKELY( status_changed || tpu_update_pending ) ) {
     fd_bam_gossip_update( ctx, ctx->stem, use_bam );
   }
+  if( FD_UNLIKELY( status_changed ) ) fd_bam_shred_update( ctx, ctx->stem, use_bam );
   ctx->bam_status_recent = status;
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
     /* Expose BAM connectivity via a shared latch. The verify tile uses
@@ -1192,6 +1234,13 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->gossip_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
   }
 
+  ulong shred_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_shred", tile->kind_id );
+  if( shred_out_idx != ULONG_MAX ) {
+    ctx->shred_out = bam_out_link( topo, &topo->links[ tile->out_link_id[ shred_out_idx ] ], shred_out_idx );
+  } else {
+    ctx->shred_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
+  }
+
   /* Set socket receive buffer size */
   ulong so_rcvbuf = tile->bam.buf_sz;
   if( FD_UNLIKELY( so_rcvbuf < 2048UL  ) ) FD_LOG_ERR(( "Invalid [development.bam.buffer_size_kib]: too small" ));
@@ -1212,6 +1261,8 @@ unprivileged_init( fd_topo_t *      topo,
 
   ctx->bam_tpu         = (fd_ip4_port_t){0};
   ctx->bam_tpu_fwd     = (fd_ip4_port_t){0};
+  ctx->bam_shred_sock_cnt = 0UL;
+  ctx->published_shred_sock_cnt = 0UL;
   ctx->default_tpu     = (fd_ip4_port_t){0};
   ctx->default_tpu_fwd = (fd_ip4_port_t){0};
   ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;

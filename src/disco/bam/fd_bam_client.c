@@ -114,6 +114,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   /* Drop the shared BAM-status latch immediately so downstream tiles
      can resume QUIC/bundle ingestion without waiting for housekeeping. */
   if( FD_LIKELY( ctx->bam_status_fseq ) ) fd_fseq_update( ctx->bam_status_fseq, 0UL );
+  fd_bam_shred_update( ctx, ctx->stem, 0 );
 
   if( FD_UNLIKELY( ctx->tcp_sock >= 0 ) ) {
     if( FD_UNLIKELY( 0 != close( ctx->tcp_sock ) ) ) {
@@ -540,8 +541,11 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   bam_types_BamConfig const * cfg = &resp.bam_config;
   fd_ip4_port_t prev_tpu     = ctx->bam_tpu;
   fd_ip4_port_t prev_tpu_fwd = ctx->bam_tpu_fwd;
+  ulong         prev_shred_sock_cnt = ctx->bam_shred_sock_cnt;
   fd_ip4_port_t new_tpu     = {0};
   fd_ip4_port_t new_tpu_fwd = {0};
+  fd_ip4_port_t new_shred_sock[ FD_BAM_SHRED_SOCK_MAX ] = {0};
+  ulong         new_shred_sock_cnt = 0UL;
 
   if( cfg->has_tpu_sock ) {
     uint ip4;
@@ -569,6 +573,17 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     }
   }
 
+  for( ulong i=0UL; i<(ulong)cfg->shred_sock_count; i++ ) {
+    bam_types_Socket const * sock = &cfg->shred_sock[ i ];
+    uint ip4;
+    if( FD_LIKELY( fd_cstr_to_ip4_addr( sock->ip, &ip4 ) ) &&
+        FD_LIKELY( sock->port > 0 && sock->port <= USHORT_MAX ) ) {
+      new_shred_sock[ new_shred_sock_cnt++ ] = (fd_ip4_port_t){ .addr = ip4, .port = fd_ushort_bswap( (ushort)sock->port ) };
+    } else {
+      FD_LOG_WARNING(( "Dropping invalid BAM shred receiver socket in ConfigResponse: %s:%u", sock->ip, sock->port ));
+    }
+  }
+
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   /* A disconnect means Firedancer should resume advertising its local
      TPU ports so TPU clients do not get stuck targeting the BAM host. */
@@ -582,11 +597,22 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     FD_LOG_WARNING(( "Received incomplete or invalid TPU config; preserving prior BAM TPU config" ));
   }
 
+  _Bool shred_changed = ( prev_shred_sock_cnt != new_shred_sock_cnt ) ||
+                        ( new_shred_sock_cnt &&
+                          0!=memcmp( ctx->bam_shred_sock, new_shred_sock, new_shred_sock_cnt * sizeof(fd_ip4_port_t) ) );
+  if( FD_UNLIKELY( shred_changed ) ) {
+    ctx->bam_shred_sock_cnt = new_shred_sock_cnt;
+    fd_memcpy( ctx->bam_shred_sock, new_shred_sock, new_shred_sock_cnt * sizeof(fd_ip4_port_t) );
+  }
+
   ctx->gui_dirty = 1U;
   /* Only switch TPU adverts to BAM when the client is actually healthy.
      Config responses can arrive while connecting or after an admin disable,
      and should not force a BAM TPU override. */
   fd_bam_gossip_update( ctx, ctx->stem, ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) && has_valid_contact );
+  if( FD_UNLIKELY( shred_changed ) ) {
+    fd_bam_shred_update( ctx, ctx->stem, status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  }
 
   // update fee config
   _Bool bam_config_fee_updated = false;

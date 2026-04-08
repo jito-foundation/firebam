@@ -229,6 +229,10 @@ struct fd_bam_tile {
   uint               fee_cfg_version;  /* Last version published to fee_cfg */
   fd_ip4_port_t bam_tpu;               /* Latest TPU socket advertised by BAM */
   fd_ip4_port_t bam_tpu_fwd;           /* Latest TPU Forward socket advertised by BAM */
+  ulong         bam_shred_sock_cnt;    /* Latest shred receiver count advertised by BAM */
+  fd_ip4_port_t bam_shred_sock[ FD_BAM_SHRED_SOCK_MAX ]; /* Latest shred receivers advertised by BAM */
+  ulong         published_shred_sock_cnt; /* Last effective shred receiver count published to shred tiles */
+  fd_ip4_port_t published_shred_sock[ FD_BAM_SHRED_SOCK_MAX ]; /* Last effective shred receivers published to shred tiles */
   fd_ip4_port_t default_tpu;           /* TPU socket Agave booted with (non-BAM) */
   fd_ip4_port_t default_tpu_fwd;       /* TPU Forward socket Agave booted with */
   fd_ip4_port_t configured_default_tpu; /* Startup TPU advert derived from local Frankendancer config when the advertised IP is locally knowable. Firedancer Agave uses the same base UDP socket for tpu and tpu_forwards. */
@@ -277,6 +281,7 @@ struct fd_bam_tile {
   fd_bam_out_ctx_t    verify_out;                    /* Output ring for transaction verification */
   fd_bam_out_ctx_t    plugin_out;                    /* Output ring for plugin status updates */
   fd_bam_out_ctx_t    gossip_out;       /* Stem output buffer used for BAM gossip updates (Full firedancer, not Frankendncer) */
+  fd_bam_out_ctx_t    shred_out;        /* Stem output buffer used for BAM shred receiver updates */
   ulong *             bam_status_fseq; /* Shared latch written with BAM status bits (bit 0 = override active, bit 1 = current-slot fresh work observed) */
 
   /* App metrics */
@@ -575,6 +580,11 @@ void
 fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                               fd_stem_context_t * stem,
                               _Bool use_bam);
+
+void
+fd_bam_shred_update( fd_bam_tile_t *    ctx,
+                     fd_stem_context_t * stem,
+                     _Bool               use_bam );
 
 /* fd_bam_tile_should_stall returns 1 if forward progress should be
    temporarily prevented due to an error. */

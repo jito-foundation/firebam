@@ -142,6 +142,14 @@ test_bam_read_gossip_update( fd_wksp_t * mem,
   return msg;
 }
 
+static fd_bam_shred_update_t
+test_bam_read_shred_update( fd_wksp_t * mem,
+                            ulong       chunk ) {
+  fd_bam_shred_update_t msg;
+  fd_memcpy( &msg, fd_chunk_to_laddr( mem, chunk ), sizeof(fd_bam_shred_update_t) );
+  return msg;
+}
+
 static void
 zero_meta_ts( fd_frag_meta_t * meta,
               ulong            depth ) {
@@ -3948,6 +3956,128 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_shred_update_publishes_receiver_list( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_wksp_t * shred_mem = fd_wksp_containing( env->out_dcache );
+  state->shred_out = (fd_bam_out_ctx_t){
+      .idx    = 0UL,
+      .mem    = shred_mem,
+      .chunk0 = fd_dcache_compact_chunk0( shred_mem, env->out_dcache ),
+      .chunk  = fd_dcache_compact_chunk0( shred_mem, env->out_dcache ),
+      .wmark  = fd_dcache_compact_wmark( shred_mem, env->out_dcache, sizeof(fd_bam_shred_update_t) )
+  };
+
+  bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_bam_config = true;
+  resp.bam_config.has_tpu_sock = true;
+  strlcpy( resp.bam_config.tpu_sock.ip, "10.20.30.40", sizeof( resp.bam_config.tpu_sock.ip ) );
+  resp.bam_config.tpu_sock.port = 1122U;
+  resp.bam_config.has_tpu_fwd_sock = true;
+  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  resp.bam_config.tpu_fwd_sock.port = 3344U;
+  resp.bam_config.shred_sock_count = 4U;
+  strlcpy( resp.bam_config.shred_sock[ 0 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_sock[ 0 ].ip ) );
+  resp.bam_config.shred_sock[ 0 ].port = 5001U;
+  strlcpy( resp.bam_config.shred_sock[ 1 ].ip, "2.2.2.2", sizeof( resp.bam_config.shred_sock[ 1 ].ip ) );
+  resp.bam_config.shred_sock[ 1 ].port = 5002U;
+  strlcpy( resp.bam_config.shred_sock[ 2 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_sock[ 2 ].ip ) );
+  resp.bam_config.shred_sock[ 2 ].port = 5001U;
+  strlcpy( resp.bam_config.shred_sock[ 3 ].ip, "bad-ip", sizeof( resp.bam_config.shred_sock[ 3 ].ip ) );
+  resp.bam_config.shred_sock[ 3 ].port = 0U;
+
+  uchar pb_buf[ 1024 ];
+  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+
+  ulong publish_chunk = state->shred_out.chunk;
+  fd_bam_client_grpc_rx_msg( state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+
+  fd_bam_shred_update_t update = test_bam_read_shred_update( shred_mem, publish_chunk );
+  FD_TEST( update.shred_sock_cnt == 3UL );
+  FD_TEST( state->bam_shred_sock_cnt == 3UL );
+
+  uint ip4 = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &ip4 ) );
+  FD_TEST( update.shred_sock[ 0 ].addr == ip4 );
+  FD_TEST( fd_ushort_bswap( update.shred_sock[ 0 ].port ) == 5001U );
+  FD_TEST( update.shred_sock[ 2 ].addr == ip4 );
+  FD_TEST( fd_ushort_bswap( update.shred_sock[ 2 ].port ) == 5001U );
+
+  FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &ip4 ) );
+  FD_TEST( update.shred_sock[ 1 ].addr == ip4 );
+  FD_TEST( fd_ushort_bswap( update.shred_sock[ 1 ].port ) == 5002U );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_shred_update_disconnect_uses_empty_without_clearing_receivers( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_wksp_t * shred_mem = fd_wksp_containing( env->out_dcache );
+  state->shred_out = (fd_bam_out_ctx_t){
+      .idx    = 0UL,
+      .mem    = shred_mem,
+      .chunk0 = fd_dcache_compact_chunk0( shred_mem, env->out_dcache ),
+      .chunk  = fd_dcache_compact_chunk0( shred_mem, env->out_dcache ),
+      .wmark  = fd_dcache_compact_wmark( shred_mem, env->out_dcache, sizeof(fd_bam_shred_update_t) )
+  };
+
+  bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_bam_config = true;
+  resp.bam_config.has_tpu_sock = true;
+  strlcpy( resp.bam_config.tpu_sock.ip, "10.20.30.40", sizeof( resp.bam_config.tpu_sock.ip ) );
+  resp.bam_config.tpu_sock.port = 1122U;
+  resp.bam_config.has_tpu_fwd_sock = true;
+  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  resp.bam_config.tpu_fwd_sock.port = 3344U;
+  resp.bam_config.shred_sock_count = 2U;
+  strlcpy( resp.bam_config.shred_sock[ 0 ].ip, "3.3.3.3", sizeof( resp.bam_config.shred_sock[ 0 ].ip ) );
+  resp.bam_config.shred_sock[ 0 ].port = 7001U;
+  strlcpy( resp.bam_config.shred_sock[ 1 ].ip, "4.4.4.4", sizeof( resp.bam_config.shred_sock[ 1 ].ip ) );
+  resp.bam_config.shred_sock[ 1 ].port = 7002U;
+
+  uchar pb_buf[ 1024 ];
+  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+
+  ulong publish_chunk = state->shred_out.chunk;
+  fd_bam_client_grpc_rx_msg( state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+
+  fd_bam_shred_update_t updates[ 3 ] = {0};
+  updates[ 0 ] = test_bam_read_shred_update( shred_mem, publish_chunk );
+  FD_TEST( updates[ 0 ].shred_sock_cnt == 2UL );
+
+  publish_chunk = state->shred_out.chunk;
+  fd_bam_shred_update( state, state->stem, false );
+  updates[ 1 ] = test_bam_read_shred_update( shred_mem, publish_chunk );
+  FD_TEST( updates[ 1 ].shred_sock_cnt == 0UL );
+  FD_TEST( state->bam_shred_sock_cnt == 2UL );
+
+  publish_chunk = state->shred_out.chunk;
+  fd_bam_shred_update( state, state->stem, true );
+  updates[ 2 ] = test_bam_read_shred_update( shred_mem, publish_chunk );
+  FD_TEST( updates[ 2 ].shred_sock_cnt == 2UL );
+  FD_TEST( updates[ 2 ].shred_sock[ 0 ].l == updates[ 0 ].shred_sock[ 0 ].l );
+  FD_TEST( updates[ 2 ].shred_sock[ 1 ].l == updates[ 0 ].shred_sock[ 1 ].l );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_config_requires_full_contact_before_gossip_override( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -4508,6 +4638,8 @@ main( int     argc,
   test_bam_gossip_resets_when_contact_missing( wksp );
   test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( wksp );
   test_bam_runtime_toggle_updates_gossip( wksp );
+  test_bam_shred_update_publishes_receiver_list( wksp );
+  test_bam_shred_update_disconnect_uses_empty_without_clearing_receivers( wksp );
   test_bam_config_requires_full_contact_before_gossip_override( wksp );
 
   /* Config and fees */
