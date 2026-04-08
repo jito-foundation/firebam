@@ -341,15 +341,12 @@ fd_bam_shred_update( fd_bam_tile_t *    ctx,
                      _Bool               use_bam ) {
   ulong desired_cnt = use_bam ? ctx->bam_shred_sock_cnt : 0UL;
   if( FD_LIKELY( ctx->published_shred_sock_cnt == desired_cnt &&
-                 ( !desired_cnt ||
-                   0==memcmp( ctx->published_shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) ) ) ) ) {
+                 0==memcmp( ctx->published_shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) ) ) ) {
     return;
   }
 
   ctx->published_shred_sock_cnt = desired_cnt;
-  if( FD_LIKELY( desired_cnt ) ) {
-    fd_memcpy( ctx->published_shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) );
-  }
+  fd_memcpy( ctx->published_shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) );
 
   FD_LOG_NOTICE(( "Publishing BAM shred receivers active=%u count=%lu", (uint)use_bam, desired_cnt ));
 
@@ -357,9 +354,7 @@ fd_bam_shred_update( fd_bam_tile_t *    ctx,
 
   fd_bam_shred_update_t * msg = fd_chunk_to_laddr( ctx->shred_out.mem, ctx->shred_out.chunk );
   msg->shred_sock_cnt = desired_cnt;
-  if( FD_LIKELY( desired_cnt ) ) {
-    fd_memcpy( msg->shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) );
-  }
+  fd_memcpy( msg->shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) );
 
   fd_stem_publish( stem,
                    ctx->shred_out.idx,

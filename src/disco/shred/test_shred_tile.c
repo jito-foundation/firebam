@@ -62,12 +62,6 @@ test_bam_forwarding_window_and_send( void ) {
   }
 
   FD_TEST( run_start!=ULONG_MAX );
-  FD_TEST( !fd_shred_should_forward_to_bam( ctx, run_start-3UL ) );
-  FD_TEST(  fd_shred_should_forward_to_bam( ctx, run_start-2UL ) );
-  FD_TEST(  fd_shred_should_forward_to_bam( ctx, run_start-1UL ) );
-  FD_TEST(  fd_shred_should_forward_to_bam( ctx, run_start     ) );
-  FD_TEST(  fd_shred_should_forward_to_bam( ctx, run_end       ) );
-  FD_TEST( !fd_shred_should_forward_to_bam( ctx, run_end+1UL   ) );
 
   void * net_out_mem = aligned_alloc( FD_CHUNK_ALIGN, FD_CHUNK_SZ*512UL );
   FD_TEST( net_out_mem );
@@ -114,10 +108,10 @@ test_bam_forwarding_window_and_send( void ) {
   ulong second_chunk = fd_dcache_compact_next( 0UL, FD_SHRED_MIN_SZ + sizeof(fd_ip4_udp_hdrs_t), 0UL, ctx->net_out_wmark );
   fd_shred_send_bam_shred( ctx, &stem, shred );
 
-  FD_TEST( ctx->bam_obs->forwarded_shred_cnt        == 1UL );
-  FD_TEST( ctx->bam_obs->forwarded_packet_cnt       == 2UL );
-  FD_TEST( ctx->bam_obs->skipped_no_receivers_cnt   == 0UL );
-  FD_TEST( ctx->bam_obs->skipped_outside_window_cnt == 0UL );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_shred_cnt        == 1UL );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_packet_cnt       == 2UL );
+  FD_TEST( ctx->bam_obs->cnt.skipped_no_receivers_cnt   == 0UL );
+  FD_TEST( ctx->bam_obs->cnt.skipped_outside_window_cnt == 0UL );
   FD_TEST( stem.seqs[ NET_OUT_IDX ]                 == 2UL );
   FD_TEST( mcache1[ 0 ].chunk                       == 0U );
   FD_TEST( mcache1[ 1 ].chunk                       == (uint)second_chunk );
@@ -129,18 +123,44 @@ test_bam_forwarding_window_and_send( void ) {
   FD_TEST( pkt1->ip4->daddr                          == ctx->bam_dests[ 1 ].ip4 );
   FD_TEST( fd_ushort_bswap( pkt1->udp->net_dport )  == ctx->bam_dests[ 1 ].port );
 
+  shred->slot = run_start-3UL;
+  fd_shred_send_bam_shred( ctx, &stem, shred );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_shred_cnt        == 1UL );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_packet_cnt       == 2UL );
+  FD_TEST( ctx->bam_obs->cnt.skipped_outside_window_cnt == 1UL );
+  FD_TEST( stem.seqs[ NET_OUT_IDX ]                     == 2UL );
+
+  shred->slot = run_start-1UL;
+  fd_shred_send_bam_shred( ctx, &stem, shred );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_shred_cnt        == 2UL );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_packet_cnt       == 4UL );
+  FD_TEST( ctx->bam_obs->cnt.skipped_outside_window_cnt == 1UL );
+  FD_TEST( stem.seqs[ NET_OUT_IDX ]                     == 4UL );
+
+  shred->slot = run_start;
+  fd_shred_send_bam_shred( ctx, &stem, shred );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_shred_cnt        == 3UL );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_packet_cnt       == 6UL );
+  FD_TEST( stem.seqs[ NET_OUT_IDX ]                     == 6UL );
+
+  shred->slot = run_end;
+  fd_shred_send_bam_shred( ctx, &stem, shred );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_shred_cnt        == 4UL );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_packet_cnt       == 8UL );
+  FD_TEST( stem.seqs[ NET_OUT_IDX ]                     == 8UL );
+
   shred->slot = run_end+1UL;
   fd_shred_send_bam_shred( ctx, &stem, shred );
-  FD_TEST( ctx->bam_obs->forwarded_shred_cnt        == 1UL );
-  FD_TEST( ctx->bam_obs->forwarded_packet_cnt       == 2UL );
-  FD_TEST( ctx->bam_obs->skipped_outside_window_cnt == 1UL );
-  FD_TEST( stem.seqs[ NET_OUT_IDX ]                 == 2UL );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_shred_cnt        == 4UL );
+  FD_TEST( ctx->bam_obs->cnt.forwarded_packet_cnt       == 8UL );
+  FD_TEST( ctx->bam_obs->cnt.skipped_outside_window_cnt == 2UL );
+  FD_TEST( stem.seqs[ NET_OUT_IDX ]                     == 8UL );
 
   ctx->bam_dests_cnt = 0UL;
   shred->slot = run_start;
   fd_shred_send_bam_shred( ctx, &stem, shred );
-  FD_TEST( ctx->bam_obs->skipped_no_receivers_cnt == 1UL );
-  FD_TEST( stem.seqs[ NET_OUT_IDX ]               == 2UL );
+  FD_TEST( ctx->bam_obs->cnt.skipped_no_receivers_cnt == 1UL );
+  FD_TEST( stem.seqs[ NET_OUT_IDX ]                   == 8UL );
 
   free( stake_msg );
   free( net_out_mem );
@@ -167,8 +187,8 @@ test_bam_shred_update_apply_and_truncate( void ) {
   FD_TEST( ctx->bam_dests[ 1 ].port                      == 5002U );
   FD_TEST( ctx->bam_dests[ 2 ].ip4                       == FD_IP4_ADDR( 1, 1, 1, 1 ) );
   FD_TEST( ctx->bam_dests[ 2 ].port                      == 5001U );
-  FD_TEST( ctx->bam_obs->receiver_update_applied_cnt     == 1UL );
-  FD_TEST( ctx->bam_obs->receiver_update_truncated_cnt   == 0UL );
+  FD_TEST( ctx->bam_obs->cnt.receiver_update_applied_cnt     == 1UL );
+  FD_TEST( ctx->bam_obs->cnt.receiver_update_truncated_cnt   == 0UL );
 
   ctx->bam_shred_upd_buf->shred_sock_cnt = FD_BAM_SHRED_SOCK_MAX + 5UL;
   for( ulong i=0UL; i<FD_BAM_SHRED_SOCK_MAX; i++ ) {
@@ -180,8 +200,8 @@ test_bam_shred_update_apply_and_truncate( void ) {
   FD_TEST( ctx->bam_dests_cnt                          == FD_BAM_SHRED_SOCK_MAX );
   FD_TEST( ctx->bam_dests[ FD_BAM_SHRED_SOCK_MAX-1UL ].ip4  == FD_IP4_ADDR( 9, 9, 9, (uchar)FD_BAM_SHRED_SOCK_MAX ) );
   FD_TEST( ctx->bam_dests[ FD_BAM_SHRED_SOCK_MAX-1UL ].port == (ushort)(6000U + FD_BAM_SHRED_SOCK_MAX - 1UL) );
-  FD_TEST( ctx->bam_obs->receiver_update_applied_cnt   == 2UL );
-  FD_TEST( ctx->bam_obs->receiver_update_truncated_cnt == 1UL );
+  FD_TEST( ctx->bam_obs->cnt.receiver_update_applied_cnt   == 2UL );
+  FD_TEST( ctx->bam_obs->cnt.receiver_update_truncated_cnt == 1UL );
 }
 
 int

@@ -147,6 +147,15 @@ typedef union {
 } fd_shred_in_ctx_t;
 
 typedef struct {
+  ulong receiver_update_applied_cnt;
+  ulong receiver_update_truncated_cnt;
+  ulong forwarded_shred_cnt;
+  ulong forwarded_packet_cnt;
+  ulong skipped_no_receivers_cnt;
+  ulong skipped_outside_window_cnt;
+} fd_shred_bam_obs_cnt_t;
+
+typedef struct {
   fd_shredder_t      * shredder;
   fd_fec_resolver_t  * resolver;
   fd_pubkey_t          identity_key[1]; /* Just the public key */
@@ -230,18 +239,8 @@ typedef struct {
   fd_gossip_update_message_t gossip_upd_buf[1];
   fd_bam_shred_update_t      bam_shred_upd_buf[1];
   struct {
-    ulong receiver_update_applied_cnt;
-    ulong receiver_update_truncated_cnt;
-    ulong forwarded_shred_cnt;
-    ulong forwarded_packet_cnt;
-    ulong skipped_no_receivers_cnt;
-    ulong skipped_outside_window_cnt;
-    ulong last_receiver_update_applied_cnt;
-    ulong last_receiver_update_truncated_cnt;
-    ulong last_forwarded_shred_cnt;
-    ulong last_forwarded_packet_cnt;
-    ulong last_skipped_no_receivers_cnt;
-    ulong last_skipped_outside_window_cnt;
+    fd_shred_bam_obs_cnt_t cnt;
+    fd_shred_bam_obs_cnt_t last_cnt;
     long  last_log_ns;
   } bam_obs[1];
 
@@ -322,26 +321,16 @@ during_housekeeping( fd_shred_ctx_t * ctx ) {
 
   long now_ns = fd_log_wallclock();
   if( FD_UNLIKELY( !ctx->bam_obs->last_log_ns || now_ns - ctx->bam_obs->last_log_ns >= (long)30e9 ) ) {
-    if( FD_UNLIKELY( ctx->bam_obs->receiver_update_applied_cnt    != ctx->bam_obs->last_receiver_update_applied_cnt ||
-                     ctx->bam_obs->receiver_update_truncated_cnt  != ctx->bam_obs->last_receiver_update_truncated_cnt ||
-                     ctx->bam_obs->forwarded_shred_cnt           != ctx->bam_obs->last_forwarded_shred_cnt ||
-                     ctx->bam_obs->forwarded_packet_cnt          != ctx->bam_obs->last_forwarded_packet_cnt ||
-                     ctx->bam_obs->skipped_no_receivers_cnt      != ctx->bam_obs->last_skipped_no_receivers_cnt ||
-                     ctx->bam_obs->skipped_outside_window_cnt    != ctx->bam_obs->last_skipped_outside_window_cnt ) ) {
+    if( FD_UNLIKELY( 0!=memcmp( &ctx->bam_obs->cnt, &ctx->bam_obs->last_cnt, sizeof(fd_shred_bam_obs_cnt_t) ) ) ) {
       FD_LOG_NOTICE(( "BAM shred forwarding summary receivers=%lu updates=%lu truncated=%lu forwarded_shreds=%lu forwarded_packets=%lu skipped_no_receivers=%lu skipped_window=%lu",
                       ctx->bam_dests_cnt,
-                      ctx->bam_obs->receiver_update_applied_cnt,
-                      ctx->bam_obs->receiver_update_truncated_cnt,
-                      ctx->bam_obs->forwarded_shred_cnt,
-                      ctx->bam_obs->forwarded_packet_cnt,
-                      ctx->bam_obs->skipped_no_receivers_cnt,
-                      ctx->bam_obs->skipped_outside_window_cnt ));
-      ctx->bam_obs->last_receiver_update_applied_cnt = ctx->bam_obs->receiver_update_applied_cnt;
-      ctx->bam_obs->last_receiver_update_truncated_cnt = ctx->bam_obs->receiver_update_truncated_cnt;
-      ctx->bam_obs->last_forwarded_shred_cnt = ctx->bam_obs->forwarded_shred_cnt;
-      ctx->bam_obs->last_forwarded_packet_cnt = ctx->bam_obs->forwarded_packet_cnt;
-      ctx->bam_obs->last_skipped_no_receivers_cnt = ctx->bam_obs->skipped_no_receivers_cnt;
-      ctx->bam_obs->last_skipped_outside_window_cnt = ctx->bam_obs->skipped_outside_window_cnt;
+                      ctx->bam_obs->cnt.receiver_update_applied_cnt,
+                      ctx->bam_obs->cnt.receiver_update_truncated_cnt,
+                      ctx->bam_obs->cnt.forwarded_shred_cnt,
+                      ctx->bam_obs->cnt.forwarded_packet_cnt,
+                      ctx->bam_obs->cnt.skipped_no_receivers_cnt,
+                      ctx->bam_obs->cnt.skipped_outside_window_cnt ));
+      ctx->bam_obs->last_cnt = ctx->bam_obs->cnt;
     }
     ctx->bam_obs->last_log_ns = now_ns;
   }
@@ -401,35 +390,27 @@ send_shred( fd_shred_ctx_t                 * ctx,
             fd_shred_dest_weighted_t const * dest,
             ulong                            tsorig );
 
-FD_FN_PURE static inline _Bool
-fd_shred_should_forward_to_bam( fd_shred_ctx_t const * ctx,
-                                ulong                  slot ) {
-  for( ulong off=0UL; off<3UL; off++ ) {
-    fd_epoch_leaders_t const * lsched = fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot + off );
-    fd_pubkey_t const * leader = fd_epoch_leaders_get( lsched, slot + off );
-    if( FD_LIKELY( leader && fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) ) ) return 1;
-  }
-  return 0;
-}
-
 static inline void
 fd_shred_send_bam_shred( fd_shred_ctx_t *    ctx,
                          fd_stem_context_t * stem,
                          fd_shred_t const *  shred ) {
   if( FD_UNLIKELY( !ctx->bam_dests_cnt ) ) {
-    ctx->bam_obs->skipped_no_receivers_cnt++;
-    return;
-  }
-  if( FD_UNLIKELY( !fd_shred_should_forward_to_bam( ctx, shred->slot ) ) ) {
-    ctx->bam_obs->skipped_outside_window_cnt++;
+    ctx->bam_obs->cnt.skipped_no_receivers_cnt++;
     return;
   }
 
-  ctx->bam_obs->forwarded_shred_cnt++;
-  ctx->bam_obs->forwarded_packet_cnt += ctx->bam_dests_cnt;
-  for( ulong i=0UL; i<ctx->bam_dests_cnt; i++ ) {
-    send_shred( ctx, stem, shred, ctx->bam_dests + i, ctx->tsorig );
+  for( ulong off=0UL; off<3UL; off++ ) {
+    ulong slot = shred->slot + off;
+    fd_pubkey_t const * leader = fd_epoch_leaders_get( fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot ), slot );
+    if( FD_UNLIKELY( !leader || !fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) ) ) continue;
+
+    ctx->bam_obs->cnt.forwarded_shred_cnt++;
+    ctx->bam_obs->cnt.forwarded_packet_cnt += ctx->bam_dests_cnt;
+    for( ulong i=0UL; i<ctx->bam_dests_cnt; i++ ) send_shred( ctx, stem, shred, ctx->bam_dests + i, ctx->tsorig );
+    return;
   }
+
+  ctx->bam_obs->cnt.skipped_outside_window_cnt++;
 }
 
 static inline int
@@ -909,7 +890,7 @@ after_frag( fd_shred_ctx_t *    ctx,
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BAM_SHRED ) ) {
     ctx->bam_dests_cnt = fd_ulong_min( ctx->bam_shred_upd_buf->shred_sock_cnt, FD_BAM_SHRED_SOCK_MAX );
     if( FD_UNLIKELY( ctx->bam_shred_upd_buf->shred_sock_cnt > FD_BAM_SHRED_SOCK_MAX ) ) {
-      ctx->bam_obs->receiver_update_truncated_cnt++;
+      ctx->bam_obs->cnt.receiver_update_truncated_cnt++;
       FD_LOG_WARNING(( "Dropping excess BAM shred receivers cnt=%lu max=%lu",
                        ctx->bam_shred_upd_buf->shred_sock_cnt, FD_BAM_SHRED_SOCK_MAX ));
     }
@@ -917,7 +898,7 @@ after_frag( fd_shred_ctx_t *    ctx,
       ctx->bam_dests[ i ].ip4  = ctx->bam_shred_upd_buf->shred_sock[ i ].addr;
       ctx->bam_dests[ i ].port = fd_ushort_bswap( ctx->bam_shred_upd_buf->shred_sock[ i ].port );
     }
-    ctx->bam_obs->receiver_update_applied_cnt++;
+    ctx->bam_obs->cnt.receiver_update_applied_cnt++;
     FD_LOG_NOTICE(( "Applied BAM shred receiver update count=%lu", ctx->bam_dests_cnt ));
     return;
   }
