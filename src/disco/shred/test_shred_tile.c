@@ -204,6 +204,85 @@ test_bam_shred_update_apply_and_truncate( void ) {
   FD_TEST( ctx->bam_obs->cnt.receiver_update_truncated_cnt == 1UL );
 }
 
+static void
+test_bam_shred_update_compacts_polled_inputs( void ) {
+  fd_shred_ctx_t ctx[1];
+  fd_memset( ctx, 0, sizeof(ctx) );
+
+  fd_topo_t * topo = aligned_alloc( alignof(fd_topo_t), sizeof(fd_topo_t) );
+  FD_TEST( topo );
+  fd_memset( topo, 0, sizeof(fd_topo_t) );
+  fd_topo_tile_t * tile = &topo->tiles[ 0 ];
+  tile->in_cnt = 6UL;
+
+  char const * link_names[ 6 ] = {
+    "net_shred",
+    "poh_shred",
+    "stake_out",
+    "crds_shred",
+    "sign_shred",
+    "bam_shred"
+  };
+  int polled[ 6 ] = { 1, 1, 1, 1, 0, 1 };
+
+  uchar has_contact_info_in = 0;
+  ulong polled_in_idx       = 0UL;
+  for( ulong i=0UL; i<tile->in_cnt; i++ ) {
+    tile->in_link_id[ i ]   = i;
+    tile->in_link_poll[ i ] = polled[ i ];
+
+    fd_topo_link_t * link = &topo->links[ i ];
+    fd_memcpy( link->name, link_names[ i ], strlen( link_names[ i ] ) + 1UL );
+
+    if( FD_UNLIKELY( !tile->in_link_poll[ i ] ) ) continue;
+
+    int in_kind;
+    if(      !strcmp( link->name, "net_shred"    ) ) in_kind = IN_KIND_NET;
+    else if( !strcmp( link->name, "poh_shred"    ) ) in_kind = IN_KIND_POH;
+    else if( !strcmp( link->name, "stake_out"    ) ) in_kind = IN_KIND_STAKE;
+    else if( !strcmp( link->name, "replay_stake" ) ) in_kind = IN_KIND_STAKE;
+    else if( !strcmp( link->name, "sign_shred"   ) ) in_kind = IN_KIND_SIGN;
+    else if( !strcmp( link->name, "repair_shred" ) ) in_kind = IN_KIND_REPAIR;
+    else if( !strcmp( link->name, "ipecho_out"   ) ) in_kind = IN_KIND_IPECHO;
+    else if( !strcmp( link->name, "crds_shred"   ) ) {
+      FD_TEST( !has_contact_info_in );
+      has_contact_info_in = 1;
+      in_kind = IN_KIND_CONTACT;
+    } else if( !strcmp( link->name, "gossip_out" ) ) {
+      FD_TEST( !has_contact_info_in );
+      has_contact_info_in = 1;
+      in_kind = IN_KIND_GOSSIP;
+    } else if( !strcmp( link->name, "bam_shred"  ) ) {
+      in_kind = IN_KIND_BAM_SHRED;
+    } else {
+      FD_TEST( 0 );
+    }
+
+    ctx->in_kind[ polled_in_idx ] = in_kind;
+    polled_in_idx++;
+  }
+
+  FD_TEST( polled_in_idx     == 5UL );
+  FD_TEST( ctx->in_kind[ 0 ] == IN_KIND_NET );
+  FD_TEST( ctx->in_kind[ 1 ] == IN_KIND_POH );
+  FD_TEST( ctx->in_kind[ 2 ] == IN_KIND_STAKE );
+  FD_TEST( ctx->in_kind[ 3 ] == IN_KIND_CONTACT );
+  FD_TEST( ctx->in_kind[ 4 ] == IN_KIND_BAM_SHRED );
+
+  ctx->bam_shred_upd_buf->shred_sock_cnt  = 1UL;
+  ctx->bam_shred_upd_buf->shred_sock[ 0 ] = (fd_ip4_port_t){ .addr = FD_IP4_ADDR( 7, 7, 7, 7 ), .port = fd_ushort_bswap( 7777U ) };
+
+  after_frag( ctx, 4UL, 0UL, FD_BAM_STEM_SIG_SHRED_UPDATE, sizeof(fd_bam_shred_update_t), 0UL, 0UL, NULL );
+
+  FD_TEST( ctx->bam_dests_cnt                              == 1UL );
+  FD_TEST( ctx->bam_dests[ 0 ].ip4                         == FD_IP4_ADDR( 7, 7, 7, 7 ) );
+  FD_TEST( ctx->bam_dests[ 0 ].port                        == 7777U );
+  FD_TEST( ctx->bam_obs->cnt.receiver_update_applied_cnt   == 1UL );
+  FD_TEST( ctx->bam_obs->cnt.receiver_update_truncated_cnt == 0UL );
+
+  free( topo );
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -211,6 +290,7 @@ main( int     argc,
 
   test_bam_forwarding_window_and_send();
   test_bam_shred_update_apply_and_truncate();
+  test_bam_shred_update_compacts_polled_inputs();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
