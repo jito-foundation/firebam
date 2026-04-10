@@ -358,11 +358,17 @@ bam_parse_events( uchar const * data,
   ulong cnt = 0UL;
   for( ulong i=0UL; i<size && cnt<out_cap; ) {
     uchar k = data[i++];
+    uchar a = 0U;
+    uchar b = 0U;
+    uchar c = 0U;
+    if( i<size ) a = data[i++];
+    if( i<size ) b = data[i++];
+    if( i<size ) c = data[i++];
     bam_evt_t ev = {
       .kind = (bam_evt_kind_t)( k % 11U ),
-      .a    = (uchar)( i<size ? data[i++] : 0U ),
-      .b    = (uchar)( i<size ? data[i++] : 0U ),
-      .c    = (uchar)( i<size ? data[i++] : 0U ),
+      .a    = a,
+      .b    = b,
+      .c    = c,
     };
     out[cnt++] = ev;
   }
