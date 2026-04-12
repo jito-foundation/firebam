@@ -1468,13 +1468,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               pack_tile_bam_bundle_assembly_abandon_reason_t bam_abandon_reason ) {
   if( FD_UNLIKELY( ctx->dump_bam_mode && ctx->leader_slot!=ULONG_MAX ) ) {
     long observed_ns = pack_tile_wallclock_from_ticks( ctx, now );
-    FD_LOG_NOTICE(( "Firedancer slot end: slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld reason=%s current_slot_fresh=%u",
-                    ctx->leader_slot,
-                    ctx->slot_end_ns,
-                    observed_ns,
-                    observed_ns - ctx->slot_end_ns,
-                    reason,
-                    (uint)ctx->bam_current_slot_fresh ));
+    FD_LOG_NOTICE(( "Firedancer slot end: pack_current_slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld reason=%s current_slot_fresh=%u", ctx->leader_slot, ctx->slot_end_ns, observed_ns, observed_ns - ctx->slot_end_ns, reason, (uint)ctx->bam_current_slot_fresh ));
   }
 
   ulong first_insert_result_idx = pack_tile_bam_first_event_result_idx( ctx->bam_first_insert_seen,
@@ -2543,13 +2537,7 @@ after_frag( fd_pack_ctx_t *     ctx,
 
     ctx->slot_end_ns = ctx->_became_leader->slot_end_ns;
     if( FD_UNLIKELY( ctx->dump_bam_mode ) ) {
-      FD_LOG_NOTICE(( "Firedancer slot start: slot=%lu observed_ns=%ld tick=%u slot_end_ns=%ld slot_end_known=%u current_slot_fresh=%u",
-                      ctx->leader_slot,
-                      now_ns,
-                      0U,
-                      ctx->slot_end_ns,
-                      (uint)!!ctx->slot_end_ns,
-                      (uint)ctx->bam_current_slot_fresh ));
+      FD_LOG_NOTICE(( "Firedancer slot start: pack_current_slot=%lu bank_current_slot=%lu observed_ns=%ld slot_end_ns=%ld slot_end_known=%u current_slot_fresh=%u", ctx->leader_slot, ctx->_became_leader->slot, now_ns, ctx->slot_end_ns, (uint)!!ctx->slot_end_ns, (uint)ctx->bam_current_slot_fresh ));
     }
     fd_pack_limits_t limits[ 1 ];
     limits->max_cost_per_block = ctx->limits.slot_max_cost;
