@@ -469,19 +469,6 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
     }
   }
 
-  if( FD_UNLIKELY( ctx->dump_bam_mode &&
-                   state->slot!=ULONG_MAX &&
-                   state->slot!=prev_slot ) ) {
-    FD_LOG_NOTICE(( "BAM Firedancer slot start: slot=%lu prev_slot=%lu observed_ns=%ld tick=%u slot_end_ns=%ld slot_end_known=%u current_slot_fresh=%u",
-                    state->slot,
-                    prev_slot,
-                    fd_log_wallclock(),
-                    state->tick,
-                    state->slot_end_ns,
-                    (uint)!!state->slot_end_ns,
-                    state->current_slot_fresh ));
-  }
-
   ctx->bam_leader_state = *state;
   ctx->bam_leader_pending = 1U;
 }

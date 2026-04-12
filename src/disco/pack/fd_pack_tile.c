@@ -1466,6 +1466,17 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               long                now,
                               char const *        reason,
                               pack_tile_bam_bundle_assembly_abandon_reason_t bam_abandon_reason ) {
+  if( FD_UNLIKELY( ctx->dump_bam_mode && ctx->leader_slot!=ULONG_MAX ) ) {
+    long observed_ns = pack_tile_wallclock_from_ticks( ctx, now );
+    FD_LOG_NOTICE(( "Firedancer slot end: slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld reason=%s current_slot_fresh=%u",
+                    ctx->leader_slot,
+                    ctx->slot_end_ns,
+                    observed_ns,
+                    observed_ns - ctx->slot_end_ns,
+                    reason,
+                    (uint)ctx->bam_current_slot_fresh ));
+  }
+
   ulong first_insert_result_idx = pack_tile_bam_first_event_result_idx( ctx->bam_first_insert_seen,
                                                                          ctx->bam_first_insert_minus_slot_end_ns );
   ulong first_schedule_result_idx = pack_tile_bam_first_event_result_idx( ctx->bam_first_schedule_seen,
@@ -2471,6 +2482,7 @@ after_frag( fd_pack_ctx_t *     ctx,
   case IN_KIND_POH: {
     long now_ticks = fd_tickcount();
     long now_ns    = fd_log_wallclock();
+    ulong prev_leader_slot = ctx->leader_slot;
 
     if( FD_UNLIKELY( ctx->leader_slot!=ULONG_MAX ) ) {
       ulong old_leader_slot = ctx->leader_slot;
@@ -2531,6 +2543,16 @@ after_frag( fd_pack_ctx_t *     ctx,
     update_metric_state( ctx, fd_tickcount(), FD_PACK_METRIC_STATE_LEADER, 1 );
 
     ctx->slot_end_ns = ctx->_became_leader->slot_end_ns;
+    if( FD_UNLIKELY( ctx->dump_bam_mode ) ) {
+      FD_LOG_NOTICE(( "Firedancer slot start: slot=%lu prev_slot=%lu observed_ns=%ld tick=%u slot_end_ns=%ld slot_end_known=%u current_slot_fresh=%u",
+                      ctx->leader_slot,
+                      prev_leader_slot,
+                      now_ns,
+                      0U,
+                      ctx->slot_end_ns,
+                      (uint)!!ctx->slot_end_ns,
+                      (uint)ctx->bam_current_slot_fresh ));
+    }
     fd_pack_limits_t limits[ 1 ];
     limits->max_cost_per_block = ctx->limits.slot_max_cost;
     limits->max_data_bytes_per_block = ctx->slot_max_data;

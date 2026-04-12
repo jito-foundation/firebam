@@ -432,16 +432,6 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
       FD_LOG_ERR(( "unknown BAM status code %u", (uint)tracker->status_at_end ));
     }
 
-    if( FD_UNLIKELY( ctx->dump_bam_mode ) ) {
-      FD_LOG_NOTICE(( "BAM Firedancer slot end: slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld status=%u fresh_seen_before_end=%u",
-                      tracker->slot,
-                      tracker->slot_end_ns,
-                      now_ns,
-                      now_ns - tracker->slot_end_ns,
-                      (uint)tracker->status_at_end,
-                      (uint)tracker->fresh_seen_before_end ));
-    }
-
     ctx->metrics.leader_slot_end_status_cnt[ status_idx ]++;
     if( FD_LIKELY( tracker->status_at_end==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) {
       ulong result_idx = tracker->fresh_seen_before_end
