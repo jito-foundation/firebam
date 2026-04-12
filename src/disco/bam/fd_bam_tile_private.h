@@ -110,9 +110,8 @@ typedef struct {
 
 typedef struct {
   fd_bam_tile_t * ctx;                                         /* owning tile context; non-NULL while batch is processed */
-  ulong               ingress_resolved_slot;                   /* Batch slot attribution fixed at scheduler receive time. */
   long                ingress_rx_ts_ns;                        /* fd_bam_now() timestamp from the scheduler receive callback. */
-  long                ingress_slot_end_ns;                     /* slot_end_ns snapshot for ingress_resolved_slot when known at receive time, else 0. */
+  long                ingress_slot_end_ns;                     /* slot_end_ns snapshot for batch max_schedule_slot when known at receive time, else 0. */
   uint                ingress_rx_tspub;                        /* Compact fd_tickcount() timestamp from the scheduler receive callback. 0 means unknown. */
   bam_types_Packet    packets[ FD_PACK_MAX_TXN_PER_BUNDLE ];   /* decoded packet cache; indices [0,packet_cnt) valid */
   uchar               packet_cnt;                              /* number of packets collected; [0,FD_PACK_MAX_TXN_PER_BUNDLE) */
@@ -236,8 +235,8 @@ struct fd_bam_tile {
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle). */
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, or 0 when no BAM bundle is active. */
-  fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by resolved slot for debug captures. */
-  ulong dump_bam_last_slot;                       /* Most recent resolved slot dumped under FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST. */
+  fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by max_schedule_slot for debug captures. */
+  ulong dump_bam_last_slot;                       /* Most recent max_schedule_slot dumped under FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST. */
   uchar dump_bam_last_slot_valid;                 /* Whether dump_bam_last_slot has been initialized */
 
   /* BAM specific */
@@ -663,7 +662,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
 
 int
 fd_bam_should_dump_batch( fd_bam_tile_t * ctx,
-                          ulong           resolved_slot );
+                          ulong           max_schedule_slot );
 
 void
 fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,

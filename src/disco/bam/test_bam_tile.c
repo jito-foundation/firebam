@@ -427,7 +427,7 @@ test_bam_dump_bam_slot_first_txn_gate( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_slot_ingress_timing_tracks_resolved_slot_and_late_arrival( fd_wksp_t * wksp ) {
+test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_late_arrival( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
@@ -720,7 +720,6 @@ test_bam_slot_ingress_timing_tracks_hash_collisions( fd_wksp_t * wksp ) {
   bam_types_AtomicTxnBatch batch_a = bam_types_AtomicTxnBatch_init_default;
   batch_a.seq_id = 123U;
   batch_a.max_schedule_slot = 100UL;
-  batch_state.ingress_resolved_slot = 100UL;
   batch_state.ingress_rx_ts_ns      = 3000L;
   batch_state.ingress_rx_tspub      = 1U;
   g_clock = 3000L;
@@ -729,7 +728,6 @@ test_bam_slot_ingress_timing_tracks_hash_collisions( fd_wksp_t * wksp ) {
   bam_types_AtomicTxnBatch batch_b = bam_types_AtomicTxnBatch_init_default;
   batch_b.seq_id = 124U;
   batch_b.max_schedule_slot = 100UL + FD_BAM_SLOT_INGRESS_TIMING_CNT;
-  batch_state.ingress_resolved_slot = 100UL + FD_BAM_SLOT_INGRESS_TIMING_CNT;
   batch_state.ingress_rx_ts_ns      = 4444L;
   batch_state.ingress_rx_tspub      = 2U;
   g_clock = 4444L;
@@ -757,7 +755,6 @@ test_bam_publish_batch_uses_captured_ingress_metadata( fd_wksp_t * wksp ) {
   fd_bam_batch_ctx_t batch_state;
   fd_memset( &batch_state, 0, sizeof(batch_state) );
   batch_state.packet_cnt = 1U;
-  batch_state.ingress_resolved_slot = 100UL;
   batch_state.ingress_rx_ts_ns      = 1000L;
   batch_state.ingress_slot_end_ns   = 1500L;
   batch_state.ingress_rx_tspub      = 123456789U;
@@ -4549,7 +4546,7 @@ main( int     argc,
   test_bam_packets_forwarded( wksp );
   test_bam_dump_bam_txns_smoke( wksp );
   test_bam_dump_bam_slot_first_txn_gate( wksp );
-  test_bam_slot_ingress_timing_tracks_resolved_slot_and_late_arrival( wksp );
+  test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_late_arrival( wksp );
   test_bam_slot_ingress_timing_uses_concrete_max_schedule_slot( wksp );
   test_bam_freshness_status_bits( wksp );
   test_bam_slot_ingress_timing_summary_format_and_gate( wksp );

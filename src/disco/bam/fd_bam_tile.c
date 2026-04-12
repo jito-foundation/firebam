@@ -62,7 +62,7 @@ fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
       ? entry->first_rx_ts_ns - entry->slot_end_ns
       : 0L;
 
-  FD_LOG_NOTICE(( "BAM ingress vs Firedancer slot summary: resolved_slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
+  FD_LOG_NOTICE(( "BAM ingress vs Firedancer slot summary: max_schedule_slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
                   entry->slot,
                   entry->first_rx_ts_ns,
                   first_rx_minus_slot_end_ns,

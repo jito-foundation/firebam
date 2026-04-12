@@ -2482,7 +2482,6 @@ after_frag( fd_pack_ctx_t *     ctx,
   case IN_KIND_POH: {
     long now_ticks = fd_tickcount();
     long now_ns    = fd_log_wallclock();
-    ulong prev_leader_slot = ctx->leader_slot;
 
     if( FD_UNLIKELY( ctx->leader_slot!=ULONG_MAX ) ) {
       ulong old_leader_slot = ctx->leader_slot;
@@ -2544,9 +2543,8 @@ after_frag( fd_pack_ctx_t *     ctx,
 
     ctx->slot_end_ns = ctx->_became_leader->slot_end_ns;
     if( FD_UNLIKELY( ctx->dump_bam_mode ) ) {
-      FD_LOG_NOTICE(( "Firedancer slot start: slot=%lu prev_slot=%lu observed_ns=%ld tick=%u slot_end_ns=%ld slot_end_known=%u current_slot_fresh=%u",
+      FD_LOG_NOTICE(( "Firedancer slot start: slot=%lu observed_ns=%ld tick=%u slot_end_ns=%ld slot_end_known=%u current_slot_fresh=%u",
                       ctx->leader_slot,
-                      prev_leader_slot,
                       now_ns,
                       0U,
                       ctx->slot_end_ns,

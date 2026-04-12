@@ -277,13 +277,13 @@ fd_bam_dump_append_inbound_txn( char *                   msg,
 
 int
 fd_bam_should_dump_batch( fd_bam_tile_t * ctx,
-                          ulong           resolved_slot ) {
+                          ulong           max_schedule_slot ) {
   if( FD_UNLIKELY( ctx->dump_bam_mode==FD_BAM_DEBUG_DUMP_MODE_ALL ) ) return 1;
   if( FD_LIKELY( ctx->dump_bam_mode!=FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST ) ) return 0;
 
-  if( FD_LIKELY( ctx->dump_bam_last_slot_valid && ctx->dump_bam_last_slot==resolved_slot ) ) return 0;
+  if( FD_LIKELY( ctx->dump_bam_last_slot_valid && ctx->dump_bam_last_slot==max_schedule_slot ) ) return 0;
 
-  ctx->dump_bam_last_slot       = resolved_slot;
+  ctx->dump_bam_last_slot       = max_schedule_slot;
   ctx->dump_bam_last_slot_valid = 1U;
   return 1;
 }
@@ -434,17 +434,17 @@ void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch ) {
-  ulong resolved_slot = state->ingress_resolved_slot;
+  ulong max_schedule_slot = batch->max_schedule_slot;
   ulong leader_slot = ctx->bam_leader_state.slot;
   long rx_ts_ns = state->ingress_rx_ts_ns;
   long slot_end_ns = state->ingress_slot_end_ns;
   uchar packet_cnt = state->packet_cnt;
   uint scheduler_arrival_tspub = state->ingress_rx_tspub;
-  if( FD_UNLIKELY( !slot_end_ns && resolved_slot==leader_slot ) ) {
+  if( FD_UNLIKELY( !slot_end_ns && max_schedule_slot==leader_slot ) ) {
     slot_end_ns = ctx->bam_leader_state.slot_end_ns;
   }
   fd_bam_slot_ingress_timing_t * entry = NULL;
-  if( FD_LIKELY( ( entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, resolved_slot, leader_slot ) ) ) ) {
+  if( FD_LIKELY( ( entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, max_schedule_slot, leader_slot ) ) ) ) {
     if( FD_UNLIKELY( slot_end_ns ) ) {
       entry->slot_end_ns = slot_end_ns;
       entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > slot_end_ns );
@@ -456,7 +456,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                  entry->txn_unknown_slot_end );
     _Bool after_slot_end = have_slot_end
       ? rx_ts_ns > entry->slot_end_ns
-      : !!( leader_slot!=ULONG_MAX && resolved_slot && resolved_slot < leader_slot );
+      : !!( leader_slot!=ULONG_MAX && max_schedule_slot && max_schedule_slot < leader_slot );
     if( FD_UNLIKELY( first_observation ) ) {
       entry->first_rx_ts_ns          = rx_ts_ns;
       entry->first_rx_after_slot_end = (uchar)after_slot_end;
@@ -469,7 +469,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     *txn_bucket += packet_cnt;
   }
 
-  if( FD_UNLIKELY( fd_bam_should_dump_batch( ctx, resolved_slot ) ) ) {
+  if( FD_UNLIKELY( fd_bam_should_dump_batch( ctx, max_schedule_slot ) ) ) {
     char * msg = fd_bam_dump_log_buf;
     ulong  off = 0UL;
     fd_bam_slot_ingress_timing_t const empty_entry = {0};
@@ -500,9 +500,8 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                             &state->packets[ i ] );
     }
     off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
-                               "\nfiredancer_slot_timing: resolved_slot=%lu max_schedule_slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
-                               resolved_slot,
-                               batch->max_schedule_slot,
+                               "\nfiredancer_slot_timing: max_schedule_slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
+                               max_schedule_slot,
                                first_rx_ts_ns,
                                first_rx_minus_slot_end_ns,
                                first_rx_after_slot_end,
@@ -590,11 +589,10 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
     return 0;
   }
 
-  decoded->state.ingress_resolved_slot = decoded->batch.max_schedule_slot;
-  decoded->state.ingress_rx_ts_ns      = rx_ts_ns;
-  decoded->state.ingress_rx_tspub      = rx_tspub;
-  decoded->state.ingress_slot_end_ns   =
-      decoded->state.ingress_resolved_slot==leader_slot_at_rx
+  decoded->state.ingress_rx_ts_ns    = rx_ts_ns;
+  decoded->state.ingress_rx_tspub    = rx_tspub;
+  decoded->state.ingress_slot_end_ns =
+      decoded->batch.max_schedule_slot==leader_slot_at_rx
       ? leader_slot_end_ns_at_rx
       : 0L;
 
