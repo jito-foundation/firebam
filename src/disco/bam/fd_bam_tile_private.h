@@ -63,6 +63,7 @@ struct fd_bam_metrics {
 
   ulong ingress_batch_commit_attempt_cnt;
   ulong ingress_batch_published_cnt;
+  ulong ingress_batch_no_max_schedule_slot_provided_cnt;
   ulong ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_CNT ];
   ulong ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_CNT ];
 

@@ -62,7 +62,7 @@ fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
       ? entry->first_rx_ts_ns - entry->slot_end_ns
       : 0L;
 
-  FD_LOG_NOTICE(( "BAM slot ingress summary: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
+  FD_LOG_NOTICE(( "BAM slot ingress summary: resolved_slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
                   entry->slot,
                   entry->first_rx_ts_ns,
                   first_rx_minus_slot_end_ns,
@@ -130,6 +130,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_RECEIVED,         ctx->metrics.ingress_multi_message_received_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_PUBLISHED,                ctx->metrics.ingress_batch_published_cnt );
+  FD_MCNT_SET( BAM, INGRESS_BATCH_NO_MAX_SCHEDULE_SLOT_PROVIDED, ctx->metrics.ingress_batch_no_max_schedule_slot_provided_cnt );
   FD_MCNT_ENUM_COPY( BAM, INGRESS_BATCH_REJECTED, ctx->metrics.ingress_batch_rejected_cnt );
   FD_MCNT_ENUM_COPY( BAM, INGRESS_MESSAGE_REJECTED, ctx->metrics.ingress_message_rejected_cnt );
   FD_MCNT_ENUM_COPY( BAM, OUTBOUND_ENQUEUE_OUTCOME,  ctx->metrics.outbound_enqueue_outcome_cnt );

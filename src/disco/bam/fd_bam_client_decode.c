@@ -504,12 +504,11 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
 
     /* Emit one NOTICE record per bundle so unrelated logs cannot split txn details apart. */
     off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
-                               "BAM rx bundle: seq_id=%u max_schedule_slot=%lu txns=%u mode=%s dispatch=%s\n",
+                               "BAM rx bundle: seq_id=%u max_schedule_slot=%lu txns=%u mode=%s\n",
                                batch->seq_id,
                                batch->max_schedule_slot,
                                (uint)packet_cnt,
-                               state->revert_on_error ? "atomic" : "independent",
-                               state->revert_on_error ? "bundle" : "fanout" );
+                               state->revert_on_error ? "atomic" : "independent" );
     for( uchar i=0U; i<packet_cnt; i++ ) {
       if( FD_UNLIKELY( i ) ) off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off, "\n" );
       off = fd_bam_dump_append_inbound_txn( msg,
@@ -520,8 +519,9 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                             &state->packets[ i ] );
     }
     off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
-                               "\nslot_timing: slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
+                               "\nslot_timing: resolved_slot=%lu max_schedule_slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
                                resolved_slot,
+                               batch->max_schedule_slot,
                                first_rx_ts_ns,
                                first_rx_minus_slot_end_ns,
                                first_rx_after_slot_end,
@@ -607,6 +607,14 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
     };
     fd_bam_enqueue_result( ctx, &res );
     return 0;
+  }
+
+  /* Protobuf omission decodes uint64 max_schedule_slot as zero. Normalize that
+     into the internal no-hint sentinel so downstream logic and logs can
+     distinguish "hint omitted" from a real slot hint. */
+  if( FD_UNLIKELY( !decoded->batch.max_schedule_slot ) ) {
+    ctx->metrics.ingress_batch_no_max_schedule_slot_provided_cnt++;
+    decoded->batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
   }
 
   decoded->state.ingress_resolved_slot = fd_bam_resolve_batch_slot( &decoded->batch, leader_slot_at_rx );

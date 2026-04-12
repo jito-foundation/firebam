@@ -500,6 +500,7 @@ metric introduced.
     <counter name="IngressMultiMessageReceived" summary="Cumulative number of multiple_atomic_txn_batch messages decoded from BAM ingress" />
     <counter name="IngressBatchCommitAttempt" summary="Cumulative number of AtomicTxnBatch entries that entered BAM validate/commit" />
     <counter name="IngressBatchPublished" summary="Cumulative number of AtomicTxnBatch entries successfully published to verify" />
+    <counter name="IngressBatchNoMaxScheduleSlotProvided" summary="Cumulative number of AtomicTxnBatch entries for which BAM did not provide max_schedule_slot and decode normalized the protobuf zero value to the internal no-hint sentinel" />
     <counter name="IngressBatchRejected" enum="BamIngressBatchRejectReason" summary="Cumulative number of AtomicTxnBatch entry rejects by reason after decode and batch-level validation. Wrapper-level message rejects are counted separately in bam_ingress_message_rejected." />
     <counter name="IngressMessageRejected" enum="BamIngressMessageRejectReason" summary="Cumulative number of multiple_atomic_txn_batch wrapper rejects by reason. These count scheduler messages, not AtomicTxnBatch entries." />
     <counter name="OutboundEnqueueOutcome" enum="BamEnqueueOutcome" summary="Cumulative number of BAM outbound leader-state/result enqueue outcomes and heartbeat stream_send outcomes at the gRPC send boundary" />

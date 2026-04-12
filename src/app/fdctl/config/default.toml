@@ -1806,9 +1806,13 @@ dynamic_port_range = "8900-9000"
         # summaries, LUTs, instructions, and short data previews, so
         # unrelated log lines do not interleave mid-dump.
         # Example:
-        #   BAM rx bundle: seq_id=42 max_schedule_slot=123456 txns=2 mode=atomic dispatch=bundle
-        #     txn[1/2]: batch_idx=0 payload_sz=312 version=v0 sig=... fee_payer=... recent_blockhash=...
-        #     ix[0]: program_id_index=3 program=... [compute_budget] acct_cnt=0 ...
+        #   BAM rx bundle: seq_id=42 max_schedule_slot=123456 txns=2 mode=atomic
+        #     txn[1/2]: batch_idx=0 payload_sz=312 version=v0 sig=... fee_payer=... recent_blockhash=... instructions=3 accounts=12 (static=10 loaded=2 signers=1 writable=4 readonly=8 luts=1)
+        #     signatures: [0]=...
+        #     lut[0]: table=... writable=[1, 4] readonly=[0, 7, 9]
+        #     ix[0]: program_id_index=3 program=... [compute_budget] acct_cnt=0 signer_cnt=0 writable_cnt=0 lookup_cnt=0 data_sz=5 data=...
+        #     accts: [0=3/swi/..., 1=9/-rl/...]
+        #     slot_timing: resolved_slot=123456 max_schedule_slot=123456 first_rx_ns=... first_rx_minus_slot_end_ns=... first_rx_after_slot_end=0 txns_before_slot_end=2 txns_after_slot_end=0 txns_unknown_slot_end=0 current_leader_slot=123456
         # This is very verbose and should remain disabled in production.
         dump_bam_txns = false
 
@@ -1818,7 +1822,9 @@ dynamic_port_range = "8900-9000"
         # a concrete slot, otherwise it falls back to the current BAM
         # leader-state slot.
         # Example: if seq_id=42, 43, and 44 all arrive for slot 123456,
-        # only the first one prints the "BAM rx bundle: ..." record.
+        # only the first one prints the full multiline dump record
+        # starting with "BAM rx bundle: ..." and ending in
+        # "slot_timing: ...".
         dump_bam_first_slot_txn = false
 
     # The following options relate to the 'fddev pktgen' tool only.
