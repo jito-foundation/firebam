@@ -361,7 +361,7 @@ test_bam_dump_bam_txns_smoke( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
-  state->dump_bam_txns = 1U;
+  state->dump_bam_mode = FD_BAM_DEBUG_DUMP_MODE_ALL;
 
   int level_stderr  = fd_log_level_stderr();
   int level_logfile = fd_log_level_logfile();
@@ -393,11 +393,11 @@ test_bam_dump_bam_txns_smoke( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_dump_bam_first_slot_txn_gate( fd_wksp_t * wksp ) {
+test_bam_dump_bam_slot_first_txn_gate( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
-  state->dump_bam_first_slot_txn = 1U;
+  state->dump_bam_mode = FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST;
 
   state->bam_leader_state.slot = 100UL;
   FD_TEST( fd_bam_should_dump_batch( state, 100UL ) == 1 );
@@ -420,7 +420,7 @@ test_bam_dump_bam_first_slot_txn_gate( fd_wksp_t * wksp ) {
   FD_TEST( state->dump_bam_last_slot == 0UL );
   FD_TEST( fd_bam_should_dump_batch( state, 0UL ) == 0 );
 
-  state->dump_bam_txns = 1U;
+  state->dump_bam_mode = FD_BAM_DEBUG_DUMP_MODE_ALL;
   FD_TEST( fd_bam_should_dump_batch( state, 223UL ) == 1 );
 
   test_bam_env_destroy( env );
@@ -729,18 +729,17 @@ test_bam_slot_ingress_timing_summary_format_and_gate( fd_wksp_t * wksp ) {
   fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL );
   FD_TEST( entry->summary_emitted == 0U );
 
-  state->dump_bam_txns = 1U;
+  state->dump_bam_mode = FD_BAM_DEBUG_DUMP_MODE_ALL;
   fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL );
   FD_TEST( entry->summary_emitted == 1U );
 
   entry->summary_emitted = 0U;
-  state->dump_bam_txns = 0U;
-  state->dump_bam_first_slot_txn = 1U;
+  state->dump_bam_mode = FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST;
   fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL );
   FD_TEST( entry->summary_emitted == 1U );
 
   entry->summary_emitted = 0U;
-  state->dump_bam_first_slot_txn = 0U;
+  state->dump_bam_mode = FD_BAM_DEBUG_DUMP_MODE_OFF;
   fd_bam_try_emit_slot_ingress_timing_summary( state, entry, 101UL );
   FD_TEST( entry->summary_emitted == 0U );
 
@@ -770,7 +769,7 @@ test_bam_slot_ingress_timing_summary_on_leader_slot_advance( fd_wksp_t * wksp ) 
   fd_bam_tile_housekeeping( state );
   FD_TEST( entry->summary_emitted == 0U );
 
-  state->dump_bam_first_slot_txn = 1U;
+  state->dump_bam_mode = FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST;
   fd_bam_tile_housekeeping( state );
   FD_TEST( entry->summary_emitted == 1U );
   fd_bam_tile_housekeeping( state );
@@ -4624,7 +4623,7 @@ main( int     argc,
   /* Scheduler ingestion/validation */
   test_bam_packets_forwarded( wksp );
   test_bam_dump_bam_txns_smoke( wksp );
-  test_bam_dump_bam_first_slot_txn_gate( wksp );
+  test_bam_dump_bam_slot_first_txn_gate( wksp );
   test_bam_slot_ingress_timing_tracks_resolved_slot_and_late_arrival( wksp );
   test_bam_slot_ingress_timing_treats_omitted_slot_hint_as_current_leader_slot( wksp );
   test_bam_slot_ingress_timing_defers_unresolved_default_slot_until_leader_state( wksp );

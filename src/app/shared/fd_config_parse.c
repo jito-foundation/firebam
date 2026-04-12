@@ -317,7 +317,7 @@ fd_config_extract_pod( uchar *       pod,
   CFG_POP      ( cstr,   development.bam.ssl_key_log_file                 );
   CFG_POP      ( uint,   development.bam.buffer_size_kib                  );
   CFG_POP      ( bool,   development.bam.dump_bam_txns                    );
-  CFG_POP      ( bool,   development.bam.dump_bam_first_slot_txn          );
+  CFG_POP      ( bool,   development.bam.dump_bam_slot_first_txn          );
 
   CFG_POP      ( cstr,   development.pktgen.affinity                      );
   CFG_POP      ( cstr,   development.pktgen.fake_dst_ip                   );

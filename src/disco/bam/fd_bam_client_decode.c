@@ -288,8 +288,8 @@ fd_bam_resolve_batch_slot( bam_types_AtomicTxnBatch const * batch,
 int
 fd_bam_should_dump_batch( fd_bam_tile_t * ctx,
                           ulong           resolved_slot ) {
-  if( FD_UNLIKELY( !!ctx->dump_bam_txns ) ) return 1;
-  if( FD_LIKELY( !ctx->dump_bam_first_slot_txn ) ) return 0;
+  if( FD_UNLIKELY( ctx->dump_bam_mode==FD_BAM_DEBUG_DUMP_MODE_ALL ) ) return 1;
+  if( FD_LIKELY( ctx->dump_bam_mode!=FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST ) ) return 0;
 
   if( FD_LIKELY( ctx->dump_bam_last_slot_valid && ctx->dump_bam_last_slot==resolved_slot ) ) return 0;
 

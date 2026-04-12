@@ -1816,16 +1816,15 @@ dynamic_port_range = "8900-9000"
         # This is very verbose and should remain disabled in production.
         dump_bam_txns = false
 
-        # Emit the same multiline dump format as dump_bam_txns, but only
+        # Emit the same BAM debug diagnostics as dump_bam_txns, but only
         # for the first inbound BAM batch observed in each resolved slot.
         # Slot resolution uses max_schedule_slot when the batch provides
         # a concrete slot, otherwise it falls back to the current BAM
         # leader-state slot.
         # Example: if seq_id=42, 43, and 44 all arrive for slot 123456,
-        # only the first one prints the full multiline dump record
-        # starting with "BAM rx bundle: ..." and ending in
-        # "slot_timing: ...".
-        dump_bam_first_slot_txn = false
+        # only the first one prints the "BAM rx bundle: ..." record and
+        # any downstream BAM drop diagnostics for that same batch.
+        dump_bam_slot_first_txn = false
 
     # The following options relate to the 'fddev pktgen' tool only.
     # pktgen tests net tile transmit throughput by generating a flood of

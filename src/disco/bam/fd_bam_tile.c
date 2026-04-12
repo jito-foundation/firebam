@@ -56,7 +56,7 @@ void
 fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
                                              fd_bam_slot_ingress_timing_t * entry,
                                              ulong                          current_leader_slot ) {
-  if( FD_UNLIKELY( !( ctx->dump_bam_txns || ctx->dump_bam_first_slot_txn ) || entry->summary_emitted ) ) return;
+  if( FD_UNLIKELY( !ctx->dump_bam_mode || entry->summary_emitted ) ) return;
   long first_rx_minus_slot_end_ns =
       ( entry->first_rx_ts_ns && entry->slot_end_ns )
       ? entry->first_rx_ts_ns - entry->slot_end_ns
@@ -431,6 +431,16 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     ulong status_idx = (ulong)tracker->status_at_end;
     if( FD_UNLIKELY( status_idx >= FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_CNT ) ) {
       FD_LOG_ERR(( "unknown BAM status code %u", (uint)tracker->status_at_end ));
+    }
+
+    if( FD_UNLIKELY( ctx->dump_bam_mode ) ) {
+      FD_LOG_NOTICE(( "BAM slot end: slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld status=%u fresh_seen_before_end=%u",
+                      tracker->slot,
+                      tracker->slot_end_ns,
+                      now_ns,
+                      now_ns - tracker->slot_end_ns,
+                      (uint)tracker->status_at_end,
+                      (uint)tracker->fresh_seen_before_end ));
     }
 
     ctx->metrics.leader_slot_end_status_cnt[ status_idx ]++;
@@ -1110,8 +1120,7 @@ privileged_init( fd_topo_t *      topo,
   }
 
   ctx->enabled = !!tile->bam.enabled;
-  ctx->dump_bam_txns = !!tile->bam.dump_bam_txns;
-  ctx->dump_bam_first_slot_txn = !!tile->bam.dump_bam_first_slot_txn;
+  ctx->dump_bam_mode = tile->bam.dump_bam_mode;
   strlcpy( ctx->admin_rpc_path, tile->bam.admin_rpc_path, sizeof(ctx->admin_rpc_path) );
   ctx->configured_default_tpu = tile->bam.configured_default_tpu;
   ctx->fee_cfg_version = 0U;

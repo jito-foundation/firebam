@@ -577,8 +577,11 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->bam.keepalive_interval_nanos = config->tiles.bam.keepalive_interval_millis * (ulong)1e6;
     tile->bam.tls_cert_verify = !!config->tiles.bam.tls_cert_verify;
     tile->bam.enabled = !!config->tiles.bam.enabled;
-    tile->bam.dump_bam_txns = !!config->development.bam.dump_bam_txns;
-    tile->bam.dump_bam_first_slot_txn = !!config->development.bam.dump_bam_first_slot_txn;
+    tile->bam.dump_bam_mode = config->development.bam.dump_bam_txns
+                              ? FD_BAM_DEBUG_DUMP_MODE_ALL
+                              : ( config->development.bam.dump_bam_slot_first_txn
+                                  ? FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST
+                                  : FD_BAM_DEBUG_DUMP_MODE_OFF );
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "verify" ) ) ) {
     tile->verify.tcache_depth = config->tiles.verify.signature_cache_size;
@@ -595,7 +598,11 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->pack.larger_shred_limits_per_block = config->development.bench.larger_shred_limits_per_block;
     tile->pack.use_consumed_cus              = config->tiles.pack.use_consumed_cus;
     tile->pack.schedule_strategy             = config->tiles.pack.schedule_strategy_enum;
-    tile->pack.dump_bam_txns                 = !!config->development.bam.dump_bam_txns;
+    tile->pack.dump_bam_mode                 = config->development.bam.dump_bam_txns
+                                              ? FD_BAM_DEBUG_DUMP_MODE_ALL
+                                              : ( config->development.bam.dump_bam_slot_first_txn
+                                                  ? FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST
+                                                  : FD_BAM_DEBUG_DUMP_MODE_OFF );
 
     if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
 #define PARSE_PUBKEY( _tile, f ) \

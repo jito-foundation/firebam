@@ -17,7 +17,7 @@ core_dump = true
 
 [development.bam]
 dump_bam_txns = true
-dump_bam_first_slot_txn = false
+dump_bam_slot_first_txn = false
 
 [tiles.gui]
 enabled = true

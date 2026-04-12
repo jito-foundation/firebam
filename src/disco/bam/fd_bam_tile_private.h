@@ -4,6 +4,7 @@
 #include "../bundle/fd_keepalive.h"
 #include "../stem/fd_stem.h"
 #include "../keyguard/fd_keyswitch.h"
+#include "../topo/fd_topo.h"
 #include "../bam/fd_bam_types.h"
 #include "fd_bam_ctrl.h"
 #include "../metrics/fd_metrics.h"
@@ -183,8 +184,7 @@ struct fd_bam_tile {
   /* Currently running config, values loaded via TOML and updated by set_bam admin control */
   fd_bam_ctrl_t * ctrl;                  /* Runtime control shared object (NULL when tile launched without admin support) */
   uchar  enabled;                        /* Whether BAM runtime is enabled by the operator */
-  uchar  dump_bam_txns;                  /* Whether to dump every inbound BAM bundle/txn for debugging */
-  uchar  dump_bam_first_slot_txn;        /* Whether to dump only the first inbound BAM bundle seen for each scheduled slot */
+  uchar  dump_bam_mode;                  /* FD_BAM_DEBUG_DUMP_MODE_* controlling BAM debug logging. */
   char   server_fqdn[ FD_FQDN_BUF_MAX ]; /* cstr; hostname configured for BAM endpoint */
   ushort server_fqdn_len;                /* Length of server_fqdn (no terminator) */
   char   server_sni[ FD_SNI_BUF_MAX ];   /* cstr; optional override for TLS SNI */
@@ -245,7 +245,7 @@ struct fd_bam_tile {
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
   fd_bam_unresolved_slot_ingress_timing_t unresolved_slot_ingress; /* Pre-leader-slot ingress staged until a leader snapshot can attribute it to a slot. */
   fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by resolved slot for debug captures. */
-  ulong dump_bam_last_slot;                       /* Most recent resolved slot dumped under dump_bam_first_slot_txn */
+  ulong dump_bam_last_slot;                       /* Most recent resolved slot dumped under FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST. */
   uchar dump_bam_last_slot_valid;                 /* Whether dump_bam_last_slot has been initialized */
 
   /* BAM specific */
@@ -431,7 +431,9 @@ fd_bam_finalize_unresolved_slot_ingress_rollup( fd_bam_tile_t * ctx ) {
 FD_FN_UNUSED static inline void
 fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
-  if( FD_UNLIKELY( state->slot != ctx->bam_leader_state.slot ) ) {
+  ulong const prev_slot = ctx->bam_leader_state.slot;
+
+  if( FD_UNLIKELY( state->slot != prev_slot ) ) {
     ctx->bam_leader_started_slot = ULONG_MAX;
   }
 
@@ -486,6 +488,20 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
       tracker->slot_end_ns = state->slot_end_ns;
       if( FD_LIKELY( !tracker->counted ) ) tracker->fresh_seen_before_end |= (uchar)!!state->current_slot_fresh;
     }
+  }
+
+  if( FD_UNLIKELY( ctx->dump_bam_mode &&
+                   state->slot!=ULONG_MAX &&
+                   state->slot!=prev_slot ) ) {
+    FD_LOG_NOTICE(( "BAM slot start: slot=%lu prev_slot=%lu prev_slot_known=%u observed_ns=%ld tick=%u slot_end_ns=%ld slot_end_known=%u current_slot_fresh=%u",
+                    state->slot,
+                    prev_slot,
+                    (uint)( prev_slot!=ULONG_MAX ),
+                    fd_log_wallclock(),
+                    state->tick,
+                    state->slot_end_ns,
+                    (uint)!!state->slot_end_ns,
+                    state->current_slot_fresh ));
   }
 
   ctx->bam_leader_state = *state;

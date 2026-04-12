@@ -30,6 +30,10 @@
 /* Maximum number of additional destinations for leader shreds and for retransmitted shreds */
 #define FD_TOPO_ADTL_DESTS_MAX ( 32UL)
 
+#define FD_BAM_DEBUG_DUMP_MODE_OFF        0U
+#define FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST 1U
+#define FD_BAM_DEBUG_DUMP_MODE_ALL        2U
+
 
 /* A workspace is a Firedancer specific memory management structure that
    sits on top of 1 or more memory mapped gigantic or huge pages mounted
@@ -283,8 +287,7 @@ struct fd_topo_tile {
       ulong keepalive_interval_nanos;
       uchar tls_cert_verify : 1;
       uchar enabled         : 1;
-      uchar dump_bam_txns   : 1;
-      uchar dump_bam_first_slot_txn : 1;
+      uchar dump_bam_mode   : 2;
     } bam;
 
     struct {
@@ -294,7 +297,7 @@ struct fd_topo_tile {
       int   larger_shred_limits_per_block;
       int   use_consumed_cus;
       int   schedule_strategy;
-      uchar dump_bam_txns : 1;
+      uchar dump_bam_mode : 2;
       struct {
         int   enabled;
         uchar tip_distribution_program_addr[ 32 ];

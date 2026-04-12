@@ -17,7 +17,7 @@ static char const cfg_str_3[] =
   "  buffer_size_kib = 222\n"
   "  ssl_key_log_file = \"/tmp/bam.keys\"\n"
   "  dump_bam_txns = true\n"
-  "  dump_bam_first_slot_txn = true\n";
+  "  dump_bam_slot_first_txn = true\n";
 
 static char const cfg_str_4[] =
   "[tiles.bam]\n"
@@ -66,7 +66,7 @@ main( int     argc,
   FD_TEST( config->development.bam.buffer_size_kib == 222U );
   FD_TEST( 0==strcmp( config->development.bam.ssl_key_log_file, "/tmp/bam.keys" ) );
   FD_TEST( config->development.bam.dump_bam_txns );
-  FD_TEST( config->development.bam.dump_bam_first_slot_txn );
+  FD_TEST( config->development.bam.dump_bam_slot_first_txn );
 
   /* BAM dump controls were moved out of [tiles.bam] */
 
