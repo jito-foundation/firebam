@@ -544,8 +544,7 @@ bam_model_ready_push( bam_model_harness_t * h,
 
 static inline int
 bam_model_has_slot_hint( ulong max_schedule_slot ) {
-  return max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT &&
-         max_schedule_slot!=0UL;
+  return max_schedule_slot!=0UL;
 }
 
 static int
@@ -1342,7 +1341,7 @@ bam_model_run_scenario_non_atomic_stale_slot( bam_model_harness_t * h ) {
 }
 
 static void
-bam_model_run_scenario_slot_source_fallback( bam_model_harness_t * h ) {
+bam_model_run_scenario_no_leader_working_slot( bam_model_harness_t * h ) {
   h->leader_working_present = 0U;
   h->bankforks_working_slot = 140UL;
 
@@ -1707,7 +1706,7 @@ bam_model_run_scenarios( fd_wksp_t * wksp ) {
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
-  bam_model_run_scenario_slot_source_fallback( h );
+  bam_model_run_scenario_no_leader_working_slot( h );
   bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 

@@ -131,7 +131,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( ctx->builder_info_valid_until && now >= ctx->builder_info_valid_until ) ) {
     ctx->builder_info_valid_until = 0L;
   }
-  ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  ctx->bundle_max_schedule_slot = 0UL;
 
   memset( ctx->rtt, 0, sizeof(fd_rtt_estimate_t) );
 
@@ -158,7 +158,6 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_last_builder_activity_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
   ctx->bam_last_config_poll_ns    = 0L;
-  fd_bam_finalize_unresolved_slot_ingress_rollup( ctx );
   /* Preserve any buffered bundle results so they flush once the next
      scheduler stream comes up.  The server expects every dispatched
      bundle to eventually produce a result; dropping them here would lose

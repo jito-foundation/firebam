@@ -64,7 +64,6 @@ struct fd_bam_metrics {
 
   ulong ingress_batch_commit_attempt_cnt;
   ulong ingress_batch_published_cnt;
-  ulong ingress_batch_no_max_schedule_slot_provided_cnt;
   ulong ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_CNT ];
   ulong ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_CNT ];
 
@@ -98,12 +97,6 @@ typedef struct {
   uchar summary_emitted;
   uchar valid;
 } fd_bam_slot_ingress_timing_t;
-
-typedef struct {
-  long  first_rx_ts_ns;
-  ulong txn_unknown_slot_end;
-  uchar valid;
-} fd_bam_unresolved_slot_ingress_timing_t;
 
 #define FD_BAM_LEADER_SLOT_END_TRACKER_CNT 64UL
 typedef struct {
@@ -242,8 +235,7 @@ struct fd_bam_tile {
 
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle). */
-  ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
-  fd_bam_unresolved_slot_ingress_timing_t unresolved_slot_ingress; /* Pre-leader-slot ingress staged until a leader snapshot can attribute it to a slot. */
+  ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, or 0 when no BAM bundle is active. */
   fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by resolved slot for debug captures. */
   ulong dump_bam_last_slot;                       /* Most recent resolved slot dumped under FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST. */
   uchar dump_bam_last_slot_valid;                 /* Whether dump_bam_last_slot has been initialized */
@@ -419,16 +411,6 @@ fd_bam_slot_ingress_timing_query_or_insert( fd_bam_tile_t * ctx,
 }
 
 FD_FN_UNUSED static inline void
-fd_bam_finalize_unresolved_slot_ingress_rollup( fd_bam_tile_t * ctx ) {
-  if( FD_UNLIKELY( !ctx->unresolved_slot_ingress.valid ) ) return;
-
-  ctx->metrics.slot_ingress_result_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNRESOLVED_SLOT_IDX ]++;
-  ctx->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_UNRESOLVED_SLOT_IDX ] +=
-      ctx->unresolved_slot_ingress.txn_unknown_slot_end;
-  ctx->unresolved_slot_ingress = (fd_bam_unresolved_slot_ingress_timing_t){0};
-}
-
-FD_FN_UNUSED static inline void
 fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
   ulong const prev_slot = ctx->bam_leader_state.slot;
@@ -441,9 +423,6 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
   if( FD_UNLIKELY( ctx->bam_leader_pending &&
                    !fd_bam_leader_state_eq( &ctx->bam_leader_state, state ) ) ) {
     ctx->metrics.leader_pending_replaced_cnt++;
-  }
-  if( FD_UNLIKELY( ctx->unresolved_slot_ingress.valid ) ) {
-    fd_bam_finalize_unresolved_slot_ingress_rollup( ctx );
   }
 
   fd_bam_slot_ingress_timing_t * entry = track_slot_end
@@ -493,10 +472,9 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
   if( FD_UNLIKELY( ctx->dump_bam_mode &&
                    state->slot!=ULONG_MAX &&
                    state->slot!=prev_slot ) ) {
-    FD_LOG_NOTICE(( "BAM slot start: slot=%lu prev_slot=%lu prev_slot_known=%u observed_ns=%ld tick=%u slot_end_ns=%ld slot_end_known=%u current_slot_fresh=%u",
+    FD_LOG_NOTICE(( "BAM Firedancer slot start: slot=%lu prev_slot=%lu observed_ns=%ld tick=%u slot_end_ns=%ld slot_end_known=%u current_slot_fresh=%u",
                     state->slot,
                     prev_slot,
-                    (uint)( prev_slot!=ULONG_MAX ),
                     fd_log_wallclock(),
                     state->tick,
                     state->slot_end_ns,

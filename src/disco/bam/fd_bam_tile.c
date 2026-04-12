@@ -62,7 +62,7 @@ fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
       ? entry->first_rx_ts_ns - entry->slot_end_ns
       : 0L;
 
-  FD_LOG_NOTICE(( "BAM slot ingress summary: resolved_slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
+  FD_LOG_NOTICE(( "BAM ingress vs Firedancer slot summary: resolved_slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
                   entry->slot,
                   entry->first_rx_ts_ns,
                   first_rx_minus_slot_end_ns,
@@ -130,7 +130,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, INGRESS_MULTI_MESSAGE_RECEIVED,         ctx->metrics.ingress_multi_message_received_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_COMMIT_ATTEMPT,           ctx->metrics.ingress_batch_commit_attempt_cnt );
   FD_MCNT_SET( BAM, INGRESS_BATCH_PUBLISHED,                ctx->metrics.ingress_batch_published_cnt );
-  FD_MCNT_SET( BAM, INGRESS_BATCH_NO_MAX_SCHEDULE_SLOT_PROVIDED, ctx->metrics.ingress_batch_no_max_schedule_slot_provided_cnt );
   FD_MCNT_ENUM_COPY( BAM, INGRESS_BATCH_REJECTED, ctx->metrics.ingress_batch_rejected_cnt );
   FD_MCNT_ENUM_COPY( BAM, INGRESS_MESSAGE_REJECTED, ctx->metrics.ingress_message_rejected_cnt );
   FD_MCNT_ENUM_COPY( BAM, OUTBOUND_ENQUEUE_OUTCOME,  ctx->metrics.outbound_enqueue_outcome_cnt );
@@ -434,7 +433,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     }
 
     if( FD_UNLIKELY( ctx->dump_bam_mode ) ) {
-      FD_LOG_NOTICE(( "BAM slot end: slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld status=%u fresh_seen_before_end=%u",
+      FD_LOG_NOTICE(( "BAM Firedancer slot end: slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld status=%u fresh_seen_before_end=%u",
                       tracker->slot,
                       tracker->slot_end_ns,
                       now_ns,
@@ -1075,7 +1074,7 @@ privileged_init( fd_topo_t *      topo,
   ctx->bank_bam_in_idx = ULONG_MAX;
   ctx->pack_bam_leader_in_idx = ULONG_MAX;
   ctx->pack_bam_result_in_idx = ULONG_MAX;
-  ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  ctx->bundle_max_schedule_slot = 0UL;
 
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
   fd_memcpy( ctx->bam_identity_pubkey, public_key, 32UL );
@@ -1293,7 +1292,6 @@ unprivileged_init( fd_topo_t *      topo,
 
   for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ )
     fd_memset( &ctx->slot_ingress_timing[ i ], 0, sizeof(ctx->slot_ingress_timing[ i ]) );
-  ctx->unresolved_slot_ingress = (fd_bam_unresolved_slot_ingress_timing_t){0};
   ctx->bam_leader_started_slot = ULONG_MAX;
 
   fd_histf_new( ctx->metrics.builder_heartbeat_arrival_delta_nanos,

@@ -77,7 +77,7 @@ test_bam_encode_scheduler_response( bam_types_Packet * packets,
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
   batch.seq_id = seq_id;
-  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  batch.max_schedule_slot = 1UL;
   batch.packets.funcs.encode = test_bam_encode_packets_cb;
   batch.packets.arg          = &packets_ctx;
 

@@ -1771,15 +1771,12 @@ user = ""
         #     lut[0]: table=... writable=[1, 4] readonly=[0, 7, 9]
         #     ix[0]: program_id_index=3 program=... [compute_budget] acct_cnt=0 signer_cnt=0 writable_cnt=0 lookup_cnt=0 data_sz=5 data=...
         #     accts: [0=3/swi/..., 1=9/-rl/...]
-        #     slot_timing: resolved_slot=123456 max_schedule_slot=123456 first_rx_ns=... first_rx_minus_slot_end_ns=... first_rx_after_slot_end=0 txns_before_slot_end=2 txns_after_slot_end=0 txns_unknown_slot_end=0 current_leader_slot=123456
+        #     firedancer_slot_timing: resolved_slot=123456 max_schedule_slot=123456 first_rx_ns=... first_rx_minus_slot_end_ns=... first_rx_after_slot_end=0 txns_before_slot_end=2 txns_after_slot_end=0 txns_unknown_slot_end=0 current_leader_slot=123456
         # This is very verbose and should remain disabled in production.
         dump_bam_txns = false
 
         # Emit the same BAM debug diagnostics as dump_bam_txns, but only
         # for the first inbound BAM batch observed in each resolved slot.
-        # Slot resolution uses max_schedule_slot when the batch provides
-        # a concrete slot, otherwise it falls back to the current BAM
-        # leader-state slot.
         # Example: if seq_id=42, 43, and 44 all arrive for slot 123456,
         # only the first one prints the "BAM rx bundle: ..." record and
         # any downstream BAM drop diagnostics for that same batch.

@@ -215,7 +215,7 @@ test_bam_encode_atomic_batch_raw( bam_types_Packet * packets,
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
   batch.seq_id = seq_id;
-  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  batch.max_schedule_slot = 1UL;
   batch.packets.funcs.encode = test_bam_encode_packets_cb;
   batch.packets.arg          = &packets_ctx;
 
@@ -444,7 +444,7 @@ test_bam_slot_ingress_timing_tracks_resolved_slot_and_late_arrival( fd_wksp_t * 
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
   batch.seq_id = 77U;
-  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  batch.max_schedule_slot = 100UL;
   batch.packets.funcs.encode = test_bam_encode_packets_cb;
   batch.packets.arg          = &packets_ctx;
 
@@ -492,7 +492,7 @@ test_bam_slot_ingress_timing_tracks_resolved_slot_and_late_arrival( fd_wksp_t * 
 }
 
 static void
-test_bam_slot_ingress_timing_treats_omitted_slot_hint_as_current_leader_slot( fd_wksp_t * wksp ) {
+test_bam_slot_ingress_timing_uses_concrete_max_schedule_slot( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
@@ -509,7 +509,7 @@ test_bam_slot_ingress_timing_treats_omitted_slot_hint_as_current_leader_slot( fd
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
   batch.seq_id = 79U;
-  batch.max_schedule_slot = 0UL; /* Omitted on the wire; decode should normalize to the internal default sentinel. */
+  batch.max_schedule_slot = 100UL;
   batch.packets.funcs.encode = test_bam_encode_packets_cb;
   batch.packets.arg          = &packets_ctx;
 
@@ -531,82 +531,7 @@ test_bam_slot_ingress_timing_treats_omitted_slot_hint_as_current_leader_slot( fd
   FD_TEST( entry->first_rx_after_slot_end == 0U );
   FD_TEST( entry->txn_before_slot_end == 1UL );
   FD_TEST( entry->txn_after_slot_end == 0UL );
-  FD_TEST( state->metrics.ingress_batch_no_max_schedule_slot_provided_cnt == 1UL );
   FD_TEST( !fd_bam_slot_ingress_timing_query_const( state, 0UL ) );
-
-  test_bam_env_destroy( env );
-}
-
-static void
-test_bam_slot_ingress_timing_defers_unresolved_default_slot_until_leader_state( fd_wksp_t * wksp ) {
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  fd_bam_tile_t * state = env->state;
-
-  bam_types_Packet packets[1];
-  fd_memset( packets, 0, sizeof(packets) );
-  packets[0].data.size = (pb_size_t)bam_dump_txn_fixture_sz;
-  fd_memcpy( packets[0].data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
-
-  test_bam_packet_encode_ctx_t packets_ctx = {
-    .packets    = packets,
-    .packet_cnt = 1UL
-  };
-
-  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
-  batch.seq_id = 91U;
-  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
-  batch.packets.funcs.encode = test_bam_encode_packets_cb;
-  batch.packets.arg          = &packets_ctx;
-
-  uchar protobuf[ 4096 ];
-  state->bam_leader_state = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
-  g_clock = 1000L;
-  size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( &batch, 1UL, protobuf, sizeof(protobuf) );
-  fd_bam_client_grpc_rx_msg( state,
-                             protobuf,
-                             protobuf_sz,
-                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-
-  FD_TEST( !fd_bam_slot_ingress_timing_query_const( state, ULONG_MAX ) );
-  FD_TEST( state->unresolved_slot_ingress.valid );
-  FD_TEST( state->unresolved_slot_ingress.first_rx_ts_ns == 1000L );
-  FD_TEST( state->unresolved_slot_ingress.txn_unknown_slot_end == 1UL );
-
-  fd_bam_leader_state_t leader_state = {
-    .slot        = 200UL,
-    .slot_end_ns = 1500L,
-  };
-  fd_bam_stage_leader_state( state, &leader_state );
-
-  fd_bam_slot_ingress_timing_t const * entry = fd_bam_slot_ingress_timing_query_const( state, 200UL );
-  FD_TEST( entry );
-  FD_TEST( entry->first_rx_ts_ns == 0L );
-  FD_TEST( entry->slot_end_ns == 1500L );
-  FD_TEST( entry->txn_unknown_slot_end == 0UL );
-  FD_TEST( entry->txn_before_slot_end == 0UL );
-  FD_TEST( entry->txn_after_slot_end == 0UL );
-  FD_TEST( entry->first_rx_after_slot_end == 0U );
-  FD_TEST( !state->unresolved_slot_ingress.valid );
-  FD_TEST( state->metrics.slot_ingress_result_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_V_UNRESOLVED_SLOT_IDX ] == 1UL );
-  FD_TEST( state->metrics.slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_V_UNRESOLVED_SLOT_IDX ] == 1UL );
-
-  fd_bam_test_metrics_write( state );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_NO_INGRESS ) == 1UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_SLOT_END_UNKNOWN ) == 0UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_BEFORE_END ) == 0UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AT_END ) == 0UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AFTER_END ) == 0UL );
-  FD_TEST( (long)FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS ) == LONG_MIN );
-
-  state->bam_leader_state = (fd_bam_leader_state_t){ .slot = 201UL };
-  fd_bam_test_metrics_write( state );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_NO_INGRESS ) == 1UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_SLOT_END_UNKNOWN ) == 0UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_BEFORE_END ) == 0UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AT_END ) == 0UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_AFTER_END ) == 0UL );
-  FD_TEST( (long)FD_MGAUGE_GET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS ) == LONG_MIN );
 
   test_bam_env_destroy( env );
 }
@@ -841,7 +766,7 @@ test_bam_publish_batch_uses_captured_ingress_metadata( fd_wksp_t * wksp ) {
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
   batch.seq_id = 77U;
-  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  batch.max_schedule_slot = 100UL;
 
   state->bam_leader_state.slot        = 101UL;
   state->bam_leader_state.slot_end_ns = 2500L;
@@ -900,13 +825,13 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
   bam_types_AtomicTxnBatch batches[2];
   batches[0] = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
   batches[0].seq_id = 6U;
-  batches[0].max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  batches[0].max_schedule_slot = 100UL;
   batches[0].packets.funcs.encode = test_bam_encode_packets_cb;
   batches[0].packets.arg          = &first_ctx;
 
   batches[1] = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
   batches[1].seq_id = 7U;
-  batches[1].max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  batches[1].max_schedule_slot = 100UL;
   batches[1].packets.funcs.encode = test_bam_encode_packets_cb;
   batches[1].packets.arg          = &second_ctx;
 
@@ -990,7 +915,7 @@ test_bam_multiple_batches_accept_limit_counts( fd_wksp_t * wksp ) {
 
     batches[ i ] = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
     batches[ i ].seq_id            = (uint32_t)(700U + i);
-    batches[ i ].max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    batches[ i ].max_schedule_slot = 100UL + i;
     batches[ i ].packets.funcs.encode = test_bam_encode_packets_cb;
     batches[ i ].packets.arg          = &packet_ctx[ i ];
   }
@@ -1249,7 +1174,7 @@ test_bam_multiple_batches_reject_excess_batch_count( fd_wksp_t * wksp ) {
 
     batches[ i ] = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
     batches[ i ].seq_id            = (uint32_t)(800U + i);
-    batches[ i ].max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    batches[ i ].max_schedule_slot = 200UL + i;
     batches[ i ].packets.funcs.encode = test_bam_encode_packets_cb;
     batches[ i ].packets.arg          = &packet_ctx[ i ];
   }
@@ -1714,7 +1639,7 @@ test_bam_bundle_rejects_empty_batch( fd_wksp_t * wksp ) {
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
   batch.seq_id = 55;
-  batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  batch.max_schedule_slot = 1UL;
   batch.packets.funcs.encode = test_bam_encode_packets_cb;
   batch.packets.arg          = &packets_ctx;
 
@@ -4625,8 +4550,7 @@ main( int     argc,
   test_bam_dump_bam_txns_smoke( wksp );
   test_bam_dump_bam_slot_first_txn_gate( wksp );
   test_bam_slot_ingress_timing_tracks_resolved_slot_and_late_arrival( wksp );
-  test_bam_slot_ingress_timing_treats_omitted_slot_hint_as_current_leader_slot( wksp );
-  test_bam_slot_ingress_timing_defers_unresolved_default_slot_until_leader_state( wksp );
+  test_bam_slot_ingress_timing_uses_concrete_max_schedule_slot( wksp );
   test_bam_freshness_status_bits( wksp );
   test_bam_slot_ingress_timing_summary_format_and_gate( wksp );
   test_bam_slot_ingress_timing_summary_on_leader_slot_advance( wksp );

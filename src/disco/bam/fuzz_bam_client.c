@@ -555,7 +555,7 @@ bam_fuzz_reset_tile( void ) {
   ctx->bam_status_recent  = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->enabled               = 1U;
   ctx->feedback_queue_depth   = 0U;
-  ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  ctx->bundle_max_schedule_slot = 0UL;
 
   /* Assume a valid builder config was fetched so bundle publish paths don't abort */
   long bam_now = fd_bam_now();

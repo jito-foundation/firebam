@@ -275,16 +275,6 @@ fd_bam_dump_append_inbound_txn( char *                   msg,
   return off;
 }
 
-static inline ulong
-fd_bam_resolve_batch_slot( bam_types_AtomicTxnBatch const * batch,
-                           ulong                            leader_slot_at_rx ) {
-  ulong resolved_slot = batch->max_schedule_slot;
-  if( FD_UNLIKELY( resolved_slot==FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ) ) {
-    resolved_slot = leader_slot_at_rx;
-  }
-  return resolved_slot;
-}
-
 int
 fd_bam_should_dump_batch( fd_bam_tile_t * ctx,
                           ulong           resolved_slot ) {
@@ -370,7 +360,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .deser_index       = state->deser_index
     };
     fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    ctx->bundle_max_schedule_slot = 0UL;
     return 0;
   }
 
@@ -387,7 +377,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .deser_index       = 0
     };
     fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    ctx->bundle_max_schedule_slot = 0UL;
     return 0;
   }
 
@@ -406,7 +396,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .deser_index       = 0
     };
     fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    ctx->bundle_max_schedule_slot = 0UL;
     return 0;
   }
 
@@ -433,7 +423,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .deser_index       = (uchar)simple_vote_idx,
     };
     fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    ctx->bundle_max_schedule_slot = 0UL;
     return 0;
   }
 
@@ -454,16 +444,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     slot_end_ns = ctx->bam_leader_state.slot_end_ns;
   }
   fd_bam_slot_ingress_timing_t * entry = NULL;
-  if( FD_UNLIKELY( resolved_slot==ULONG_MAX ) ) {
-    if( FD_LIKELY( packet_cnt ) ) {
-      if( FD_UNLIKELY( !ctx->unresolved_slot_ingress.valid ||
-                       rx_ts_ns < ctx->unresolved_slot_ingress.first_rx_ts_ns ) ) {
-        ctx->unresolved_slot_ingress.first_rx_ts_ns = rx_ts_ns;
-      }
-      ctx->unresolved_slot_ingress.txn_unknown_slot_end += packet_cnt;
-      ctx->unresolved_slot_ingress.valid = 1U;
-    }
-  } else if( FD_LIKELY( ( entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, resolved_slot, leader_slot ) ) ) ) {
+  if( FD_LIKELY( ( entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, resolved_slot, leader_slot ) ) ) ) {
     if( FD_UNLIKELY( slot_end_ns ) ) {
       entry->slot_end_ns = slot_end_ns;
       entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > slot_end_ns );
@@ -519,7 +500,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                             &state->packets[ i ] );
     }
     off = fd_bam_dump_appendf( msg, FD_BAM_DUMP_LOG_BUF_SZ, off,
-                               "\nslot_timing: resolved_slot=%lu max_schedule_slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
+                               "\nfiredancer_slot_timing: resolved_slot=%lu max_schedule_slot=%lu first_rx_ns=%ld first_rx_minus_slot_end_ns=%ld first_rx_after_slot_end=%u txns_before_slot_end=%lu txns_after_slot_end=%lu txns_unknown_slot_end=%lu current_leader_slot=%lu",
                                resolved_slot,
                                batch->max_schedule_slot,
                                first_rx_ts_ns,
@@ -560,7 +541,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                0 );
     }
   }
-  ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  ctx->bundle_max_schedule_slot = 0UL;
 }
 
 /* Decodes one bam_types.AtomicTxnBatch message into staged state only.
@@ -609,15 +590,7 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
     return 0;
   }
 
-  /* Protobuf omission decodes uint64 max_schedule_slot as zero. Normalize that
-     into the internal no-hint sentinel so downstream logic and logs can
-     distinguish "hint omitted" from a real slot hint. */
-  if( FD_UNLIKELY( !decoded->batch.max_schedule_slot ) ) {
-    ctx->metrics.ingress_batch_no_max_schedule_slot_provided_cnt++;
-    decoded->batch.max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
-  }
-
-  decoded->state.ingress_resolved_slot = fd_bam_resolve_batch_slot( &decoded->batch, leader_slot_at_rx );
+  decoded->state.ingress_resolved_slot = decoded->batch.max_schedule_slot;
   decoded->state.ingress_rx_ts_ns      = rx_ts_ns;
   decoded->state.ingress_rx_tspub      = rx_tspub;
   decoded->state.ingress_slot_end_ns   =
@@ -756,7 +729,7 @@ fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ct
     /* Reject counters are recorded at the decode site where err_result was staged
        (overflow/empty wrapper) so the batch/message taxonomy remains accurate. */
     fd_bam_enqueue_result( ctx, &decoded_multi->err_result );
-    ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    ctx->bundle_max_schedule_slot = 0UL;
   }
 }
 

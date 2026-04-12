@@ -437,12 +437,9 @@ struct fd_pack_ctx {
        - If a new seq_id arrives before the current batch completes,
          pack abandons the partial batch and reports missing indices as
          SIGNATURE_FAILURE (upstream sigverify/resolv likely dropped them).
-       - max_schedule_slot:
-           * 0 means "no slot hint" (per proto defaults)
-           * FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT (ULONG_MAX) is an internal
-             "no hint" sentinel used by some components
-         When a non-zero/non-default hint is present, pack drops the
-         bundle if it becomes leader *after* max_schedule_slot. */
+       - max_schedule_slot is a concrete scheduler-provided slot limit.
+         Pack drops the bundle if it becomes leader *after*
+         max_schedule_slot. */
   struct {
     /* BAM AtomicTxnBatch.seq_id. Unique only within one leader rotation.
        Used for correlating bundle results back to the scheduler. */
@@ -469,10 +466,8 @@ struct fd_pack_ctx {
        batch. */
     ulong min_blockhash_slot;
 
-    /* BAM AtomicTxnBatch.max_schedule_slot. 0 means "no hint" per proto.
-       Some components also use FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT (ULONG_MAX)
-       as an explicit "no hint" sentinel. When a real hint is present,
-       pack enforces that the bundle only schedules in slots <= this value. */
+    /* BAM AtomicTxnBatch.max_schedule_slot. Pack enforces that the
+       bundle only schedules in slots <= this value. */
     ulong max_schedule_slot;
 
     /* Slot bucket used for recent-slot BAM funnel accounting. This is
@@ -624,7 +619,7 @@ static inline ulong
 pack_tile_bam_fresh_slot_for_hint( fd_pack_ctx_t const * ctx,
                                    ulong                 max_schedule_slot ) {
   if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) return ULONG_MAX;
-  return fd_ulong_if( max_schedule_slot==FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT || max_schedule_slot==ctx->leader_slot,
+  return fd_ulong_if( max_schedule_slot==ctx->leader_slot,
                       ctx->leader_slot,
                       ULONG_MAX );
 }
@@ -905,8 +900,8 @@ pack_tile_bam_best_known_slot( fd_pack_ctx_t const * ctx ) {
 static inline ulong
 pack_tile_bam_funnel_slot( fd_pack_ctx_t const * ctx,
                            ulong                 max_schedule_slot ) {
-  if( FD_LIKELY( max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ) ) return max_schedule_slot;
-  return pack_tile_bam_best_known_slot( ctx );
+  (void)ctx;
+  return max_schedule_slot;
 }
 
 static inline char const *
@@ -983,7 +978,7 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
   char sig0_b58[ FD_BASE58_ENCODED_64_SZ ] = "<none>";
   if( FD_LIKELY( sig0 ) ) fd_base58_encode_64( (uchar const *)sig0, NULL, sig0_b58 );
 
-  FD_LOG_INFO(( "bam_drop category=%s reason=%s invalid_reason_known=%u invalid_reason_idx=%u pack_rc_known=%u pack_rc=%d seq_id=%u txns=%u sig0=%s work_state=%s validation_slot=%lu validation_slot_known=%u required_min_slot=%lu required_min_slot_known=%u bam_max_schedule_slot=%lu bam_max_schedule_default=%u work_slot=%lu work_slot_known=%u blockhash_slot=%lu blockhash_slot_known=%u leader_slot=%lu leader_slot_known=%u current_leader_slot_end_ns=%ld current_leader_slot_end_known=%u now_ns=%ld now_minus_current_leader_slot_end_ns=%ld highest_observed_slot=%lu first_rx_ts_ns=%ld first_rx_known=%u age_ns=%lu age_known=%u revert_on_error_known=%u revert_on_error=%u batch_idx_known=%u batch_idx=%u txn_received=%lu txn_expected=%lu first_missing_idx_known=%u first_missing_idx=%u pack_avail_txn_cnt=%lu extra_queue_cnt=%lu bam_work_cnt=%lu bam_pending_work_cnt=%lu bam_scheduled_work_cnt=%lu max_pending_transactions=%lu",
+  FD_LOG_INFO(( "bam_drop category=%s reason=%s invalid_reason_known=%u invalid_reason_idx=%u pack_rc_known=%u pack_rc=%d seq_id=%u txns=%u sig0=%s work_state=%s validation_slot=%lu validation_slot_known=%u required_min_slot=%lu required_min_slot_known=%u bam_max_schedule_slot=%lu work_slot=%lu work_slot_known=%u blockhash_slot=%lu blockhash_slot_known=%u leader_slot=%lu leader_slot_known=%u current_leader_slot_end_ns=%ld current_leader_slot_end_known=%u now_ns=%ld now_minus_current_leader_slot_end_ns=%ld highest_observed_slot=%lu first_rx_ts_ns=%ld first_rx_known=%u age_ns=%lu age_known=%u revert_on_error_known=%u revert_on_error=%u batch_idx_known=%u batch_idx=%u txn_received=%lu txn_expected=%lu first_missing_idx_known=%u first_missing_idx=%u pack_avail_txn_cnt=%lu extra_queue_cnt=%lu bam_work_cnt=%lu bam_pending_work_cnt=%lu bam_scheduled_work_cnt=%lu max_pending_transactions=%lu",
                 category,
                 reason,
                 invalid_reason_known,
@@ -999,7 +994,6 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
                 required_min_slot,
                 (uint)( required_min_slot!=ULONG_MAX ),
                 max_schedule_slot,
-                (uint)( max_schedule_slot==FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ),
                 work_slot,
                 (uint)( work_slot!=ULONG_MAX ),
                 blockhash_slot,
@@ -1040,11 +1034,10 @@ pack_tile_bam_invalid_reason( ulong current_slot,
      slot can be rejected immediately.
 
      Once current_slot is known, BAM matches the model contract: blockhash
-     lifetime is checked against current_slot, and an explicit max_schedule_slot
+     lifetime is checked against current_slot, and max_schedule_slot
      must still be >= both current_slot and blockhash_slot. */
   if( FD_UNLIKELY( current_slot==ULONG_MAX ) ) {
-    if( FD_UNLIKELY( max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT &&
-                     max_schedule_slot<blockhash_slot ) ) {
+    if( FD_UNLIKELY( max_schedule_slot<blockhash_slot ) ) {
       return PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
     }
     return PACK_TILE_BAM_INVALID_NONE;
@@ -1052,8 +1045,7 @@ pack_tile_bam_invalid_reason( ulong current_slot,
 
   ulong oldest_live_slot = fd_ulong_max( current_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS;
   if( FD_UNLIKELY( blockhash_slot<oldest_live_slot ) ) return PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED;
-  if( FD_UNLIKELY( max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT &&
-                   max_schedule_slot<fd_ulong_max( current_slot, blockhash_slot ) ) ) {
+  if( FD_UNLIKELY( max_schedule_slot<fd_ulong_max( current_slot, blockhash_slot ) ) ) {
     return PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
   }
   return PACK_TILE_BAM_INVALID_NONE;
@@ -2412,7 +2404,7 @@ during_frag( fd_pack_ctx_t * ctx,
          persist the metadata needed to revalidate BAM work on reinsertion. */
       fd_pack_extra_txn_t * extra = extra_txn_deq_peek_tail( ctx->extra_txn_deq );
       ctx->cur_spot->txnp->blockhash_slot = sig;
-      extra->bam_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+      extra->bam_max_schedule_slot = 0UL;
       extra->bam_funnel_slot       = ULONG_MAX;
       if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
         extra->bam_max_schedule_slot = txnm->bam.max_schedule_slot;
@@ -2748,7 +2740,7 @@ after_frag( fd_pack_ctx_t *     ctx,
       fd_txn_p_t const * txnp = ctx->cur_spot->txnp;
       _Bool is_bam            = txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
       uint  bam_seq_id        = txnp->bam.seq_id;
-      ulong bam_slot          = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+      ulong bam_slot          = 0UL;
       ulong bam_funnel_slot   = ULONG_MAX;
       pack_tile_bam_invalid_reason_t invalid_reason = PACK_TILE_BAM_INVALID_NONE;
       fd_ed25519_sig_t bam_sig[1] = {0};
@@ -3060,7 +3052,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->cur_spot                      = NULL;
   ctx->bundle_kind                   = PACK_TILE_BUNDLE_KIND_NONE;
   ctx->dump_bam_mode                 = tile->pack.dump_bam_mode;
-  ctx->bam_txn_max_schedule_slot     = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  ctx->bam_txn_max_schedule_slot     = 0UL;
   ctx->bam_work_cnt                  = 0UL;
   ctx->bam_pending_work_cnt          = 0UL;
   ctx->bam_scheduled_work_cnt        = 0UL;
