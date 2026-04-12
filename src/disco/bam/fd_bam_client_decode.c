@@ -7,6 +7,9 @@
 #include "../../ballet/nanopb/pb_decode.h"
 #include "../../flamenco/runtime/fd_system_ids.h"
 
+#include <stdarg.h>
+#include <stdio.h>
+
 
 #define FD_BAM_MAX_TXN_PER_ATOMIC_BATCH        5U
 #define FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET   8U
@@ -909,6 +912,15 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
     break;
   case FD_BAM_V0_STAGED_MULTI:
     fd_bam_commit_multiple_atomic_txn_batch( ctx, &decoded_v0.multi );
+    if( FD_UNLIKELY( leader_slot_at_rx!=ULONG_MAX &&
+                     ctx->bam_leader_started_slot!=leader_slot_at_rx ) ) {
+      ctx->bam_leader_started_slot = leader_slot_at_rx;
+      if( FD_UNLIKELY( ctx->bam_leader_pending &&
+                       ctx->bam_leader_state.slot==leader_slot_at_rx &&
+                       fd_bam_send_leader_state( ctx, &ctx->bam_leader_state ) ) ) {
+        ctx->bam_leader_pending = 0U;
+      }
+    }
     ctx->bam_last_builder_activity_ns = rx_ts_ns;
     break;
   case FD_BAM_V0_STAGED_PING: {

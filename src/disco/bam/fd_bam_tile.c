@@ -570,6 +570,7 @@ bam_after_frag( fd_bam_tile_t *     ctx,
     ulong const prev_slot = ctx->bam_leader_state.slot;
     fd_bam_stage_leader_state( ctx, leader_state );
     if( FD_LIKELY( prev_slot!=leader_state->slot &&
+                   fd_bam_leader_state_send_allowed( ctx, &ctx->bam_leader_state ) &&
                    ctx->bam_stream &&
                    ctx->bam_stream_live &&
                    fd_bam_send_leader_state( ctx, &ctx->bam_leader_state ) ) ) {
@@ -1283,6 +1284,7 @@ unprivileged_init( fd_topo_t *      topo,
   for( ulong i=0UL; i<FD_BAM_SLOT_INGRESS_TIMING_CNT; i++ )
     fd_memset( &ctx->slot_ingress_timing[ i ], 0, sizeof(ctx->slot_ingress_timing[ i ]) );
   ctx->unresolved_slot_ingress = (fd_bam_unresolved_slot_ingress_timing_t){0};
+  ctx->bam_leader_started_slot = ULONG_MAX;
 
   fd_histf_new( ctx->metrics.builder_heartbeat_arrival_delta_nanos,
                 FD_MHIST_MIN( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ),

@@ -443,6 +443,7 @@ test_bam_env_create( test_bam_env_t * env,
   fd_base58_encode_32( state->bam_identity_pubkey, NULL, state->bam_identity_pubkey_b58 );
   state->stem = env->stem;
   state->enabled = 1;
+  state->bam_leader_started_slot = ULONG_MAX;
   state->verify_out = (fd_bam_out_ctx_t) {
     .idx    = 0UL,
     .mem    = dcache,

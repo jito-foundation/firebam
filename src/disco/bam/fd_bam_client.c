@@ -149,6 +149,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_stream                 = NULL;
   fd_bam_set_stream_live( ctx, 0U );
   ctx->bam_stream_connecting      = 0;
+  ctx->bam_leader_started_slot    = ULONG_MAX;
   ctx->bam_auth_ready             = 0;
   ctx->challenge_to_sign[ 0 ]     = '\0';
   ctx->bam_auth_inflight          = 0;
@@ -959,8 +960,10 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
     }
   }
 
-  /* Push leader state updates when slot/tick changes. */
-  if( FD_UNLIKELY( ctx->bam_leader_pending ) ) {
+  /* Push leader state updates once BAM has started the current slot by
+     delivering at least one scheduler batch for it. */
+  if( FD_UNLIKELY( ctx->bam_leader_pending &&
+                   fd_bam_leader_state_send_allowed( ctx, &ctx->bam_leader_state ) ) ) {
     if( FD_LIKELY( fd_bam_send_leader_state( ctx, &ctx->bam_leader_state ) ) ) {
       ctx->bam_leader_pending = 0U;
       busy = 1;
