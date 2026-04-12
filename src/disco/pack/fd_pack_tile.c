@@ -964,7 +964,6 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
 
   ulong validation_slot                    = pack_tile_bam_best_known_slot( ctx );
   ulong required_min_slot                  = ULONG_MAX;
-  ulong oldest_live_slot                   = ULONG_MAX;
   long  now_ns                             = pack_tile_now_ns( ctx );
   ulong age_ns                             = ULONG_MAX;
   long  current_leader_slot_end_ns         = ctx->leader_slot==ULONG_MAX ? 0L : ctx->slot_end_ns;
@@ -976,7 +975,6 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
 #endif
   if( FD_LIKELY( first_rx_ts_ns>0L && now_ns>=first_rx_ts_ns ) ) age_ns = (ulong)( now_ns - first_rx_ts_ns );
   if( FD_LIKELY( validation_slot!=ULONG_MAX ) ) {
-    oldest_live_slot = fd_ulong_max( validation_slot, TRANSACTION_LIFETIME_SLOTS ) - TRANSACTION_LIFETIME_SLOTS;
     required_min_slot = blockhash_slot!=ULONG_MAX ? fd_ulong_max( validation_slot, blockhash_slot ) : validation_slot;
   } else if( FD_LIKELY( blockhash_slot!=ULONG_MAX ) ) {
     required_min_slot = blockhash_slot;
@@ -985,7 +983,7 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
   char sig0_b58[ FD_BASE58_ENCODED_64_SZ ] = "<none>";
   if( FD_LIKELY( sig0 ) ) fd_base58_encode_64( (uchar const *)sig0, NULL, sig0_b58 );
 
-  FD_LOG_INFO(( "bam_drop category=%s reason=%s invalid_reason_known=%u invalid_reason_idx=%u pack_rc_known=%u pack_rc=%d seq_id=%u txns=%u sig0=%s work_state=%s validation_slot=%lu validation_slot_known=%u required_min_slot=%lu required_min_slot_known=%u oldest_live_slot=%lu oldest_live_slot_known=%u bam_max_schedule_slot=%lu bam_max_schedule_default=%u work_slot=%lu work_slot_known=%u blockhash_slot=%lu blockhash_slot_known=%u leader_slot=%lu leader_slot_known=%u current_leader_slot_end_ns=%ld current_leader_slot_end_known=%u now_ns=%ld now_minus_current_leader_slot_end_ns=%ld highest_observed_slot=%lu first_rx_ts_ns=%ld first_rx_known=%u age_ns=%lu age_known=%u revert_on_error_known=%u revert_on_error=%u batch_idx_known=%u batch_idx=%u txn_received=%lu txn_expected=%lu first_missing_idx_known=%u first_missing_idx=%u pack_avail_txn_cnt=%lu extra_queue_cnt=%lu bam_work_cnt=%lu bam_pending_work_cnt=%lu bam_scheduled_work_cnt=%lu max_pending_transactions=%lu",
+  FD_LOG_INFO(( "bam_drop category=%s reason=%s invalid_reason_known=%u invalid_reason_idx=%u pack_rc_known=%u pack_rc=%d seq_id=%u txns=%u sig0=%s work_state=%s validation_slot=%lu validation_slot_known=%u required_min_slot=%lu required_min_slot_known=%u bam_max_schedule_slot=%lu bam_max_schedule_default=%u work_slot=%lu work_slot_known=%u blockhash_slot=%lu blockhash_slot_known=%u leader_slot=%lu leader_slot_known=%u current_leader_slot_end_ns=%ld current_leader_slot_end_known=%u now_ns=%ld now_minus_current_leader_slot_end_ns=%ld highest_observed_slot=%lu first_rx_ts_ns=%ld first_rx_known=%u age_ns=%lu age_known=%u revert_on_error_known=%u revert_on_error=%u batch_idx_known=%u batch_idx=%u txn_received=%lu txn_expected=%lu first_missing_idx_known=%u first_missing_idx=%u pack_avail_txn_cnt=%lu extra_queue_cnt=%lu bam_work_cnt=%lu bam_pending_work_cnt=%lu bam_scheduled_work_cnt=%lu max_pending_transactions=%lu",
                 category,
                 reason,
                 invalid_reason_known,
@@ -1000,8 +998,6 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
                 (uint)( validation_slot!=ULONG_MAX ),
                 required_min_slot,
                 (uint)( required_min_slot!=ULONG_MAX ),
-                oldest_live_slot,
-                (uint)( oldest_live_slot!=ULONG_MAX ),
                 max_schedule_slot,
                 (uint)( max_schedule_slot==FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT ),
                 work_slot,
