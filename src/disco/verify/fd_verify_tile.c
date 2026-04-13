@@ -143,11 +143,12 @@ after_frag( fd_verify_ctx_t *   ctx,
   /* Users sometimes send transactions as part of a bundle (with a tip)
      and via the normal path (without a tip).  Regardless of which
      arrives first, we want to pack the one with the tip.  Thus, we
-     exempt bundles from the normal HA dedup checks.  The dedup tile
-     will still do a full-bundle dedup check to make sure to drop any
-     identical bundles. */
+     exempt bundles from the normal HA dedup checks.  Likewise, BAM
+     traffic is already sequenced by the BAM node and may legitimately
+     resend signatures, so it bypasses early signature dedup entirely. */
+  int do_sig_dedup = fd_txn_m_use_prepack_sig_dedup( txnm );
   ulong _txn_sig;
-  int res = fd_txn_verify( ctx, fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, !is_bundle, &_txn_sig );
+  int res = fd_txn_verify( ctx, fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, do_sig_dedup, &_txn_sig );
   if( FD_UNLIKELY( res!=FD_TXN_VERIFY_SUCCESS ) ) {
     if( FD_UNLIKELY( is_bundle ) ) ctx->bundle_failed = 1;
 

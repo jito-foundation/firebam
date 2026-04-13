@@ -97,6 +97,16 @@ fd_txn_m_footprint( ulong payload_sz,
   return FD_LAYOUT_FINI( l, fd_txn_m_align() );
 }
 
+static inline int
+fd_txn_m_use_prepack_sig_dedup( fd_txn_m_t const * txnm ) {
+  /* Early signature dedup is disabled for block-engine bundles, which
+     rely on bundle-aware handling downstream, and for BAM traffic,
+     which is sequenced by the BAM node and may intentionally resend a
+     transaction signature. */
+  return !( txnm->block_engine.bundle_id ||
+            txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+}
+
 static inline uchar *
 fd_txn_m_payload( fd_txn_m_t * txnm ) {
   return (uchar *)(txnm+1UL);

@@ -67,6 +67,7 @@ mock_topo_create( void ) {
 
   mock_link_create( topo, "quic_verify"  );
   mock_link_create( topo, "bundle_verif" );
+  mock_link_create( topo, "bam_verif"    );
   mock_link_create( topo, "gossip_out"   );
   mock_link_create( topo, "send_out"     );
 
@@ -74,14 +75,31 @@ mock_topo_create( void ) {
      idx confusion */
 #define IN_IDX_SEND   0
 #define IN_IDX_GOSSIP 1
-#define IN_IDX_BUNDLE 2
-#define IN_IDX_QUIC   3
+#define IN_IDX_BAM    2
+#define IN_IDX_BUNDLE 3
+#define IN_IDX_QUIC   4
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "send_out",     0UL, 0, 1 );
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "gossip_out",   0UL, 0, 1 );
+  fd_topob_tile_in( topo, "verify", 0UL, "wksp", "bam_verif",    0UL, 0, 1 );
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "bundle_verif", 0UL, 0, 1 );
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "quic_verify",  0UL, 0, 1 );
 
   return topo;
+}
+
+static void
+test_prepack_sig_dedup_policy( void ) {
+  fd_txn_m_t txnm = {0};
+
+  txnm.source_tpu = FD_TXN_M_TPU_SOURCE_QUIC;
+  FD_TEST(  fd_txn_m_use_prepack_sig_dedup( &txnm ) );
+
+  txnm.block_engine.bundle_id = 1UL;
+  FD_TEST( !fd_txn_m_use_prepack_sig_dedup( &txnm ) );
+
+  txnm.block_engine.bundle_id = 0UL;
+  txnm.source_tpu             = FD_TXN_M_TPU_SOURCE_BAM;
+  FD_TEST( !fd_txn_m_use_prepack_sig_dedup( &txnm ) );
 }
 
 static void
@@ -100,6 +118,10 @@ test_load_balance( void ) {
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 0UL, 1UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 1UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   0UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   1UL, 0UL )==0 );
 
@@ -108,11 +130,16 @@ test_load_balance( void ) {
   ctx->round_robin_cnt = 4UL;
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 0UL, 1UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 1UL )==0 );
 
   /* Tile 0 should load balance other traffic */
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 0UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 0UL )==1 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 2UL, 0UL )==1 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 0UL )==1 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    2UL, 0UL )==1 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   0UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   1UL, 0UL )==1 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   2UL, 0UL )==1 );
@@ -124,6 +151,7 @@ main( int     argc,
   fd_boot( &argc, &argv );
 
   test_seccomp();
+  test_prepack_sig_dedup_policy();
   test_load_balance();
   test_free_all();
   /* further tests here ... */
