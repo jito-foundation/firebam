@@ -430,14 +430,41 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   return 1;
 }
 
+static inline ulong
+fd_bam_effective_max_schedule_slot( fd_bam_tile_t const *            ctx,
+                                    fd_bam_batch_ctx_t const *       state,
+                                    bam_types_AtomicTxnBatch const * batch ) {
+  ulong original_slot = batch->max_schedule_slot;
+  ulong leader_slot   = ctx->bam_leader_state.slot;
+
+  /* BAM currently forwards against its replay-bank slot while pack validates
+     against the live producer slot. If an inbound batch is exactly one slot
+     stale, the previous slot was also ours, and the batch first arrived after
+     that previous slot ended but before the current slot ended, rewrite the
+     hint onto the live leader slot before handing it to pack. */
+  if( FD_UNLIKELY( !original_slot || original_slot==ULONG_MAX || leader_slot==ULONG_MAX ) ) return original_slot;
+  if( FD_UNLIKELY( original_slot+1UL != leader_slot ) ) return original_slot;
+  if( FD_UNLIKELY( ctx->bam_leader_state.current_slot_fresh ) ) return original_slot;
+  if( FD_UNLIKELY( !ctx->bam_leader_state.slot_end_ns ||
+                   state->ingress_rx_ts_ns >= ctx->bam_leader_state.slot_end_ns ) ) return original_slot;
+
+  fd_bam_slot_ingress_timing_t const * prev_slot =
+      fd_bam_slot_ingress_timing_query_const( ctx, original_slot );
+  if( FD_UNLIKELY( !prev_slot || !prev_slot->slot_end_ns ) ) return original_slot;
+  if( FD_UNLIKELY( state->ingress_rx_ts_ns <= prev_slot->slot_end_ns ) ) return original_slot;
+
+  return leader_slot;
+}
+
 void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch ) {
-  ulong max_schedule_slot = batch->max_schedule_slot;
-  ulong leader_slot = ctx->bam_leader_state.slot;
-  long rx_ts_ns = state->ingress_rx_ts_ns;
-  long slot_end_ns = state->ingress_slot_end_ns;
+  ulong max_schedule_slot           = batch->max_schedule_slot;
+  ulong effective_max_schedule_slot = fd_bam_effective_max_schedule_slot( ctx, state, batch );
+  ulong leader_slot                 = ctx->bam_leader_state.slot;
+  long rx_ts_ns                     = state->ingress_rx_ts_ns;
+  long slot_end_ns                  = state->ingress_slot_end_ns;
   uchar packet_cnt = state->packet_cnt;
   uint scheduler_arrival_tspub = state->ingress_rx_tspub;
   if( FD_UNLIKELY( !slot_end_ns && max_schedule_slot==leader_slot ) ) {
@@ -514,7 +541,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
 
   if( state->revert_on_error ) {
     ctx->bundle_seq                = batch->seq_id;
-    ctx->bundle_max_schedule_slot  = batch->max_schedule_slot;
+    ctx->bundle_max_schedule_slot  = effective_max_schedule_slot;
 
     for( uchar i=0; i<packet_cnt; i++ ) {
       fd_bam_tile_publish_bundle_txn( ctx,
@@ -531,7 +558,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
       fd_bam_tile_publish_txn( ctx,
                                state->packets[i].data.bytes,
                                state->packets[i].data.size,
-                               batch->max_schedule_slot,
+                               effective_max_schedule_slot,
                                batch->seq_id,
                                i,
                                packet_cnt,

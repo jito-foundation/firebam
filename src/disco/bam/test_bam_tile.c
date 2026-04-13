@@ -785,6 +785,87 @@ test_bam_publish_batch_uses_captured_ingress_metadata( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_publish_batch_rewrites_adjacent_late_slot_hint( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  fd_bam_batch_ctx_t batch_state;
+  fd_memset( &batch_state, 0, sizeof(batch_state) );
+  batch_state.packet_cnt           = 1U;
+  batch_state.ingress_rx_ts_ns     = 2000L;
+  batch_state.ingress_slot_end_ns  = 0L;
+  batch_state.ingress_rx_tspub     = 987654321U;
+  batch_state.packets[ 0 ].data.size = (pb_size_t)bam_dump_txn_fixture_sz;
+  fd_memcpy( batch_state.packets[ 0 ].data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
+
+  fd_bam_slot_ingress_timing_t * prev_slot =
+      fd_bam_slot_ingress_timing_query_or_insert( state, 100UL, 101UL );
+  FD_TEST( prev_slot );
+  prev_slot->slot_end_ns = 1500L;
+
+  state->bam_leader_state = (fd_bam_leader_state_t){
+    .slot               = 101UL,
+    .slot_end_ns        = 2500L,
+    .current_slot_fresh = 0U,
+  };
+
+  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
+  batch.seq_id = 88U;
+  batch.max_schedule_slot = 100UL;
+
+  g_clock = 2000L;
+  fd_bam_publish_batch( state, &batch_state, &batch );
+
+  fd_txn_m_t const * first = (fd_txn_m_t const *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
+  FD_TEST( first->bam.max_schedule_slot == 101UL );
+  FD_TEST( first->scheduler_arrival_tspub == 987654321U );
+
+  fd_bam_slot_ingress_timing_t const * entry =
+      fd_bam_slot_ingress_timing_query_const( state, 100UL );
+  FD_TEST( entry );
+  FD_TEST( entry->txn_after_slot_end == 1UL );
+  FD_TEST( entry->txn_before_slot_end == 0UL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_publish_batch_keeps_hint_without_prior_owned_slot( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  fd_bam_batch_ctx_t batch_state;
+  fd_memset( &batch_state, 0, sizeof(batch_state) );
+  batch_state.packet_cnt           = 1U;
+  batch_state.ingress_rx_ts_ns     = 2000L;
+  batch_state.ingress_slot_end_ns  = 0L;
+  batch_state.ingress_rx_tspub     = 123123123U;
+  batch_state.packets[ 0 ].data.size = (pb_size_t)bam_dump_txn_fixture_sz;
+  fd_memcpy( batch_state.packets[ 0 ].data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
+
+  state->bam_leader_state = (fd_bam_leader_state_t){
+    .slot               = 101UL,
+    .slot_end_ns        = 2500L,
+    .current_slot_fresh = 0U,
+  };
+
+  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
+  batch.seq_id = 89U;
+  batch.max_schedule_slot = 100UL;
+
+  g_clock = 2000L;
+  fd_bam_publish_batch( state, &batch_state, &batch );
+
+  fd_txn_m_t const * first = (fd_txn_m_t const *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
+  FD_TEST( first->bam.max_schedule_slot == 100UL );
+  FD_TEST( first->scheduler_arrival_tspub == 123123123U );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 /* Validates that a scheduler response carrying multiple AtomicTxnBatch entries
    fans out into sequential fragments with the correct metadata for each batch. */
 test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
@@ -4553,6 +4634,8 @@ main( int     argc,
   test_bam_slot_ingress_timing_summary_on_leader_slot_advance( wksp );
   test_bam_slot_ingress_timing_tracks_hash_collisions( wksp );
   test_bam_publish_batch_uses_captured_ingress_metadata( wksp );
+  test_bam_publish_batch_rewrites_adjacent_late_slot_hint( wksp );
+  test_bam_publish_batch_keeps_hint_without_prior_owned_slot( wksp );
   test_bam_multiple_batches_forwarded( wksp );
   test_bam_multiple_batches_accept_limit_counts( wksp );
   test_bam_scheduler_truncated_message_dropped( wksp );
