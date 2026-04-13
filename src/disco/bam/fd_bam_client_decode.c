@@ -444,7 +444,7 @@ fd_bam_effective_max_schedule_slot( fd_bam_tile_t const *            ctx,
      hint onto the live leader slot before handing it to pack. */
   if( FD_UNLIKELY( !original_slot || original_slot==ULONG_MAX || leader_slot==ULONG_MAX ) ) return original_slot;
   if( FD_UNLIKELY( original_slot+1UL != leader_slot ) ) return original_slot;
-  if( FD_UNLIKELY( ctx->bam_leader_state.current_slot_fresh ) ) return original_slot;
+  if( FD_UNLIKELY( ctx->bam_leader_state.current_slot_has_bam_work ) ) return original_slot;
   if( FD_UNLIKELY( !ctx->bam_leader_state.slot_end_ns ||
                    state->ingress_rx_ts_ns >= ctx->bam_leader_state.slot_end_ns ) ) return original_slot;
 

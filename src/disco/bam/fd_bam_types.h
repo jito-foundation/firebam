@@ -60,7 +60,7 @@ typedef struct {
   uint  tick;
   uint  slot_cu_budget_remaining;
   long  slot_end_ns;
-  uint  current_slot_fresh;
+  uint  current_slot_has_bam_work; /* Latched once BAM work for the live leader slot arrives before slot end. */
 } fd_bam_leader_state_t;
 
 FD_FN_PURE static inline _Bool
@@ -70,11 +70,11 @@ fd_bam_leader_state_eq( fd_bam_leader_state_t const * a,
              a->tick                     == b->tick                     &&
              a->slot_cu_budget_remaining == b->slot_cu_budget_remaining &&
              a->slot_end_ns              == b->slot_end_ns              &&
-             a->current_slot_fresh       == b->current_slot_fresh );
+             a->current_slot_has_bam_work== b->current_slot_has_bam_work );
 }
 
 #define FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE    (1UL<<0)
-#define FD_BAM_STATUS_FSEQ_CURRENT_SLOT_FRESH (1UL<<1)
+#define FD_BAM_STATUS_FSEQ_CURRENT_SLOT_HAS_BAM_WORK (1UL<<1)
 
 typedef struct {
   fd_ip4_port_t tpu;     /* TPU socket advertised by BAM (net order) */

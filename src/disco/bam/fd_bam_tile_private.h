@@ -275,7 +275,7 @@ struct fd_bam_tile {
   fd_bam_out_ctx_t    plugin_out;                    /* Output ring for plugin status updates */
   fd_bam_out_ctx_t    gossip_out;       /* Stem output buffer used for BAM gossip updates (Full firedancer, not Frankendncer) */
   fd_bam_out_ctx_t    shred_out;        /* Stem output buffer used for BAM shred receiver updates */
-  ulong *             bam_status_fseq; /* Shared latch written with BAM status bits (bit 0 = override active, bit 1 = current-slot fresh work observed) */
+  ulong *             bam_status_fseq; /* Shared latch written with BAM status bits (bit 0 = override active, bit 1 = current slot has BAM work) */
 
   /* App metrics */
   fd_bam_metrics_t metrics;                         /* Tile-local counters flushed to metrics */
@@ -464,7 +464,7 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
         };
       }
       tracker->slot_end_ns = state->slot_end_ns;
-      if( FD_LIKELY( !tracker->counted ) ) tracker->fresh_seen_before_end |= (uchar)!!state->current_slot_fresh;
+      if( FD_LIKELY( !tracker->counted ) ) tracker->fresh_seen_before_end |= (uchar)!!state->current_slot_has_bam_work;
     }
   }
 
@@ -480,11 +480,11 @@ fd_bam_leader_state_send_allowed( fd_bam_tile_t const *               ctx,
 }
 
 FD_FN_PURE static inline _Bool
-fd_bam_current_slot_fresh( fd_bam_tile_t const * ctx,
-                           long                   now_ns ) {
+fd_bam_current_slot_has_bam_work( fd_bam_tile_t const * ctx,
+                                  long                   now_ns ) {
   return !!( ctx->bam_leader_state.slot_end_ns &&
              now_ns < ctx->bam_leader_state.slot_end_ns &&
-             ctx->bam_leader_state.current_slot_fresh );
+             ctx->bam_leader_state.current_slot_has_bam_work );
 }
 
 /* Define 'request_ctx' IDs to identify different types of gRPC calls */

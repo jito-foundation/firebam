@@ -537,7 +537,7 @@ test_bam_slot_ingress_timing_uses_concrete_max_schedule_slot( fd_wksp_t * wksp )
 }
 
 static void
-test_bam_freshness_status_bits( fd_wksp_t * wksp ) {
+test_bam_current_slot_work_status_bits( fd_wksp_t * wksp ) {
   fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL, 0UL ) );
 
   test_bam_env_t env[1];
@@ -567,7 +567,7 @@ test_bam_freshness_status_bits( fd_wksp_t * wksp ) {
   state->bam_leader_state = (fd_bam_leader_state_t){
     .slot               = 42UL,
     .slot_end_ns        = fd_log_wallclock() - 1L,
-    .current_slot_fresh = 0U,
+    .current_slot_has_bam_work = 0U,
   };
   fd_bam_tile_housekeeping( state );
   FD_TEST( fd_fseq_query( fseq ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
@@ -582,10 +582,10 @@ test_bam_freshness_status_bits( fd_wksp_t * wksp ) {
     .slot               = 43UL,
     .tick               = 7U,
     .slot_end_ns        = fd_log_wallclock() + (long)1e9,
-    .current_slot_fresh = 1U,
+    .current_slot_has_bam_work = 1U,
   };
   fd_bam_tile_housekeeping( state );
-  FD_TEST( fd_fseq_query( fseq ) == ( FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE | FD_BAM_STATUS_FSEQ_CURRENT_SLOT_FRESH ) );
+  FD_TEST( fd_fseq_query( fseq ) == ( FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE | FD_BAM_STATUS_FSEQ_CURRENT_SLOT_HAS_BAM_WORK ) );
   fd_bam_test_metrics_write( state );
   FD_TEST( FD_MGAUGE_GET( BAM, LEADER_STATE_SLOT ) == 43UL );
   FD_TEST( FD_MGAUGE_GET( BAM, LEADER_STATE_TICK ) == 7UL );
@@ -807,7 +807,7 @@ test_bam_publish_batch_rewrites_adjacent_late_slot_hint( fd_wksp_t * wksp ) {
   state->bam_leader_state = (fd_bam_leader_state_t){
     .slot               = 101UL,
     .slot_end_ns        = 2500L,
-    .current_slot_fresh = 0U,
+    .current_slot_has_bam_work = 0U,
   };
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
@@ -848,7 +848,7 @@ test_bam_publish_batch_keeps_hint_without_prior_owned_slot( fd_wksp_t * wksp ) {
   state->bam_leader_state = (fd_bam_leader_state_t){
     .slot               = 101UL,
     .slot_end_ns        = 2500L,
-    .current_slot_fresh = 0U,
+    .current_slot_has_bam_work = 0U,
   };
 
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
@@ -4629,7 +4629,7 @@ main( int     argc,
   test_bam_dump_bam_slot_first_txn_gate( wksp );
   test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_late_arrival( wksp );
   test_bam_slot_ingress_timing_uses_concrete_max_schedule_slot( wksp );
-  test_bam_freshness_status_bits( wksp );
+  test_bam_current_slot_work_status_bits( wksp );
   test_bam_slot_ingress_timing_summary_format_and_gate( wksp );
   test_bam_slot_ingress_timing_summary_on_leader_slot_advance( wksp );
   test_bam_slot_ingress_timing_tracks_hash_collisions( wksp );

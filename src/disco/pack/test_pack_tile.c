@@ -1190,7 +1190,7 @@ main( int     argc,
   ctx->bam_leader_out.idx = ULONG_MAX;
   ctx->leader_slot        = 123UL;
   ctx->slot_end_ns        = 1000L;
-  ctx->bam_current_slot_fresh = 0U;
+  ctx->bam_current_slot_has_bam_work = 0U;
   (void)pack_tile_bam_recent_slot_prepare( ctx, ctx->leader_slot );
   pack_tile_note_bam_received( ctx, 123UL, 3UL, 5UL );
   pack_tile_note_bam_accepted( ctx, 123UL, 2UL, 3UL );
@@ -1206,13 +1206,13 @@ main( int     argc,
   pack_tile_bam_recent_slot_sub_pending( ctx, 123UL, 1UL, 2UL );
   pack_tile_note_bam_landed( ctx, 123UL, 1UL, 2UL );
   pack_tile_note_first_bam_insert( ctx, NULL, 900L, 122UL );
-  FD_TEST( ctx->bam_current_slot_fresh==0U );
+  FD_TEST( ctx->bam_current_slot_has_bam_work==0U );
   pack_tile_note_first_bam_insert( ctx, NULL, 950L, 123UL );
   fd_memset( scheduled_bam, 0, sizeof(scheduled_bam) );
   scheduled_bam->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
   pack_tile_drop_scheduled_pending_bam_work( ctx, scheduled_bam, 1UL, 920L );
   pack_tile_drop_scheduled_pending_bam_work( ctx, scheduled_bam, 1UL, 980L );
-  FD_TEST( ctx->bam_current_slot_fresh==1U );
+  FD_TEST( ctx->bam_current_slot_has_bam_work==1U );
   pack_bam_recent_slot_t const * recent_slot = &ctx->bam_recent_slot[ 123UL & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
   FD_TEST( recent_slot->slot == 123UL );
   metrics_write( ctx );

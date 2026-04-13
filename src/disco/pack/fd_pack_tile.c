@@ -378,7 +378,7 @@ struct fd_pack_ctx {
   ulong      bam_tracking_rejected_txn_cnt;
   pack_bam_recent_slot_t bam_recent_slot[ FD_PACK_BAM_RECENT_SLOT_CNT ];
   pack_bam_unresolved_work_t bam_unresolved_work;
-  uint       bam_current_slot_fresh;
+  uint       bam_current_slot_has_bam_work;
   uchar      bam_first_insert_seen;
   uchar      bam_first_schedule_seen;
   long       bam_first_insert_minus_slot_end_ns;
@@ -750,8 +750,8 @@ pack_tile_note_first_bam_insert( fd_pack_ctx_t *     ctx,
     ctx->bam_first_insert_seen = 1U;
     ctx->bam_first_insert_minus_slot_end_ns = insert_minus_slot_end_ns;
   }
-  if( FD_LIKELY( ctx->bam_current_slot_fresh || insert_minus_slot_end_ns>=0L || bam_fresh_slot!=ctx->leader_slot ) ) return;
-  ctx->bam_current_slot_fresh = 1U;
+  if( FD_LIKELY( ctx->bam_current_slot_has_bam_work || insert_minus_slot_end_ns>=0L || bam_fresh_slot!=ctx->leader_slot ) ) return;
+  ctx->bam_current_slot_has_bam_work = 1U;
   pack_tile_publish_bam_leader_state( ctx, stem );
 }
 
@@ -811,7 +811,7 @@ pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
   fd_bam_leader_state_t state = { .slot = ctx->leader_slot, .tick = tick,
     .slot_cu_budget_remaining = (uint)fd_ulong_sat_sub( ctx->limits.slot_max_cost, fd_pack_current_block_cost( ctx->pack ) ),
     .slot_end_ns = ctx->slot_end_ns,
-    .current_slot_fresh = ctx->bam_current_slot_fresh
+    .current_slot_has_bam_work = ctx->bam_current_slot_has_bam_work
   };
 
   if( FD_LIKELY( fd_bam_leader_state_eq( &state, &ctx->last_bam_leader_state ) ) ) return;
@@ -1468,7 +1468,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               pack_tile_bam_bundle_assembly_abandon_reason_t bam_abandon_reason ) {
   if( FD_UNLIKELY( ctx->dump_bam_mode && ctx->leader_slot!=ULONG_MAX ) ) {
     long observed_ns = pack_tile_wallclock_from_ticks( ctx, now );
-    FD_LOG_NOTICE(( "Firedancer slot end: pack_current_slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld reason=%s current_slot_fresh=%u", ctx->leader_slot, ctx->slot_end_ns, observed_ns, observed_ns - ctx->slot_end_ns, reason, (uint)ctx->bam_current_slot_fresh ));
+    FD_LOG_NOTICE(( "Firedancer slot end: pack_current_slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld reason=%s current_slot_has_bam_work=%u", ctx->leader_slot, ctx->slot_end_ns, observed_ns, observed_ns - ctx->slot_end_ns, reason, (uint)ctx->bam_current_slot_has_bam_work ));
   }
 
   ulong first_insert_result_idx = pack_tile_bam_first_event_result_idx( ctx->bam_first_insert_seen,
@@ -1515,7 +1515,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
   ctx->drain_banks         = 1;
   ctx->leader_slot         = ULONG_MAX;
   ctx->slot_microblock_cnt = 0UL;
-  ctx->bam_current_slot_fresh = 0U;
+  ctx->bam_current_slot_has_bam_work = 0U;
   ctx->bam_first_insert_seen = 0U;
   ctx->bam_first_schedule_seen = 0U;
   ctx->bam_first_insert_minus_slot_end_ns = 0L;
@@ -2483,7 +2483,7 @@ after_frag( fd_pack_ctx_t *     ctx,
       pack_tile_finish_leader_slot( ctx, stem, now_ticks, "switch", PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_LEADER_SLOT_END );
     }
     ctx->leader_slot = leader_slot;
-    ctx->bam_current_slot_fresh = 0U;
+    ctx->bam_current_slot_has_bam_work = 0U;
     ctx->bam_first_insert_seen = 0U;
     ctx->bam_first_schedule_seen = 0U;
     ctx->bam_first_insert_minus_slot_end_ns = 0L;
@@ -2537,7 +2537,7 @@ after_frag( fd_pack_ctx_t *     ctx,
 
     ctx->slot_end_ns = ctx->_became_leader->slot_end_ns;
     if( FD_UNLIKELY( ctx->dump_bam_mode ) ) {
-      FD_LOG_NOTICE(( "Firedancer slot start: pack_current_slot=%lu bank_current_slot=%lu observed_ns=%ld slot_end_ns=%ld slot_end_known=%u current_slot_fresh=%u", ctx->leader_slot, ctx->_became_leader->slot, now_ns, ctx->slot_end_ns, (uint)!!ctx->slot_end_ns, (uint)ctx->bam_current_slot_fresh ));
+      FD_LOG_NOTICE(( "Firedancer slot start: pack_current_slot=%lu bank_current_slot=%lu observed_ns=%ld slot_end_ns=%ld slot_end_known=%u current_slot_has_bam_work=%u", ctx->leader_slot, ctx->_became_leader->slot, now_ns, ctx->slot_end_ns, (uint)!!ctx->slot_end_ns, (uint)ctx->bam_current_slot_has_bam_work ));
     }
     fd_pack_limits_t limits[ 1 ];
     limits->max_cost_per_block = ctx->limits.slot_max_cost;
@@ -3172,7 +3172,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_tracking_rejected_txn_cnt = 0UL;
   for( ulong i=0UL; i<FD_PACK_BAM_RECENT_SLOT_CNT; i++ ) ctx->bam_recent_slot[ i ].slot = ULONG_MAX;
   ctx->bam_unresolved_work = (pack_bam_unresolved_work_t){0};
-  ctx->bam_current_slot_fresh = 0U;
+  ctx->bam_current_slot_has_bam_work = 0U;
   ctx->bam_first_insert_seen = 0U;
   ctx->bam_first_schedule_seen = 0U;
   ctx->bam_first_insert_minus_slot_end_ns = 0L;

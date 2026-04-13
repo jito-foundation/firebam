@@ -443,7 +443,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   }
 
   _Bool use_bam = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
-  _Bool current_slot_fresh = use_bam && fd_bam_current_slot_fresh( ctx, now_ns );
+  _Bool current_slot_has_bam_work = use_bam && fd_bam_current_slot_has_bam_work( ctx, now_ns );
   _Bool tpu_update_pending = ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ) |
                             ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
   _Bool status_changed = ctx->bam_status_recent != status;
@@ -460,8 +460,8 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
        immediately release the TPU back to default Firedancer behaviour */
     ulong bam_status =
         fd_ulong_if( use_bam, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE, 0UL ) |
-        fd_ulong_if( current_slot_fresh,
-                     FD_BAM_STATUS_FSEQ_CURRENT_SLOT_FRESH,
+        fd_ulong_if( current_slot_has_bam_work,
+                     FD_BAM_STATUS_FSEQ_CURRENT_SLOT_HAS_BAM_WORK,
                      0UL );
     fd_fseq_update( ctx->bam_status_fseq, bam_status );
   }
