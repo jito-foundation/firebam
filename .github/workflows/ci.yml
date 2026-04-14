@@ -1,0 +1,82 @@
+# Firebam CI
+#
+# Runs the C build and its unit/fuzz regression suites on Jito-hosted runners.
+# Firedancer's upstream-only workflows remain available for broader matrices.
+
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main, eric/v1.1-bam]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  MACHINE: linux_gcc_x86_64
+  EXTRAS: rpath handholding
+  CC: gcc
+  CXX: g++
+
+jobs:
+  build-and-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04-32c-128g
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compute dependency cache key
+        id: deps-key
+        run: |
+          echo "hash=$(cat /etc/os-release deps.sh | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "gcc=$(gcc -dumpfullversion -dumpversion)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore dependencies
+        id: cache-deps
+        uses: actions/cache/restore@v6
+        with:
+          path: opt
+          key: >-
+            deps-${{ runner.os }}-${{ runner.arch }}-gcc-${{ steps.deps-key.outputs.gcc }}-dev-${{ steps.deps-key.outputs.hash }}
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          FD_AUTO_INSTALL_PACKAGES=1 ./deps.sh +dev check
+
+      - name: Build dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: FD_AUTO_INSTALL_PACKAGES=1 ./deps.sh +dev fetch install
+
+      - name: Save dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: opt
+          key: ${{ steps.cache-deps.outputs.cache-primary-key }}
+
+      - name: Build
+        run: ./contrib/make-j all
+
+      - name: Set up hugepages
+        uses: ./.github/actions/hugepages
+        with:
+          count_gigantic: 32
+
+      - name: Run unit tests
+        run: |
+          sudo prlimit --pid $$ --memlock=-1:-1
+          make run-unit-test
+
+      - name: Run fuzz regression tests
+        run: |
+          sudo prlimit --pid $$ --memlock=-1:-1
+          make run-fuzz-test
