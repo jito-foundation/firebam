@@ -260,11 +260,8 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
     fd_bam_bundle_result_t res = {0};
     res.seq_id            = (uint)seed0;
     res.slot              = (ulong)seed0;
-    res.bundle_txn_cnt    = 1U + (seed0 & 0x7U);
+    res.bundle_txn_cnt    = (uchar)( 1U + ( seed0 % FD_PACK_MAX_TXN_PER_BUNDLE ) );
     res.execution_success = 1U;
-    res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-    res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-    res.transaction_err_count = 0U;
     for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
       res.sanitize_success[ i ] = 1U;
       res.consumed_cus    [ i ] = (seed0 + i) & 0xffU;
@@ -276,12 +273,8 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
   {
     fd_bam_bundle_result_t res = {0};
     res.seq_id            = seed0 | ((uint)seed1<<8);
-    res.slot              = (ulong)( seed1 );
-    res.bundle_txn_cnt    = 1U + (seed1 & 0x7U);
-    res.execution_success = 0U;
-    res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-    res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
-    res.transaction_err_count = 0U;
+    res.slot              = (ulong)seed1;
+    res.bundle_txn_cnt    = (uchar)( 1U + ( seed1 % FD_PACK_MAX_TXN_PER_BUNDLE ) );
 
     uchar reason_sel = (uchar)( (seed1>>3) & 0x3U );
     if( reason_sel==0U ) {

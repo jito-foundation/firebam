@@ -3349,38 +3349,18 @@ test_bam_enqueue_result_preserves_invalid_bundle_error( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_enqueue_result_preserves_oversized_bundle_txn_cnt( fd_wksp_t * wksp ) {
+test_bam_enqueue_result_drops_oversized_bundle_txn_cnt( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
-  test_bam_prepare_scheduler_stream( state );
-
-  g_clock = (long)17e9;
-  test_bam_keepalive_sync( state, g_clock );
-
-  fd_bam_bundle_result_t res = test_make_bundle_result( 913, 1913, 1 );
-  res.execution_success      = 0;
-  res.bundle_txn_cnt         = (uchar)(FD_PACK_MAX_TXN_PER_BUNDLE + 2U);
+  fd_bam_bundle_result_t res = {
+    .bundle_txn_cnt = (uchar)( FD_PACK_MAX_TXN_PER_BUNDLE + 2U ),
+  };
   fd_bam_enqueue_result( state, &res );
 
-  FD_TEST( state->feedback_queue_depth == 1U );
-  fd_bam_bundle_result_t const * queued = &state->bam_results[ state->bam_results_head ];
-  FD_TEST( queued->bundle_txn_cnt == (uchar)(FD_PACK_MAX_TXN_PER_BUNDLE + 2U) );
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
-
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 1U );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
+  FD_TEST( state->metrics.feedback_results_dropped_cnt == 1UL );
 
   test_bam_env_destroy( env );
 }
@@ -4732,7 +4712,7 @@ main( int     argc,
   test_bam_scheduler_result_not_committed_invalid_scheduling_error_reason( wksp );
   test_bam_scheduler_result_not_committed_invalid_bundle_error_reason( wksp );
   test_bam_enqueue_result_preserves_invalid_bundle_error( wksp );
-  test_bam_enqueue_result_preserves_oversized_bundle_txn_cnt( wksp );
+  test_bam_enqueue_result_drops_oversized_bundle_txn_cnt( wksp );
 
   /* Control surface */
   test_bam_request_ctx_labels();

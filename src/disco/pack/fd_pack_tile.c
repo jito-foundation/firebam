@@ -1440,10 +1440,11 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
     .scheduling_error = FD_BAM_SCHED_ERR_NONE,
   };
   fd_memset( res.sanitize_success, 1, res.bundle_txn_cnt );
+  res.transaction_err_count = (uchar)( res.bundle_txn_cnt - ctx->current_bam_bundle->txn_received );
   for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
+    res.transaction_err[ i ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
     if( FD_UNLIKELY( !ctx->current_bam_bundle->received[ i ] ) ) {
       res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
-      res.transaction_err_count++;
     }
   }
   if( FD_UNLIKELY( queue_missing_result ) ) {

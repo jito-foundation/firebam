@@ -300,8 +300,10 @@ FD_FN_UNUSED static inline void
 fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
                        fd_bam_bundle_result_t const * res ) {
   if( FD_UNLIKELY( res->bundle_txn_cnt > FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
-    FD_LOG_WARNING(( "Malformed BAM bundle result txn_cnt=%u exceeds max=%lu (seq_id=%u slot=%lu)",
+    FD_LOG_WARNING(( "Dropping malformed BAM bundle result txn_cnt=%u exceeds max=%lu (seq_id=%u slot=%lu)",
                      res->bundle_txn_cnt, FD_PACK_MAX_TXN_PER_BUNDLE, res->seq_id, res->slot ));
+    ctx->metrics.feedback_results_dropped_cnt++;
+    return;
   }
   if( FD_UNLIKELY( res->bundle_err > FD_BAM_BUNDLE_ERR_GENERIC_INVALID ) ) {
     FD_LOG_WARNING(( "Malformed BAM bundle result bundle_err=%u (seq_id=%u slot=%lu)",

@@ -520,11 +520,9 @@ bam_model_emit_partial_missing( bam_model_harness_t * h,
   res.seq_id            = p->seq_id;
   res.slot              = p->max_schedule_slot;
   res.bundle_txn_cnt    = p->txn_cnt;
-  res.execution_success = 0U;
-  res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-  res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
   for( uchar i=0U; i<p->txn_cnt; i++ ) {
     res.sanitize_success[ i ] = 1U;
+    res.transaction_err[ i ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
     if( FD_UNLIKELY( !p->seen[ i ] ) ) {
       res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
       res.transaction_err_count++;
@@ -1544,6 +1542,8 @@ bam_model_run_scenario_partial_then_seq_switch( bam_model_harness_t * h ) {
   FD_TEST( !!seq14 );
   FD_TEST( !!seq15 );
   FD_TEST( seq14->transaction_err_count>0U );
+  FD_TEST( seq14->transaction_err[0]==bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+  FD_TEST( seq14->transaction_err[2]==bam_types_TransactionErrorReason_SIGNATURE_FAILURE );
 }
 
 static void
