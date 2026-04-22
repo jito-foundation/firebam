@@ -2845,6 +2845,52 @@ test_bam_pack_result_channel_contract( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_bank_result_channel_contract( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  union {
+    fd_bam_bundle_result_t result;
+    uchar                  bytes[ sizeof(fd_bam_bundle_result_t) ];
+  } ingress[2] = {0};
+  ingress[0].result = test_make_bundle_result( 501U, 1501UL, 1U );
+  ingress[1].result = test_make_bundle_result( 502U, 1502UL, 2U );
+
+  state->bank_bam_in_cnt    = 2UL;
+  state->bank_bam_in_idx    = 5UL;
+  state->bank_in[0] = (fd_bam_in_ctx_t){
+    .mem    = (fd_wksp_t *)ingress[0].bytes,
+    .chunk0 = 0UL,
+    .wmark  = 0UL
+  };
+  state->bank_in[1] = (fd_bam_in_ctx_t){
+    .mem    = (fd_wksp_t *)ingress[1].bytes,
+    .chunk0 = 0UL,
+    .wmark  = 0UL
+  };
+
+  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx,      0UL, sizeof(fd_bam_bundle_result_t) );
+  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx+1UL, 0UL, sizeof(fd_bam_bundle_result_t) );
+
+  FD_TEST( state->feedback_queue_depth == 2U );
+  FD_TEST( state->bam_results_head == 0U );
+  FD_TEST( state->bam_results_tail == 2U );
+  FD_TEST( state->bam_results[0].seq_id == ingress[0].result.seq_id );
+  FD_TEST( state->bam_results[0].slot == ingress[0].result.slot );
+  FD_TEST( state->bam_results[1].seq_id == ingress[1].result.seq_id );
+  FD_TEST( state->bam_results[1].slot == ingress[1].result.slot );
+
+  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx+2UL, 0UL, sizeof(fd_bam_bundle_result_t) );
+  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx+1UL, 0UL, sizeof(fd_bam_leader_state_t) );
+
+  FD_TEST( state->feedback_queue_depth == 2U );
+  FD_TEST( state->bam_results_tail == 2U );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_scheduler_result_publishes_message( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -4672,6 +4718,7 @@ main( int     argc,
   test_bam_pack_leader_channel_contract( wksp );
   test_bam_pack_leader_slot_change_waits_for_first_scheduler_batch( wksp );
   test_bam_pack_result_channel_contract( wksp );
+  test_bam_bank_result_channel_contract( wksp );
   test_bam_grpc_metrics_export( wksp );
   test_bam_scheduler_result_publishes_message( wksp );
   test_bam_scheduler_result_committed_with_execution_error_publishes_message( wksp );

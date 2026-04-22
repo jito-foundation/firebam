@@ -155,14 +155,16 @@ struct fd_bam_tile {
   fd_keyswitch_t * keyswitch;                     /* Manages the identity keypair */
   fd_keyguard_client_t keyguard_client[1];        /* Keyguard client used to request signatures */
 
-  ulong            bank_bam_in_idx;               /* Polled input index for bank_bam durable results in stem callback space */
+  ulong            bank_bam_in_idx;               /* First polled bank_bam input index in stem callback space */
+  ulong            bank_bam_in_cnt;               /* Count of contiguous bank_bam durable result inputs */
   ulong            pack_bam_leader_in_idx;        /* Polled input index for pack_bam_ldr snapshot/control updates */
   ulong            pack_bam_result_in_idx;        /* Polled input index for pack_bam_res durable bundle feedback */
-  fd_bam_in_ctx_t  bank_in;                       /* Bank->BAM result ingress dcache context */
+  fd_bam_in_ctx_t  bank_in[ FD_PACK_MAX_BANK_TILES ]; /* Bank->BAM result ingress dcache contexts */
   fd_bam_in_ctx_t  pack_leader_in;                /* Pack->BAM latest-value-wins leader-state ingress */
   fd_bam_in_ctx_t  pack_result_in;                /* Pack->BAM durable result ingress */
   uchar            frag_staged_kind;              /* FD_BAM_FRAG_STAGED_* marker set by during_frag and consumed by after_frag; NONE means "drop/no-op". */
   ulong            frag_staged_chunk;             /* during_frag staged source dcache chunk for after_frag commit */
+  fd_wksp_t *      frag_staged_mem;               /* during_frag staged source dcache workspace for after_frag commit */
 
   uchar is_ssl : 1;                                /* Non-zero when TLS is negotiated */
   int  keylog_fd;                                 /* TLS key log output fd (-1 when disabled) */
