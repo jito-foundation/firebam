@@ -63,6 +63,7 @@ struct fd_txn_m {
   struct {
       /* An 'atomic transaction batch' is a bundle of transactions that must be processed together */
       ulong max_schedule_slot; // Solana slot for which this bundle is valid for (inclusive). eg if we're building slot 100, and max_schedule_slot == 100, process the txn
+      ulong min_schedule_slot; // earliest slot in which this bundle may be scheduled; 0 = no restriction
       uint  seq_id;  // unique for a single leader rotation, propagated so downstream stages can correlate execution results
       uchar txn_cnt; // how many transactions are expected in the atomic transaction batch
       uchar batch_idx; // index of this transaction inside the atomic transaction batch

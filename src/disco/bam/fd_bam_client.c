@@ -305,6 +305,16 @@ fd_bam_tile_publish_bundle_txn(
     uint               source_ipv4
 ) {
   fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
+  /* Advance max_schedule_slot by 1 when BAMPC targets the current leader slot.
+     Pipeline latency (~300ms) causes bundles to arrive at pack one slot later. */
+  ulong bundle_max_slot = ctx->bundle_max_schedule_slot;
+  ulong leader_slot     = ctx->bam_leader_state.slot;
+  if( FD_LIKELY( bundle_max_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT &&
+                 leader_slot!=ULONG_MAX &&
+                 bundle_max_slot<=leader_slot ) ) {
+    bundle_max_slot = leader_slot + 1UL;
+  }
+  ulong bundle_min_slot = ctx->bundle_min_schedule_slot;
   *txnm = (fd_txn_m_t) {
     .reference_slot = 0UL,
     .payload_sz     = txn_sz,
@@ -314,7 +324,8 @@ fd_bam_tile_publish_bundle_txn(
     .scheduler_arrival_tspub = scheduler_arrival_tspub,
     .block_engine   = {0},
     .bam = {
-      .max_schedule_slot = ctx->bundle_max_schedule_slot,
+      .max_schedule_slot = bundle_max_slot,
+      .min_schedule_slot = bundle_min_slot,
       .seq_id            = ctx->bundle_seq,
       .txn_cnt         = bundle_txn_cnt,
       .batch_idx         = batch_idx,
@@ -341,6 +352,7 @@ fd_bam_tile_publish_txn(
     void const *       txn,
     ulong              txn_sz,  /* <= FD_TXN_MTU */
     ulong              max_schedule_slot,
+    ulong              min_schedule_slot,
     uint               seq_id,
     uchar              batch_idx,
     uchar              batch_cnt,
@@ -349,6 +361,14 @@ fd_bam_tile_publish_txn(
     uint               source_ipv4
 ) {
   fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
+  /* Same pipeline-latency compensation as publish_bundle_txn: bump by exactly 1
+     from the original target slot rather than jumping to leader_slot+1. */
+  ulong txn_leader_slot = ctx->bam_leader_state.slot;
+  if( FD_LIKELY( max_schedule_slot!=FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT &&
+                 txn_leader_slot!=ULONG_MAX &&
+                 max_schedule_slot<=txn_leader_slot ) ) {
+    max_schedule_slot = max_schedule_slot + 1UL;
+  }
   *txnm = (fd_txn_m_t) {
     .reference_slot = 0UL,
     .payload_sz     = (ushort)txn_sz,
@@ -359,8 +379,9 @@ fd_bam_tile_publish_txn(
     .block_engine   = {0},
     .bam = {
       .max_schedule_slot = max_schedule_slot,
+      .min_schedule_slot = min_schedule_slot,
       .seq_id            = seq_id,
-      .txn_cnt         = batch_cnt,
+      .txn_cnt           = batch_cnt,
       .batch_idx         = batch_idx,
       .revert_on_error   = !!revert_on_error,
     },
@@ -868,6 +889,7 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
   ls.slot                    = state->slot;
   ls.tick                    = state->tick;
   ls.slot_cu_budget_remaining = state->slot_cu_budget_remaining;
+  ls.current_slot_fresh       = (bool)state->current_slot_fresh;
 
   bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
   msg.which_versioned_msg        = bam_api_SchedulerMessage_v0_tag;

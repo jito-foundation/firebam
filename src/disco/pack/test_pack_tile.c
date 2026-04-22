@@ -948,7 +948,7 @@ insert_pending_bam_test_txn( fd_pack_ctx_t * ctx,
   fd_memcpy( spot->txnp, txnp, sizeof(fd_txn_p_t) );
 
   ulong deleted = 0UL;
-  int result = fd_pack_insert_txn_fini( ctx->pack, spot, blockhash_slot, &deleted );
+  int result = fd_pack_insert_txn_fini( ctx->pack, spot, blockhash_slot, 0UL, &deleted );
   FD_TEST( deleted==0UL );
   if( FD_LIKELY( result>=0 ) ) {
     ulong slot = pack_tile_bam_funnel_slot( ctx, max_schedule_slot );

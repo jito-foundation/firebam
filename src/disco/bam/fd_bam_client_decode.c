@@ -447,6 +447,33 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   long slot_end_ns = state->ingress_slot_end_ns;
   uchar packet_cnt = state->packet_cnt;
   uint scheduler_arrival_tspub = state->ingress_rx_tspub;
+
+  /* Wave diagnostics: log when BAMPC starts a new bundle wave (max_schedule_slot changes). */
+  if( FD_UNLIKELY( packet_cnt && batch->max_schedule_slot!=ctx->diag_wave_max_slot ) ) {
+    if( FD_LIKELY( ctx->diag_wave_bundle_cnt ) )
+      FD_LOG_NOTICE(( "bam_diag_wave_end: max_slot=%lu bundle_cnt=%lu first_rx_ns=%ld"
+                      " arc_ns_min=%lu arc_ns_max=%lu",
+                      ctx->diag_wave_max_slot, ctx->diag_wave_bundle_cnt, ctx->diag_wave_first_rx_ns,
+                      ctx->diag_wave_arc_ns_min, ctx->diag_wave_arc_ns_max ));
+    ctx->diag_wave_max_slot    = batch->max_schedule_slot;
+    ctx->diag_wave_bundle_cnt  = 0UL;
+    ctx->diag_wave_first_rx_ns = rx_ts_ns;
+    ctx->diag_wave_arc_ns_min  = 0UL;
+    ctx->diag_wave_arc_ns_max  = 0UL;
+    FD_LOG_NOTICE(( "bam_diag_wave_start: max_slot=%lu first_rx_ns=%ld leader_slot=%lu",
+                    batch->max_schedule_slot, rx_ts_ns, leader_slot ));
+  }
+  if( FD_LIKELY( packet_cnt ) ) {
+    ctx->diag_wave_bundle_cnt++;
+    ulong arc_ns = batch->auction_round_close_ns;
+    if( FD_LIKELY( arc_ns ) ) {
+      if( FD_UNLIKELY( !ctx->diag_wave_arc_ns_min || arc_ns < ctx->diag_wave_arc_ns_min ) )
+        ctx->diag_wave_arc_ns_min = arc_ns;
+      if( FD_UNLIKELY( arc_ns > ctx->diag_wave_arc_ns_max ) )
+        ctx->diag_wave_arc_ns_max = arc_ns;
+    }
+  }
+
   if( FD_UNLIKELY( !slot_end_ns && resolved_slot==leader_slot ) ) {
     slot_end_ns = ctx->bam_leader_state.slot_end_ns;
   }
@@ -532,6 +559,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   if( state->revert_on_error ) {
     ctx->bundle_seq                = batch->seq_id;
     ctx->bundle_max_schedule_slot  = batch->max_schedule_slot;
+    ctx->bundle_min_schedule_slot  = batch->min_schedule_slot;
 
     for( uchar i=0; i<packet_cnt; i++ ) {
       fd_bam_tile_publish_bundle_txn( ctx,
@@ -549,6 +577,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                                state->packets[i].data.bytes,
                                state->packets[i].data.size,
                                batch->max_schedule_slot,
+                               batch->min_schedule_slot,
                                batch->seq_id,
                                i,
                                packet_cnt,
@@ -558,6 +587,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     }
   }
   ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  ctx->bundle_min_schedule_slot = 0UL;
 }
 
 /* Decodes one bam_types.AtomicTxnBatch message into staged state only.
@@ -746,6 +776,7 @@ fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ct
        (overflow/empty wrapper) so the batch/message taxonomy remains accurate. */
     fd_bam_enqueue_result( ctx, &decoded_multi->err_result );
     ctx->bundle_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+    ctx->bundle_min_schedule_slot = 0UL;
   }
 }
 

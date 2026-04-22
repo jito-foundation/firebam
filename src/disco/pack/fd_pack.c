@@ -45,6 +45,10 @@ struct fd_pack_private_ord_txn {
      doesn't require transactions to be inserted in expiration date
      order. */
   ulong expires_at;
+  /* For BAM bundles: the earliest leader slot in which this transaction
+     may be scheduled.  0 means no restriction (the common case for all
+     non-BAM transactions and BAM bundles without a future-slot hint). */
+  ulong min_schedule_slot;
   /* expq_idx: When this object is part of one of the treaps, it's
      also in the expiration priority queue.  This field (which is
      manipulated behind the scenes by the fd_prq code) stores where so
@@ -1270,6 +1274,7 @@ int
 fd_pack_insert_txn_fini( fd_pack_t  * pack,
                          fd_txn_e_t * txne,
                          ulong        expires_at,
+                         ulong        min_slot,
                          ulong      * delete_cnt ) {
   *delete_cnt = 0UL;
 
@@ -1284,7 +1289,8 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
      accessed with adj_lut[n]. */
   fd_acct_addr_t const * alt_adj = ord->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
 
-  ord->expires_at = expires_at;
+  ord->expires_at        = expires_at;
+  ord->min_schedule_slot = min_slot;
 
   int est_result = fd_pack_estimate_rewards_and_compute( txne, ord );
   if( FD_UNLIKELY( !est_result ) ) REJECT( ESTIMATION_FAIL );
@@ -1507,6 +1513,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
                             fd_txn_e_t * const * bundle,
                             ulong                txn_cnt,
                             ulong                expires_at,
+                            ulong                min_slot,
                             int                  initializer_bundle,
                             void         const * bundle_meta,
                             ulong              * delete_cnt ) {
@@ -1558,8 +1565,9 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     bundle[ i ]->txnp->flags &= ~(FD_TXN_P_FLAGS_INITIALIZER_BUNDLE | FD_TXN_P_FLAGS_DURABLE_NONCE);
     bundle[ i ]->txnp->flags |= fd_uint_if( initializer_bundle, FD_TXN_P_FLAGS_INITIALIZER_BUNDLE, 0U );
     bundle[ i ]->txnp->flags |= fd_uint_if( is_durable_nonce,   FD_TXN_P_FLAGS_DURABLE_NONCE,      0U );
-    ord->skip = FD_PACK_SKIP_CNT;
-    ord->expires_at = expires_at;
+    ord->skip              = FD_PACK_SKIP_CNT;
+    ord->expires_at        = expires_at;
+    ord->min_schedule_slot = min_slot;
 
     if( FD_UNLIKELY( is_durable_nonce ) ) {
       nonce_hash63[ i ] = noncemap_key_hash( ord->txn_e, pack->noncemap->seed ) & 0x7FFFFFFFFFFFFFFFUL;
@@ -1868,6 +1876,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
                        ulong                txn_limit,
                        ulong                byte_limit,
                        ulong                bank_tile,
+                       ulong                leader_slot,
                        fd_pack_smallest_t * smallest_in_treap,
                        ulong              * use_by_bank_txn,
                        fd_txn_p_t         * out ) {
@@ -1943,6 +1952,12 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
     }
 
     if( FD_UNLIKELY( cur->skip==compressed_slot_number ) ) {
+      skip_c++;
+      continue;
+    }
+
+    if( FD_UNLIKELY( cur->min_schedule_slot > leader_slot ) ) {
+      /* Bundle dispatched for a future slot; hold until that slot opens. */
       skip_c++;
       continue;
     }
@@ -2141,6 +2156,8 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
     if( FD_UNLIKELY( cur->txn->flags & FD_TXN_P_FLAGS_DURABLE_NONCE ) ) noncemap_ele_remove_fast( pack->noncemap, cur, pack->pool );
     sig2txn_ele_remove_fast( pack->signature_map, cur, pool );
 
+    if( FD_UNLIKELY( cur->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) )
+      FD_LOG_INFO(( "bam_diag_scheduled pending_before=%lu seq=%u leader_slot=%lu", pack->pending_txn_cnt, cur->txn->bam.seq_id, leader_slot ));
     cur->root = FD_ORD_TXN_ROOT_FREE;
     expq_remove( pack->expiration_q, cur->expq_idx );
     treap_idx_remove( sched_from, _cur, pool );
@@ -2573,6 +2590,8 @@ fd_pack_try_schedule_bundle_candidate( fd_pack_t       * pack,
     if( FD_UNLIKELY( cur->txn->flags & FD_TXN_P_FLAGS_DURABLE_NONCE ) ) noncemap_ele_remove_fast( pack->noncemap, cur, pack->pool );
     sig2txn_ele_remove_fast( pack->signature_map, cur, pack->pool );
 
+    if( FD_UNLIKELY( cur->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) )
+      FD_LOG_INFO(( "bam_diag_bundle_scheduled pending_before=%lu seq=%u", pack->pending_txn_cnt, cur->txn->bam.seq_id ));
     cur->root = FD_ORD_TXN_ROOT_FREE;
     expq_remove( pack->expiration_q, cur->expq_idx );
     treap_idx_remove( pack->pending_bundles, _cur, pack->pool );
@@ -2631,6 +2650,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
                                   float        vote_fraction,
                                   ulong        bank_tile,
                                   int          schedule_flags,
+                                  ulong        leader_slot,
                                   fd_txn_p_t * out ) {
 
   /* TODO: Decide if these are exactly how we want to handle limits */
@@ -2661,7 +2681,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
 
   if( FD_LIKELY( schedule_flags & FD_PACK_SCHEDULE_VOTE ) ) {
     /* Schedule vote transactions */
-    status1= fd_pack_schedule_impl( pack, pack->pending_votes, vote_cus, vote_reserved_txns, byte_limit, bank_tile, pack->pending_votes_smallest, use_by_bank_txn, out+scheduled );
+    status1= fd_pack_schedule_impl( pack, pack->pending_votes, vote_cus, vote_reserved_txns, byte_limit, bank_tile, leader_slot, pack->pending_votes_smallest, use_by_bank_txn, out+scheduled );
 
     scheduled                   += status1.txns_scheduled;
     pack->cumulative_vote_cost  += status1.cus_scheduled;
@@ -2690,7 +2710,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
 
   /* Fill any remaining space with non-vote transactions */
   if( FD_LIKELY( schedule_flags & FD_PACK_SCHEDULE_TXN ) ) {
-    status = fd_pack_schedule_impl( pack, pack->pending,       cu_limit, txn_limit,          byte_limit, bank_tile, pack->pending_smallest,       use_by_bank_txn, out+scheduled );
+    status = fd_pack_schedule_impl( pack, pack->pending,       cu_limit, txn_limit,          byte_limit, bank_tile, leader_slot, pack->pending_smallest,       use_by_bank_txn, out+scheduled );
 
     scheduled                   += status.txns_scheduled;
     pack->cumulative_block_cost += status.cus_scheduled;
@@ -2973,6 +2993,11 @@ delete_transaction( fd_pack_t         * pack,
                     fd_pack_ord_txn_t * containing,
                     int                 delete_full_bundle,
                     int                 move_from_penalty_treap ) {
+  int is_bam_txn = (containing->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM);
+  if( FD_UNLIKELY( is_bam_txn ) )
+    FD_LOG_INFO(( "bam_diag_delete_txn root=%d pending_before=%lu expire_before=%lu seq=%u dfb=%d mfpt=%d",
+                  containing->root, pack->pending_txn_cnt, pack->expire_before,
+                  containing->txn->bam.seq_id, delete_full_bundle, move_from_penalty_treap ));
 
   fd_txn_t * txn = TXN( containing->txn );
   fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, containing->txn->payload );
@@ -3096,7 +3121,8 @@ delete_transaction( fd_pack_t         * pack,
 
 ulong
 fd_pack_delete_transaction( fd_pack_t              * pack,
-                            fd_ed25519_sig_t const * sig0 ) {
+                            fd_ed25519_sig_t const * sig0,
+                            int                      skip_bam ) {
   ulong cnt = 0;
   ulong next = ULONG_MAX;
   for( ulong idx = sig2txn_idx_query_const( pack->signature_map, (wrapped_sig_t const *)sig0, ULONG_MAX, pack->pool );
@@ -3107,6 +3133,7 @@ fd_pack_delete_transaction( fd_pack_t              * pack,
        That means we know next is not part of the same bundle as idx,
        which means that deleting idx will not delete next. */
     next = sig2txn_idx_next_const( idx, ULONG_MAX, pack->pool );
+    if( FD_UNLIKELY( skip_bam && pack->pool[ idx ].txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
     cnt += delete_transaction( pack, pack->pool+idx, 1, 1 );
   }
 

@@ -430,7 +430,7 @@ FD_STATIC_ASSERT( FD_PACK_INSERT_ACCEPT_NONCE_NONVOTE_REPLACE<FD_PACK_INSERT_RET
    codes explained above.
  */
 fd_txn_e_t * fd_pack_insert_txn_init  ( fd_pack_t * pack                                                         );
-int          fd_pack_insert_txn_fini  ( fd_pack_t * pack, fd_txn_e_t * txn, ulong expires_at, ulong * delete_cnt );
+int          fd_pack_insert_txn_fini  ( fd_pack_t * pack, fd_txn_e_t * txn, ulong expires_at, ulong min_slot, ulong * delete_cnt );
 void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn                                       );
 
 /* fd_pack_insert_bundle_{init,fini,cancel} are parallel to the
@@ -510,7 +510,7 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
 
 fd_txn_e_t * const * fd_pack_insert_bundle_init  ( fd_pack_t * pack, fd_txn_e_t *       * bundle, ulong txn_cnt                                        );
 int                  fd_pack_insert_bundle_fini  ( fd_pack_t * pack, fd_txn_e_t * const * bundle, ulong txn_cnt,
-                                                   ulong expires_at, int initializer_bundle, void const * bundle_meta, ulong * delete_cnt );
+                                                   ulong expires_at, ulong min_slot, int initializer_bundle, void const * bundle_meta, ulong * delete_cnt );
 void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t * const * bundle, ulong txn_cnt                                        );
 
 
@@ -677,6 +677,7 @@ fd_pack_schedule_next_microblock( fd_pack_t  * pack,
                                   float        vote_fraction,
                                   ulong        bank_tile,
                                   int          schedule_flags,
+                                  ulong        leader_slot,
                                   fd_txn_p_t * out );
 
 
@@ -728,7 +729,13 @@ ulong fd_pack_expire_before( fd_pack_t * pack, ulong expire_before );
    nonzero count of the number of transactions deleted, if the
    transaction was found (and then removed) and 0 if not.  The count
    might be >1 if a bundle was caused to be deleted. */
-ulong fd_pack_delete_transaction( fd_pack_t * pack, fd_ed25519_sig_t const * sig0 );
+/* skip_bam: if non-zero, BAM-sourced transactions matching sig0 are left
+   in pack and not deleted.  Pass 1 when deleting via executed_txn
+   (replay of other validators' blocks) so pending BAM bundles survive
+   until our own leader slot. */
+ulong fd_pack_delete_transaction( fd_pack_t              * pack,
+                                  fd_ed25519_sig_t const * sig0,
+                                  int                      skip_bam );
 
 /* fd_pack_end_block resets some state to prepare for the next block.
    Specifically, the per-block limits are cleared and transactions in

@@ -574,6 +574,8 @@ bam_after_frag( fd_bam_tile_t *     ctx,
                    ctx->bam_stream_live &&
                    fd_bam_send_leader_state( ctx, &ctx->bam_leader_state ) ) ) {
       ctx->bam_leader_pending = 0U;
+      FD_LOG_NOTICE(( "bam_diag_leader_state_sent: slot=%lu ts_ns=%ld",
+                      ctx->bam_leader_state.slot, fd_log_wallclock() ));
     }
     break;
   default:

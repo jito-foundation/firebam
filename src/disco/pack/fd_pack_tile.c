@@ -97,6 +97,7 @@ FD_IMPORT( wait_duration, "src/disco/pack/pack_delay.bin", ulong, 6, "" );
 struct fd_pack_ctx {
   fd_txn_e_t txn;
   ulong      bam_max_schedule_slot; /* Sidecar for extra-storage BAM txns; fd_txn_p_t does not carry this hint. */
+  ulong      bam_min_schedule_slot; /* Sidecar for extra-storage BAM txns; 0 means no restriction. */
   ulong      bam_funnel_slot;       /* Slot bucket assigned when the BAM txn first reached pack ingress. */
 } fd_pack_extra_txn_t;
 
@@ -229,6 +230,7 @@ struct fd_pack_ctx {
   uchar        bundle_kind; /* PACK_TILE_BUNDLE_KIND_* (none/BE/BAM) */
   uchar        dump_bam_txns;
   ulong        bam_txn_max_schedule_slot; /* Current single-txn BAM slot hint; carried here because fd_txn_p_t.bam has no max_schedule_slot. */
+  ulong        bam_txn_min_schedule_slot; /* Current single-txn BAM min slot hint; 0 means no restriction. */
 
   uchar executed_txn_sig[ 64UL ];
 
@@ -473,6 +475,10 @@ struct fd_pack_ctx {
        as an explicit "no hint" sentinel. When a real hint is present,
        pack enforces that the bundle only schedules in slots <= this value. */
     ulong max_schedule_slot;
+
+    /* BAM AtomicTxnBatch.min_schedule_slot. 0 means no restriction.
+       When set, pack holds the bundle until leader_slot >= min_schedule_slot. */
+    ulong min_schedule_slot;
 
     /* Slot bucket used for recent-slot BAM funnel accounting. This is
        derived when the first transaction for the bundle reaches pack. */
@@ -783,10 +789,61 @@ remove_ib( fd_pack_ctx_t * ctx ) {
   /* It's likely the initializer bundle is long scheduled, but we want to
      try deleting it just in case. */
   if( FD_UNLIKELY( ctx->crank->enabled & ctx->crank->ib_inserted ) ) {
-    ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)ctx->crank->last_sig );
+    ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)ctx->crank->last_sig, 0 );
     FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
   }
   ctx->crank->ib_inserted = 0;
+}
+
+/* Called when a POH_PKT_TYPE_UPCOMING_LEADER notification arrives
+   ~500ms before slot `upcoming_slot` starts.  Publishes a preliminary
+   fd_bam_leader_state_t to the BAM tile so it can forward LeaderState(N)
+   to BAMPC early enough for a fresh auction wave to arrive before the
+   slot starts.  Does NOT set ctx->leader_slot; that happens later when
+   pack_became_leader fires for real. */
+static void
+pack_tile_publish_bam_early_leader_state( fd_pack_ctx_t *     ctx,
+                                          fd_stem_context_t * stem,
+                                          ulong               upcoming_slot ) {
+  if( FD_UNLIKELY( ctx->bam_leader_out.idx==ULONG_MAX ) ) return;
+  /* If we are already leader for this slot (should not happen, but be
+     defensive), skip: the real leader-state publish will handle it. */
+  if( FD_UNLIKELY( ctx->leader_slot==upcoming_slot ) ) return;
+
+  fd_bam_leader_state_t early_state = {
+    .slot                     = upcoming_slot,
+    .tick                     = 0U,
+    /* Report full budget so BAMPC auctions freely.  slot_end_ns is not
+       forwarded to BAMPC so 0 is fine; BAM tile uses it for tracking. */
+    .slot_cu_budget_remaining = (uint)fd_ulong_min( ctx->limits.slot_max_cost, (ulong)UINT_MAX ),
+    .slot_end_ns              = 0L,
+    .current_slot_fresh       = 0U,
+  };
+
+  /* Suppress duplicate sends (last_bam_leader_state guard). */
+  if( FD_LIKELY( fd_bam_leader_state_eq( &early_state, &ctx->last_bam_leader_state ) ) ) return;
+  ctx->last_bam_leader_state = early_state;
+
+  long now_ticks = fd_tickcount();
+  fd_bam_leader_state_t * out = fd_chunk_to_laddr( ctx->bam_leader_out.mem, ctx->bam_leader_out.chunk );
+  *out = early_state;
+
+  fd_stem_publish( stem,
+                   ctx->bam_leader_out.idx,
+                   0UL,
+                   ctx->bam_leader_out.chunk,
+                   sizeof(fd_bam_leader_state_t),
+                   0UL,
+                   0UL,
+                   fd_frag_meta_ts_comp( now_ticks ) );
+  ctx->bam_leader_out.chunk = fd_dcache_compact_next( ctx->bam_leader_out.chunk,
+                                                      sizeof(fd_bam_leader_state_t),
+                                                      ctx->bam_leader_out.chunk0,
+                                                      ctx->bam_leader_out.wmark );
+  FD_LOG_NOTICE(( "pack_early_leader_state slot=%lu avail=%lu bam_pending=%lu",
+                  upcoming_slot,
+                  fd_pack_avail_txn_cnt( ctx->pack ),
+                  ctx->bam_pending_work_cnt ));
 }
 
 static inline void
@@ -1155,6 +1212,8 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t *     ctx,
     /* BAM work accepted into pack can become stale later as slots advance, so
        remove it from both the local tracker and pack when that happens. */
     pack_bam_work_t item = pack_tile_bam_work_swap_remove( ctx, i );
+    FD_LOG_INFO(( "bam_diag_evict_pending current_slot=%lu seq_id=%u max_schedule_slot=%lu blockhash_slot=%lu reason=%u",
+                  current_slot, item.seq_id, item.max_schedule_slot, item.blockhash_slot, (uint)invalid_reason ));
     pack_tile_log_bam_drop( ctx,
                                "post_pending_validation",
                                invalid_reason==PACK_TILE_BAM_INVALID_OUTSIDE_SLOT
@@ -1197,7 +1256,7 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t *     ctx,
     }
     pack_tile_bam_recent_slot_sub_pending( ctx, item.slot, 1UL, item.txn_cnt );
 
-    ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)(void const *)&item.sig[ 0 ] );
+    ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)(void const *)&item.sig[ 0 ], 0 );
     FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
     pack_tile_publish_bam_invalid_result( ctx,
                                           stem,
@@ -1265,7 +1324,7 @@ pack_tile_publish_bam_tracking_reject( fd_pack_ctx_t *          ctx,
                                        uint                     revert_on_error_known,
                                        uint                     revert_on_error,
                                        uchar                    txn_cnt ) {
-  ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)sig0 );
+  ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)sig0, 0 );
   FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
   pack_tile_log_bam_drop( ctx,
                              "tracking",
@@ -1790,7 +1849,7 @@ insert_from_extra( fd_pack_ctx_t *     ctx,
 
   ulong deleted;
   long insert_duration = -fd_tickcount();
-  int result = fd_pack_insert_txn_fini( ctx->pack, spot, blockhash_slot, &deleted );
+  int result = fd_pack_insert_txn_fini( ctx->pack, spot, blockhash_slot, insert->bam_min_schedule_slot, &deleted );
   insert_duration      += fd_tickcount();
 
   FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
@@ -2017,7 +2076,7 @@ after_credit( fd_pack_ctx_t *     ctx,
 
         ctx->crank->ib_inserted = 1;
         ulong deleted;
-        int retval = fd_pack_insert_bundle_fini( ctx->pack, bundle, 1UL, ctx->leader_slot-1UL, 1, NULL, &deleted );
+        int retval = fd_pack_insert_bundle_fini( ctx->pack, bundle, 1UL, ctx->leader_slot-1UL, 0UL, 1, NULL, &deleted );
         FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
         ctx->insert_result[ retval + FD_PACK_INSERT_RETVAL_OFF ]++;
         if( FD_UNLIKELY( retval<0 ) ) {
@@ -2084,7 +2143,7 @@ after_credit( fd_pack_ctx_t *     ctx,
 
     fd_txn_p_t * microblock_dst = fd_chunk_to_laddr( ctx->bank_out_mem, ctx->bank_out_chunk );
     long schedule_duration = -fd_tickcount();
-    ulong schedule_cnt = fd_pack_schedule_next_microblock( ctx->pack, CUS_PER_MICROBLOCK, VOTE_FRACTION, (ulong)i, flags, microblock_dst );
+    ulong schedule_cnt = fd_pack_schedule_next_microblock( ctx->pack, CUS_PER_MICROBLOCK, VOTE_FRACTION, (ulong)i, flags, ctx->leader_slot, microblock_dst );
     schedule_duration      += fd_tickcount();
     fd_histf_sample( (schedule_cnt>0UL) ? ctx->schedule_duration : ctx->no_sched_duration, (ulong)schedule_duration );
 
@@ -2279,6 +2338,13 @@ during_frag( fd_pack_ctx_t * ctx,
       ctx->bam_pending_check_slot = sig;
       ulong exp_cnt = fd_pack_expire_before( ctx->pack, fd_ulong_max( ctx->highest_observed_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS );
       FD_MCNT_INC( PACK, TRANSACTION_EXPIRED, exp_cnt );
+      if( FD_UNLIKELY( exp_cnt>0UL ) )
+        FD_LOG_INFO(( "bam_diag_expire_nonleader highest_slot=%lu threshold=%lu exp_cnt=%lu avail=%lu bam_pending=%lu",
+                      ctx->highest_observed_slot,
+                      fd_ulong_max( ctx->highest_observed_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS,
+                      exp_cnt,
+                      fd_pack_avail_txn_cnt( ctx->pack ),
+                      ctx->bam_pending_work_cnt ));
     }
 
     if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.revert_on_error ) ) {
@@ -2301,6 +2367,7 @@ during_frag( fd_pack_ctx_t * ctx,
         ctx->current_bam_bundle->txn_received      = 0U;
         ctx->current_bam_bundle->min_blockhash_slot = ULONG_MAX;
         ctx->current_bam_bundle->max_schedule_slot = txnm->bam.max_schedule_slot;
+        ctx->current_bam_bundle->min_schedule_slot = txnm->bam.min_schedule_slot;
         ctx->current_bam_bundle->slot             = pack_tile_bam_funnel_slot( ctx, txnm->bam.max_schedule_slot );
         memset( ctx->current_bam_bundle->received, 0, sizeof(ctx->current_bam_bundle->received) );
         ctx->current_bam_bundle->bundle = fd_pack_insert_bundle_init( ctx->pack, ctx->current_bam_bundle->_txn, txnm->bam.txn_cnt );
@@ -2396,10 +2463,12 @@ during_frag( fd_pack_ctx_t * ctx,
       ctx->cur_spot->txnp->bam.batch_idx       = txnm->bam.batch_idx;
       ctx->cur_spot->txnp->bam.revert_on_error = txnm->bam.revert_on_error;
       ctx->bam_txn_max_schedule_slot           = txnm->bam.max_schedule_slot;
+      ctx->bam_txn_min_schedule_slot           = txnm->bam.min_schedule_slot;
     } else {
       ctx->cur_spot->txnp->bam.seq_id          = 0U;
       ctx->cur_spot->txnp->bam.batch_idx       = 0U;
       ctx->cur_spot->txnp->bam.revert_on_error = 0U;
+      ctx->bam_txn_min_schedule_slot           = 0UL;
     }
 #if FD_PACK_USE_EXTRA_STORAGE
     if( FD_UNLIKELY( ctx->insert_to_extra ) ) {
@@ -2408,9 +2477,11 @@ during_frag( fd_pack_ctx_t * ctx,
       fd_pack_extra_txn_t * extra = extra_txn_deq_peek_tail( ctx->extra_txn_deq );
       ctx->cur_spot->txnp->blockhash_slot = sig;
       extra->bam_max_schedule_slot = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+      extra->bam_min_schedule_slot = 0UL;
       extra->bam_funnel_slot       = ULONG_MAX;
       if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
         extra->bam_max_schedule_slot = txnm->bam.max_schedule_slot;
+        extra->bam_min_schedule_slot = txnm->bam.min_schedule_slot;
         extra->bam_funnel_slot       = pack_tile_bam_funnel_slot( ctx, txnm->bam.max_schedule_slot );
       }
     }
@@ -2462,6 +2533,14 @@ after_frag( fd_pack_ctx_t *     ctx,
       fd_pack_get_sched_metrics( ctx->pack, ctx->start_block_sched_metrics->sched_results );
       break;
     case IN_KIND_POH:
+      if( fd_disco_poh_sig_pkt_type( sig )==POH_PKT_TYPE_UPCOMING_LEADER ) {
+        /* Early notification: PoH tile detected we are ~500ms from
+           becoming leader.  Publish a preliminary BAM leader state so
+           the BAM tile can forward LeaderState(N) to BAMPC now, giving
+           BAMPC time to run a fresh auction before our slot starts. */
+        pack_tile_publish_bam_early_leader_state( ctx, stem, fd_disco_poh_sig_slot( sig ) );
+        return;
+      }
       if( fd_disco_poh_sig_pkt_type( sig )!=POH_PKT_TYPE_BECAME_LEADER ) return;
       leader_slot = fd_disco_poh_sig_slot( sig );
       break;
@@ -2487,6 +2566,12 @@ after_frag( fd_pack_ctx_t *     ctx,
     ctx->bam_first_insert_minus_slot_end_ns = 0L;
     ctx->bam_first_schedule_minus_slot_end_ns = 0L;
     (void)pack_tile_bam_recent_slot_prepare( ctx, ctx->leader_slot );
+    FD_LOG_INFO(( "bam_diag_pre_evict slot=%lu avail=%lu bam_work_cnt=%lu bam_pending=%lu bam_scheduled=%lu",
+                  ctx->leader_slot,
+                  fd_pack_avail_txn_cnt( ctx->pack ),
+                  ctx->bam_work_cnt,
+                  ctx->bam_pending_work_cnt,
+                  ctx->bam_scheduled_work_cnt ));
     pack_tile_evict_invalid_pending_bam_work( ctx, stem, ctx->leader_slot );
     for( ulong i=0UL; i<ctx->bam_work_cnt; ) {
       if( FD_UNLIKELY( ctx->bam_work[ i ].state==PACK_BAM_WORK_STATE_SCHEDULED &&
@@ -2499,6 +2584,12 @@ after_frag( fd_pack_ctx_t *     ctx,
 
     ulong exp_cnt = fd_pack_expire_before( ctx->pack, fd_ulong_max( ctx->leader_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS );
     FD_MCNT_INC( PACK, TRANSACTION_EXPIRED, exp_cnt );
+    FD_LOG_INFO(( "bam_diag_expire_leader leader_slot=%lu threshold=%lu exp_cnt=%lu avail_after=%lu bam_pending=%lu",
+                  ctx->leader_slot,
+                  fd_ulong_max( ctx->leader_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS,
+                  exp_cnt,
+                  fd_pack_avail_txn_cnt( ctx->pack ),
+                  ctx->bam_pending_work_cnt ));
 
     ctx->leader_bank          = ctx->_became_leader->bank;
     ctx->leader_bank_idx      = ctx->_became_leader->bank_idx;
@@ -2529,7 +2620,7 @@ after_frag( fd_pack_ctx_t *     ctx,
       memcpy( ctx->crank->tip_receiver_owner, ctx->_became_leader->bundle->tip_receiver_owner, 32UL );
     }
 
-    FD_LOG_INFO(( "pack_became_leader(slot=%lu,ends_at=%ld)", ctx->leader_slot, ctx->_became_leader->slot_end_ns ));
+    FD_LOG_INFO(( "pack_became_leader(slot=%lu,ends_at=%ld,avail=%lu,bam_pending=%lu,bam_scheduled=%lu)", ctx->leader_slot, ctx->_became_leader->slot_end_ns, fd_pack_avail_txn_cnt( ctx->pack ), ctx->bam_pending_work_cnt, ctx->bam_scheduled_work_cnt ));
 
     update_metric_state( ctx, fd_tickcount(), FD_PACK_METRIC_STATE_LEADER, 1 );
 
@@ -2562,6 +2653,10 @@ after_frag( fd_pack_ctx_t *     ctx,
     /* While not leader, resolv slot bumps are the only local signal that
        buffered BAM work may have crossed its schedule or blockhash window. */
     if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX && ctx->bam_pending_check_slot ) ) {
+      FD_LOG_INFO(( "bam_diag_check_evict check_slot=%lu avail=%lu bam_pending=%lu",
+                    ctx->bam_pending_check_slot,
+                    fd_pack_avail_txn_cnt( ctx->pack ),
+                    ctx->bam_pending_work_cnt ));
       pack_tile_evict_invalid_pending_bam_work( ctx, stem, ctx->bam_pending_check_slot );
       ctx->bam_pending_check_slot = 0UL;
     }
@@ -2573,7 +2668,7 @@ after_frag( fd_pack_ctx_t *     ctx,
       if( FD_UNLIKELY( ++(ctx->current_bundle->txn_received)==ctx->current_bundle->txn_cnt ) ) {
         ulong deleted;
         long insert_duration = -fd_tickcount();
-        int result = fd_pack_insert_bundle_fini( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt, ctx->current_bundle->min_blockhash_slot, 0, ctx->bundle_meta, &deleted );
+        int result = fd_pack_insert_bundle_fini( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt, ctx->current_bundle->min_blockhash_slot, 0UL, 0, ctx->bundle_meta, &deleted );
         insert_duration      += fd_tickcount();
         FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
         ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
@@ -2663,6 +2758,7 @@ after_frag( fd_pack_ctx_t *     ctx,
                                                ctx->current_bam_bundle->bundle,
                                                ctx->current_bam_bundle->txn_cnt,
                                                ctx->current_bam_bundle->min_blockhash_slot,
+                                               ctx->current_bam_bundle->min_schedule_slot,
                                                0,
                                                ctx->bundle_meta,
                                                &deleted );
@@ -2732,6 +2828,11 @@ after_frag( fd_pack_ctx_t *     ctx,
         break;
       }
       pack_tile_note_bam_accepted( ctx, ctx->current_bam_bundle->slot, 1UL, ctx->current_bam_bundle->txn_cnt );
+      FD_LOG_INFO(( "bam_diag_bundle_inserted seq_id=%u max_slot=%lu blkhash_slot=%lu avail=%lu leader_slot=%lu",
+                    ctx->current_bam_bundle->seq_id, max_schedule_slot,
+                    ctx->current_bam_bundle->min_blockhash_slot,
+                    fd_pack_avail_txn_cnt( ctx->pack ),
+                    ctx->leader_slot ));
       pack_tile_note_first_bam_insert( ctx,
                                        stem,
                                        pack_tile_now_ns( ctx ),
@@ -2752,6 +2853,13 @@ after_frag( fd_pack_ctx_t *     ctx,
         bam_funnel_slot = pack_tile_bam_funnel_slot( ctx, bam_slot );
         fd_memcpy( bam_sig, txnp->payload + 1UL, sizeof(fd_ed25519_sig_t) );
         invalid_reason = pack_tile_bam_invalid_reason( pack_tile_bam_best_known_slot( ctx ), bam_slot, sig );
+        if( FD_UNLIKELY( txnp->bam.batch_idx==0 ) )
+          FD_LOG_INFO(( "bam_diag_none_arrival seq=%u bam_slot=%lu ref_slot=%lu best_slot=%lu reason=%u avail=%lu leader=%lu",
+                        bam_seq_id, bam_slot, sig,
+                        pack_tile_bam_best_known_slot( ctx ),
+                        (uint)invalid_reason,
+                        fd_pack_avail_txn_cnt( ctx->pack ),
+                        ctx->leader_slot ));
       }
 
       if( FD_UNLIKELY( invalid_reason!=PACK_TILE_BAM_INVALID_NONE ) ) {
@@ -2802,7 +2910,7 @@ after_frag( fd_pack_ctx_t *     ctx,
 #endif
       ulong deleted;
       long insert_duration = -fd_tickcount();
-      int result = fd_pack_insert_txn_fini( ctx->pack, ctx->cur_spot, sig, &deleted );
+      int result = fd_pack_insert_txn_fini( ctx->pack, ctx->cur_spot, sig, ctx->bam_txn_min_schedule_slot, &deleted );
       insert_duration      += fd_tickcount();
       FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
       ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ]++;
@@ -2821,6 +2929,10 @@ after_frag( fd_pack_ctx_t *     ctx,
           pack_tile_publish_bam_tracking_reject( ctx, stem, bam_sig[ 0 ], txnp->scheduler_arrival_time_nanos, bam_seq_id, bam_funnel_slot, bam_slot, sig, 1U, (uint)txnp->bam.revert_on_error, 1U );
         } else {
           pack_tile_note_bam_accepted( ctx, bam_funnel_slot, 1UL, 1UL );
+          FD_LOG_INFO(( "bam_diag_none_inserted seq=%u bam_slot=%lu ref_slot=%lu avail=%lu leader=%lu",
+                        bam_seq_id, bam_slot, sig,
+                        fd_pack_avail_txn_cnt( ctx->pack ),
+                        ctx->leader_slot ));
           pack_tile_note_first_bam_insert( ctx,
                                            stem,
                                            pack_tile_now_ns( ctx ),
@@ -2868,7 +2980,7 @@ after_frag( fd_pack_ctx_t *     ctx,
     break;
   }
   case IN_KIND_EXECUTED_TXN: {
-    ulong deleted = fd_pack_delete_transaction( ctx->pack, fd_type_pun( ctx->executed_txn_sig ) );
+    ulong deleted = fd_pack_delete_transaction( ctx->pack, fd_type_pun( ctx->executed_txn_sig ), 1 );
     FD_MCNT_INC( PACK, TRANSACTION_ALREADY_EXECUTED, deleted );
     uchar scheduled_matched_idx = UCHAR_MAX;
     ulong scheduled_work_idx = pack_tile_bam_work_find_by_any_sig( ctx, ctx->executed_txn_sig, PACK_BAM_WORK_STATE_SCHEDULED, &scheduled_matched_idx );
@@ -3056,6 +3168,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bundle_kind                   = PACK_TILE_BUNDLE_KIND_NONE;
   ctx->dump_bam_txns                 = tile->pack.dump_bam_txns;
   ctx->bam_txn_max_schedule_slot     = FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT;
+  ctx->bam_txn_min_schedule_slot     = 0UL;
   ctx->bam_work_cnt                  = 0UL;
   ctx->bam_pending_work_cnt          = 0UL;
   ctx->bam_scheduled_work_cnt        = 0UL;

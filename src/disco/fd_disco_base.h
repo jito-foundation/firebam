@@ -15,9 +15,13 @@
 #define DST_PROTO_GOSSIP   (5UL)
 #define DST_PROTO_SEND     (6UL)
 
-#define POH_PKT_TYPE_MICROBLOCK    (0UL)
-#define POH_PKT_TYPE_BECAME_LEADER (1UL)
-#define POH_PKT_TYPE_FEAT_ACT_SLOT (2UL)
+#define POH_PKT_TYPE_MICROBLOCK      (0UL)
+#define POH_PKT_TYPE_BECAME_LEADER   (1UL)
+#define POH_PKT_TYPE_FEAT_ACT_SLOT   (2UL)
+/* Sent ~500ms before the slot start to let BAM tile trigger a fresh
+   auction wave in time.  The slot number is encoded in the sig via
+   fd_disco_poh_sig.  No dcache payload (sz=0). */
+#define POH_PKT_TYPE_UPCOMING_LEADER (3UL)
 
 /* FD_NET_MTU is the max full packet size, with ethernet, IP, and UDP
    headers that can go in or out of the net tile.  2048 is the maximum

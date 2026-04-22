@@ -109,6 +109,7 @@ typedef struct _bam_types_LeaderState {
     uint64_t slot;
     uint32_t tick;
     uint32_t slot_cu_budget_remaining;
+    bool     current_slot_fresh;
 } bam_types_LeaderState;
 
 /* An 'atomic transaction batch' is a bundle of transactions that must be processed together */
@@ -116,6 +117,8 @@ typedef struct _bam_types_AtomicTxnBatch {
     uint32_t seq_id; /* unique for a single leader rotation */
     uint64_t max_schedule_slot; /* slot for which this bundle is valid for execution */
     pb_callback_t packets;
+    uint64_t auction_round_close_ns; /* Unix nanos when BAM's auction produced this batch; 0 = unknown */
+    uint64_t min_schedule_slot; /* earliest slot in which this bundle may be scheduled; 0 = no restriction */
 } bam_types_AtomicTxnBatch;
 
 /* A a collection of disjoint atomic transaction batches;
@@ -268,8 +271,8 @@ extern "C" {
 #define bam_types_Ping_init_default              {0}
 #define bam_types_Pong_init_default              {0}
 #define bam_types_Socket_init_default            {"", 0}
-#define bam_types_LeaderState_init_default       {0, 0, 0}
-#define bam_types_AtomicTxnBatch_init_default    {0, 0, {{NULL}, NULL}}
+#define bam_types_LeaderState_init_default       {0, 0, 0, false}
+#define bam_types_AtomicTxnBatch_init_default    {0, 0, {{NULL}, NULL}, 0, 0}
 #define bam_types_MultipleAtomicTxnBatch_init_default {{{NULL}, NULL}}
 #define bam_types_AtomicTxnBatchResult_init_default {0, 0, {bam_types_Committed_init_default}}
 #define bam_types_MultipleAtomicTxnBatchResult_init_default {{{NULL}, NULL}}
@@ -291,8 +294,8 @@ extern "C" {
 #define bam_types_Ping_init_zero                 {0}
 #define bam_types_Pong_init_zero                 {0}
 #define bam_types_Socket_init_zero               {"", 0}
-#define bam_types_LeaderState_init_zero          {0, 0, 0}
-#define bam_types_AtomicTxnBatch_init_zero       {0, 0, {{NULL}, NULL}}
+#define bam_types_LeaderState_init_zero          {0, 0, 0, false}
+#define bam_types_AtomicTxnBatch_init_zero       {0, 0, {{NULL}, NULL}, 0, 0}
 #define bam_types_MultipleAtomicTxnBatch_init_zero {{{NULL}, NULL}}
 #define bam_types_AtomicTxnBatchResult_init_zero {0, 0, {bam_types_Committed_init_zero}}
 #define bam_types_MultipleAtomicTxnBatchResult_init_zero {{{NULL}, NULL}}
@@ -322,9 +325,11 @@ extern "C" {
 #define bam_types_LeaderState_slot_tag           1
 #define bam_types_LeaderState_tick_tag           2
 #define bam_types_LeaderState_slot_cu_budget_remaining_tag 3
-#define bam_types_AtomicTxnBatch_seq_id_tag      1
-#define bam_types_AtomicTxnBatch_max_schedule_slot_tag 2
-#define bam_types_AtomicTxnBatch_packets_tag     3
+#define bam_types_AtomicTxnBatch_seq_id_tag               1
+#define bam_types_AtomicTxnBatch_max_schedule_slot_tag    2
+#define bam_types_AtomicTxnBatch_packets_tag              3
+#define bam_types_AtomicTxnBatch_auction_round_close_ns_tag 4
+#define bam_types_AtomicTxnBatch_min_schedule_slot_tag    5
 #define bam_types_MultipleAtomicTxnBatch_batches_tag 3
 #define bam_types_MultipleAtomicTxnBatchResult_results_tag 1
 #define bam_types_PacketFlags_simple_vote_tx_tag 1
@@ -393,16 +398,19 @@ X(a, STATIC,   SINGULAR, UINT32,   port,              2)
 #define bam_types_Socket_DEFAULT NULL
 
 #define bam_types_LeaderState_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UINT64,   slot,              1) \
-X(a, STATIC,   SINGULAR, UINT32,   tick,              2) \
-X(a, STATIC,   SINGULAR, UINT32,   slot_cu_budget_remaining,   3)
+X(a, STATIC,   SINGULAR, UINT64,   slot,                     1) \
+X(a, STATIC,   SINGULAR, UINT32,   tick,                     2) \
+X(a, STATIC,   SINGULAR, UINT32,   slot_cu_budget_remaining, 3) \
+X(a, STATIC,   SINGULAR, BOOL,     current_slot_fresh,       4)
 #define bam_types_LeaderState_CALLBACK NULL
 #define bam_types_LeaderState_DEFAULT NULL
 
 #define bam_types_AtomicTxnBatch_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UINT32,   seq_id,            1) \
-X(a, STATIC,   SINGULAR, UINT64,   max_schedule_slot,   2) \
-X(a, CALLBACK, REPEATED, MESSAGE,  packets,           3)
+X(a, STATIC,   SINGULAR, UINT32,   seq_id,                  1) \
+X(a, STATIC,   SINGULAR, UINT64,   max_schedule_slot,        2) \
+X(a, CALLBACK, REPEATED, MESSAGE,  packets,                  3) \
+X(a, STATIC,   SINGULAR, UINT64,   auction_round_close_ns,   4) \
+X(a, STATIC,   SINGULAR, UINT64,   min_schedule_slot,        5)
 #define bam_types_AtomicTxnBatch_CALLBACK pb_default_field_callback
 #define bam_types_AtomicTxnBatch_DEFAULT NULL
 #define bam_types_AtomicTxnBatch_packets_MSGTYPE bam_types_Packet
@@ -575,7 +583,7 @@ extern const pb_msgdesc_t bam_types_BamConfig_msg;
 #define bam_types_BuilderHeartBeat_size          11
 #define bam_types_DeserializationError_size      8
 #define bam_types_GenericInvalid_size            258
-#define bam_types_LeaderState_size               23
+#define bam_types_LeaderState_size               25
 #define bam_types_Meta_size                      17
 #define bam_types_NotCommitted_size              261
 #define bam_types_PacketFlags_size               4

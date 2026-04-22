@@ -458,7 +458,8 @@ after_frag( fd_gui_ctx_t *      ctx,
     }
     case IN_KIND_POH_PACK: {
       FD_TEST( !ctx->is_full_client );
-      FD_TEST( fd_disco_poh_sig_pkt_type( sig )==POH_PKT_TYPE_BECAME_LEADER );
+      /* Ignore early-leader notifications and other non-leader messages. */
+      if( FD_UNLIKELY( fd_disco_poh_sig_pkt_type( sig )!=POH_PKT_TYPE_BECAME_LEADER ) ) break;
       fd_became_leader_t * became_leader = (fd_became_leader_t *)ctx->buf;
       fd_gui_became_leader( ctx->gui, fd_disco_poh_sig_slot( sig ), became_leader->slot_start_ns, became_leader->slot_end_ns, became_leader->limits.slot_max_cost, became_leader->max_microblocks_in_slot );
       break;

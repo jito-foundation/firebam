@@ -242,6 +242,7 @@ struct fd_bam_tile {
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle). */
   ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, FD_BAM_MAX_SCHEDULE_SLOT_DEFAULT as default */
+  ulong bundle_min_schedule_slot;                 /* Earliest slot in which this bundle may be scheduled; 0 = no restriction */
   fd_bam_unresolved_slot_ingress_timing_t unresolved_slot_ingress; /* Pre-leader-slot ingress staged until a leader snapshot can attribute it to a slot. */
   fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by resolved slot for debug captures. */
   ulong dump_bam_last_slot;                       /* Most recent resolved slot dumped under dump_bam_first_slot_txn */
@@ -295,6 +296,13 @@ struct fd_bam_tile {
   long  last_bam_status_log_nanos;
   long  last_gui_publish_nanos;
   uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
+
+  /* Bundle wave diagnostics: track BAMPC response waves by max_schedule_slot */
+  ulong diag_wave_max_slot;        /* max_schedule_slot of current in-flight wave (0 = none seen) */
+  ulong diag_wave_bundle_cnt;      /* bundles received in current wave */
+  long  diag_wave_first_rx_ns;     /* ingress_rx_ts_ns of first bundle in wave */
+  ulong diag_wave_arc_ns_min;      /* min auction_round_close_ns seen in wave (0 = none) */
+  ulong diag_wave_arc_ns_max;      /* max auction_round_close_ns seen in wave */
 };
 
 typedef struct fd_bam_tile fd_bam_tile_t;
@@ -655,6 +663,7 @@ fd_bam_tile_publish_txn(
     void const *       txn,
     ulong              txn_sz,
     ulong              max_schedule_slot,
+    ulong              min_schedule_slot,
     uint               seq_id,
     uchar              batch_idx,
     uchar              batch_cnt,

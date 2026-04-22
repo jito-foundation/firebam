@@ -569,6 +569,12 @@ typedef struct {
   ulong parent_slot;
   uchar parent_block_id[ 32 ];
 
+  /* Slot for which we already sent a POH_PKT_TYPE_UPCOMING_LEADER
+     notification to the pack tile.  Prevents duplicate sends across
+     repeated after_credit calls.  Reset to ULONG_MAX whenever
+     next_leader_slot changes. */
+  ulong early_leader_notify_sent_slot;
+
   uchar __attribute__((aligned(FD_MULTI_EPOCH_LEADERS_ALIGN))) mleaders_mem[ FD_MULTI_EPOCH_LEADERS_FOOTPRINT ];
 } fd_poh_ctx_t;
 
@@ -1498,6 +1504,34 @@ after_credit( fd_poh_ctx_t *      ctx,
   }
 
   int is_leader = ctx->next_leader_slot!=ULONG_MAX && ctx->slot>=ctx->next_leader_slot;
+
+  /* If our next leader slot is approaching within 500ms and we have
+     not yet sent an early notification, publish a
+     POH_PKT_TYPE_UPCOMING_LEADER message on the pack_out link.  The
+     pack tile will forward a preliminary fd_bam_leader_state_t to the
+     BAM tile, which triggers a fresh BAMPC auction wave that can land
+     ~135ms before the slot starts rather than 35ms after. */
+  if( FD_UNLIKELY( !is_leader &&
+                   ctx->next_leader_slot!=ULONG_MAX &&
+                   ctx->early_leader_notify_sent_slot!=ctx->next_leader_slot ) ) {
+    long now_ns_early = fd_log_wallclock();
+    long expected_ns  = ctx->reset_slot_start_ns +
+      (long)((double)(ctx->next_leader_slot - ctx->reset_slot) * ctx->slot_duration_ns);
+    if( FD_UNLIKELY( now_ns_early >= expected_ns - 500000000L ) ) {
+      ulong upcoming_sig = fd_disco_poh_sig( ctx->next_leader_slot,
+                                             POH_PKT_TYPE_UPCOMING_LEADER,
+                                             0UL );
+      fd_stem_publish( ctx->stem, ctx->pack_out->idx, upcoming_sig,
+                       ctx->pack_out->chunk, 0UL, 0UL, 0UL,
+                       fd_frag_meta_ts_comp( fd_tickcount() ) );
+      /* sz=0: nothing written to dcache; chunk pointer stays put. */
+      ctx->early_leader_notify_sent_slot = ctx->next_leader_slot;
+      FD_LOG_NOTICE(( "poh_early_leader_notify slot=%lu expected_start_ns=%ld now_ns=%ld lead_ms=%ld",
+                      ctx->next_leader_slot, expected_ns, now_ns_early,
+                      (expected_ns - now_ns_early) / 1000000L ));
+    }
+  }
+
   if( FD_UNLIKELY( is_leader && !ctx->current_leader_bank ) ) {
     /* If we are the leader, but we didn't yet learn what the leader
        bank object is from the replay stage, do not do any hashing.
@@ -2282,9 +2316,10 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->slot                  = 0UL;
   ctx->hashcnt               = 0UL;
   ctx->last_hashcnt          = 0UL;
-  ctx->highwater_leader_slot = ULONG_MAX;
-  ctx->next_leader_slot      = ULONG_MAX;
-  ctx->reset_slot            = ULONG_MAX;
+  ctx->highwater_leader_slot           = ULONG_MAX;
+  ctx->next_leader_slot                = ULONG_MAX;
+  ctx->early_leader_notify_sent_slot   = ULONG_MAX;
+  ctx->reset_slot                      = ULONG_MAX;
 
   ctx->lagged_consecutive_leader_start = tile->poh.lagged_consecutive_leader_start;
   ctx->expect_sequential_leader_slot = ULONG_MAX;

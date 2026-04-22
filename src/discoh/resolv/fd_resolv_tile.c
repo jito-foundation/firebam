@@ -403,9 +403,20 @@ after_frag( fd_resolv_ctx_t *   ctx,
   }
 
   int is_bundle_member = !!txnm->block_engine.bundle_id;
+  int is_bam_txn       = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
   int is_durable_nonce = fd_resolv_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
 
-  if( FD_UNLIKELY( !is_bundle_member && !is_durable_nonce && !blockhash ) ) {
+  /* BAM txns bypass the stash below and are forwarded to pack immediately
+     even when their blockhash is not yet in our map.  In that case,
+     reference_slot was set to completed_slot above, which may still be 0
+     at startup (before the first completed-bank message).  Pack uses
+     reference_slot as blockhash_slot and evicts bundles where
+     blockhash_slot < oldest_live_slot = current_slot - 160.  Avoid the
+     false expiry by falling back to root_slot when completed_slot is 0. */
+  if( FD_UNLIKELY( is_bam_txn && !blockhash ) )
+    txnm->reference_slot = fd_ulong_max( ctx->root_slot, ctx->completed_slot );
+
+  if( FD_UNLIKELY( !is_bundle_member && !is_bam_txn && !is_durable_nonce && !blockhash ) ) {
     ulong pool_idx;
     if( FD_UNLIKELY( !pool_free( ctx->pool ) ) ) {
       pool_idx = lru_list_idx_pop_tail( ctx->lru_list, ctx->pool );
