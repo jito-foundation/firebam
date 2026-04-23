@@ -5,6 +5,7 @@
 #include "fd_pack_unwritable.h"
 #include "fd_chkdup.h"
 #include "fd_pack_tip_prog_blacklist.h"
+#include "../fd_txn_m.h"
 #include <math.h> /* for sqrt */
 #include <stddef.h> /* for offsetof */
 #include "../metrics/fd_metrics.h"
@@ -199,6 +200,12 @@ typedef struct fd_pack_bitset_acct_mapping fd_pack_bitset_acct_mapping_t;
 
 /* Returns 1 if x.rewards/x.compute < y.rewards/y.compute. Not robust. */
 #define COMPARE_WORSE(x,y) ( ((ulong)((x)->rewards)*(ulong)((y)->compute_est)) < ((ulong)((y)->rewards)*(ulong)((x)->compute_est)) )
+
+/* Bundle insertion uses reward/cost encoding so bundle transaction order can
+   live in the same treap ordering relation as normal transactions. */
+#define BUNDLE_L_PRIME 37896771UL
+#define BUNDLE_N       312671UL
+#define RC_TO_REL_BUNDLE_IDX( r, c ) (BUNDLE_N - ((ulong)(r) * 1UL<<32)/((ulong)(c) * BUNDLE_L_PRIME))
 
 /* Declare all the data structures */
 
@@ -650,6 +657,10 @@ FD_STATIC_ASSERT( offsetof(fd_pack_t, pending_txn_cnt)==FD_PACK_PENDING_TXN_CNT_
 /* Forward-declare some helper functions */
 static ulong delete_transaction( fd_pack_t * pack, fd_pack_ord_txn_t * txn, int delete_full_bundle, int move_from_penalty_treap );
 static inline void insert_bundle_impl( fd_pack_t * pack, ulong bundle_idx, ulong txn_cnt, fd_pack_ord_txn_t * * bundle, ulong expires_at );
+static inline ulong fd_pack_bundle_idx( fd_pack_ord_txn_t const * txn );
+static inline treap_rev_iter_t fd_pack_bundle_next( treap_rev_iter_t cur, fd_pack_ord_txn_t * pool );
+static int fd_pack_bundle_conflicts( fd_pack_t * pack, treap_rev_iter_t a0, treap_rev_iter_t b0 );
+static int fd_pack_try_schedule_bundle_candidate( fd_pack_t * pack, ulong bank_tile, fd_txn_e_t * out, treap_rev_iter_t _txn0, ulong bundle_idx, int is_ib );
 
 FD_FN_PURE ulong
 fd_pack_footprint( ulong                    pack_depth,
@@ -763,6 +774,8 @@ fd_pack_new( void                   * mem,
   pack->expire_before               = 0UL;
   pack->outstanding_microblock_mask = 0UL;
   pack->cumulative_rebated_cus      = 0UL;
+  pack->initializer_bundle_state    = FD_PACK_IB_STATE_NOT_INITIALIZED;
+  pack->relative_bundle_idx         = 0UL;
 
 
   trp_pool_new(  _pool,        pack_depth+extra_depth );
@@ -1423,10 +1436,104 @@ fd_pack_insert_bundle_cancel( fd_pack_t          * pack,
   for( ulong i=0UL; i<txn_cnt; i++ ) trp_pool_ele_release( pack->pool, (fd_pack_ord_txn_t*)bundle[ txn_cnt-1UL-i ] );
 }
 
-/* Explained below */
-#define BUNDLE_L_PRIME 37896771UL
-#define BUNDLE_N       312671UL
-#define RC_TO_REL_BUNDLE_IDX( r, c ) (BUNDLE_N - ((ulong)(r) * 1UL<<32)/((ulong)(c) * BUNDLE_L_PRIME))
+static inline ulong
+fd_pack_bundle_idx( fd_pack_ord_txn_t const * txn ) {
+  return RC_TO_REL_BUNDLE_IDX( txn->rewards, txn->compute_est );
+}
+
+static inline treap_rev_iter_t
+fd_pack_bundle_next( treap_rev_iter_t   cur,
+                     fd_pack_ord_txn_t * pool ) {
+  if( FD_UNLIKELY( treap_rev_iter_done( cur ) ) ) return cur;
+  ulong bundle_idx = fd_pack_bundle_idx( treap_rev_iter_ele( cur, pool ) );
+  do { cur = treap_rev_iter_next( cur, pool ); }
+  while( FD_LIKELY( !treap_rev_iter_done( cur ) && fd_pack_bundle_idx( treap_rev_iter_ele( cur, pool ) )==bundle_idx ) );
+  return cur;
+}
+
+/* Returns non-zero if bundle a0 conflicts with bundle b0 under BAM prio-graph
+   R/W semantics.  This helper only uses a temporary map sized for one bundle,
+   so it clears map state before and after each comparison. */
+static int
+fd_pack_bundle_conflicts( fd_pack_t *         pack,
+                          treap_rev_iter_t    a0,
+                          treap_rev_iter_t    b0 ) {
+  fd_pack_addr_use_t * temp_map = pack->bundle_temp_map;
+  fd_pack_addr_use_t   null_use[1] = {{{{ 0 }}, { 0 }}};
+  fd_pack_ord_txn_t *  pool = pack->pool;
+
+  acct_uses_clear( temp_map );
+
+  /* First pass: summarize bundle A's account footprint.  We record every
+     touched account and mark which ones are writable. */
+  ulong a_idx = fd_pack_bundle_idx( treap_rev_iter_ele( a0, pool ) );
+  for( treap_rev_iter_t _cur=a0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
+    fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
+    if( FD_UNLIKELY( fd_pack_bundle_idx( cur )!=a_idx ) ) break;
+
+    fd_txn_t const * txn = TXN( cur->txn );
+    fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, cur->txn->payload );
+    fd_acct_addr_t const * alt_adj = cur->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+
+    for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
+         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
+      fd_pack_addr_use_t * use = acct_uses_query( temp_map, acct, null_use );
+      if( FD_LIKELY( use==null_use ) ) {
+        use = acct_uses_insert( temp_map, acct );
+        use->in_use_by = 0UL;
+      }
+      use->in_use_by |= FD_PACK_IN_USE_WRITABLE;
+    }
+
+    for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_READONLY );
+         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      fd_acct_addr_t const * acct = ACCT_ITER_TO_PTR( iter );
+      if( fd_pack_unwritable_contains( acct ) ) continue;
+      if( FD_LIKELY( acct_uses_query( temp_map, *acct, null_use )==null_use ) ) {
+        fd_pack_addr_use_t * use = acct_uses_insert( temp_map, *acct );
+        use->in_use_by = 0UL;
+      }
+    }
+  }
+
+  int conflict = 0;
+  /* Second pass: probe bundle B against A's footprint.  Any write overlap
+     or readonly-vs-writable overlap means B is blocked behind A. */
+  ulong b_idx = fd_pack_bundle_idx( treap_rev_iter_ele( b0, pool ) );
+  for( treap_rev_iter_t _cur=b0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
+    fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
+    if( FD_UNLIKELY( fd_pack_bundle_idx( cur )!=b_idx ) ) break;
+
+    fd_txn_t const * txn = TXN( cur->txn );
+    fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, cur->txn->payload );
+    fd_acct_addr_t const * alt_adj = cur->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+
+    for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
+         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
+      if( FD_UNLIKELY( acct_uses_query( temp_map, acct, null_use )!=null_use ) ) {
+        conflict = 1;
+        goto done;
+      }
+    }
+
+    for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_READONLY );
+         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      fd_acct_addr_t const * acct = ACCT_ITER_TO_PTR( iter );
+      if( fd_pack_unwritable_contains( acct ) ) continue;
+
+      if( FD_UNLIKELY( acct_uses_query( temp_map, *acct, null_use )->in_use_by & FD_PACK_IN_USE_WRITABLE ) ) {
+        conflict = 1;
+        goto done;
+      }
+    }
+  }
+
+done:
+  acct_uses_clear( temp_map );
+  return conflict;
+}
 
 int
 fd_pack_insert_bundle_fini( fd_pack_t          * pack,
@@ -1662,9 +1769,6 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
      Note that this is all checked by a proof of the code translated
      into Z3.  Unfortunately CBMC was too slow to prove this code
      directly. */
-#define BUNDLE_L_PRIME 37896771UL
-#define BUNDLE_N       312671UL
-
   if( FD_UNLIKELY( pack->relative_bundle_idx>BUNDLE_N ) ) {
     FD_LOG_WARNING(( "Too many bundles inserted without allowing pending bundles to go empty. "
                      "Ordering of bundles may be incorrect." ));
@@ -2010,6 +2114,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, pack_alloc     )+sizeof(((fd_txn_p_t*)NULL)->pack_alloc    )<=1280UL, nt_memcpy );
 
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, flags          )+sizeof(((fd_txn_p_t*)NULL)->flags         )<=1280UL, nt_memcpy );
+      FD_STATIC_ASSERT( offsetof(fd_txn_p_t, bam            )+sizeof(((fd_txn_p_t*)NULL)->bam           )<=1280UL, nt_memcpy );
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, _              )                                            <=1280UL, nt_memcpy );
       const ulong offset_into_txn = 1280UL - offsetof(fd_txn_p_t, _ );
       fd_memcpy( offset_into_txn+(uchar *)TXN(out_txnp), offset_into_txn+(uchar const *)txn,
@@ -2026,6 +2131,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
       out_txnp->source_tpu                      = cur->txn->source_tpu;
       out_txnp->source_ipv4                     = cur->txn->source_ipv4;
       out_txnp->flags                           = cur->txn->flags;
+      out_txnp->bam                             = cur->txn->bam;
     }
     /* Copy the ALT accounts from the source fd_txn_e_t */
     ulong alt_acct_cnt = (ulong)txn->addr_table_adtl_cnt;
@@ -2264,32 +2370,74 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   fd_pack_ord_txn_t * pool    = pack->pool;
   treap_t           * bundles = pack->pending_bundles;
 
-  int require_ib;
-  if( FD_UNLIKELY( state==FD_PACK_IB_STATE_NOT_INITIALIZED ) ) { require_ib = 1; }
-  if( FD_LIKELY  ( state==FD_PACK_IB_STATE_READY           ) ) { require_ib = 0; }
+  int saw_conflict   = 0;
+  int saw_doesnt_fit = 0;
 
-  treap_rev_iter_t _cur  = treap_rev_iter_init( bundles, pool );
-  ulong bundle_idx = ULONG_MAX;
+  for( treap_rev_iter_t _txn0=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _txn0 ); _txn0=fd_pack_bundle_next( _txn0, pool ) ) {
+    fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
+    ulong bundle_idx = fd_pack_bundle_idx( txn0 );
+    _Bool const cand_is_bam = txn0->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+    uint  const cand_seq    = cand_is_bam ? txn0->txn->bam.seq_id : 0U;
 
-  /* Skip any that we've marked as won't fit in this block */
-  while( FD_UNLIKELY( !treap_rev_iter_done( _cur ) && treap_rev_iter_ele( _cur, pool )->skip==pack->compressed_slot_number ) ) {
-    _cur = treap_rev_iter_next( _cur, pool );
-    pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
+    if( FD_UNLIKELY( txn0->skip==pack->compressed_slot_number ) ) {
+      for( treap_rev_iter_t _cur=_txn0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
+        if( FD_UNLIKELY( fd_pack_bundle_idx( treap_rev_iter_ele( _cur, pool ) )!=bundle_idx ) ) break;
+        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
+      }
+      continue;
+    }
+
+    int is_ib = !!(txn0->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
+    if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_NOT_INITIALIZED) & !is_ib ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
+
+    int blocked_by_prior = 0;
+    /* Conflicting BAM bundles resolve by lower seq_id first; insertion order is
+       only the tie-breaker after that priority. */
+    for( treap_rev_iter_t _other=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _other ); _other=fd_pack_bundle_next( _other, pool ) ) {
+      if( FD_UNLIKELY( _other==_txn0 ) ) continue;
+      fd_pack_ord_txn_t * other = treap_rev_iter_ele( _other, pool );
+      ulong const other_bundle_idx = fd_pack_bundle_idx( other );
+      if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) continue;
+      if( FD_LIKELY( !fd_pack_bundle_conflicts( pack, _other, _txn0 ) ) ) continue;
+
+      if( FD_UNLIKELY( cand_is_bam && other->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+        uint const other_seq = other->txn->bam.seq_id;
+        if( FD_UNLIKELY( other_seq != cand_seq ) ) {
+          if( FD_LIKELY( other_seq > cand_seq ) ) continue;
+        } else if( FD_LIKELY( other_bundle_idx > bundle_idx ) ) continue;
+      } else if( FD_LIKELY( other_bundle_idx > bundle_idx ) ) continue;
+
+      blocked_by_prior = 1;
+      break;
+    }
+    if( FD_UNLIKELY( blocked_by_prior ) ) {
+      saw_conflict = 1;
+      continue;
+    }
+
+    int bundle_result = fd_pack_try_schedule_bundle_candidate( pack, bank_tile, out, _txn0, bundle_idx, is_ib );
+    if( FD_UNLIKELY( bundle_result>0 ) ) return bundle_result;
+    if( FD_UNLIKELY( bundle_result==TRY_BUNDLE_HAS_CONFLICTS ) ) {
+      saw_conflict = 1;
+    } else {
+      FD_TEST( bundle_result==TRY_BUNDLE_DOES_NOT_FIT );
+      saw_doesnt_fit = 1;
+    }
   }
 
-  if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
+  if( FD_UNLIKELY( saw_conflict   ) ) return TRY_BUNDLE_HAS_CONFLICTS;
+  if( FD_UNLIKELY( saw_doesnt_fit ) ) return TRY_BUNDLE_DOES_NOT_FIT;
+  return TRY_BUNDLE_NO_READY_BUNDLES;
+}
 
-  treap_rev_iter_t   _txn0 = _cur;
-  fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
-  int is_ib = !!(txn0->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
-  bundle_idx = RC_TO_REL_BUNDLE_IDX( txn0->rewards, txn0->compute_est );
-
-  if( FD_UNLIKELY( require_ib & !is_ib ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
-
-  /* At this point, we have our candidate bundle, so we'll schedule it
-     if we can.  If we can't, we won't schedule anything. */
-
-
+static int
+fd_pack_try_schedule_bundle_candidate( fd_pack_t       * pack,
+                                       ulong             bank_tile,
+                                       fd_txn_e_t      * out,
+                                       treap_rev_iter_t  _txn0,
+                                       ulong             bundle_idx,
+                                       int               is_ib ) {
+  fd_pack_ord_txn_t * pool = pack->pool;
   fd_pack_addr_use_t * bundle_temp_inserted[ FD_PACK_MAX_TXN_PER_BUNDLE * FD_TXN_ACCT_ADDR_MAX ];
   ulong bundle_temp_inserted_cnt = 0UL;
 
@@ -2317,9 +2465,12 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
   fd_pack_addr_use_t   null_use[1]    = {{{{ 0 }}, { 0 }}};
 
+  /* Dry-run one bundle into scratch state only.  We stop at first hard
+     limit hit or external conflict. */
+  treap_rev_iter_t _cur = _txn0;
   while( !(doesnt_fit | has_conflict) & !treap_rev_iter_done( _cur ) ) {
     fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
-    ulong this_bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+    ulong this_bundle_idx = fd_pack_bundle_idx( cur );
     if( FD_UNLIKELY( this_bundle_idx!=bundle_idx ) ) break;
 
     if( FD_UNLIKELY( cur->compute_est>cu_limit ) ) {
@@ -2433,10 +2584,9 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     txn_cnt++;
     _cur = treap_rev_iter_next( _cur, pool );
   }
-  int retval = fd_int_if( doesnt_fit, TRY_BUNDLE_DOES_NOT_FIT,
-                                      fd_int_if( has_conflict, TRY_BUNDLE_HAS_CONFLICTS, TRY_BUNDLE_SUCCESS( (int)txn_cnt ) ) );
-
-  if( FD_UNLIKELY( retval<=0 ) ) {
+  if( FD_UNLIKELY( doesnt_fit | has_conflict ) ) {
+    /* Rejected candidate: clear every scratch insertion before returning. */
+    int retval = fd_int_if( doesnt_fit, TRY_BUNDLE_DOES_NOT_FIT, TRY_BUNDLE_HAS_CONFLICTS );
     for( ulong i=0UL; i<bundle_temp_inserted_cnt; i++ ) {
       acct_uses_remove( pack->bundle_temp_map, bundle_temp_inserted[ bundle_temp_inserted_cnt-i-1UL ] );
     }
@@ -2447,7 +2597,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
       for( _cur=_txn0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
         fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
-        ulong this_bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+        ulong this_bundle_idx = fd_pack_bundle_idx( cur );
         if( FD_UNLIKELY( this_bundle_idx!=bundle_idx ) ) break;
 
         /* See fd_pack_schedule_impl for this line */
@@ -2470,6 +2620,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   fd_pack_addr_use_t * use_by_bank     = pack->use_by_bank    [bank_tile];
   ulong              * use_by_bank_txn = pack->use_by_bank_txn[bank_tile];
   ulong cum_sum = 0UL;
+  /* Prefix sums turn "last use in txn k" counts into stable write offsets. */
   for( ulong k=0UL; k<txn_cnt; k++ ) { use_by_bank_txn[k] = cum_sum; cum_sum += last_use_in_txn_cnt[ k+1UL ]; }
   pack->use_by_bank_cnt[bank_tile] = cum_sum;
 
@@ -2490,6 +2641,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     out_txnp->source_tpu                      = cur->txn->source_tpu;
     out_txnp->source_ipv4                     = cur->txn->source_ipv4;
     out_txnp->flags                           = cur->txn->flags;
+    out_txnp->bam                             = cur->txn->bam;
     /* Copy the ALT accounts from the source fd_txn_e_t */
     ulong alt_acct_cnt = (ulong)txn->addr_table_adtl_cnt;
     fd_memcpy( out->alt_accts, cur->txn_e->alt_accts, alt_acct_cnt * sizeof(fd_acct_addr_t) );
@@ -2552,9 +2704,8 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   if( FD_UNLIKELY( is_ib ) ) {
     pack->initializer_bundle_state = FD_PACK_IB_STATE_PENDING;
   }
-  return retval;
+  return TRY_BUNDLE_SUCCESS( (int)txn_cnt );
 }
-
 
 ulong
 fd_pack_schedule_next_microblock( fd_pack_t *  pack,

@@ -1,0 +1,58 @@
+[gossip]
+entrypoints = [
+    "entrypoint.mainnet-beta.solana.com:8001",
+    "entrypoint2.mainnet-beta.solana.com:8001",
+    "entrypoint3.mainnet-beta.solana.com:8001",
+    "entrypoint4.mainnet-beta.solana.com:8001",
+    "entrypoint5.mainnet-beta.solana.com:8001",
+]
+
+[snapshots]
+minimum_snapshot_download_speed = 104857600 # 100 MiB/sec
+path = "/solana/snapshots"
+
+[ledger]
+path = "/solana/ledger"
+accounts_path = "/solana/accounts"
+
+[consensus]
+identity_path = "/home/{user}/keys/validator-keypair.json"
+vote_account_path = "/home/{user}/keys/validator-vote.json"
+authorized_voter_paths = ["/home/{user}/keys/validator-keypair.json"] # remove, this is for testing jito infra
+expected_genesis_hash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+known_validators = [
+    "7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2",
+    "GdnSyH3YtwcxFvQrVVJMm1JhTS4QVX7MFsX56uJLUfiZ",
+    "DE1bawNcRJB9rVm3buyMVfr8mBEoyyu73NBovf2oXJsJ",
+    "CakcnaRDHka2gXyfbEd2d3xsvkJkqsLw2akB3zsN1D2S",
+]
+#snapshot_fetch = false
+
+[rpc]
+port = 8899
+full_api = true
+private = true
+
+[development]
+sandbox = false
+core_dump = true
+no_clone = false
+
+[reporting]
+solana_metrics_config = "host=https://metrics.solana.com:8086,db=mainnet-beta,u=mainnet-beta_write,p=password"
+
+[tiles.bundle]
+enabled = true
+url = "https://mainnet.block-engine.jito.wtf"
+tip_distribution_program_addr = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
+tip_payment_program_addr = "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
+tip_distribution_authority = "8F4jGUmxF36vQ6yabnsxX6AQVXdKBhs8kGSUuRKSg8Xt"
+commission_bps = 800
+
+[tiles.bam]
+enabled = true
+url = "http://mainnet.bam.jito.wtf"
+keepalive_interval_millis = 5000
+
+[tiles.gui]
+gui_listen_address = "0.0.0.0"

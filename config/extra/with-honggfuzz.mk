@@ -13,3 +13,7 @@ FD_HAS_FUZZ:=1
 # pull them from the archive on the first pass.
 LDFLAGS+=-Wl,--undefined=hfuzz_metrics_register_module
 LDFLAGS+=-Wl,--undefined=hfuzz_metrics_register_pc_table
+
+ifeq ($(FD_USING_CLANG),1)
+CPPFLAGS+=-Wno-unknown-attributes
+endif

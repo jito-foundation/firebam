@@ -11,6 +11,7 @@
 #include "../../disco/fd_txn_m.h"
 #include "../tower/fd_tower_tile.h"
 #include "../restore/utils/fd_ssmsg.h"
+#include "../../disco/bam/fd_bam_types.h"
 
 #define IN_KIND_GOSSVF        (0)
 #define IN_KIND_SHRED_VERSION (1)
@@ -19,6 +20,7 @@
 #define IN_KIND_EPOCH         (4)
 #define IN_KIND_TOWER         (5)
 #define IN_KIND_SNAPIN_MANIF  (6)
+#define IN_KIND_BAM_GOSSIP    (7)
 
 /* Symbols exported by version.c */
 extern ulong const firedancer_major_version;
@@ -332,6 +334,24 @@ handle_local_duplicate_shred( fd_gossip_tile_ctx_t *            ctx,
   }
 }
 
+void
+fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
+                                  fd_bam_contact_update_t const * update,
+                                  long                            now ) {
+
+  fd_ip4_port_t tpu     = update->tpu;
+  fd_ip4_port_t tpu_fwd = update->tpu_fwd;
+
+  fd_gossip_socket_t tpu_sock     = { .is_ipv6 = 0, .ip4 = tpu.addr,     .port = tpu.port     };
+  fd_gossip_socket_t tpu_fwd_sock = { .is_ipv6 = 0, .ip4 = tpu_fwd.addr, .port = tpu_fwd.port };
+
+  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ]               = tpu_sock;
+  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ]      = tpu_fwd_sock;
+  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ]          = tpu_sock;
+  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ] = tpu_fwd_sock;
+  fd_gossip_set_my_contact_info( ctx->gossip, ctx->my_contact_info, now );
+}
+
 static inline int
 returnable_frag( fd_gossip_tile_ctx_t * ctx,
                  ulong                  in_idx,
@@ -397,6 +417,16 @@ returnable_frag( fd_gossip_tile_ctx_t * ctx,
       FD_MGAUGE_SET( GOSSIP, WFS_STAKED_PEERS_TOTAL, ctx->wfs_peers.total );
       FD_MGAUGE_SET( GOSSIP, WFS_STAKE_TOTAL,        ctx->wfs_stake.total );
 
+      break;
+    }
+    case IN_KIND_BAM_GOSSIP: {
+      if( FD_UNLIKELY( sz!=sizeof(fd_bam_contact_update_t) ) ) {
+        FD_LOG_WARNING(( "Unexpected BAM gossip update size %lu", sz ));
+        break;
+      }
+      fd_bam_contact_update_t const * update = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
+      long now = ctx->last_wallclock + (long)((double)(fd_tickcount()-ctx->last_tickcount)/ctx->ticks_per_ns);
+      fd_gossip_tile_apply_bam_contact( ctx, update, now );
       break;
     }
     default: FD_LOG_ERR(( "unreachable" ));
@@ -496,6 +526,8 @@ unprivileged_init( fd_topo_t *      topo,
       ctx->in[ i ].kind = IN_KIND_TOWER;
     } else if( FD_UNLIKELY( !strcmp( link->name, "snapin_manif" ) ) ) {
       ctx->in[ i ].kind = IN_KIND_SNAPIN_MANIF;
+    } else if( FD_UNLIKELY( !strcmp( link->name, "bam_gossip" ) ) ) {
+      ctx->in[ i ].kind = IN_KIND_BAM_GOSSIP;
     } else {
       FD_LOG_ERR(( "unexpected input link name %s", link->name ));
     }

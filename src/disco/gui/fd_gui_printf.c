@@ -1,6 +1,7 @@
 #include "fd_gui_printf.h"
 #include "fd_gui_config_parse.h"
 
+#include "../plugin/fd_plugin.h"
 #include "../../waltz/http/fd_http_server_private.h"
 #include "../../ballet/utf8/fd_utf8.h"
 #include "../../disco/fd_txn_m.h"
@@ -640,6 +641,63 @@ fd_gui_printf_block_engine( fd_gui_t * gui ) {
 }
 
 void
+fd_gui_printf_bam( fd_gui_t * gui ) {
+  jsonp_open_envelope( gui->http, "bam", "update" );
+    jsonp_open_object( gui->http, "value" );
+      jsonp_string( gui->http, "name",   gui->bam.name );
+      jsonp_string( gui->http, "url",    gui->bam.url );
+      jsonp_string( gui->http, "sni",    gui->bam.sni );
+      jsonp_string( gui->http, "ip",     gui->bam.ip_cstr );
+      jsonp_string( gui->http, "tpu",    gui->bam.tpu_cstr );
+      jsonp_string( gui->http, "tpu_fwd",gui->bam.tpu_fwd_cstr );
+      jsonp_ulong(  gui->http, "enabled", gui->bam.enabled );
+      if( FD_LIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED ) )      jsonp_string( gui->http, "status", "disabled" );
+      else if( FD_LIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED ) ) jsonp_string( gui->http, "status", "disconnected" );
+      else if( FD_LIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) ) jsonp_string( gui->http, "status", "connecting" );
+      else if( FD_LIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY ) ) jsonp_string( gui->http, "status", "connected-unhealthy" );
+      else if( FD_LIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) jsonp_string( gui->http, "status", "connected-healthy" );
+      else                                                                               jsonp_string( gui->http, "status", "unexpected" );
+
+      jsonp_double( gui->http, "keepalive_rtt_sample",     (double)gui->bam.keepalive_rtt_sample );
+      jsonp_double( gui->http, "keepalive_rtt_smoothed",   (double)gui->bam.keepalive_rtt_smoothed );
+      jsonp_double( gui->http, "keepalive_rtt_deviation",  (double)gui->bam.keepalive_rtt_deviation );
+      jsonp_ulong(  gui->http, "feedback_queue_depth", gui->bam.feedback_queue_depth );
+      jsonp_ulong(  gui->http, "outbound_heartbeat_enqueued", gui->bam.outbound_heartbeat_enqueued );
+      jsonp_ulong(  gui->http, "outbound_heartbeat_enqueue_fail", gui->bam.outbound_heartbeat_enqueue_fail );
+      jsonp_ulong(  gui->http, "builder_heartbeats_decoded", gui->bam.builder_heartbeats_decoded );
+      jsonp_ulong(  gui->http, "transaction_published", gui->bam.transaction_published );
+      jsonp_ulong(  gui->http, "atomic_batch_published", gui->bam.atomic_batch_published );
+      jsonp_ulong(  gui->http, "ingress_packet_oversize", gui->bam.ingress_packet_oversize );
+      jsonp_ulong(  gui->http, "failure_auth_challenge_decode", gui->bam.failure_auth_challenge_decode );
+      jsonp_ulong(  gui->http, "failure_config_decode", gui->bam.failure_config_decode );
+      jsonp_ulong(  gui->http, "failure_scheduler_envelope_decode", gui->bam.failure_scheduler_envelope_decode );
+      jsonp_ulong(  gui->http, "failure_request_failed", gui->bam.failure_request_failed );
+      jsonp_ulong(  gui->http, "failure_resolve", gui->bam.failure_resolve );
+      jsonp_ulong(  gui->http, "failure_connect", gui->bam.failure_connect );
+      jsonp_ulong(  gui->http, "failure_io", gui->bam.failure_io );
+      jsonp_ulong(  gui->http, "failure_unsupported_version", gui->bam.failure_unsupported_version );
+      jsonp_ulong(  gui->http, "failure_request_timeout", gui->bam.failure_request_timeout );
+      jsonp_ulong(  gui->http, "failure_keepalive_timeout", gui->bam.failure_keepalive_timeout );
+      jsonp_ulong(  gui->http, "failure_builder_activity_timeout", gui->bam.failure_builder_activity_timeout );
+      jsonp_ulong(  gui->http, "ingress_multi_message_received", gui->bam.ingress_multi_message_received );
+      jsonp_ulong(  gui->http, "ingress_batch_commit_attempt", gui->bam.ingress_batch_commit_attempt );
+      jsonp_ulong(  gui->http, "ingress_batch_published", gui->bam.ingress_batch_published );
+      jsonp_ulong(  gui->http, "ingress_batch_rejected_invalid_batch", gui->bam.ingress_batch_rejected_invalid_batch );
+      jsonp_ulong(  gui->http, "ingress_batch_rejected_empty_batch", gui->bam.ingress_batch_rejected_empty_batch );
+      jsonp_ulong(  gui->http, "ingress_batch_rejected_vote_transaction", gui->bam.ingress_batch_rejected_vote_transaction );
+      jsonp_ulong(  gui->http, "ingress_batch_rejected_non_revert_multi_packet", gui->bam.ingress_batch_rejected_non_revert_multi_packet );
+      jsonp_ulong(  gui->http, "ingress_message_rejected_empty_message", gui->bam.ingress_message_rejected_empty_message );
+      jsonp_ulong(  gui->http, "ingress_message_rejected_overflow_message", gui->bam.ingress_message_rejected_overflow_message );
+      jsonp_ulong(  gui->http, "leader_slot_end_status_disabled", gui->bam.leader_slot_end_status_disabled );
+      jsonp_ulong(  gui->http, "leader_slot_end_status_disconnected", gui->bam.leader_slot_end_status_disconnected );
+      jsonp_ulong(  gui->http, "leader_slot_end_status_connecting", gui->bam.leader_slot_end_status_connecting );
+      jsonp_ulong(  gui->http, "leader_slot_end_status_connected_unhealthy", gui->bam.leader_slot_end_status_connected_unhealthy );
+      jsonp_ulong(  gui->http, "leader_slot_end_status_connected_healthy", gui->bam.leader_slot_end_status_connected_healthy );
+    jsonp_close_object( gui->http );
+  jsonp_close_envelope( gui->http );
+}
+
+void
 fd_gui_printf_tiles( fd_gui_t * gui ) {
   jsonp_open_envelope( gui->http, "summary", "tiles" );
     jsonp_open_array( gui->http, "value" );
@@ -784,6 +842,7 @@ fd_gui_printf_waterfall( fd_gui_t *               gui,
       jsonp_ulong( gui->http, "udp",             cur->in.udp    - prev->in.udp );
       jsonp_ulong( gui->http, "gossip",          cur->in.gossip - prev->in.gossip );
       jsonp_ulong( gui->http, "block_engine",    cur->in.block_engine - prev->in.block_engine );
+      jsonp_ulong( gui->http, "bam",             cur->in.bam    - prev->in.bam );
     jsonp_close_object( gui->http );
 
     jsonp_open_object( gui->http, "out" );
@@ -2015,6 +2074,10 @@ fd_gui_printf_slot_transactions_request( fd_gui_t * gui,
                 case FD_TXN_M_TPU_SOURCE_TXSEND: {
                   jsonp_string( gui->http, NULL, "send");
                   break;
+                }
+                case FD_TXN_M_TPU_SOURCE_BAM: {
+                      jsonp_string( gui->http, NULL, "bam");
+                      break;
                 }
                 default: FD_LOG_ERR(("unknown tpu"));
               }
