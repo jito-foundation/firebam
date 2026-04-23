@@ -8,12 +8,9 @@ tls_domain_name = ""
 keepalive_interval_millis = 5000
 tls_cert_verify = false
 
-[development.netns]
-enabled = false
-
 [development]
 sandbox = false
-core_dump = true
+core_dump = "regular"
 
 [development.bam]
 dump_bam_txns = true

@@ -366,7 +366,7 @@ fd_topo_initialize( config_t * config ) {
     FOR(verify_tile_cnt) fd_topob_link( topo, "bank_bam",   "bank_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
     /**/                 fd_topob_link( topo, "bam_shred",  "bam_shred",  128UL,                                    sizeof(fd_bam_shred_update_t), 1UL );
 
-    /**/                 fd_topob_tile( topo, "bam",     "bam",     "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1 );
+    /**/                 fd_topob_tile( topo, "bam",     "bam",     "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1,                 0 );
 
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_verif",    0UL                                                );
     FOR(verify_tile_cnt) fd_topob_tile_in(  topo, "verify", i,             "metric_in", "bam_verif",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
@@ -472,15 +472,11 @@ fd_topo_initialize( config_t * config ) {
     }
     FD_TEST( fd_pod_insertf_ulong( topo->props, bam_status_obj->id, "bam_status" ) );
 
-    fd_topo_obj_t * bam_ctrl_obj = fd_topob_obj( topo, "opaque", "bam_ctrl" );
-    FD_TEST( fd_pod_insertf_ulong( topo->props, sizeof(fd_bam_ctrl_t), "obj.%lu.footprint", bam_ctrl_obj->id ) );
-    FD_TEST( fd_pod_insertf_ulong( topo->props, alignof(fd_bam_ctrl_t), "obj.%lu.align",     bam_ctrl_obj->id ) );
+    fd_topo_obj_t * bam_ctrl_obj = fd_topob_obj( topo, "bam_ctrl", "bam_ctrl" );
     fd_topob_tile_uses( topo, bam_tile, bam_ctrl_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
     FD_TEST( fd_pod_insertf_ulong( topo->props, bam_ctrl_obj->id, "bam_ctrl" ) );
 
-    fd_topo_obj_t * bam_fee_cfg_obj = fd_topob_obj( topo, "opaque", "bam_fee_cfg" );
-    FD_TEST( fd_pod_insertf_ulong( topo->props, sizeof(fd_bam_fee_cfg_t), "obj.%lu.footprint", bam_fee_cfg_obj->id ) );
-    FD_TEST( fd_pod_insertf_ulong( topo->props, alignof(fd_bam_fee_cfg_t), "obj.%lu.align",     bam_fee_cfg_obj->id ) );
+    fd_topo_obj_t * bam_fee_cfg_obj = fd_topob_obj( topo, "bam_fee_cfg", "bam_fee_cfg" );
     fd_topob_tile_uses( topo, bam_tile, bam_fee_cfg_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
     fd_topo_tile_t * pack_tile = &topo->tiles[ fd_topo_find_tile( topo, "pack", 0UL ) ];
     fd_topob_tile_uses( topo, pack_tile, bam_fee_cfg_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
