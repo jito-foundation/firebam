@@ -159,7 +159,7 @@ struct fd_bam_tile {
   ulong            bank_bam_in_cnt;               /* Count of contiguous bank_bam durable result inputs */
   ulong            pack_bam_leader_in_idx;        /* Polled input index for pack_bam_ldr snapshot/control updates */
   ulong            pack_bam_result_in_idx;        /* Polled input index for pack_bam_res durable bundle feedback */
-  fd_bam_in_ctx_t  bank_in[ FD_PACK_MAX_EXECLE_TILES ]; /* Bank->BAM result ingress dcache contexts */
+  fd_bam_in_ctx_t  bank_in[ FD_TILE_MAX ];        /* Result ingress dcache contexts */
   fd_bam_in_ctx_t  pack_leader_in;                /* Pack->BAM latest-value-wins leader-state ingress */
   fd_bam_in_ctx_t  pack_result_in;                /* Pack->BAM durable result ingress */
   uchar            frag_staged_kind;              /* FD_BAM_FRAG_STAGED_* marker set by during_frag and consumed by after_frag; NONE means "drop/no-op". */

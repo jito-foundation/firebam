@@ -363,6 +363,7 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_link( topo, "pack_bam_ldr", "pack_bam_ldr", FD_BAM_MAX_PENDING_RESULTS, sizeof(fd_bam_leader_state_t),  1UL );
     /**/                 fd_topob_link( topo, "pack_bam_res", "pack_bam_res", FD_BAM_MAX_PENDING_RESULTS, sizeof(fd_bam_bundle_result_t), 1UL );
     FOR(bank_tile_cnt)   fd_topob_link( topo, "bank_bam",   "bank_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
+    FOR(verify_tile_cnt) fd_topob_link( topo, "bank_bam",   "bank_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
     /**/                 fd_topob_link( topo, "bam_shred",  "bam_shred",  128UL,                                    sizeof(fd_bam_shred_update_t), 1UL );
 
     /**/                 fd_topob_tile( topo, "bam",     "bam",     "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1 );
@@ -381,6 +382,8 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam_res", 0UL,            FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
     FOR(bank_tile_cnt)   fd_topob_tile_out( topo, "bank",   i,                          "bank_bam",     i                                                  );
     FOR(bank_tile_cnt)   fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     i,            FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+    FOR(verify_tile_cnt) fd_topob_tile_out( topo, "verify", i,                          "bank_bam",     bank_tile_cnt+i                                      );
+    FOR(verify_tile_cnt) fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     bank_tile_cnt+i, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_shred",    0UL                                                );
     FOR(shred_tile_cnt)  fd_topob_tile_in(  topo, "shred",  i,             "metric_in", "bam_shred",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
 

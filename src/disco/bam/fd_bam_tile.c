@@ -1165,7 +1165,7 @@ unprivileged_init( fd_topo_t *      topo,
     fd_topo_link_t const * link = &topo->links[ tile->in_link_id[ raw_in_idx ] ];
     if( FD_UNLIKELY( strcmp( link->name, "bank_bam" ) ) ) break;
     if( FD_UNLIKELY( !tile->in_link_poll[ raw_in_idx ] ) ) FD_LOG_ERR(( "bank_bam must be polled" ));
-    if( FD_UNLIKELY( ctx->bank_bam_in_cnt >= FD_PACK_MAX_EXECLE_TILES ) ) FD_LOG_ERR(( "too many bank_bam links" ));
+    if( FD_UNLIKELY( ctx->bank_bam_in_cnt >= FD_TILE_MAX ) ) FD_LOG_ERR(( "too many bank_bam links" ));
     ctx->bank_in[ ctx->bank_bam_in_cnt++ ] = bam_in_link( topo, link );
   }
 
