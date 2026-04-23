@@ -9,8 +9,8 @@ It is written so an engineer can reimplement BAM support clean-room, without rea
 
 Observed from:
 
-- jito-solana git commit `5f2900c3a531a70a2424f0254ba0b6b268db60ad`
-- bam git commit `f2c02f511a44a0190a9550504758d2228dfc79ac`
+- jito-solana git commit `5387c19431c99e6018395ff1a5f14a143a074773`
+- bam git commit `806e7ef69b3e850d0516bc95e0888117d466f21f`
 
 ## Terminology
 
@@ -33,10 +33,11 @@ Observed from:
 ## High-Level Behavior
 
 1. Validator connects to Node via gRPC, authenticates by signing a Node-provided challenge, and fetches config.
-2. While connected, validator updates its advertised TPU/TPU-forward addresses to point at Node-provided sockets, sends
-   leader state updates while it is leader, receives `AtomicTxnBatch` messages from Node, validates and schedules them
-   with account-aware conflict tracking, executes them against the active leader bank, and sends an
-   `AtomicTxnBatchResult` per received batch back to Node.
+2. While connected, validator sends leader state updates while it is leader, receives `AtomicTxnBatch` messages from
+   Node, validates and schedules them with account-aware conflict tracking, executes them against the active leader
+   bank, and sends an `AtomicTxnBatchResult` per received batch back to Node. If BAM TPU config is present and parses
+   successfully, the validator may also advertise Node-provided TPU/TPU-forward sockets once fetch-stage switches into
+   BAM TPU state.
 3. When BAM is connected, the validator switches non-vote scheduling to BAM-supplied batches. Block Engine
    streaming is suppressed only in the `Connected` state, and TPU packet forwarding is suppressed only when the
    validator has also accepted BAM TPU config and switched fetch-stage TPU gossip to BAM addresses.
@@ -169,8 +170,8 @@ reasons, including:
 
 - Not authenticating within `WAIT_FOR_AUTH_DURATION` (2s).
 - The validator becoming disabled by policy, or no longer being on the leader schedule.
-- A newer authenticated connection replacing an existing one for the same validator pubkey (the older stream terminates
-  with "Connection replaced").
+- A newer authenticated connection replacing an existing one for the same validator pubkey (the replaced stream
+  terminates with "Connection replaced").
 - The node reporting itself unhealthy, unless the validator is within `buffer_slot_lookahead` slots of an upcoming
   leader slot.
 - Sustained high mean network ping RTT above `max_ping_rtt_us` (default 30ms) for
@@ -184,7 +185,7 @@ reasons, including:
 `ConfigResponse` contains:
 
 - `block_engine_config { builder_pubkey, builder_commission }`
-- `bam_config { prio_fee_recipient_pubkey, commission_bps, tpu_sock, tpu_fwd_sock }`
+- `bam_config { prio_fee_recipient_pubkey, commission_bps, tpu_sock, tpu_fwd_sock, shred_sock[] }`
 
 Validator applies config live:
 
@@ -200,6 +201,10 @@ Validator applies config live:
    Parse and store `prio_fee_recipient_pubkey`. Parse failure preserves the prior stored value.
 4. `commission_bps`:
    Currently ignored by the validator.
+5. `shred_sock`:
+   Advertises BAM's embedded validator TVU UDP shred ingress. BAM currently emits the embedded
+   validator's advertised external TVU address, so a client can forward leader and
+   near-leader shreds there. The field is repeated to allow for multiple shred destinations in the future.
 
 The validator only reports itself as fully "Connected" when it is both heartbeat-healthy and has received at least one
 `ConfigResponse` (it does not require that all config fields parse successfully).
@@ -314,115 +319,86 @@ Node sends:
 
 Each `AtomicTxnBatch` contains:
 
-- `seq_id: u32` (Node-generated identifier used for both ordering and correlation of results. This should reset per
-   leader rotation).
+- `seq_id: u32` (Node-generated identifier used for both ordering and correlation of results. In the current node, this
+   is a single process-lifetime counter that increments with `wrapping_add(1)` on each forwarded `AtomicTxnBatch`.)
 - `max_schedule_slot: u64` (slot for which the batch is valid)
 - `packets: repeated Packet`
 
 Observed Node behavior:
 
-- TPU and Block Engine "packet stream": `packets.len() == 1`, `revert_on_error == false`.
-- Block Engine "bundle stream": `1 <= packets.len() <= 5`, `revert_on_error == true`.
+- Individually dispatched transactions are sent as `packets.len() == 1`, `revert_on_error == false`.
+- Dispatched bundles are sent as `1 <= packets.len() <= 5`, `revert_on_error == true`.
+- A single `MultipleAtomicTxnBatch` message may contain multiple single-transaction `AtomicTxnBatch` entries when the
+  node coalesces multiple committed transactions in one dispatch call. Bundle dispatch currently emits one bundle batch
+  per message.
 
 Node sets:
 
-- `seq_id` as a monotonically increasing counter per forwarded batch.
-- `max_schedule_slot` to the leader slot it is currently targeting for that validator.
+- `seq_id` from that wrapping per-process counter, one fresh value per forwarded `AtomicTxnBatch`.
+- `max_schedule_slot` to the current speculative/working-bank slot the auction is dispatching for.
 
-## Node: Bundle Intake, Validation, Priority, and Forwarding (Observed)
+## Node: Intake, Prioritization, and Dispatch Path (Observed)
 
 This section summarizes node-side behaviors that materially affect what the validator receives. It is not required to
 implement a validator-side client, but is useful for end-to-end clean-room reimplementations.
 
-### Ingress Normalization
+Node uses the speculative scheduler stack:
 
-Node ingests from multiple sources and normalizes each input into `PacketBatchWithMeta`:
+- `node` -> `simple_forwarder` -> `state-machine` -> `scheduler`
 
-- Fields: `PacketBatchWithMeta { batch: AtomicTxnBatch, revert_on_error: bool, simulated_tip_and_cu: Option<(u64,u32)>, entrypoint }`.
-- Sources (observed):
-  - Block Engine bundles: `revert_on_error = true`, `1 <= packets.len() <= 5`, may have `simulated_tip_and_cu`.
-  - Block Engine packets: `revert_on_error = false`, `packets.len() == 1`.
-  - TPU packets: `revert_on_error = false`, `packets.len() == 1`.
+### Ingress and Parsing
 
-When the node (re)serializes packets into an `AtomicTxnBatch`, it sets each `Packet.meta` as:
+Node ingests two logical work classes:
 
-- `meta.size = packet.data.len()` (u64)
-- `meta.flags.revert_on_error = <batch revert_on_error>`
-- `meta.flags.simple_vote_tx = false`
+- Single transactions from TPU and Block Engine packet streams.
+- Bundles from the Block Engine bundle stream.
 
-### Bundle Construction and Deduplication
+Transaction receive path:
 
-Node converts the incoming packet bytes into an internal `Bundle` by:
+- Parses bytes into sanitized and then resolved runtime transaction views.
+- Resolves v0 address lookup tables against the root bank and root-bank reserved account keys.
+- Rejects simple vote transactions, blacklisted accounts, invalid account-lock sets, and invalid compute-budget
+  instructions.
+- Computes transaction priority as `reward * 1_000_000 / (cost + 1)`, where reward is the validator deposit from the
+  transaction fee calculation and cost is the cost-model estimate.
+- Runs dynamic `check_transactions` plus fee-payer solvency checks before queueing.
 
-1. Deserializing each packet into a sanitized transaction view and then a runtime transaction.
-2. Resolving v0 address lookup tables against cluster state (finalized slot), using the cluster state's reserved account
-   keys. LUT resolution rejects lookup failures and rejects any loaded address that is in the node's
-   `blacklisted_accounts` set.
-3. Rejecting intra-bundle duplicates by message hash: if two transactions have the same message hash, the bundle is
-   rejected (`DuplicateTransaction`).
-4. Extracting durable-nonce usage if present.
-5. Computing per-transaction fee and cost estimates:
-   - Fee = signature fee (`5000 lamports * total_signatures`) + prioritization fee (from compute-budget limits).
-   - Cost = cost-model estimate sum.
-6. Computing `bundle_id = SHA256(concat(first_signature(tx_0), ..., first_signature(tx_n)))` for deduplication.
+Bundle receive path:
 
-Node maintains a `seen` set of `bundle_id` and drops already-seen bundles (it does not enqueue them).
+- Parses each packet into a runtime transaction view using the same root-bank LUT resolution machinery.
+- Rejects bundle-local duplicate message hashes before bundle admission.
+- Rejects blacklisted accounts, invalid locks, and invalid compute-budget instructions.
+- Computes bundle priority as `(sum(reward) + sum(static system-transfer tips to configured tip accounts)) *
+  1_000_000 / (sum(cost) + 1)`.
+- Applies dynamic `builder_bank.check_transactions` across the bundle before queueing.
+- Only checks the fee payer of the first transaction in the bundle on this node-side path.
 
-### Node-Side Validation
+### Buffering and Ordering
 
-Node applies two layers of validation before enqueueing:
+- Buffered work is capacity-bounded.
+- Transaction queues and bundle queues drop the current lowest-priority queued work when over capacity.
+- Auction admission adds work to an account-conflict DAG in priority order.
+- Auction-local deduplication is performed by bundle ID, message hash, and certain durable-nonce conflicts while filling
+  the DAG; there is no global forwarding-time `seen` set in the current implementation.
 
-Static validation:
+### Speculative Execution and Dispatch
 
-- Enforce per-transaction account key count <= max (64, or `MAX_TX_ACCOUNT_LOCKS` when the corresponding feature is
-  active).
-- Reject vote transactions (node runs with `only_non_votes = true`).
-- Reject if any static account key is in the node's `blacklisted_accounts` set. (Loaded LUT addresses are checked
-  earlier during bundle construction.)
+The scheduler:
 
-Dynamic validation (against the node's highest BankForks view):
+- Simulates ready DAG items against a slot-scoped speculative bank.
+- Dispatches only successfully committed speculative results to the validator.
+- Sends committed standalone transactions as one-packet, `revert_on_error = false` batches.
+- Sends committed bundles as grouped `revert_on_error = true` batches.
+- Serializes each packet with:
+  - `meta.size = packet.data.len()`
+  - `meta.flags.revert_on_error = <batch atomicity>`
+  - `meta.flags.simple_vote_tx = false`
 
-- Blockhash / nonce validity:
-  - For non-nonce transactions: require recent blockhash to be valid for age (`MAX_PROCESSING_AGE`).
-  - For nonce transactions: perform a weak nonce-account check (if the nonce account is missing, the check is skipped;
-    if present, it validates nonce-account owner/state/authority and nonce value).
-- Reject if any transaction's first signature is already processed (node calls `any_signature_processed` over
-  `tx.signatures().first()` for each transaction).
-- Fee payer solvency ("weak"): only the first transaction's fee payer is checked; if the account is missing, the check
-  is skipped.
+Retryable work is split into two buckets:
 
-Only bundles passing all checks are eligible for forwarding.
-
-### Priority and Queue Ordering
-
-For valid bundles, node computes:
-
-- `priority = (total_fees_lamports + simulated_tip_lamports) * 1_000_000 / total_cost`
-- If `total_cost == 0`, priority is 0 (checked division).
-
-Node queues bundles in a max-heap keyed by:
-
-1. `revert_on_error` (true sorts above false)
-2. `priority` (higher first)
-3. `bundle_id` (tie-breaker)
-
-### Forwarding to Leaders
-
-On each send cycle, node:
-
-1. Selects a connected leader in the range `local_current_slot..=local_current_slot+1` (one-slot fall-behind leeway).
-2. Computes `slot_to_target = max(leader_state.slot, leader_schedule_slot)` and only sends if at least one of
-   `local_current_slot >= leader_schedule_slot` or `leader_state.slot >= leader_schedule_slot` holds.
-3. On target-slot change: if the chosen `leader_schedule_slot` differs from the last targeted slot (tracked as
-   `last_send_slot`), spills retryable bundles back to the ready heap and copies pending-without-result bundles back to
-   the ready heap (both gated by dynamic revalidation).
-4. Pops best-ready bundles, reruns dynamic validation, serializes to `AtomicTxnBatch` if needed, and sets:
-   - `seq_id = next_seq_id` (monotonic u32 counter, incremented with `saturating_add(1)` after each send)
-   - `max_schedule_slot = leader_schedule_slot` (the slot chosen for forwarding; typically equals `slot_to_target`)
-5. Emits `MultipleAtomicTxnBatch` messages containing up to 8 independent `AtomicTxnBatch` entries, and tracks pending
-   results by `seq_id` until a result is received (or the entry is copied back on a later slot boundary).
-
-Result handling and retry policy are described in "Node: Result Handling and Retry Policy (Observed)" below.
+- `RetryableThisSlot`: may be retried again in the current slot.
+- `RetryableNextSlot`: must wait until the next slot. Work that was already sent to the validator is intentionally
+  deferred here on retry/cleanup so late validator results do not corrupt speculative status handling.
 
 ## Validator: Batch Ingestion, Checks, and Filters
 
@@ -500,7 +476,9 @@ Any failure rejects the entire batch, with the failing transaction index in the 
    - Status-cache duplicate detection (`AlreadyProcessed`).
    Failure maps to `TransactionErrorReason`.
 8. Fee payer solvency:
-   Verify the fee payer can pay fee and required rent. Failure maps to `TransactionErrorReason`.
+   On the current BAM batch parsing path, only the first transaction's fee payer is checked. The validator verifies
+   that the first transaction's fee payer can pay fee and required rent; later transactions in the same BAM bundle are
+   not fee-payer-checked here. Failure maps to `TransactionErrorReason`.
 9. Blacklisted accounts:
    If any account key is in the validator-provided blacklist, reject. In this codebase the blacklist includes the
    tip-payment program id (`tip_manager.tip_payment_program_id()`). Failure maps to
@@ -858,22 +836,25 @@ Node correlates results by `seq_id` to the forwarded batch.
 
 Result lifecycle and correlation details (observed):
 
-- The node stores sent bundles in `pending_result_bundles` keyed only by `seq_id`. When a result arrives, it removes the
-  pending entry by `seq_id` (the validator pubkey in the result is not used for lookup).
-- The node computes `same_slot = (forwarded_slot == last_send_slot)`, where `forwarded_slot` is the slot used when the
-  bundle was sent (the leader schedule slot) and `last_send_slot` tracks the most recently targeted `slot_to_target`.
-- When `same_slot == true`, retryable results are queued into the node's retryable queue, and non-retryable results
-  (including committed) cause the bundle id to be removed from the node's `seen` set. When `same_slot == false`, the
-  node assumes the bundle has already been copied back into the ready heap on a slot boundary and does not update the
-  `seen` set or retryable queue in response to the result.
+- The node stores pending validator sends in `pending_batch_by_sequence_id`, keyed by `seq_id`.
+- Each pending entry records the DAG item, expected validator pubkey, and per-transaction metadata used for callbacks.
+- When a result arrives, the node first checks that the `seq_id` exists and that the sending validator matches the
+  entry's `expected_leader`. Unknown `seq_id` or wrong-validator results are dropped.
+- Accepted results remove the pending entry by `seq_id`, emit result callbacks, and then update the corresponding DAG
+  node state.
+- `Committed` results mark the DAG node processed.
+- Retryable `NotCommitted` results recover the sent payload and move it to `RetryableNextSlot`.
+- Non-retryable `NotCommitted` results mark the DAG node not processed/dropped.
+- During auction stop/cleanup, payloads still in `Pending` or `RetryableThisSlot` can be recovered for same-slot retry,
+  while payloads already sent to the validator are recovered as next-slot retryables.
 
 Retryability decision:
 
 1. If `NotCommitted.reason` is `SchedulingError`, it is retryable.
 2. If `NotCommitted.reason` is `TransactionError`, retryability depends on the specific error.
-   Retryable set includes: `AccountInUse`, `ResanitizationNeeded`, `WouldExceedMaxBlockCostLimit`,
+   Retryable set includes: `AccountInUse`, `WouldExceedMaxBlockCostLimit`,
    `WouldExceedMaxVoteCostLimit`, `WouldExceedMaxAccountCostLimit`, `WouldExceedAccountDataBlockLimit`,
-   `CommitCancelled`, `ClusterMaintenance`.
+   `WouldExceedAccountDataTotalLimit`.
 3. If `NotCommitted.reason` is `DeserializationError` or `GenericInvalid`, it is not retryable.
 
 Node may requeue retryable work for resend, subject to its slot-targeting logic.
@@ -915,7 +896,7 @@ Node-side (observed):
 - interval_backoff_after_disconnect_on_max_ping_rtt (RTT reconnect backoff default): 5m
 - min_slots_before_leader_for_disconnect (RTT policy default): 10 slots
 - leader state slot validity window: current_slot +/- 5 slots
-- max batches per MultipleAtomicTxnBatch message: 8
+- default auction inner drain batch size: 2
 - commission_bps returned in config: 300 (3%)
 
 ## Clean-Room Implementation Checklist
@@ -931,9 +912,9 @@ To implement validator-side BAM support compatible with current bam-node behavio
    Store builder pubkey and commission, store `prio_fee_recipient_pubkey` if parseable, and only apply BAM TPU
    config if both BAM sockets parse as IPv4. When gossiping BAM TPU addresses, add `+6` to both BAM TPU /
    TPU-forward ports.
-5. When connected, switch non-vote scheduling to BAM and suppress the legacy intake paths under the current validator's
-   exact gating: suppress Block Engine only in `Connected`, and suppress TPU forwarding only once BAM TPU state is
-   actually selected.
+5. When connected, switch non-vote scheduling to BAM and suppress the non-BAM intake paths under the validator's exact
+   gating: suppress Block Engine only in `Connected`, and suppress TPU forwarding only once BAM TPU state is actually
+   selected.
 6. Receive AtomicTxnBatch and enforce:
    Slot window and batch constraints, CPU signature verification, and sanitize + LUT resolution + bank checks +
    blacklist filter.
@@ -949,7 +930,8 @@ To implement validator-side BAM support compatible with current bam-node behavio
 - Protocol permits non-revert batches with multiple packets, but current Node sends single-packet non-revert batches.
   Validator result mapping assumes that invariant.
 - Node `seq_id` generation must avoid reuse while a previous `seq_id` could still produce a result. The current node
-  uses a single saturating process-lifetime `u32` counter and correlates pending results by `seq_id` alone.
+  uses a single wrapping process-lifetime `u32` counter and correlates pending results by `seq_id` plus the expected
+  validator pubkey.
 
 ## Appendix: Traceability (Non-Normative)
 
@@ -984,9 +966,15 @@ bam:
 
 - `node/src/validator_service.rs`
 - `node/src/simple_forwarder.rs`
+- `node/src/simple_forwarder/dispatch_speculative.rs`
 - `node/src/tpu.rs`
 - `node/src/blockengine_connection.rs`
-- `node/src/utils/connected_leader_schedule.rs`
-- `bundle/src/bundle.rs`
+- `state-machine/src/driver.rs`
+- `state-machine/src/hooks.rs`
+- `scheduler/src/auction.rs`
+- `scheduler/src/receive_and_buffer.rs`
+- `scheduler/src/transaction_container.rs`
+- `scheduler/src/auction_priority_graph_manager.rs`
+- `packet/src/bundle_id.rs`
 - `jito-protos/jss-protos/bam_api.proto`
 - `jito-protos/jss-protos/bam_types.proto`
