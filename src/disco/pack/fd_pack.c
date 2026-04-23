@@ -682,7 +682,7 @@ fd_pack_footprint( ulong                    pack_depth,
   ulong max_w_per_block    = fd_ulong_min( limits->max_cost_per_block / FD_PACK_COST_PER_WRITABLE_ACCT,
                                            max_txn_per_mblk * limits->max_microblocks_per_block * FD_TXN_ACCT_ADDR_MAX );
   ulong written_list_max   = fd_ulong_min( max_w_per_block>>1, DEFAULT_WRITTEN_LIST_MAX );
-  ulong bundle_temp_accts  = fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE*FD_TXN_ACCT_ADDR_MAX, 1UL );
+  ulong bundle_temp_accts  = FD_TXN_ACCT_ADDR_MAX * fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE, 1UL );
   ulong sig_chain_cnt      = sig2txn_chain_cnt_est( pack_depth );
   ulong nonce_chain_cnt    = noncemap_chain_cnt_est( pack_depth );
 
@@ -730,7 +730,7 @@ fd_pack_new( void                   * mem,
   ulong max_w_per_block    = fd_ulong_min( limits->max_cost_per_block / FD_PACK_COST_PER_WRITABLE_ACCT,
                                            max_txn_per_mblk * limits->max_microblocks_per_block * FD_TXN_ACCT_ADDR_MAX );
   ulong written_list_max   = fd_ulong_min( max_w_per_block>>1, DEFAULT_WRITTEN_LIST_MAX );
-  ulong bundle_temp_accts  = fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE*FD_TXN_ACCT_ADDR_MAX, 1UL );
+  ulong bundle_temp_accts  = FD_TXN_ACCT_ADDR_MAX * fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE, 1UL );
   ulong sig_chain_cnt      = sig2txn_chain_cnt_est( pack_depth );
   ulong nonce_chain_cnt    = noncemap_chain_cnt_est( pack_depth );
 
@@ -877,7 +877,7 @@ fd_pack_join( void * mem ) {
   ulong max_w_per_block    = fd_ulong_min( pack->lim->max_cost_per_block / FD_PACK_COST_PER_WRITABLE_ACCT,
                                            max_txn_per_microblock * pack->lim->max_microblocks_per_block * FD_TXN_ACCT_ADDR_MAX );
   ulong written_list_max   = fd_ulong_min( max_w_per_block>>1, DEFAULT_WRITTEN_LIST_MAX );
-  ulong bundle_temp_accts  = fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE*FD_TXN_ACCT_ADDR_MAX, 1UL );
+  ulong bundle_temp_accts  = FD_TXN_ACCT_ADDR_MAX * fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE, 1UL );
   ulong sig_chain_cnt      = sig2txn_chain_cnt_est( pack_depth );
   ulong nonce_chain_cnt    = noncemap_chain_cnt_est( pack_depth );
 
@@ -1376,7 +1376,9 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
 
   treap_t * insert_into = pack->pending;
 
-  if( FD_UNLIKELY( cumulative_penalty && !is_vote ) ) { /* Optimize for high parallelism case */
+  /* Penalty treaps hide candidates from the normal scheduler scan.  Keep BAM
+     non-revert singles visible so lower seq_id conflicts can block later seqs. */
+  if( FD_UNLIKELY( cumulative_penalty && !is_vote && !(ord->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !ord->txn->bam.revert_on_error) ) ) { /* Optimize for high parallelism case */
     /* Compute a weighted random choice */
     ulong roll = (ulong)fd_rng_uint_roll( pack->rng, (uint)cumulative_penalty ); /* cumulative_penalty < USHORT_MAX*64 < UINT_MAX */
     ulong i = 0UL;
@@ -1451,6 +1453,60 @@ fd_pack_bundle_next( treap_rev_iter_t   cur,
   return cur;
 }
 
+static void
+fd_pack_conflict_map_insert_txn( fd_pack_addr_use_t *     temp_map,
+                                 fd_pack_ord_txn_t const * cur ) {
+  fd_pack_addr_use_t null_use[1] = {{{{ 0 }}, { 0 }}};
+  fd_txn_t const * txn = TXN( cur->txn );
+  fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, cur->txn->payload );
+  fd_acct_addr_t const * alt_adj = cur->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+
+  for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
+       iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+    fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
+    fd_pack_addr_use_t * use = acct_uses_query( temp_map, acct, null_use );
+    if( FD_LIKELY( use==null_use ) ) {
+      use = acct_uses_insert( temp_map, acct );
+      use->_ = 0UL;
+    }
+    use->in_use_by |= FD_PACK_IN_USE_WRITABLE;
+  }
+
+  for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_READONLY );
+       iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+    fd_acct_addr_t const * acct = ACCT_ITER_TO_PTR( iter );
+    if( fd_pack_unwritable_contains( acct ) ) continue;
+    if( FD_LIKELY( acct_uses_query( temp_map, *acct, null_use )==null_use ) ) {
+      fd_pack_addr_use_t * use = acct_uses_insert( temp_map, *acct );
+      use->_ = 0UL;
+    }
+  }
+}
+
+static int
+fd_pack_conflict_map_txn_conflicts( fd_pack_addr_use_t *     temp_map,
+                                    fd_pack_ord_txn_t const * cur ) {
+  fd_pack_addr_use_t null_use[1] = {{{{ 0 }}, { 0 }}};
+  fd_txn_t const * txn = TXN( cur->txn );
+  fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, cur->txn->payload );
+  fd_acct_addr_t const * alt_adj = cur->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+
+  for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
+       iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+    fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
+    if( FD_UNLIKELY( acct_uses_query( temp_map, acct, null_use )!=null_use ) ) return 1;
+  }
+
+  for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_READONLY );
+       iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+    fd_acct_addr_t const * acct = ACCT_ITER_TO_PTR( iter );
+    if( fd_pack_unwritable_contains( acct ) ) continue;
+    if( FD_UNLIKELY( acct_uses_query( temp_map, *acct, null_use )->in_use_by & FD_PACK_IN_USE_WRITABLE ) ) return 1;
+  }
+
+  return 0;
+}
+
 /* Returns non-zero if bundle a0 conflicts with bundle b0 under BAM prio-graph
    R/W semantics.  This helper only uses a temporary map sized for one bundle,
    so it clears map state before and after each comparison. */
@@ -1459,7 +1515,6 @@ fd_pack_bundle_conflicts( fd_pack_t *         pack,
                           treap_rev_iter_t    a0,
                           treap_rev_iter_t    b0 ) {
   fd_pack_addr_use_t * temp_map = pack->bundle_temp_map;
-  fd_pack_addr_use_t   null_use[1] = {{{{ 0 }}, { 0 }}};
   fd_pack_ord_txn_t *  pool = pack->pool;
 
   acct_uses_clear( temp_map );
@@ -1471,30 +1526,7 @@ fd_pack_bundle_conflicts( fd_pack_t *         pack,
     fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
     if( FD_UNLIKELY( fd_pack_bundle_idx( cur )!=a_idx ) ) break;
 
-    fd_txn_t const * txn = TXN( cur->txn );
-    fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, cur->txn->payload );
-    fd_acct_addr_t const * alt_adj = cur->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
-
-    for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
-         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
-      fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
-      fd_pack_addr_use_t * use = acct_uses_query( temp_map, acct, null_use );
-      if( FD_LIKELY( use==null_use ) ) {
-        use = acct_uses_insert( temp_map, acct );
-        use->in_use_by = 0UL;
-      }
-      use->in_use_by |= FD_PACK_IN_USE_WRITABLE;
-    }
-
-    for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_READONLY );
-         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
-      fd_acct_addr_t const * acct = ACCT_ITER_TO_PTR( iter );
-      if( fd_pack_unwritable_contains( acct ) ) continue;
-      if( FD_LIKELY( acct_uses_query( temp_map, *acct, null_use )==null_use ) ) {
-        fd_pack_addr_use_t * use = acct_uses_insert( temp_map, *acct );
-        use->in_use_by = 0UL;
-      }
-    }
+    fd_pack_conflict_map_insert_txn( temp_map, cur );
   }
 
   int conflict = 0;
@@ -1505,28 +1537,9 @@ fd_pack_bundle_conflicts( fd_pack_t *         pack,
     fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
     if( FD_UNLIKELY( fd_pack_bundle_idx( cur )!=b_idx ) ) break;
 
-    fd_txn_t const * txn = TXN( cur->txn );
-    fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, cur->txn->payload );
-    fd_acct_addr_t const * alt_adj = cur->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
-
-    for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
-         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
-      fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
-      if( FD_UNLIKELY( acct_uses_query( temp_map, acct, null_use )!=null_use ) ) {
-        conflict = 1;
-        goto done;
-      }
-    }
-
-    for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_READONLY );
-         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
-      fd_acct_addr_t const * acct = ACCT_ITER_TO_PTR( iter );
-      if( fd_pack_unwritable_contains( acct ) ) continue;
-
-      if( FD_UNLIKELY( acct_uses_query( temp_map, *acct, null_use )->in_use_by & FD_PACK_IN_USE_WRITABLE ) ) {
-        conflict = 1;
-        goto done;
-      }
+    if( FD_UNLIKELY( fd_pack_conflict_map_txn_conflicts( temp_map, cur ) ) ) {
+      conflict = 1;
+      goto done;
     }
   }
 
@@ -2069,6 +2082,31 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
     if( FD_UNLIKELY( conflicts ) ) {
       slow_path++;
       continue;
+    }
+
+    /* BAM non-revert singles are single-transaction batches; lower seq_id
+       conflicting batches block later seqs. */
+    if( FD_UNLIKELY( cur->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !cur->txn->bam.revert_on_error ) ) {
+      uint const seq = cur->txn->bam.seq_id;
+      fd_pack_addr_use_t * temp_map = pack->bundle_temp_map;
+
+      for( treap_rev_iter_t _other=treap_rev_iter_init( sched_from, pack->pool ); !treap_rev_iter_done( _other ); _other=treap_rev_iter_next( _other, pack->pool ) ) {
+        fd_pack_ord_txn_t const * other = treap_rev_iter_ele_const( _other, pack->pool );
+        if( FD_LIKELY(  other->txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM || other->txn->bam.revert_on_error ) ) continue;
+        if( FD_LIKELY(  other->txn->bam.seq_id>=seq                ) ) continue;
+        if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) continue;
+
+        acct_uses_clear( temp_map );
+        fd_pack_conflict_map_insert_txn( temp_map, other );
+        conflicts = (ulong)fd_pack_conflict_map_txn_conflicts( temp_map, cur );
+        if( FD_UNLIKELY( conflicts ) ) break;
+      }
+
+      acct_uses_clear( temp_map );
+      if( FD_UNLIKELY( conflicts ) ) {
+        slow_path++;
+        continue;
+      }
     }
 
     /* Include this transaction in the microblock! */

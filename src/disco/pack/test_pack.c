@@ -1952,6 +1952,54 @@ test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
+static void
+test_bam_nonrevert_seq_conflict_order( void ) {
+  pack_outcome_t outcome;
+
+  struct bam_nonrevert_txn_case {
+    ulong  txn_id;
+    double priority;
+    uint   seq;
+  };
+  struct bam_nonrevert_case {
+    struct bam_nonrevert_txn_case txn[2];
+    uchar expect_idx[2];
+  } cases[2] = {
+    {{{ 300UL,  3.0, 10U }, { 301UL, 12.0, 11U }}, { 0U, 1U }},
+    {{{ 400UL, 12.0, 20U }, { 401UL,  3.0, 10U }}, { 1U, 0U }},
+  };
+
+  for( ulong c=0UL; c<2UL; c++ ) {
+    fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, 64UL, &outcome );
+    for( ulong i=0UL; i<2UL; i++ ) {
+      struct bam_nonrevert_txn_case const * txn_case = &cases[c].txn[i];
+      ulong _deleted;
+      fd_txn_e_t * txn = fd_pack_insert_txn_init( pack );
+      make_transaction1( txn->txnp, txn_case->txn_id, 2000U, 32U, txn_case->priority, "x", "", NULL, NULL );
+      txn->txnp->source_tpu          = FD_TXN_M_TPU_SOURCE_BAM;
+      txn->txnp->bam.seq_id          = txn_case->seq;
+      txn->txnp->bam.batch_idx       = 0U;
+      txn->txnp->bam.revert_on_error = 0U;
+      FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &_deleted )>=0 );
+    }
+
+    for( ulong i=0UL; i<2UL; i++ ) {
+      ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_TXN, outcome.results );
+      struct bam_nonrevert_txn_case const * txn_case = &cases[c].txn[ cases[c].expect_idx[i] ];
+      FD_TEST( txn_cnt==1UL );
+      FD_TEST( test_txn_id( &outcome.results[0] )==txn_case->txn_id );
+      FD_TEST( outcome.results[0].source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+      FD_TEST( outcome.results[0].bam.seq_id==txn_case->seq );
+      FD_TEST( outcome.results[0].bam.batch_idx==0U );
+      FD_TEST( outcome.results[0].bam.revert_on_error==0U );
+      fd_pack_microblock_complete( pack, 0UL );
+    }
+
+    FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
+    fd_pack_delete( fd_pack_leave( pack ) );
+  }
+}
+
 /* Test initializer bundle state machine */
 static void
 test_initializer_bundle_state_machine( void ) {
@@ -2632,6 +2680,7 @@ main( int     argc,
   test_bundle_account_conflicts();
   test_bam_bundle_seq_conflict_order_and_bypass();
   test_bam_bundle_seq_conflict_order_independent_of_insertion();
+  test_bam_nonrevert_seq_conflict_order();
   test_initializer_bundle_state_machine();
   test_bundle_priority_ordering();
   test_bundle_varying_sizes();
