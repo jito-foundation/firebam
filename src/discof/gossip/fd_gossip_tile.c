@@ -12,6 +12,7 @@
 #include "../tower/fd_tower_tile.h"
 #include "../restore/utils/fd_ssmsg.h"
 #include "../../disco/bam/fd_bam_types.h"
+#include <limits.h>
 
 #define IN_KIND_GOSSVF        (0)
 #define IN_KIND_SHRED_VERSION (1)
@@ -338,17 +339,37 @@ void
 fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
                                   fd_bam_contact_update_t const * update,
                                   long                            now ) {
-
-  fd_ip4_port_t tpu     = update->tpu;
-  fd_ip4_port_t tpu_fwd = update->tpu_fwd;
-
-  fd_gossip_socket_t tpu_sock     = { .is_ipv6 = 0, .ip4 = tpu.addr,     .port = tpu.port     };
-  fd_gossip_socket_t tpu_fwd_sock = { .is_ipv6 = 0, .ip4 = tpu_fwd.addr, .port = tpu_fwd.port };
-
-  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ]               = tpu_sock;
-  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ]      = tpu_fwd_sock;
-  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ]          = tpu_sock;
-  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ] = tpu_fwd_sock;
+  ushort tpu_port     = fd_ushort_bswap( update->tpu.port );
+  ushort tpu_fwd_port = fd_ushort_bswap( update->tpu_fwd.port );
+  if( FD_UNLIKELY( tpu_port>(ushort)(USHRT_MAX-6U) || tpu_fwd_port>(ushort)(USHRT_MAX-6U) ) ) {
+    FD_LOG_WARNING(( "Ignoring BAM contact update with TPU base port overflow: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                     FD_IP4_ADDR_FMT_ARGS( update->tpu.addr ),
+                     tpu_port,
+                     FD_IP4_ADDR_FMT_ARGS( update->tpu_fwd.addr ),
+                     tpu_fwd_port ));
+    return;
+  }
+  /* BAM supplies base TPU ports. Gossip advertises the paired QUIC sockets at base+6. */
+  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ] = (fd_gossip_socket_t){
+    .is_ipv6 = 0,
+    .ip4     = update->tpu.addr,
+    .port    = update->tpu.port
+  };
+  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ] = (fd_gossip_socket_t){
+    .is_ipv6 = 0,
+    .ip4     = update->tpu_fwd.addr,
+    .port    = update->tpu_fwd.port
+  };
+  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ] = (fd_gossip_socket_t){
+    .is_ipv6 = 0,
+    .ip4     = update->tpu.addr,
+    .port    = fd_ushort_bswap( (ushort)( tpu_port + 6U ) )
+  };
+  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ] = (fd_gossip_socket_t){
+    .is_ipv6 = 0,
+    .ip4     = update->tpu_fwd.addr,
+    .port    = fd_ushort_bswap( (ushort)( tpu_fwd_port + 6U ) )
+  };
   fd_gossip_set_my_contact_info( ctx->gossip, ctx->my_contact_info, now );
 }
 

@@ -190,136 +190,250 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
     ? FD_BAM_TPU_UPDATE_STATE_PENDING_BAM
     : FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT;
 
-  if( FD_UNLIKELY( ctx->tpu_update_state != desired_applied ) ) {
-    if( FD_UNLIKELY( !ctx->admin_rpc_path[0] ) ) {
-      ctx->tpu_update_state = desired_applied;
-    } else {
-      fd_ip4_port_t current_tpu     = (fd_ip4_port_t){0};
-      fd_ip4_port_t current_tpu_fwd = (fd_ip4_port_t){0};
-      int current_rc = fd_bam_admin_rpc_get_contact_info( ctx->admin_rpc_path, &current_tpu, &current_tpu_fwd );
-      if( FD_UNLIKELY( current_rc ) ) {
-        ctx->tpu_update_state = desired_pending;
-      } else {
-        _Bool have_default_tpu = !!( ctx->default_tpu.addr     &&
-                                     ctx->default_tpu.port     &&
-                                     ctx->default_tpu_fwd.addr &&
-                                     ctx->default_tpu_fwd.port );
+  if( FD_LIKELY( ctx->tpu_update_state == desired_applied ) ) goto publish;
+  if( FD_UNLIKELY( !ctx->admin_rpc_path[0] ) ) {
+    ctx->tpu_update_state = desired_applied;
+    goto publish;
+  }
 
-        /* Cache the non-BAM TPU to restore it if BAM is disabled/disconnects.
-           This can't be done in init() since agave takes a long time to start. */
-        if( FD_UNLIKELY( !have_default_tpu ) ) {
-          if( FD_UNLIKELY( !current_tpu.addr || !current_tpu_fwd.addr || !current_tpu.port || !current_tpu_fwd.port ) ) {
-            FD_LOG_WARNING(( "Failed to cache default TPU, invalid ip/port. tpu=" FD_IP4_ADDR_FMT ":%hu, tpu_fwd=" FD_IP4_ADDR_FMT ":%hu)",
-                             FD_IP4_ADDR_FMT_ARGS( current_tpu.addr ), fd_ushort_bswap( current_tpu.port ),
-                             FD_IP4_ADDR_FMT_ARGS( current_tpu_fwd.addr ), fd_ushort_bswap( current_tpu_fwd.port ) ) );
-          } else if( FD_UNLIKELY( current_tpu.l==ctx->bam_tpu.l &&
-                                  current_tpu_fwd.l==ctx->bam_tpu_fwd.l ) ) {
-            if( FD_LIKELY( ctx->configured_default_tpu.addr &&
-                           ctx->configured_default_tpu.port &&
-                           ( ctx->configured_default_tpu.l!=ctx->bam_tpu.l ||
-                             ctx->configured_default_tpu.l!=ctx->bam_tpu_fwd.l ) ) ) {
-              ctx->default_tpu     = ctx->configured_default_tpu;
-              ctx->default_tpu_fwd = ctx->configured_default_tpu;
-              have_default_tpu     = true;
-              FD_LOG_NOTICE(( "Using configured default TPU addresses because current admin RPC readback already matches BAM TPU: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
-                              FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu.addr ),
-                              fd_ushort_bswap( ctx->default_tpu.port ),
-                              FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu_fwd.addr ),
-                              fd_ushort_bswap( ctx->default_tpu_fwd.port ) ));
-            } else {
-              FD_LOG_WARNING(( "Default TPU cache deferred because current admin RPC readback already matches BAM TPU and no safe C-side default TPU advert is available" ));
-            }
-          } else {
-            ctx->default_tpu     = current_tpu;
-            ctx->default_tpu_fwd = current_tpu_fwd;
-            have_default_tpu     = true;
-            FD_LOG_NOTICE(( "Agave default TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
-                            FD_IP4_ADDR_FMT_ARGS( current_tpu.addr ), fd_ushort_bswap( current_tpu.port ),
-                            FD_IP4_ADDR_FMT_ARGS( current_tpu_fwd.addr ), fd_ushort_bswap( current_tpu_fwd.port ) ));
-          }
-        }
+  fd_ip4_port_t current_tpu     = (fd_ip4_port_t){0};
+  fd_ip4_port_t current_tpu_fwd = (fd_ip4_port_t){0};
+  int current_rc = 0;
+  do {
+    char response[ 4096 ];
+    current_rc = fd_bam_admin_rpc_request( ctx->admin_rpc_path,
+                                           "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"contactInfo\",\"params\":[]}\n",
+                                           response,
+                                           sizeof(response) );
+    if( FD_UNLIKELY( current_rc ) ) break;
+    if( FD_UNLIKELY( strstr( response, "\"error\"" ) ) ) {
+      FD_LOG_WARNING(( "BAM admin RPC contactInfo returned error response: %.*s",
+                       (int)fd_ulong_min( strnlen( response, sizeof(response) ), 256UL ),
+                       response ));
+      current_rc = -1;
+      break;
+    }
 
-        fd_ip4_port_t tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
-        fd_ip4_port_t tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
-
-        if( FD_UNLIKELY( !use_bam && !have_default_tpu ) ) {
-          FD_LOG_WARNING(( "Attempted to revert TPU before agave finished initializing" ));
-          ctx->tpu_update_state = desired_pending;
-        } else if( FD_UNLIKELY( !tpu.addr || !tpu.port || !tpu_fwd.addr || !tpu_fwd.port ) ) {
-          FD_LOG_WARNING(( "Failed to update TPU addresses: target incomplete tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                           FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                           fd_ushort_bswap( tpu.port ),
-                           FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                           fd_ushort_bswap( tpu_fwd.port ) ));
-          ctx->tpu_update_state = desired_pending;
-        } else if( FD_UNLIKELY( current_tpu.l==tpu.l && current_tpu_fwd.l==tpu_fwd.l ) ) {
-          FD_LOG_NOTICE(( "TPU addresses already match desired %s state: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                          use_bam ? "BAM" : "default",
-                          FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                          fd_ushort_bswap( tpu.port ),
-                          FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                          fd_ushort_bswap( tpu_fwd.port ) ));
-          ctx->tpu_update_state = desired_applied;
-        } else {
-          FD_LOG_NOTICE(( "Prepare to set TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, use_bam: %d", /* FIXME: change to INFO level */
-                          FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                          fd_ushort_bswap( tpu.port ),
-                          FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                          fd_ushort_bswap( tpu_fwd.port ),
-                          use_bam ));
-
-          int set_rc = fd_bam_admin_rpc_set_public_tpu( ctx->admin_rpc_path, tpu, tpu_fwd );
-          if( FD_UNLIKELY( set_rc ) ) {
-            FD_LOG_WARNING(( "Failed to update TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                             FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                             fd_ushort_bswap( tpu.port ),
-                             FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                             fd_ushort_bswap( tpu_fwd.port ) ));
-            ctx->tpu_update_state = desired_pending;
-          } else {
-            fd_ip4_port_t readback_tpu     = (fd_ip4_port_t){0};
-            fd_ip4_port_t readback_tpu_fwd = (fd_ip4_port_t){0};
-            int readback_rc = fd_bam_admin_rpc_get_contact_info( ctx->admin_rpc_path, &readback_tpu, &readback_tpu_fwd );
-            if( FD_LIKELY( !readback_rc && readback_tpu.l==tpu.l && readback_tpu_fwd.l==tpu_fwd.l ) ) {
-              FD_LOG_NOTICE(( "Updated TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu", /* FIXME: change to INFO level */
-                              FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                              fd_ushort_bswap( tpu.port ),
-                              FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                              fd_ushort_bswap( tpu_fwd.port ) ));
-              ctx->tpu_update_state = desired_applied;
-            } else {
-              if( FD_UNLIKELY( readback_rc ) ) {
-                FD_LOG_WARNING(( "Failed to verify TPU addresses after apply: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                                 FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                                 fd_ushort_bswap( tpu.port ),
-                                 FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                                 fd_ushort_bswap( tpu_fwd.port ) ));
-              } else {
-                FD_LOG_WARNING(( "Failed to verify TPU addresses after apply: expected tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, readback tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                                 FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                                 fd_ushort_bswap( tpu.port ),
-                                 FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                                 fd_ushort_bswap( tpu_fwd.port ),
-                                 FD_IP4_ADDR_FMT_ARGS( readback_tpu.addr ),
-                                 fd_ushort_bswap( readback_tpu.port ),
-                                 FD_IP4_ADDR_FMT_ARGS( readback_tpu_fwd.addr ),
-                                 fd_ushort_bswap( readback_tpu_fwd.port ) ));
-              }
-              ctx->tpu_update_state = desired_pending;
-            }
-          }
-        }
+    fd_ip4_port_t socket[ 2 ] = {0};
+    char const * keys[ 2 ] = { "\"tpu\"", "\"tpu_forwards\"" };
+    for( ulong i=0UL; i<2UL; i++ ) {
+      char const * cursor = strstr( response, keys[ i ] );
+      if( FD_UNLIKELY( !cursor ) ) {
+        current_rc = -1;
+        break;
       }
+      cursor += strlen( keys[ i ] );
+      while( *cursor && isspace( (uchar)*cursor ) ) cursor++;
+      if( FD_UNLIKELY( *cursor++!=':' ) ) {
+        current_rc = -1;
+        break;
+      }
+      while( *cursor && isspace( (uchar)*cursor ) ) cursor++;
+      if( FD_UNLIKELY( *cursor++!='"' ) ) {
+        current_rc = -1;
+        break;
+      }
+
+      char socket_cstr[ sizeof("255.255.255.255:65535") ];
+      ulong socket_idx = 0UL;
+      for( ; *cursor; cursor++ ) {
+        if( FD_UNLIKELY( *cursor=='"' ) ) break;
+        if( FD_UNLIKELY( *cursor=='\\' || socket_idx+1UL>=sizeof(socket_cstr) ) ) {
+          current_rc = -1;
+          break;
+        }
+        socket_cstr[ socket_idx++ ] = *cursor;
+      }
+      if( FD_UNLIKELY( current_rc || *cursor!='"' ) ) {
+        current_rc = -1;
+        break;
+      }
+      socket_cstr[ socket_idx ] = '\0';
+
+      char * colon = strrchr( socket_cstr, ':' );
+      if( FD_UNLIKELY( !colon ) ) {
+        current_rc = -1;
+        break;
+      }
+      *colon = '\0';
+
+      uint ip4 = 0U;
+      ushort port = fd_cstr_to_ushort( colon+1 );
+      if( FD_UNLIKELY( !fd_cstr_to_ip4_addr( socket_cstr, &ip4 ) || !port ) ) {
+        current_rc = -1;
+        break;
+      }
+
+      socket[ i ] = (fd_ip4_port_t){ .addr = ip4, .port = fd_ushort_bswap( port ) };
+    }
+
+    if( FD_UNLIKELY( current_rc ) ) break;
+    current_tpu     = socket[ 0 ];
+    current_tpu_fwd = socket[ 1 ];
+  } while( 0 );
+
+  if( FD_UNLIKELY( current_rc ) ) {
+    ctx->tpu_update_state = desired_pending;
+    goto publish;
+  }
+
+  _Bool have_default_tpu = !!( ctx->default_tpu.addr     &&
+                               ctx->default_tpu.port     &&
+                               ctx->default_tpu_fwd.addr &&
+                               ctx->default_tpu_fwd.port );
+
+  /* Cache the non-BAM TPU to restore it if BAM is disabled/disconnects.
+     This can't be done in init() since agave takes a long time to start. */
+  if( FD_UNLIKELY( !have_default_tpu ) ) {
+    if( FD_LIKELY( ctx->configured_default_tpu.addr &&
+                   ctx->configured_default_tpu.port &&
+                   ( ctx->configured_default_tpu.l!=ctx->bam_tpu.l ||
+                     ctx->configured_default_tpu.l!=ctx->bam_tpu_fwd.l ) ) ) {
+      ctx->default_tpu     = ctx->configured_default_tpu;
+      ctx->default_tpu_fwd = ctx->configured_default_tpu;
+      have_default_tpu     = true;
+      FD_LOG_NOTICE(( "Using configured default TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
+                      FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu.addr ),
+                      fd_ushort_bswap( ctx->default_tpu.port ),
+                      FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu_fwd.addr ),
+                      fd_ushort_bswap( ctx->default_tpu_fwd.port ) ));
+    } else if( FD_UNLIKELY( !current_tpu.addr || !current_tpu_fwd.addr || !current_tpu.port || !current_tpu_fwd.port ) ) {
+      FD_LOG_WARNING(( "Failed to cache default TPU, invalid ip/port. tpu=" FD_IP4_ADDR_FMT ":%hu, tpu_fwd=" FD_IP4_ADDR_FMT ":%hu)",
+                       FD_IP4_ADDR_FMT_ARGS( current_tpu.addr ), fd_ushort_bswap( current_tpu.port ),
+                       FD_IP4_ADDR_FMT_ARGS( current_tpu_fwd.addr ), fd_ushort_bswap( current_tpu_fwd.port ) ) );
+    } else if( FD_UNLIKELY( current_tpu.l==ctx->bam_tpu.l &&
+                            current_tpu_fwd.l==ctx->bam_tpu_fwd.l ) ) {
+      FD_LOG_WARNING(( "Default TPU cache deferred because current admin RPC readback already matches BAM TPU and no safe C-side default TPU advert is available" ));
+    } else {
+      ctx->default_tpu     = current_tpu;
+      ctx->default_tpu_fwd = current_tpu_fwd;
+      have_default_tpu     = true;
+      FD_LOG_NOTICE(( "Agave default TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
+                      FD_IP4_ADDR_FMT_ARGS( current_tpu.addr ), fd_ushort_bswap( current_tpu.port ),
+                      FD_IP4_ADDR_FMT_ARGS( current_tpu_fwd.addr ), fd_ushort_bswap( current_tpu_fwd.port ) ));
     }
   }
 
-  if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
   fd_ip4_port_t tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
   fd_ip4_port_t tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
+
+  if( FD_UNLIKELY( !use_bam && !have_default_tpu ) ) {
+    FD_LOG_WARNING(( "Attempted to revert TPU before agave finished initializing" ));
+    ctx->tpu_update_state = desired_pending;
+    goto publish;
+  }
+  if( FD_UNLIKELY( !tpu.addr || !tpu.port || !tpu_fwd.addr || !tpu_fwd.port ) ) {
+    FD_LOG_WARNING(( "Failed to update TPU addresses: target incomplete tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                     FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                     fd_ushort_bswap( tpu.port ),
+                     FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                     fd_ushort_bswap( tpu_fwd.port ) ));
+    ctx->tpu_update_state = desired_pending;
+    goto publish;
+  }
+  if( FD_UNLIKELY( current_tpu.l==tpu.l && current_tpu_fwd.l==tpu_fwd.l ) ) {
+    FD_LOG_NOTICE(( "TPU addresses already match desired %s state: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                    use_bam ? "BAM" : "default",
+                    FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                    fd_ushort_bswap( tpu.port ),
+                    FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                    fd_ushort_bswap( tpu_fwd.port ) ));
+    ctx->tpu_update_state = desired_applied;
+    goto publish;
+  }
+
+  FD_LOG_NOTICE(( "Prepare to set TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, use_bam: %d", /* FIXME: change to INFO level */
+                  FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                  fd_ushort_bswap( tpu.port ),
+                  FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                  fd_ushort_bswap( tpu_fwd.port ),
+                  use_bam ));
+
+  int set_rc = 0;
+  do {
+    char request[ 512 ];
+    char response[ 4096 ];
+    fd_ip4_port_t const sockets[ 2 ] = { tpu, tpu_fwd };
+    char const * methods[ 2 ] = { "setPublicTpuAddress", "setPublicTpuForwardsAddress" };
+    for( ulong i=0UL; i<2UL; i++ ) {
+      fd_ip4_port_t socket = sockets[ i ];
+      char const * method = methods[ i ];
+      ushort port = fd_ushort_bswap( socket.port );
+      if( FD_UNLIKELY( port>(ushort)(USHRT_MAX-6U) ) ) {
+        FD_LOG_WARNING(( "BAM admin RPC %s target overflows QUIC port offset: base=" FD_IP4_ADDR_FMT ":%hu",
+                         method,
+                         FD_IP4_ADDR_FMT_ARGS( socket.addr ),
+                         port ));
+        set_rc = -1;
+        break;
+      }
+      ushort public_port = (ushort)( port + 6U );
+      if( FD_UNLIKELY( !fd_cstr_printf_check( request,
+                                              sizeof(request),
+                                              NULL,
+                                              "{\"jsonrpc\":\"2.0\",\"id\":%u,\"method\":\"%s\",\"params\":[\"" FD_IP4_ADDR_FMT ":%hu\"]}\n",
+                                              (uint)( 2UL+i ),
+                                              method,
+                                              FD_IP4_ADDR_FMT_ARGS( socket.addr ),
+                                              public_port ) ) ) {
+        FD_LOG_WARNING(( "BAM admin RPC failed to format %s request for public QUIC target=" FD_IP4_ADDR_FMT ":%hu",
+                         method,
+                         FD_IP4_ADDR_FMT_ARGS( socket.addr ),
+                         public_port ));
+        set_rc = -1;
+        break;
+      }
+      if( FD_UNLIKELY( fd_bam_admin_rpc_request( ctx->admin_rpc_path, request, response, sizeof(response) ) ) ) {
+        FD_LOG_WARNING(( "BAM admin RPC %s request failed for public QUIC target=" FD_IP4_ADDR_FMT ":%hu via `%s`",
+                         method,
+                         FD_IP4_ADDR_FMT_ARGS( socket.addr ),
+                         public_port,
+                         ctx->admin_rpc_path ));
+        set_rc = -1;
+        break;
+      }
+      if( FD_UNLIKELY( strstr( response, "\"error\"" ) ) ) {
+        FD_LOG_WARNING(( "BAM admin RPC %s returned error for public QUIC target=" FD_IP4_ADDR_FMT ":%hu: %.*s",
+                         method,
+                         FD_IP4_ADDR_FMT_ARGS( socket.addr ),
+                         public_port,
+                         (int)fd_ulong_min( strnlen( response, sizeof(response) ), 256UL ),
+                         response ));
+        set_rc = -1;
+        break;
+      }
+
+      if( FD_UNLIKELY( i==0UL ) ) {
+        /* Agave refreshes contact-info on each setter.  A short delay avoids
+           same-millisecond CRDS tie-breaks between the TPU and TPU-forwards writes. */
+        fd_log_wait_until( fd_log_wallclock() + (long)2e6 );
+      }
+    }
+  } while( 0 );
+  if( FD_UNLIKELY( set_rc ) ) {
+    FD_LOG_WARNING(( "Failed to update TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                     FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                     fd_ushort_bswap( tpu.port ),
+                     FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                     fd_ushort_bswap( tpu_fwd.port ) ));
+    ctx->tpu_update_state = desired_pending;
+  } else {
+    FD_LOG_NOTICE(( "Updated TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu", /* FIXME: change to INFO level */
+                    FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                    fd_ushort_bswap( tpu.port ),
+                    FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                    fd_ushort_bswap( tpu_fwd.port ) ));
+    ctx->tpu_update_state = desired_applied;
+  }
+
+publish:
+  if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
+  fd_ip4_port_t gossip_tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
+  fd_ip4_port_t gossip_tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
   /* Full firedancer uses Gossip tile, it consumes these messages and mutates its local contact-info state. */
   fd_bam_contact_update_t * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
-  msg->tpu     = tpu;
-  msg->tpu_fwd = tpu_fwd;
+  msg->tpu     = gossip_tpu;
+  msg->tpu_fwd = gossip_tpu_fwd;
 
   fd_stem_publish( stem,
                    ctx->gossip_out.idx,

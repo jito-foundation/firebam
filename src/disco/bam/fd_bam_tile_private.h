@@ -131,7 +131,7 @@ typedef struct {
    - fd_bam_gossip_update() compares the desired "applied" state
      (BAM vs default TPU) to ctx->tpu_update_state. If it already matches,
      it skips the admin RPC update, preventing duplicate updates.
-   - On failure (admin RPC unavailable, apply failure, or readback mismatch),
+   - On failure (admin RPC unavailable or apply failure),
      it records a PENDING_* state so fd_bam_tile_housekeeping() will retry later.
    - When BAM TPU sockets change (new ConfigResponse), we set UNKNOWN so the
      next call will re-apply even if we're already in BAM mode. */
@@ -230,7 +230,7 @@ struct fd_bam_tile {
   fd_ip4_port_t published_shred_sock[ FD_BAM_SHRED_SOCK_MAX ]; /* Last effective shred receivers published to shred tiles */
   fd_ip4_port_t default_tpu;           /* TPU socket Agave booted with (non-BAM) */
   fd_ip4_port_t default_tpu_fwd;       /* TPU Forward socket Agave booted with */
-  fd_ip4_port_t configured_default_tpu; /* Startup TPU advert derived from local Frankendancer config when the advertised IP is locally knowable. Firedancer Agave uses the same base UDP socket for tpu and tpu_forwards. */
+  fd_ip4_port_t configured_default_tpu; /* Startup TPU base port derived from local Frankendancer config when the advertised IP is locally knowable. Frankendancer BAM restore derives QUIC as base+6 for both TPU and TPU forwards. */
   char admin_rpc_path[ PATH_MAX ];     /* Frankendancer Agave admin socket path; empty disables the cross-process admin path. */
   fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for admin-RPC TPU advert updates (Frankendancer) */
 
@@ -492,25 +492,15 @@ FD_PROTOTYPES_BEGIN
 long
 fd_bam_now( void );
 
-/* Admin-RPC helpers used by Frankendancer BAM mode.  The low-level
-   request hook is weak so unit tests can override it without touching
-   the production Unix-socket transport. */
+/* Frankendancer BAM mode uses this weak low-level admin-RPC request
+   hook so unit tests can override it without touching the production
+   Unix-socket transport. */
 
 int
 fd_bam_admin_rpc_request( char const * admin_rpc_path,
                           char const * request,
                           char *       response,
                           ulong        response_max );
-
-int
-fd_bam_admin_rpc_get_contact_info( char const *   admin_rpc_path,
-                                   fd_ip4_port_t * out_tpu,
-                                   fd_ip4_port_t * out_tpu_fwd );
-
-int
-fd_bam_admin_rpc_set_public_tpu( char const *       admin_rpc_path,
-                                 fd_ip4_port_t const tpu,
-                                 fd_ip4_port_t const tpu_fwd );
 
 /* fd_bam_client_grpc_callbacks provides callbacks for grpc_client. */
 

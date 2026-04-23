@@ -175,17 +175,19 @@ test_gossip_apply_bam_contact_updates_contact_info( void ) {
   };
   fd_gossip_tile_apply_bam_contact( &ctx, &contact_update, ctx.last_wallclock + 1L );
 
-  fd_ip4_port_t expected_tpu = { .addr = bam_tpu, .port = fd_ushort_bswap( 5000 ) };
-  fd_ip4_port_t expected_tpu_fwd = { .addr = bam_tpu_fwd, .port = fd_ushort_bswap( 6000 ) };
+  fd_ip4_port_t expected_tpu          = { .addr = bam_tpu,     .port = fd_ushort_bswap( 5000 ) };
+  fd_ip4_port_t expected_tpu_fwd      = { .addr = bam_tpu_fwd, .port = fd_ushort_bswap( 6000 ) };
+  fd_ip4_port_t expected_tpu_quic     = { .addr = bam_tpu,     .port = fd_ushort_bswap( 5006 ) };
+  fd_ip4_port_t expected_tpu_fwd_quic = { .addr = bam_tpu_fwd, .port = fd_ushort_bswap( 6006 ) };
 
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].ip4                == expected_tpu.addr );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].port               == expected_tpu.port );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ].ip4       == expected_tpu_fwd.addr );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ].port      == expected_tpu_fwd.port );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].ip4           == expected_tpu.addr );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].port          == expected_tpu.port );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].ip4  == expected_tpu_fwd.addr );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].port == expected_tpu_fwd.port );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].ip4           == expected_tpu_quic.addr );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].port          == expected_tpu_quic.port );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].ip4  == expected_tpu_fwd_quic.addr );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].port == expected_tpu_fwd_quic.port );
   free( gossip_mem );
 }
 

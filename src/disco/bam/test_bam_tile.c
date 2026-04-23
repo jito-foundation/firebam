@@ -3565,18 +3565,16 @@ test_bam_admin_rpc_apply_success_caches_default_and_marks_applied( fd_wksp_t * w
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":1}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
-  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"8.8.8.8:7001\"},\"id\":4}" );
 
   fd_bam_gossip_update( state, state->stem, 1 );
 
-  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 3UL );
   FD_TEST( !strcmp( test_bam_admin_rpc_mock.paths[0], "/tmp/test-bam-admin.rpc" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[0], "\"method\":\"contactInfo\"" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setPublicTpuAddress\"" ) );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "9.9.9.9:7000" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "9.9.9.9:7006" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "\"method\":\"setPublicTpuForwardsAddress\"" ) );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "8.8.8.8:7001" ) );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "\"method\":\"contactInfo\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "8.8.8.8:7007" ) );
 
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM );
   FD_TEST( fd_ushort_bswap( state->default_tpu.port ) == 4242 );
@@ -3593,7 +3591,7 @@ test_bam_admin_rpc_apply_success_caches_default_and_marks_applied( fd_wksp_t * w
 }
 
 static void
-test_bam_admin_rpc_readback_mismatch_stays_pending( fd_wksp_t * wksp ) {
+test_bam_admin_rpc_set_failure_stays_pending( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
@@ -3606,13 +3604,12 @@ test_bam_admin_rpc_readback_mismatch_stays_pending( fd_wksp_t * wksp ) {
 
   test_bam_admin_rpc_mock_reset();
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":1}" );
-  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
-  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
-  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":4}" );
+  test_bam_admin_rpc_mock_push_reply( -1, NULL );
 
   fd_bam_gossip_update( state, state->stem, 1 );
 
-  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 2UL );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setPublicTpuAddress\"" ) );
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM );
 
   test_bam_env_destroy( env );
@@ -3638,15 +3635,14 @@ test_bam_admin_rpc_revert_uses_cached_defaults( fd_wksp_t * wksp ) {
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"8.8.8.8:7001\"},\"id\":1}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
-  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":4}" );
 
   fd_bam_gossip_update( state, state->stem, 0 );
 
-  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 3UL );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setPublicTpuAddress\"" ) );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "1.1.1.1:4242" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "1.1.1.1:4248" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "\"method\":\"setPublicTpuForwardsAddress\"" ) );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "2.2.2.2:4343" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "2.2.2.2:4349" ) );
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
 
   test_bam_env_destroy( env );
@@ -3671,15 +3667,14 @@ test_bam_admin_rpc_restart_recovers_configured_defaults_for_revert( fd_wksp_t * 
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"8.8.8.8:7001\"},\"id\":1}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
-  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"1.1.1.1:4242\"},\"id\":1}" );
 
   fd_bam_gossip_update( state, state->stem, 0 );
 
-  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 3UL );
   FD_TEST( state->default_tpu.l == state->configured_default_tpu.l );
   FD_TEST( state->default_tpu_fwd.l == state->configured_default_tpu.l );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "1.1.1.1:4242" ) );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "1.1.1.1:4242" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "1.1.1.1:4248" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "1.1.1.1:4248" ) );
   FD_TEST( fd_ushort_bswap( state->default_tpu.port ) == 4242 );
   FD_TEST( fd_ushort_bswap( state->default_tpu_fwd.port ) == 4242 );
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
@@ -4679,7 +4674,7 @@ main( int     argc,
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
   test_bam_ctrl_blank_url_clears_and_disables( wksp );
   test_bam_admin_rpc_apply_success_caches_default_and_marks_applied( wksp );
-  test_bam_admin_rpc_readback_mismatch_stays_pending( wksp );
+  test_bam_admin_rpc_set_failure_stays_pending( wksp );
   test_bam_admin_rpc_revert_uses_cached_defaults( wksp );
   test_bam_admin_rpc_restart_recovers_configured_defaults_for_revert( wksp );
   test_bam_admin_rpc_path_empty_skips_frankendancer_apply( wksp );
