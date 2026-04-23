@@ -8,6 +8,7 @@
 #define IN_KIND_BUNDLE (1UL)
 #define IN_KIND_GOSSIP (2UL)
 #define IN_KIND_SEND   (3UL)
+#define IN_KIND_BAM    (4UL)
 
 FD_FN_CONST static inline ulong
 scratch_align( void ) {
@@ -43,11 +44,13 @@ before_frag( fd_verify_ctx_t * ctx,
      regular transaction and should be round-robined between verify
      tiles, while bundles need to go through verify:0 currently to
      prevent interleaving of bundle streams. */
-  int is_bundle_packet = (ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE && !sig);
+  int is_bundle_packet = ((ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE ||
+                           ctx->in_kind[ in_idx ]==IN_KIND_BAM) &&
+                          !sig);
 
   if( FD_LIKELY( is_bundle_packet || ctx->in_kind[ in_idx ]==IN_KIND_QUIC ) ) {
     return (seq % ctx->round_robin_cnt) != ctx->round_robin_idx;
-  } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE ) ) {
+  } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE || ctx->in_kind[ in_idx ]==IN_KIND_BAM ) ) {
     return ctx->round_robin_idx!=0UL;
   } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_GOSSIP ) ) {
       return (seq % ctx->round_robin_cnt) != ctx->round_robin_idx ||
@@ -71,7 +74,7 @@ during_frag( fd_verify_ctx_t * ctx,
              ulong             ctl FD_PARAM_UNUSED ) {
 
   ulong in_kind = ctx->in_kind[ in_idx ];
-  if( FD_UNLIKELY( in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_QUIC || in_kind==IN_KIND_SEND ) ) {
+  if( FD_UNLIKELY( in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_BAM || in_kind==IN_KIND_QUIC || in_kind==IN_KIND_SEND ) ) {
     if( FD_UNLIKELY( chunk<ctx->in[in_idx].chunk0 || chunk>ctx->in[in_idx].wmark || sz>FD_TPU_RAW_MTU ) )
       FD_LOG_ERR(( "chunk %lu %lu corrupt, not in range [%lu,%lu,%lu]", chunk, sz, ctx->in[in_idx].chunk0, ctx->in[in_idx].wmark, FD_TPU_RAW_MTU ));
 
@@ -140,11 +143,12 @@ after_frag( fd_verify_ctx_t *   ctx,
   /* Users sometimes send transactions as part of a bundle (with a tip)
      and via the normal path (without a tip).  Regardless of which
      arrives first, we want to pack the one with the tip.  Thus, we
-     exempt bundles from the normal HA dedup checks.  The dedup tile
-     will still do a full-bundle dedup check to make sure to drop any
-     identical bundles. */
+     exempt bundles from the normal HA dedup checks.  Likewise, BAM
+     traffic is already sequenced by the BAM node and may legitimately
+     resend signatures, so it bypasses early signature dedup entirely. */
+  int do_sig_dedup = fd_txn_m_use_prepack_sig_dedup( txnm );
   ulong _txn_sig;
-  int res = fd_txn_verify( ctx, fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, !is_bundle, &_txn_sig );
+  int res = fd_txn_verify( ctx, fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, do_sig_dedup, &_txn_sig );
   if( FD_UNLIKELY( res!=FD_TXN_VERIFY_SUCCESS ) ) {
     if( FD_UNLIKELY( is_bundle ) ) ctx->bundle_failed = 1;
 
@@ -210,6 +214,7 @@ unprivileged_init( fd_topo_t *      topo,
 
     if(      !strcmp( link->name, "quic_verify"  ) ) ctx->in_kind[ i ] = IN_KIND_QUIC;
     else if( !strcmp( link->name, "bundle_verif" ) ) ctx->in_kind[ i ] = IN_KIND_BUNDLE;
+    else if( !strcmp( link->name, "bam_verif"    ) ) ctx->in_kind[ i ] = IN_KIND_BAM;
     else if( !strcmp( link->name, "send_out"     ) ) ctx->in_kind[ i ] = IN_KIND_SEND;
     else if( !strcmp( link->name, "gossip_out"   ) ) ctx->in_kind[ i ] = IN_KIND_GOSSIP;
     else FD_LOG_ERR(( "unexpected link name %s", link->name ));

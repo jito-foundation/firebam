@@ -361,6 +361,7 @@ fd_topob_auto_layout( fd_topo_t * topo,
     "sock",
     "quic",
     "bundle",
+    "bam",
     "verify",
     "dedup",
     "resolv", /* FRANK only */

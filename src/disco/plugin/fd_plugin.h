@@ -1,6 +1,8 @@
 #ifndef HEADER_fd_src_disco_plugin_fd_plugin_h
 #define HEADER_fd_src_disco_plugin_fd_plugin_h
 
+#include "../../waltz/http/fd_url.h"
+
 #define FD_PLUGIN_MSG_SLOT_ROOTED                   ( 0UL)
 #define FD_PLUGIN_MSG_SLOT_OPTIMISTICALLY_CONFIRMED ( 1UL)
 #define FD_PLUGIN_MSG_SLOT_COMPLETED                ( 2UL)
@@ -102,9 +104,74 @@ FD_STATIC_ASSERT( sizeof(fd_vote_update_msg_t) <= FD_GOSSIP_LINK_MSG_SIZE, fd_vo
 
 typedef struct {
   char name[ 16 ];
-  char url[ 256 ];
+  char url[ FD_URL_MAX ];
   char ip_cstr[ 40 ]; /* IPv4 or IPv6 cstr */
   int status;
 } fd_plugin_msg_block_engine_update_t;
+
+
+
+#define FD_PLUGIN_MSG_BAM_UPDATE           (15UL)
+
+typedef enum {
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED            = 0,
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED        = 1, // the client has recently failed and is currently backing off from a reconnect attempt
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING          = 2, // the client is currently reconnecting.
+  FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY = 3, /* all of below conditions met, but no recent builder activity has been observed yet
+  - TCP socket is alive
+  - SSL session is not in an error state
+  - HTTP/2 connection is established (SETTINGS exchange done)
+  - gRPC bundle and packet subscriptions are live
+  - HTTP/2 PING exchange was done recently */
+    FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY   = 4  /* recently observed scheduler-stream builder activity within timeout */
+} fd_plugin_bam_update_status_t;
+
+typedef struct {
+  char  name[ 16 ];
+  char  url[ FD_URL_MAX ];
+  char  sni[ FD_SNI_BUF_MAX ];
+  char  ip_cstr[ 40 ];    /* IPv4 or IPv6 cstr */
+  char  tpu_cstr[ 22 ];   /* "a.b.c.d:port" */
+  char  tpu_fwd_cstr[ 22 ];
+  fd_plugin_bam_update_status_t status_code;           /* FD_PLUGIN_MSG_BAM_UPDATE_STATUS_* */
+  uchar enabled;          /* Non-zero when operator enabled BAM */
+
+  /* BAM operator diagnostics mirrored from the BAM tile metrics. */
+  float  keepalive_rtt_sample;         /* Latest HTTP/2 keepalive RTT sample (ns) */
+  float  keepalive_rtt_smoothed;       /* Smoothed HTTP/2 keepalive RTT estimate (ns) */
+  float  keepalive_rtt_deviation;      /* Smoothed HTTP/2 keepalive RTT variation estimate (ns) */
+  ushort feedback_queue_depth;         /* Pending BAM feedback results */
+  ulong  outbound_heartbeat_enqueued;   /* Validator heartbeat messages accepted by gRPC stream_send */
+  ulong  outbound_heartbeat_enqueue_fail; /* Validator heartbeat sends attempted on a live scheduler stream but rejected by gRPC stream_send */
+  ulong  builder_heartbeats_decoded;   /* Builder heartbeat messages successfully decoded */
+  ulong  transaction_published;        /* Transactions published from BAM to verify */
+  ulong  atomic_batch_published;       /* revert_on_error AtomicTxnBatch entries published to verify */
+  ulong  ingress_packet_oversize;      /* BAM packets over local MTU */
+  ulong  failure_auth_challenge_decode; /* AuthChallengeResponse protobuf/validation failures */
+  ulong  failure_config_decode;        /* ConfigResponse protobuf decode failures */
+  ulong  failure_scheduler_envelope_decode; /* SchedulerResponse envelope/protobuf decode failures */
+  ulong  failure_request_failed;       /* HTTP/gRPC request failures */
+  ulong  failure_resolve;              /* DNS resolution failures */
+  ulong  failure_connect;              /* TCP connect failures */
+  ulong  failure_io;                   /* TLS, HTTP/2, or stream I/O failures */
+  ulong  failure_unsupported_version;  /* Unsupported BAM scheduler-response versions */
+  ulong  failure_request_timeout;      /* Auth/config/scheduler gRPC request timeouts */
+  ulong  failure_keepalive_timeout;    /* HTTP/2 keepalive timeout failures */
+  ulong  failure_builder_activity_timeout; /* Scheduler-stream builder-activity watchdog timeouts */
+  ulong  ingress_multi_message_received;
+  ulong  ingress_batch_commit_attempt;
+  ulong  ingress_batch_published;
+  ulong  ingress_batch_rejected_invalid_batch;
+  ulong  ingress_batch_rejected_empty_batch;
+  ulong  ingress_batch_rejected_vote_transaction;
+  ulong  ingress_batch_rejected_non_revert_multi_packet;
+  ulong  ingress_message_rejected_empty_message;
+  ulong  ingress_message_rejected_overflow_message;
+  ulong  leader_slot_end_status_disabled;
+  ulong  leader_slot_end_status_disconnected;
+  ulong  leader_slot_end_status_connecting;
+  ulong  leader_slot_end_status_connected_unhealthy;
+  ulong  leader_slot_end_status_connected_healthy;
+} fd_plugin_msg_bam_update_t;
 
 #endif /* HEADER_fd_src_disco_plugin_fd_plugin_h */

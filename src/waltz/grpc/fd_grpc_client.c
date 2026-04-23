@@ -180,6 +180,7 @@ fd_grpc_client_stream_acquire( fd_grpc_client_t * client,
   client->stream_ids[ client->stream_cnt ] = stream_id;
   client->streams   [ client->stream_cnt ] = stream;
   client->stream_cnt++;
+  client->metrics->streams_active++;
 
   return stream;
 }
@@ -208,6 +209,7 @@ fd_grpc_client_stream_release( fd_grpc_client_t *    client,
     client->streams   [ map_idx ] = client->streams   [ client->stream_cnt-1 ];
   }
   client->stream_cnt--;
+  client->metrics->streams_active--;
 
   fd_grpc_h2_stream_pool_ele_release( client->stream_pool, stream );
 }
@@ -410,11 +412,14 @@ fd_grpc_client_request_continue1( fd_grpc_client_t * client ) {
   fd_h2_stream_t *      h2_stream = &stream->s;
   fd_h2_tx_op_copy( client->conn, h2_stream, client->frame_tx, client->request_tx_op );
   if( FD_UNLIKELY( client->request_tx_op->chunk_sz ) ) return 0;
-  if( FD_UNLIKELY( h2_stream->state != FD_H2_STREAM_STATE_CLOSING_TX ) ) return 0;
+  if( FD_UNLIKELY( client->request_tx_op->fin && h2_stream->state != FD_H2_STREAM_STATE_CLOSING_TX ) ) return 0;
   client->metrics->stream_chunks_tx_cnt++;
   /* Request finished */
   client->request_stream = NULL;
   client->callbacks->tx_complete( client->ctx, stream->request_ctx );
+  if( client->request_tx_op->fin ) {
+    client->metrics->requests_sent++;
+  }
   return 1;
 }
 
@@ -445,7 +450,7 @@ fd_grpc_client_request_is_blocked( fd_grpc_client_t * client ) {
 }
 
 fd_grpc_h2_stream_t *
-fd_grpc_client_request_start(
+fd_grpc_client_request_start_ex(
     fd_grpc_client_t *   client,
     char const *         path,
     ulong                path_len,
@@ -453,7 +458,8 @@ fd_grpc_client_request_start(
     pb_msgdesc_t const * fields,
     void const *         message,
     char const *         auth_token,
-    ulong                auth_token_sz
+    ulong                auth_token_sz,
+    _Bool                end_stream
 ) {
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( client ) ) ) return NULL;
 
@@ -462,7 +468,7 @@ fd_grpc_client_request_start(
   uchar * proto_buf = client->nanopb_tx + sizeof(fd_grpc_hdr_t);
   pb_ostream_t ostream = pb_ostream_from_buffer( proto_buf, client->nanopb_tx_max - sizeof(fd_grpc_hdr_t) );
   if( FD_UNLIKELY( !pb_encode( &ostream, fields, message ) ) ) {
-    FD_LOG_WARNING(( "Failed to encode Protobuf message (%.*s). This is a bug (insufficient buffer space?)", (int)path_len, path ));
+    FD_LOG_WARNING(( "Failed to encode Protobuf message (%.*s). Error: %s", (int)path_len, path, PB_GET_ERROR( &ostream ) ));
     return NULL;
   }
   ulong const serialized_sz = ostream.bytes_written;
@@ -506,14 +512,59 @@ fd_grpc_client_request_start(
   /* Queue request payload for send
      (Protobuf message might have to be fragmented into multiple HTTP/2
      DATA frames if the client gets blocked) */
-  fd_h2_tx_op_init( client->request_tx_op, client->nanopb_tx, payload_sz, FD_H2_FLAG_END_STREAM );
+  fd_h2_tx_op_init( client->request_tx_op, client->nanopb_tx, payload_sz, end_stream ? FD_H2_FLAG_END_STREAM : 0U );
   fd_grpc_client_request_continue1( client );
-  client->metrics->requests_sent++;
-  client->metrics->streams_active++;
-
   FD_LOG_DEBUG(( "gRPC request path=%.*s sz=%lu", (int)path_len, path, serialized_sz ));
 
   return stream;
+}
+
+fd_grpc_h2_stream_t *
+fd_grpc_client_request_start(
+    fd_grpc_client_t *   client,
+    char const *         path,
+    ulong                path_len,
+    ulong                request_ctx,
+    pb_msgdesc_t const * fields,
+    void const *         message,
+    char const *         auth_token,
+    ulong                auth_token_sz
+) {
+  return fd_grpc_client_request_start_ex( client, path, path_len, request_ctx, fields, message, auth_token, auth_token_sz, true );
+}
+
+/* fd_grpc_client_stream_send writes a gRPC DATA message on an existing
+   stream. The caller must keep the stream open (end_stream=0) for
+   additional messages; setting end_stream closes the client side. */
+int
+fd_grpc_client_stream_send(
+    fd_grpc_client_t *   client,
+    fd_grpc_h2_stream_t * stream,
+    pb_msgdesc_t const * fields,
+    void const *         message,
+    _Bool                end_stream
+) {
+  if( FD_UNLIKELY( !stream || stream->s.state == FD_H2_STREAM_STATE_CLOSED || client->request_stream ) ) return 0;
+
+  FD_TEST( client->nanopb_tx_max > sizeof(fd_grpc_hdr_t) );
+  uchar * proto_buf = client->nanopb_tx + sizeof(fd_grpc_hdr_t);
+  pb_ostream_t ostream = pb_ostream_from_buffer( proto_buf, client->nanopb_tx_max - sizeof(fd_grpc_hdr_t) );
+  if( FD_UNLIKELY( !pb_encode( &ostream, fields, message ) ) ) {
+    FD_LOG_WARNING(( "Failed to encode streaming gRPC message" ));
+    return 0;
+  }
+
+  fd_grpc_hdr_t hdr = {
+    .compressed = 0,
+    .msg_sz     = fd_uint_bswap( (uint)ostream.bytes_written )
+  };
+  memcpy( client->nanopb_tx, &hdr, sizeof(fd_grpc_hdr_t) );
+  ulong const payload_sz = ostream.bytes_written + sizeof(fd_grpc_hdr_t);
+
+  client->request_stream = stream;
+  fd_h2_tx_op_init( client->request_tx_op, client->nanopb_tx, payload_sz, end_stream ? FD_H2_FLAG_END_STREAM : 0U );
+  fd_grpc_client_request_continue1( client );
+  return 1;
 }
 
 void

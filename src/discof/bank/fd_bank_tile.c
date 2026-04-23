@@ -1,6 +1,8 @@
 #include "fd_bank_err.h"
 
 #include "../../disco/tiles.h"
+#include "../../disco/fd_txn_m.h"
+#include "../../disco/bam/fd_bam_types.h"
 #include "generated/fd_bank_tile_seccomp.h"
 #include "../../disco/pack/fd_pack.h"
 #include "../../disco/pack/fd_pack_cost.h"
@@ -36,6 +38,12 @@ typedef struct {
   ulong       out_chunk0;
   ulong       out_wmark;
   ulong       out_chunk;
+
+  ulong       bam_out_idx;
+  fd_wksp_t * bam_out_mem;
+  ulong       bam_out_chunk0;
+  ulong       bam_out_wmark;
+  ulong       bam_out_chunk;
 
   fd_wksp_t * rebate_mem;
   ulong       rebate_chunk0;
@@ -83,6 +91,78 @@ scratch_footprint( fd_topo_tile_t const * tile ) {
 static inline void
 metrics_write( fd_bank_ctx_t * ctx ) {
   FD_MCNT_ENUM_COPY( BANKF, TRANSACTION_RESULT, ctx->metrics.txn_result );
+}
+
+static inline void
+bank_tile_publish_bam_result( fd_bank_ctx_t *             ctx,
+                              fd_stem_context_t *         stem,
+                              fd_bam_bundle_result_t const * res ) {
+  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
+  fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->bam_out_mem, ctx->bam_out_chunk );
+  *out = *res;
+  fd_stem_publish( stem,
+                   ctx->bam_out_idx,
+                   0UL,
+                   ctx->bam_out_chunk,
+                   sizeof(fd_bam_bundle_result_t),
+                   0UL,
+                   0UL,
+                   fd_frag_meta_ts_comp( fd_tickcount() ) );
+  ctx->bam_out_chunk = fd_dcache_compact_next( ctx->bam_out_chunk, sizeof(fd_bam_bundle_result_t), ctx->bam_out_chunk0, ctx->bam_out_wmark );
+}
+
+/* fd_runtime_txn_err values in [-1,-39] match bam_types_TransactionErrorReason
+   ordering, so translate directly and special-case nonce blockhash errors. */
+static inline bam_types_TransactionErrorReason
+bank_tile_bam_txn_err_from_runtime_err( int exec_err ) {
+  if( FD_UNLIKELY( exec_err==FD_RUNTIME_TXN_ERR_BLOCKHASH_NONCE_ALREADY_ADVANCED ||
+                   exec_err==FD_RUNTIME_TXN_ERR_BLOCKHASH_FAIL_ADVANCE_NONCE_INSTR ||
+                   exec_err==FD_RUNTIME_TXN_ERR_BLOCKHASH_FAIL_WRONG_NONCE ) ) {
+    return bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  }
+  if( FD_LIKELY( exec_err<=FD_RUNTIME_TXN_ERR_ACCOUNT_IN_USE &&
+                 exec_err>=FD_RUNTIME_TXN_ERR_COMMIT_CANCELLED ) ) {
+    uint idx = (uint)(-exec_err - 1);
+    if( FD_LIKELY( idx < (uint)_bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
+      return (bam_types_TransactionErrorReason)idx;
+    }
+  }
+  return bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+}
+
+static inline void
+bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
+                                    fd_stem_context_t * stem,
+                                    fd_txn_p_t const *  txn,
+                                    fd_exec_txn_ctx_t const * txn_ctx,
+                                    ulong               slot,
+                                    int                 exec_err ) {
+  if( FD_UNLIKELY( txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM || txn->bam.revert_on_error ) ) return;
+
+  /* revert_on_error=0 batches are assumed to be single-packet, so emit one
+     result per seq_id without aggregating multiple transactions. */
+  _Bool committed = !!( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
+  fd_bam_bundle_result_t res = {0};
+  res.seq_id            = txn->bam.seq_id;
+  res.slot              = slot;
+  res.bundle_txn_cnt    = 1U;
+  res.execution_success = committed;
+  res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+  res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+  res.consumed_cus[ 0 ] = txn->bank_cu.actual_consumed_cus;
+  if( FD_LIKELY( committed ) ) {
+    res.feepayer_balance_lamports[ 0 ] = fd_txn_account_get_lamports( &txn_ctx->accounts[ FD_FEE_PAYER_TXN_IDX ] );
+    res.loaded_accounts_data_size[ 0 ] = (uint)txn_ctx->loaded_accounts_data_size;
+  }
+  res.sanitize_success[ 0 ] = !!( txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+  if( FD_UNLIKELY( !res.sanitize_success[ 0 ] ) ) {
+    res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_SANITIZE_FAILURE;
+    res.transaction_err_count = 1U;
+  } else if( FD_UNLIKELY( exec_err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
+    res.transaction_err[ 0 ] = bank_tile_bam_txn_err_from_runtime_err( exec_err );
+    res.transaction_err_count = 1U;
+  }
+  bank_tile_publish_bam_result( ctx, stem, &res );
 }
 
 static int
@@ -196,6 +276,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     if( FD_UNLIKELY( !(txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS ) ) ) {
       fd_pack_rebate_sum_add_txn( ctx->rebater, txn, NULL, 1UL );
       ctx->metrics.txn_result[ fd_bank_err_from_runtime_err( txn_ctx->exec_err ) ]++;
+      bank_tile_maybe_publish_bam_result( ctx, stem, txn, txn_ctx, slot, txn_ctx->exec_err );
       continue;
     }
 
@@ -276,6 +357,8 @@ handle_microblock( fd_bank_ctx_t *     ctx,
                    txn_ctx->exec_err ));
     }
 
+    bank_tile_maybe_publish_bam_result( ctx, stem, txn, txn_ctx, slot, txn_ctx->exec_err );
+
   }
 
   /* Indicate to pack tile we are done processing the transactions so
@@ -347,7 +430,9 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   fd_acct_addr_t const * writable_alt[ MAX_TXN_PER_MICROBLOCK ] = { NULL };
   ulong                  tips        [ MAX_TXN_PER_MICROBLOCK ] = { 0U };
 
-  int execution_success = 1;
+  _Bool execution_success = 1;
+  ulong fail_idx        = ULONG_MAX;
+  int   fail_exec_err   = FD_RUNTIME_EXECUTE_SUCCESS;
 
   /* Every transaction in the bundle should be executed in order against
      different transaciton contexts. */
@@ -359,14 +444,19 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     txn->flags &= ~FD_TXN_P_FLAGS_SANITIZE_SUCCESS;
     txn->flags &= ~FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
 
-    if( execution_success==0 ) {
+    if( FD_UNLIKELY( !execution_success ) ) {
       txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-FD_RUNTIME_TXN_ERR_BUNDLE_PEER)<<24);
       continue;
     }
 
     txn_ctx->exec_err = fd_runtime_prepare_and_execute_txn( ctx->banks, ctx->_bank_idx, txn_ctx, txn, NULL, &ctx->exec_stack, &ctx->exec_accounts[ i ], NULL, NULL );
     txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-txn_ctx->exec_err)<<24);
-    if( FD_UNLIKELY( !(txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS ) || txn_ctx->exec_err ) ) {
+    _Bool sanitize_success = !!( txn_ctx->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+    if( FD_UNLIKELY( !sanitize_success || txn_ctx->exec_err ) ) {
+      if( FD_UNLIKELY( fail_idx==ULONG_MAX ) ) {
+        fail_idx      = i;
+        fail_exec_err = txn_ctx->exec_err;
+      }
       execution_success = 0;
       continue;
     }
@@ -424,6 +514,49 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   }
 
   fd_pack_rebate_sum_add_txn( ctx->rebater, txns, writable_alt, txn_cnt );
+
+  /* Publish execution results for BAM atomic batches (revert_on_error==true).
+     Pack emits only pre-execution drops; for executed work, the bank tile is
+     the source of truth. */
+  if( FD_LIKELY( txn_cnt &&
+                 txns[ 0 ].source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                 txns[ 0 ].bam.revert_on_error ) ) {
+    fd_bam_bundle_result_t res = {0};
+    res.seq_id         = txns[ 0 ].bam.seq_id;
+    res.slot           = slot;
+    res.bundle_txn_cnt = (uchar)txn_cnt;
+    res.execution_success = execution_success;
+    res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
+    res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
+
+    for( ulong i=0UL; i<txn_cnt; i++ ) {
+      res.consumed_cus[ i ]     = txns[ i ].bank_cu.actual_consumed_cus;
+      if( FD_LIKELY( execution_success ) ) {
+        fd_exec_txn_ctx_t const * txn_ctx = &ctx->txn_ctx[ i ];
+        res.feepayer_balance_lamports[ i ] = fd_txn_account_get_lamports( &txn_ctx->accounts[ FD_FEE_PAYER_TXN_IDX ] );
+        res.loaded_accounts_data_size[ i ] = (uint)txn_ctx->loaded_accounts_data_size;
+      }
+      _Bool sanitize_success = 1;
+      if( FD_UNLIKELY( !execution_success && i==fail_idx ) ) {
+        sanitize_success = !!( ctx->txn_ctx[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+      }
+      res.sanitize_success[ i ] = sanitize_success;
+    }
+
+    if( FD_UNLIKELY( !execution_success ) ) {
+      res.transaction_err_count = (uchar)txn_cnt;
+      for( ulong i=0UL; i<txn_cnt; i++ ) {
+        res.transaction_err[ i ] = FD_UNLIKELY( !res.sanitize_success[ i ] )
+                                 ? bam_types_TransactionErrorReason_SANITIZE_FAILURE
+                                 : bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+      }
+      if( FD_LIKELY( fail_idx < txn_cnt && res.sanitize_success[ fail_idx ] ) ) {
+        res.transaction_err[ fail_idx ] = bank_tile_bam_txn_err_from_runtime_err( fail_exec_err );
+      }
+    }
+
+    bank_tile_publish_bam_result( ctx, stem, &res );
+  }
 
   /* Indicate to pack tile we are done processing the transactions so
      it can pack new microblocks using these accounts. */
@@ -576,6 +709,20 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->out_wmark  = fd_dcache_compact_wmark ( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache, topo->links[ tile->out_link_id[ 0 ] ].mtu );
   ctx->out_chunk  = ctx->out_chunk0;
 
+  ctx->bam_out_idx    = ULONG_MAX;
+  ctx->bam_out_mem    = NULL;
+  ctx->bam_out_chunk0 = 0UL;
+  ctx->bam_out_wmark  = 0UL;
+  ctx->bam_out_chunk  = 0UL;
+  ulong bam_out_idx = fd_topo_find_tile_out_link( topo, tile, "bank_bam", tile->kind_id );
+  if( FD_LIKELY( bam_out_idx!=ULONG_MAX ) ) {
+    ctx->bam_out_idx = bam_out_idx;
+    fd_topo_link_t const * bam_out = &topo->links[ tile->out_link_id[ bam_out_idx ] ];
+    ctx->bam_out_mem    = topo->workspaces[ topo->objs[ bam_out->dcache_obj_id ].wksp_id ].wksp;
+    ctx->bam_out_chunk0 = fd_dcache_compact_chunk0( ctx->bam_out_mem, bam_out->dcache );
+    ctx->bam_out_wmark  = fd_dcache_compact_wmark ( ctx->bam_out_mem, bam_out->dcache, bam_out->mtu );
+    ctx->bam_out_chunk  = ctx->bam_out_chunk0;
+  }
 
   ctx->rebate_mem    = topo->workspaces[ topo->objs[ topo->links[ tile->out_link_id[ 1 ] ].dcache_obj_id ].wksp_id ].wksp;
   ctx->rebate_chunk0 = fd_dcache_compact_chunk0( ctx->rebate_mem, topo->links[ tile->out_link_id[ 1 ] ].dcache );

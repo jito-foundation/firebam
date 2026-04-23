@@ -128,7 +128,7 @@ fd_bundle_client_create_conn( fd_bundle_tile_t * ctx ) {
                 (int)ctx->server_sni_len, ctx->server_sni ));
 
   int connect_err = fd_bundle_client_do_connect( ctx, ip4_addr );
-  if( FD_UNLIKELY( connect_err ) ) {
+  if( FD_LIKELY( connect_err ) ) {
     if( FD_UNLIKELY( connect_err!=EINPROGRESS ) ) {
       FD_LOG_WARNING(( "connect(tcp_sock," FD_IP4_ADDR_FMT ":%u) failed (%i-%s)",
                       FD_IP4_ADDR_FMT_ARGS( ip4_addr ), ctx->server_tcp_port,
@@ -470,8 +470,9 @@ fd_bundle_tile_publish_bundle_txn(
     .block_engine   = {
       .bundle_id      = ctx->bundle_seq,
       .bundle_txn_cnt = bundle_txn_cnt,
-      .commission     = (uchar)ctx->builder_commission
+      .commission     = ctx->builder_commission
     },
+    .bam = {0},
   };
   memcpy( txnm->block_engine.commission_pubkey, ctx->builder_pubkey, 32UL );
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
@@ -511,6 +512,7 @@ fd_bundle_tile_publish_txn(
       .commission        = 0U,
       .commission_pubkey = {0U}
     },
+    .bam = {0},
   };
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
 
@@ -754,11 +756,15 @@ fd_bundle_client_handle_builder_fee_info(
     return;
   }
 
-  ctx->builder_commission = (uchar)res.commission;
-  if( FD_UNLIKELY( !fd_base58_decode_32( res.pubkey, ctx->builder_pubkey ) ) ) {
+  uchar decoded_builder_pubkey[ 32 ];
+  if( FD_UNLIKELY( !fd_base58_decode_32( res.pubkey, decoded_builder_pubkey ) ) ) {
     FD_LOG_HEXDUMP_WARNING(( "Invalid pubkey in BlockBuilderFeeInfoResponse", res.pubkey, strnlen( res.pubkey, sizeof(res.pubkey) ) ));
     return;
   }
+
+  /* Apply builder info atomically to avoid mixed old/new state. */
+  ctx->builder_commission = (uchar)res.commission;
+  fd_memcpy( ctx->builder_pubkey, decoded_builder_pubkey, sizeof(ctx->builder_pubkey) );
 
   long validity_duration_ns = (long)( 60e9 * 5. ); /* 5 minutes */
   ctx->builder_info_avail = 1;
