@@ -2647,7 +2647,6 @@ test_bam_scheduler_leader_state_publishes_message( fd_wksp_t * wksp ) {
     .tick = 7U,
     .slot_cu_budget_remaining = 123U
   };
-  state->bam_leader_started_slot = 42UL;
 
   g_clock = (long)8e9;
   long now = g_clock;
@@ -2741,7 +2740,7 @@ test_bam_pack_leader_channel_contract( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_pack_leader_slot_change_waits_for_first_scheduler_batch( fd_wksp_t * wksp ) {
+test_bam_pack_leader_slot_change_flushes_immediately( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -2753,7 +2752,6 @@ test_bam_pack_leader_slot_change_waits_for_first_scheduler_batch( fd_wksp_t * wk
     .tick = 8U,
     .slot_cu_budget_remaining = 111U
   };
-  state->bam_leader_started_slot = 76UL;
 
   union {
     fd_bam_leader_state_t leader;
@@ -2773,29 +2771,14 @@ test_bam_pack_leader_slot_change_waits_for_first_scheduler_batch( fd_wksp_t * wk
 
   fd_bam_test_receive_ingress_frag( state, state->pack_bam_leader_in_idx, 0UL, sizeof(fd_bam_leader_state_t) );
 
-  FD_TEST( state->bam_leader_pending == 1U );
+  FD_TEST( state->bam_leader_pending == 0U );
   FD_TEST( state->bam_leader_state.slot == ingress.leader.slot );
   FD_TEST( state->bam_leader_state.tick == ingress.leader.tick );
   FD_TEST( state->bam_leader_state.slot_cu_budget_remaining == ingress.leader.slot_cu_budget_remaining );
-  FD_TEST( state->bam_leader_started_slot == ULONG_MAX );
-  FD_TEST( state->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUED_IDX ] == 0UL );
-
-  bam_types_Packet packet = bam_types_Packet_init_default;
-  packet.data.size       = 1U;
-  packet.data.bytes[ 0 ] = (uchar)'x';
-
-  uchar protobuf[ 256 ];
-  size_t protobuf_sz = test_bam_encode_scheduler_response( &packet, 1UL, 99U, protobuf, sizeof(protobuf) );
-  fd_bam_client_grpc_rx_msg( state,
-                             protobuf,
-                             protobuf_sz,
-                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( state->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUED_IDX ] == 1UL );
 
   test_bam_decoded_message_t decoded;
   test_bam_decode_last_message( state, &decoded );
-  FD_TEST( state->bam_leader_pending == 0U );
-  FD_TEST( state->bam_leader_started_slot == ingress.leader.slot );
-  FD_TEST( state->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUED_IDX ] == 1UL );
   FD_TEST( decoded.msg.which_versioned_msg == bam_api_SchedulerMessage_v0_tag );
   FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_leader_state_tag );
   bam_types_LeaderState const * ls = &decoded.msg.versioned_msg.v0.msg.leader_state;
@@ -4696,7 +4679,7 @@ main( int     argc,
   test_bam_scheduler_leader_state_publishes_message( wksp );
   test_bam_leader_state_supersede_counts_drop( wksp );
   test_bam_pack_leader_channel_contract( wksp );
-  test_bam_pack_leader_slot_change_waits_for_first_scheduler_batch( wksp );
+  test_bam_pack_leader_slot_change_flushes_immediately( wksp );
   test_bam_pack_result_channel_contract( wksp );
   test_bam_bank_result_channel_contract( wksp );
   test_bam_grpc_metrics_export( wksp );

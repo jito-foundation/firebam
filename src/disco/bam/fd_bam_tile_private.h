@@ -251,7 +251,6 @@ struct fd_bam_tile {
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_res and bank_bam; preserved across reconnect/reset until flushed */
   fd_bam_leader_state_t  bam_leader_state;               /* Latest pack_bam_ldr snapshot awaiting publication; newer unsent snapshots supersede older ones */
-  ulong                 bam_leader_started_slot;         /* Slot whose leader-state stream is unlocked because BAM has already delivered at least one scheduler batch for it. ULONG_MAX means the current slot is still gated. */
   fd_bam_leader_slot_end_tracker_t leader_slot_end[ FD_BAM_LEADER_SLOT_END_TRACKER_CNT ]; /* Per-slot metric tracker used to record BAM status and fresh-work state at slot end without relying on transition-history reconstruction. */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
@@ -416,12 +415,6 @@ fd_bam_slot_ingress_timing_query_or_insert( fd_bam_tile_t * ctx,
 FD_FN_UNUSED static inline void
 fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
                            fd_bam_leader_state_t const *  state ) {
-  ulong const prev_slot = ctx->bam_leader_state.slot;
-
-  if( FD_UNLIKELY( state->slot != prev_slot ) ) {
-    ctx->bam_leader_started_slot = ULONG_MAX;
-  }
-
   _Bool track_slot_end = ( state->slot!=ULONG_MAX && state->slot_end_ns );
   if( FD_UNLIKELY( ctx->bam_leader_pending &&
                    !fd_bam_leader_state_eq( &ctx->bam_leader_state, state ) ) ) {
@@ -474,13 +467,6 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
 
   ctx->bam_leader_state = *state;
   ctx->bam_leader_pending = 1U;
-}
-
-FD_FN_PURE static inline _Bool
-fd_bam_leader_state_send_allowed( fd_bam_tile_t const *               ctx,
-                                  fd_bam_leader_state_t const *       state ) {
-  return !!( state->slot!=ULONG_MAX &&
-             ctx->bam_leader_started_slot==state->slot );
 }
 
 FD_FN_PURE static inline _Bool
