@@ -115,7 +115,9 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
                                     fd_txn_p_t const *  txn,
                                     ulong               slot,
                                     int                 transaction_err_idx,
-                                    _Bool               sanitize_success ) {
+                                    _Bool               sanitize_success,
+                                    ulong               feepayer_balance_lamports,
+                                    uint                loaded_accounts_data_size ) {
   if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
   if( FD_UNLIKELY( txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM || txn->bam.revert_on_error ) ) return;
 
@@ -128,6 +130,8 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
   res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
   res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
   res.consumed_cus[ 0 ] = txn->bank_cu.actual_consumed_cus;
+  res.feepayer_balance_lamports[ 0 ] = feepayer_balance_lamports;
+  res.loaded_accounts_data_size[ 0 ] = loaded_accounts_data_size;
   res.sanitize_success[ 0 ] = sanitize_success;
 
   if( FD_UNLIKELY( !sanitize_success ) ) {
@@ -167,8 +171,8 @@ before_frag( fd_bank_ctx_t * ctx,
   return 0;
 }
 
-extern int    fd_ext_bank_execute_and_commit_bundle( void const * bank, void * txns, ulong txn_cnt, int * out_transaction_err, uint * actual_execution_cus, uint * actual_acct_data_cus, ulong * out_timestamps, ulong * out_tips );
-extern void * fd_ext_bank_load_and_execute_txns( void const * bank, void * txns, ulong txn_cnt, int * out_processing_results, int * out_transaction_err, uint * out_consumed_exec_cus, uint * out_consumed_acct_data_cus, ulong * out_timestamps, ulong * out_tips );
+extern int    fd_ext_bank_execute_and_commit_bundle( void const * bank, void * txns, ulong txn_cnt, int * out_transaction_err, uint * actual_execution_cus, uint * actual_acct_data_cus, ulong * out_timestamps, ulong * out_tips, ulong * out_feepayer_balance_lamports, uint * out_loaded_accounts_data_size );
+extern void * fd_ext_bank_load_and_execute_txns( void const * bank, void * txns, ulong txn_cnt, int * out_processing_results, int * out_transaction_err, uint * out_consumed_exec_cus, uint * out_consumed_acct_data_cus, ulong * out_timestamps, ulong * out_tips, ulong * out_feepayer_balance_lamports, uint * out_loaded_accounts_data_size );
 extern void   fd_ext_bank_commit_txns( void const * bank, void const * txns, ulong txn_cnt , void * load_and_execute_output );
 extern void   fd_ext_bank_release_thunks( void * load_and_execute_output );
 
@@ -259,6 +263,8 @@ handle_microblock( fd_bank_ctx_t *     ctx,
   uint consumed_acct_data_cus[   MAX_TXN_PER_MICROBLOCK ] = { 0U };
   ulong out_timestamps       [ 4*MAX_TXN_PER_MICROBLOCK ] = { 0U };
   ulong out_tips             [   MAX_TXN_PER_MICROBLOCK ] = { 0U };
+  ulong feepayer_balance_lamports[ MAX_TXN_PER_MICROBLOCK ] = { 0UL };
+  uint loaded_accounts_data_size [ MAX_TXN_PER_MICROBLOCK ] = { 0U  };
 
   void * load_and_execute_output = fd_ext_bank_load_and_execute_txns( ctx->_bank,
                                                                       ctx->txn_abi_mem,
@@ -268,7 +274,9 @@ handle_microblock( fd_bank_ctx_t *     ctx,
                                                                       consumed_exec_cus,
                                                                       consumed_acct_data_cus,
                                                                       out_timestamps,
-                                                                      out_tips );
+                                                                      out_tips,
+                                                                      feepayer_balance_lamports,
+                                                                      loaded_accounts_data_size );
 
   ulong sanitized_idx = 0UL;
   for( ulong i=0UL; i<txn_cnt; i++ ) {
@@ -283,7 +291,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     txn->bank_cu.rebated_cus = requested_exec_plus_acct_data_cus + non_execution_cus;
     txn->flags               &= ~FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
     if( FD_UNLIKELY( !(txn->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS) ) ) {
-      bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, FD_METRICS_ENUM_TRANSACTION_ERROR_V_SANITIZE_FAILURE_IDX, 0 );
+      bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, FD_METRICS_ENUM_TRANSACTION_ERROR_V_SANITIZE_FAILURE_IDX, 0, 0UL, 0U );
       continue;
     }
 
@@ -299,7 +307,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     ctx->metrics.fee_only          += (ulong)(processing_results[ sanitized_idx-1UL ]==FD_BANK_TRANSACTION_LANDED);
 
     if( FD_UNLIKELY( !(processing_results[ sanitized_idx-1UL ] & FD_BANK_TRANSACTION_LANDED) ) ) {
-      bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, transaction_err_idx, 1 );
+      bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, transaction_err_idx, 1, 0UL, 0U );
       continue;
     }
 
@@ -327,7 +335,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
        transactions. */
     txn->flags                      |= FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
 
-    bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, transaction_err_idx, 1 );
+    bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, transaction_err_idx, 1, feepayer_balance_lamports[ sanitized_idx-1UL ], loaded_accounts_data_size[ sanitized_idx-1UL ] );
 
     if( FD_UNLIKELY( !(processing_results[ sanitized_idx-1UL ] & FD_BANK_TRANSACTION_EXECUTED) ) ) continue;
 
@@ -453,8 +461,10 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   uint consumed_cus         [   MAX_TXN_PER_MICROBLOCK ] = { 0U };
   ulong out_timestamps      [ 4*MAX_TXN_PER_MICROBLOCK ] = { 0U };
   ulong tips                [   MAX_TXN_PER_MICROBLOCK ] = { 0U };
+  ulong feepayer_balance_lamports[ MAX_TXN_PER_MICROBLOCK ] = { 0UL };
+  uint loaded_accounts_data_size [ MAX_TXN_PER_MICROBLOCK ] = { 0U  };
   if( FD_LIKELY( execution_success ) ) {
-    execution_success = !!fd_ext_bank_execute_and_commit_bundle( ctx->_bank, ctx->txn_abi_mem, txn_cnt, transaction_err, actual_execution_cus, actual_acct_data_cus, out_timestamps, tips );
+    execution_success = !!fd_ext_bank_execute_and_commit_bundle( ctx->_bank, ctx->txn_abi_mem, txn_cnt, transaction_err, actual_execution_cus, actual_acct_data_cus, out_timestamps, tips, feepayer_balance_lamports, loaded_accounts_data_size );
   }
 
   if( FD_LIKELY( execution_success ) ) {
@@ -537,6 +547,13 @@ handle_bundle( fd_bank_ctx_t *     ctx,
         _Bool sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
         res.sanitize_success[ i ] = sanitize_success;
         res.consumed_cus[ i ]     = txns[ i ].bank_cu.actual_consumed_cus;
+      }
+
+      if( FD_LIKELY( execution_success ) ) {
+        for( ulong i=0UL; i<txn_cnt; i++ ) {
+          res.feepayer_balance_lamports[ i ] = feepayer_balance_lamports[ i ];
+          res.loaded_accounts_data_size[ i ] = loaded_accounts_data_size[ i ];
+        }
       }
 
       if( FD_UNLIKELY( !execution_success ) ) {
