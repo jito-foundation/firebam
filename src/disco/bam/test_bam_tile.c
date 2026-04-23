@@ -427,7 +427,7 @@ test_bam_dump_bam_slot_first_txn_gate( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_late_arrival( fd_wksp_t * wksp ) {
+test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_rejects_stale_arrival( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
@@ -437,16 +437,14 @@ test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_late_arrival( fd_wksp_
   packets[0].data.size = (pb_size_t)bam_dump_txn_fixture_sz;
   fd_memcpy( packets[0].data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
 
-  test_bam_packet_encode_ctx_t packets_ctx = {
-    .packets    = packets,
-    .packet_cnt = 1UL
-  };
-
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
   batch.seq_id = 77U;
   batch.max_schedule_slot = 100UL;
   batch.packets.funcs.encode = test_bam_encode_packets_cb;
-  batch.packets.arg          = &packets_ctx;
+  batch.packets.arg          = &(test_bam_packet_encode_ctx_t){
+    .packets    = packets,
+    .packet_cnt = 1UL
+  };
 
   uchar protobuf[ 4096 ];
 
@@ -487,6 +485,16 @@ test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_late_arrival( fd_wksp_
   FD_TEST( entry->first_rx_after_slot_end == 0U );
   FD_TEST( entry->txn_before_slot_end == 1UL );
   FD_TEST( entry->txn_after_slot_end == 1UL );
+  FD_TEST( state->metrics.ingress_batch_commit_attempt_cnt == 2UL );
+  FD_TEST( state->metrics.ingress_batch_published_cnt == 1UL );
+  FD_TEST( state->metrics.transaction_published_cnt == 1UL );
+  FD_TEST( state->feedback_queue_depth == 1UL );
+  FD_TEST( state->bam_results[0].seq_id == 78U );
+  FD_TEST( state->bam_results[0].slot == 100UL );
+  FD_TEST( state->bam_results[0].bundle_txn_cnt == 1U );
+  FD_TEST( state->bam_results[0].execution_success == 0 );
+  FD_TEST( state->bam_results[0].scheduling_error == FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+  FD_TEST( state->bam_results[0].bundle_err == FD_BAM_BUNDLE_ERR_NONE );
 
   test_bam_env_destroy( env );
 }
@@ -502,16 +510,14 @@ test_bam_slot_ingress_timing_uses_concrete_max_schedule_slot( fd_wksp_t * wksp )
   packets[0].data.size = (pb_size_t)bam_dump_txn_fixture_sz;
   fd_memcpy( packets[0].data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
 
-  test_bam_packet_encode_ctx_t packets_ctx = {
-    .packets    = packets,
-    .packet_cnt = 1UL
-  };
-
   bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
   batch.seq_id = 79U;
   batch.max_schedule_slot = 100UL;
   batch.packets.funcs.encode = test_bam_encode_packets_cb;
-  batch.packets.arg          = &packets_ctx;
+  batch.packets.arg          = &(test_bam_packet_encode_ctx_t){
+    .packets    = packets,
+    .packet_cnt = 1UL
+  };
 
   uchar protobuf[ 4096 ];
 
@@ -780,87 +786,6 @@ test_bam_publish_batch_uses_captured_ingress_metadata( fd_wksp_t * wksp ) {
 
   fd_txn_m_t const * first = (fd_txn_m_t const *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
   FD_TEST( first->scheduler_arrival_tspub == 123456789U );
-
-  test_bam_env_destroy( env );
-}
-
-static void
-test_bam_publish_batch_rewrites_adjacent_late_slot_hint( fd_wksp_t * wksp ) {
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  fd_bam_tile_t * state = env->state;
-
-  fd_bam_batch_ctx_t batch_state;
-  fd_memset( &batch_state, 0, sizeof(batch_state) );
-  batch_state.packet_cnt           = 1U;
-  batch_state.ingress_rx_ts_ns     = 2000L;
-  batch_state.ingress_slot_end_ns  = 0L;
-  batch_state.ingress_rx_tspub     = 987654321U;
-  batch_state.packets[ 0 ].data.size = (pb_size_t)bam_dump_txn_fixture_sz;
-  fd_memcpy( batch_state.packets[ 0 ].data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
-
-  fd_bam_slot_ingress_timing_t * prev_slot =
-      fd_bam_slot_ingress_timing_query_or_insert( state, 100UL, 101UL );
-  FD_TEST( prev_slot );
-  prev_slot->slot_end_ns = 1500L;
-
-  state->bam_leader_state = (fd_bam_leader_state_t){
-    .slot               = 101UL,
-    .slot_end_ns        = 2500L,
-    .current_slot_has_bam_work = 0U,
-  };
-
-  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
-  batch.seq_id = 88U;
-  batch.max_schedule_slot = 100UL;
-
-  g_clock = 2000L;
-  fd_bam_publish_batch( state, &batch_state, &batch );
-
-  fd_txn_m_t const * first = (fd_txn_m_t const *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
-  FD_TEST( first->bam.max_schedule_slot == 101UL );
-  FD_TEST( first->scheduler_arrival_tspub == 987654321U );
-
-  fd_bam_slot_ingress_timing_t const * entry =
-      fd_bam_slot_ingress_timing_query_const( state, 100UL );
-  FD_TEST( entry );
-  FD_TEST( entry->txn_after_slot_end == 1UL );
-  FD_TEST( entry->txn_before_slot_end == 0UL );
-
-  test_bam_env_destroy( env );
-}
-
-static void
-test_bam_publish_batch_keeps_hint_without_prior_owned_slot( fd_wksp_t * wksp ) {
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  fd_bam_tile_t * state = env->state;
-
-  fd_bam_batch_ctx_t batch_state;
-  fd_memset( &batch_state, 0, sizeof(batch_state) );
-  batch_state.packet_cnt           = 1U;
-  batch_state.ingress_rx_ts_ns     = 2000L;
-  batch_state.ingress_slot_end_ns  = 0L;
-  batch_state.ingress_rx_tspub     = 123123123U;
-  batch_state.packets[ 0 ].data.size = (pb_size_t)bam_dump_txn_fixture_sz;
-  fd_memcpy( batch_state.packets[ 0 ].data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
-
-  state->bam_leader_state = (fd_bam_leader_state_t){
-    .slot               = 101UL,
-    .slot_end_ns        = 2500L,
-    .current_slot_has_bam_work = 0U,
-  };
-
-  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
-  batch.seq_id = 89U;
-  batch.max_schedule_slot = 100UL;
-
-  g_clock = 2000L;
-  fd_bam_publish_batch( state, &batch_state, &batch );
-
-  fd_txn_m_t const * first = (fd_txn_m_t const *)fd_chunk_to_laddr( state->verify_out.mem, 0UL );
-  FD_TEST( first->bam.max_schedule_slot == 100UL );
-  FD_TEST( first->scheduler_arrival_tspub == 123123123U );
 
   test_bam_env_destroy( env );
 }
@@ -1588,6 +1513,49 @@ test_bam_bundle_rejects_real_vote_payload( fd_wksp_t * wksp ) {
   FD_TEST( result->result.not_committed.reason.deserialization_error.reason ==
            bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE );
   FD_TEST( result->result.not_committed.reason.deserialization_error.index == 0U );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_stale_slot_rejects_before_vote_error( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  state->bam_leader_state.slot = 45UL;
+
+  bam_types_Packet packet[ 1 ];
+  test_bam_init_simple_vote_packet( &packet[0], 1U );
+
+  uchar protobuf[ 2048 ];
+  size_t protobuf_sz = test_bam_encode_scheduler_response( packet, 1UL, 44U, protobuf, sizeof( protobuf ) );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
+  FD_TEST( state->feedback_queue_depth == 1UL );
+
+  test_bam_prepare_scheduler_stream( state );
+  g_clock = (long)18e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->bam_last_config_poll_ns = g_clock;
+
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt == 1UL );
+  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_scheduling_error_tag );
+  FD_TEST( result->result.not_committed.reason.scheduling_error == bam_types_SchedulingError_OUTSIDE_LEADER_SLOT );
 
   test_bam_env_destroy( env );
 }
@@ -4636,15 +4604,13 @@ main( int     argc,
   test_bam_packets_forwarded( wksp );
   test_bam_dump_bam_txns_smoke( wksp );
   test_bam_dump_bam_slot_first_txn_gate( wksp );
-  test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_late_arrival( wksp );
+  test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_rejects_stale_arrival( wksp );
   test_bam_slot_ingress_timing_uses_concrete_max_schedule_slot( wksp );
   test_bam_current_slot_work_status_bits( wksp );
   test_bam_slot_ingress_timing_summary_format_and_gate( wksp );
   test_bam_slot_ingress_timing_summary_on_leader_slot_advance( wksp );
   test_bam_slot_ingress_timing_tracks_hash_collisions( wksp );
   test_bam_publish_batch_uses_captured_ingress_metadata( wksp );
-  test_bam_publish_batch_rewrites_adjacent_late_slot_hint( wksp );
-  test_bam_publish_batch_keeps_hint_without_prior_owned_slot( wksp );
   test_bam_multiple_batches_forwarded( wksp );
   test_bam_multiple_batches_accept_limit_counts( wksp );
   test_bam_scheduler_truncated_message_dropped( wksp );
@@ -4657,6 +4623,7 @@ main( int     argc,
   test_bam_non_revert_multi_packet_rejected_by_current_packet_stream_contract( wksp );
   test_bam_validation_orders_revert_consistency_before_vote_rejection( wksp );
   test_bam_bundle_rejects_real_vote_payload( wksp );
+  test_bam_stale_slot_rejects_before_vote_error( wksp );
   test_bam_bundle_rejects_excess_packet_count( wksp );
   test_bam_bundle_rejects_oversized_packet( wksp );
   test_bam_bundle_rejects_empty_batch( wksp );
