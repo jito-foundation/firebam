@@ -2,15 +2,15 @@
 
 This document specifies the on-the-wire protocol and observed behavioral contract between:
 
-- The validator-side BAM client in this repo (`jito-solana`).
+- The validator-side BAM client in the separate `jito-solana` repo.
 - The BAM Node service in `bam` (the "bam-node").
 
 It is written so an engineer can reimplement BAM support clean-room, without reading either codebase.
 
 Observed from:
 
-- jito-solana git commit `5387c19431c99e6018395ff1a5f14a143a074773`
-- bam git commit `806e7ef69b3e850d0516bc95e0888117d466f21f`
+- jito-solana git commit `a09f22fec2c3b96d07aa099f72ad179f13de9bdf`
+- bam git commit `74047d6e303d2e9d7f9cd2674f4f28a7cb9ff699`
 
 ## Terminology
 
@@ -35,9 +35,8 @@ Observed from:
 1. Validator connects to Node via gRPC, authenticates by signing a Node-provided challenge, and fetches config.
 2. While connected, validator sends leader state updates while it is leader, receives `AtomicTxnBatch` messages from
    Node, validates and schedules them with account-aware conflict tracking, executes them against the active leader
-   bank, and sends an `AtomicTxnBatchResult` per received batch back to Node. If BAM TPU config is present and parses
-   successfully, the validator may also advertise Node-provided TPU/TPU-forward sockets once fetch-stage switches into
-   BAM TPU state.
+   bank, and returns batch results to Node. If BAM TPU config is present and parses successfully, the validator may also advertise Node-provided
+   TPU/TPU-forward sockets once fetch-stage switches into BAM TPU state.
 3. When BAM is connected, the validator switches non-vote scheduling to BAM-supplied batches. Block Engine
    streaming is suppressed only in the `Connected` state, and TPU packet forwarding is suppressed only when the
    validator has also accepted BAM TPU config and switched fetch-stage TPU gossip to BAM addresses.
@@ -185,7 +184,7 @@ reasons, including:
 `ConfigResponse` contains:
 
 - `block_engine_config { builder_pubkey, builder_commission }`
-- `bam_config { prio_fee_recipient_pubkey, commission_bps, tpu_sock, tpu_fwd_sock, shred_sock[] }`
+- `bam_config { prio_fee_recipient_pubkey, commission_bps, tpu_sock, tpu_fwd_sock, shred_socks[] }`
 
 Validator applies config live:
 
@@ -195,26 +194,27 @@ Validator applies config live:
    parse, BAM TPU config is left unchanged. When BAM TPU info is later advertised through fetch-stage gossip, the
    validator adds `+6` to both BAM TPU / TPU-forward ports before gossiping the QUIC addresses.
 2. Builder identity/commission:
-   Parse `builder_pubkey` and store it. `builder_commission` is a percent (0-100); values > 100 are rejected. Stored
-   builder info is used by tip-program maintenance.
+   `builder_commission` is a percent (0-100). If `builder_commission > 100`, the validator aborts the entire
+   builder-info update before parsing `builder_pubkey`, leaving both stored builder fields unchanged. Otherwise it
+   attempts to parse `builder_pubkey`; parse failure preserves the previous stored pubkey, but a valid new commission
+   still applies. Stored builder info is used by tip-program maintenance.
 3. Priority fee recipient:
    Parse and store `prio_fee_recipient_pubkey`. Parse failure preserves the prior stored value.
 4. `commission_bps`:
    Currently ignored by the validator.
-5. `shred_sock`:
-   Advertises BAM's embedded validator TVU UDP shred ingress. BAM currently emits the embedded
-   validator's advertised external TVU address, so a client can forward leader and
-   near-leader shreds there. The field is repeated to allow for multiple shred destinations in the future.
+5. `shred_socks`:
+   Node-populated informational field for BAM-side shred destinations. The field is repeated to allow multiple shred
+   destinations in the future.
 
 The validator only reports itself as fully "Connected" when it is both heartbeat-healthy and has received at least one
 `ConfigResponse` (it does not require that all config fields parse successfully).
 
 Implementation notes:
 
-- If `builder_pubkey` fails to parse, the validator logs an error and preserves the previously stored builder
-  pubkey.
-- If `builder_commission > 100`, the validator logs an error and ignores that commission value (leaving the prior value
-  unchanged).
+- If `builder_commission > 100`, the validator logs an error and leaves both stored builder pubkey and commission
+  unchanged.
+- If `builder_commission` is valid but `builder_pubkey` fails to parse, the validator logs an error, preserves the
+  previously stored builder pubkey, and still stores the new commission.
 
 ## BAM URL Configuration (Validator)
 
@@ -277,9 +277,8 @@ On receiving `LeaderState`, the Node validates that `leader_state.slot` is withi
 
 When `bam_enabled == Connected`, validator-side non-vote scheduling switches to BAM-supplied batches:
 
-- TPU packet forwarding from the network is disabled and drained/dropped only when fetch-stage has switched away
-  from `Original` TPU state to BAM TPU state. This requires usable BAM TPU info; `Connected` alone is not
-  sufficient.
+- TPU packet forwarding from the network is gated separately by fetch-stage TPU selection. `Connected` alone does not
+  force forwarding off, and BAM TPU info is only one input into that selection.
 - Block Engine streaming is suppressed/terminated when `bam_enabled == Connected` (the Block Engine stage exits its
   consume loop and idles). During `Connecting`, the Block Engine stage can still run normally.
 - The normal non-vote scheduler stops scheduling.
@@ -300,9 +299,8 @@ plus validator-internal maintenance work such as tip-program bundles, and indepe
   `Forward` / `ForwardAndHold` they are responded to as `OUTSIDE_LEADER_SLOT`. Block Engine ingestion is not
   actively suppressed until `Connected`.
 - `Connected` (2): BAM connection is heartbeat-healthy and at least one `ConfigResponse` has been received. The BAM
-  scheduler is enabled and the normal non-vote scheduler is disabled. TPU packet forwarding is drained/dropped only
-  if fetch-stage is actually using BAM TPU addresses; if BAM TPU info is absent or invalid, fetch-stage can remain
-  on relayer/original TPU state.
+  scheduler is enabled and the normal non-vote scheduler is disabled. TPU packet forwarding behavior remains gated by
+  fetch-stage TPU selection rather than by `Connected` alone.
 
 Observed transitions:
 
@@ -438,7 +436,7 @@ Validator signature-verifies all packets in the received batches:
 Packet-to-`solana_packet::Packet` conversion details (observed):
 
 - Copy length is `min(PACKET_DATA_SIZE, packet.data.len())`.
-- `solana_packet.meta.size` is set from proto `meta.size` if present (else defaults to `packet.data.len()`).
+- `solana_packet.meta.size` is set from `packet.data.len()`; proto `meta.size` is ignored.
 - If proto `meta.flags.simple_vote_tx == true`, `solana_packet.meta.flags` includes `SIMPLE_VOTE_TX` for sigverify
   purposes.
 
@@ -450,8 +448,9 @@ Any failure rejects the entire batch, with the failing transaction index in the 
 1. Vote-only mode reject:
    If the BankForks working bank is vote-only, reject with `DeserializationErrorReason::SANITIZE_ERROR`.
 2. Basic sanitization:
-   Parse packet bytes to a sanitized transaction view. Sanitization is parameterized by the root bank feature flag
-   `static_instruction_limit`. Failures map to `DeserializationErrorReason::SANITIZE_ERROR`.
+   Parse packet bytes to a sanitized transaction view. Sanitization is parameterized by the root bank feature flags
+   `static_instruction_limit` and `limit_instruction_accounts`. Failures map to
+   `DeserializationErrorReason::SANITIZE_ERROR`.
 3. Reject vote transactions:
    If `is_simple_vote_transaction == true`, reject with `DeserializationErrorReason::VOTE_TRANSACTION_FAILURE`.
 4. Resolve address lookup tables (v0 only):
@@ -696,9 +695,9 @@ single-transaction.
 
 ### Result Shape
 
-Validator returns exactly one `AtomicTxnBatchResult` per received `AtomicTxnBatch`, keyed by `seq_id`.
-Note: the validator *attempts* to produce one result per batch, but due to internal best-effort drops (bounded
-channels + `try_send`) a clean-room implementation must tolerate missing results (see Backpressure and Drop Semantics).
+Validator attempts to return one `AtomicTxnBatchResult` per received `AtomicTxnBatch`, keyed by `seq_id`.
+Due to internal best-effort drops (bounded channels + `try_send`), a clean-room implementation must tolerate missing
+results (see Backpressure and Drop Semantics).
 
 `AtomicTxnBatchResult.result` is one of:
 
@@ -840,8 +839,11 @@ Result lifecycle and correlation details (observed):
 - Each pending entry records the DAG item, expected validator pubkey, and per-transaction metadata used for callbacks.
 - When a result arrives, the node first checks that the `seq_id` exists and that the sending validator matches the
   entry's `expected_leader`. Unknown `seq_id` or wrong-validator results are dropped.
-- Accepted results remove the pending entry by `seq_id`, emit result callbacks, and then update the corresponding DAG
-  node state.
+- After those checks pass, the node removes the pending entry by `seq_id`, emits result callbacks, and then attempts to
+  update the corresponding DAG node state.
+- Some late results are still dropped after pending-entry removal if the auction generation changed, the DAG node was
+  already cleaned up, the DAG index now points at a different priority id, the node is no longer in a
+  `sent-to-validator` state, or a retryable result can no longer recover its sent payload.
 - `Committed` results mark the DAG node processed.
 - Retryable `NotCommitted` results recover the sent payload and move it to `RetryableNextSlot`.
 - Non-retryable `NotCommitted` results mark the DAG node not processed/dropped.
@@ -913,8 +915,8 @@ To implement validator-side BAM support compatible with current bam-node behavio
    config if both BAM sockets parse as IPv4. When gossiping BAM TPU addresses, add `+6` to both BAM TPU /
    TPU-forward ports.
 5. When connected, switch non-vote scheduling to BAM and suppress the non-BAM intake paths under the validator's exact
-   gating: suppress Block Engine only in `Connected`, and suppress TPU forwarding only once BAM TPU state is actually
-   selected.
+   gating: suppress Block Engine only in `Connected`, and keep TPU forwarding behavior aligned with fetch-stage TPU
+   selection rather than treating `Connected` alone as decisive.
 6. Receive AtomicTxnBatch and enforce:
    Slot window and batch constraints, CPU signature verification, and sanitize + LUT resolution + bank checks +
    blacklist filter.
@@ -976,5 +978,5 @@ bam:
 - `scheduler/src/transaction_container.rs`
 - `scheduler/src/auction_priority_graph_manager.rs`
 - `packet/src/bundle_id.rs`
-- `jito-protos/jss-protos/bam_api.proto`
-- `jito-protos/jss-protos/bam_types.proto`
+- `jito-protos/bam-protos/bam_api.proto`
+- `jito-protos/bam-protos/bam_types.proto`

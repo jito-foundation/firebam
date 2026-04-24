@@ -659,7 +659,7 @@ static ulong delete_transaction( fd_pack_t * pack, fd_pack_ord_txn_t * txn, int 
 static inline void insert_bundle_impl( fd_pack_t * pack, ulong bundle_idx, ulong txn_cnt, fd_pack_ord_txn_t * * bundle, ulong expires_at );
 static inline ulong fd_pack_bundle_idx( fd_pack_ord_txn_t const * txn );
 static inline treap_rev_iter_t fd_pack_bundle_next( treap_rev_iter_t cur, fd_pack_ord_txn_t * pool );
-static int fd_pack_bundle_conflicts( fd_pack_t * pack, treap_rev_iter_t a0, treap_rev_iter_t b0 );
+static inline int fd_pack_txn_is_bam_nonrevert( fd_pack_ord_txn_t const * txn );
 static int fd_pack_try_schedule_bundle_candidate( fd_pack_t * pack, ulong bank_tile, fd_txn_e_t * out, treap_rev_iter_t _txn0, ulong bundle_idx, int is_ib );
 
 FD_FN_PURE ulong
@@ -1378,7 +1378,7 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
 
   /* Penalty treaps hide candidates from the normal scheduler scan.  Keep BAM
      non-revert singles visible so lower seq_id conflicts can block later seqs. */
-  if( FD_UNLIKELY( cumulative_penalty && !is_vote && !(ord->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !ord->txn->bam.revert_on_error) ) ) { /* Optimize for high parallelism case */
+  if( FD_UNLIKELY( cumulative_penalty && !is_vote && !fd_pack_txn_is_bam_nonrevert( ord ) ) ) { /* Optimize for high parallelism case */
     /* Compute a weighted random choice */
     ulong roll = (ulong)fd_rng_uint_roll( pack->rng, (uint)cumulative_penalty ); /* cumulative_penalty < USHORT_MAX*64 < UINT_MAX */
     ulong i = 0UL;
@@ -1453,6 +1453,11 @@ fd_pack_bundle_next( treap_rev_iter_t   cur,
   return cur;
 }
 
+static inline int
+fd_pack_txn_is_bam_nonrevert( fd_pack_ord_txn_t const * txn ) {
+  return txn->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txn->txn->bam.revert_on_error;
+}
+
 static void
 fd_pack_conflict_map_insert_txn( fd_pack_addr_use_t *     temp_map,
                                  fd_pack_ord_txn_t const * cur ) {
@@ -1507,9 +1512,10 @@ fd_pack_conflict_map_txn_conflicts( fd_pack_addr_use_t *     temp_map,
   return 0;
 }
 
-/* Returns non-zero if bundle a0 conflicts with bundle b0 under BAM prio-graph
-   R/W semantics.  This helper only uses a temporary map sized for one bundle,
-   so it clears map state before and after each comparison. */
+/* Returns non-zero if bundle a0 conflicts with bundle b0 under the same
+   read/write rules used by the scheduler.  This helper only uses a temporary
+   map sized for one bundle, so it clears map state before and after each
+   comparison. */
 static int
 fd_pack_bundle_conflicts( fd_pack_t *         pack,
                           treap_rev_iter_t    a0,
@@ -2086,23 +2092,23 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
 
     /* BAM non-revert singles are single-transaction batches; lower seq_id
        conflicting batches block later seqs. */
-    if( FD_UNLIKELY( cur->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !cur->txn->bam.revert_on_error ) ) {
+    if( FD_UNLIKELY( fd_pack_txn_is_bam_nonrevert( cur ) ) ) {
       uint const seq = cur->txn->bam.seq_id;
       fd_pack_addr_use_t * temp_map = pack->bundle_temp_map;
+      acct_uses_clear( temp_map );
 
       for( treap_rev_iter_t _other=treap_rev_iter_init( sched_from, pack->pool ); !treap_rev_iter_done( _other ); _other=treap_rev_iter_next( _other, pack->pool ) ) {
         fd_pack_ord_txn_t const * other = treap_rev_iter_ele_const( _other, pack->pool );
-        if( FD_LIKELY(  other->txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM || other->txn->bam.revert_on_error ) ) continue;
-        if( FD_LIKELY(  other->txn->bam.seq_id>=seq                ) ) continue;
+        if( FD_LIKELY( !fd_pack_txn_is_bam_nonrevert( other ) ) ) continue;
+        if( FD_LIKELY(  other->txn->bam.seq_id>=seq ) ) continue;
         if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) continue;
 
-        acct_uses_clear( temp_map );
         fd_pack_conflict_map_insert_txn( temp_map, other );
         conflicts = (ulong)fd_pack_conflict_map_txn_conflicts( temp_map, cur );
+        acct_uses_clear( temp_map );
         if( FD_UNLIKELY( conflicts ) ) break;
       }
 
-      acct_uses_clear( temp_map );
       if( FD_UNLIKELY( conflicts ) ) {
         slow_path++;
         continue;
@@ -2414,8 +2420,6 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   for( treap_rev_iter_t _txn0=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _txn0 ); _txn0=fd_pack_bundle_next( _txn0, pool ) ) {
     fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
     ulong bundle_idx = fd_pack_bundle_idx( txn0 );
-    _Bool const cand_is_bam = txn0->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
-    uint  const cand_seq    = cand_is_bam ? txn0->txn->bam.seq_id : 0U;
 
     if( FD_UNLIKELY( txn0->skip==pack->compressed_slot_number ) ) {
       for( treap_rev_iter_t _cur=_txn0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
@@ -2438,12 +2442,17 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
       if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) continue;
       if( FD_LIKELY( !fd_pack_bundle_conflicts( pack, _other, _txn0 ) ) ) continue;
 
-      if( FD_UNLIKELY( cand_is_bam && other->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+      if( FD_UNLIKELY( other->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                       txn0->txn->source_tpu ==FD_TXN_M_TPU_SOURCE_BAM ) ) {
         uint const other_seq = other->txn->bam.seq_id;
-        if( FD_UNLIKELY( other_seq != cand_seq ) ) {
-          if( FD_LIKELY( other_seq > cand_seq ) ) continue;
-        } else if( FD_LIKELY( other_bundle_idx > bundle_idx ) ) continue;
-      } else if( FD_LIKELY( other_bundle_idx > bundle_idx ) ) continue;
+        uint const cand_seq  = txn0->txn->bam.seq_id;
+        if( FD_LIKELY( other_seq>cand_seq ) ) continue;
+        if( FD_UNLIKELY( other_seq<cand_seq ) ) {
+          blocked_by_prior = 1;
+          break;
+        }
+      }
+      if( FD_LIKELY( other_bundle_idx>bundle_idx ) ) continue;
 
       blocked_by_prior = 1;
       break;
