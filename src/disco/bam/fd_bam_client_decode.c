@@ -343,6 +343,11 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   return true;
 }
 
+static fd_bam_slot_ingress_timing_t *
+fd_bam_record_batch_ingress_timing( fd_bam_tile_t *            ctx,
+                                    fd_bam_batch_ctx_t const * state,
+                                    ulong                      max_schedule_slot );
+
 static _Bool
 fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
                        fd_bam_batch_ctx_t const *       state,
@@ -350,6 +355,10 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   if( FD_UNLIKELY( ctx->bam_leader_state.slot!=ULONG_MAX &&
                    batch->max_schedule_slot &&
                    batch->max_schedule_slot<ctx->bam_leader_state.slot ) ) {
+    /* Stale scheduler work still contributes to slot-ingress timing for the
+       hinted slot even though it will never be published.  This preserves the
+       receive-time accounting used by BAM ingress-vs-slot-end metrics. */
+    fd_bam_record_batch_ingress_timing( ctx, state, batch->max_schedule_slot );
     fd_bam_enqueue_result( ctx, &(fd_bam_bundle_result_t) {
       .seq_id            = batch->seq_id,
       .slot              = batch->max_schedule_slot,
@@ -444,44 +453,61 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   return 1;
 }
 
+static fd_bam_slot_ingress_timing_t *
+fd_bam_record_batch_ingress_timing( fd_bam_tile_t *            ctx,
+                                    fd_bam_batch_ctx_t const * state,
+                                    ulong                      max_schedule_slot ) {
+  ulong leader_slot = ctx->bam_leader_state.slot;
+  long  rx_ts_ns    = state->ingress_rx_ts_ns;
+  long  slot_end_ns = state->ingress_slot_end_ns;
+  uchar packet_cnt  = state->packet_cnt;
+
+  if( FD_UNLIKELY( !packet_cnt ) ) return NULL;
+
+  if( FD_UNLIKELY( !slot_end_ns && max_schedule_slot==leader_slot ) ) {
+    slot_end_ns = ctx->bam_leader_state.slot_end_ns;
+  }
+
+  fd_bam_slot_ingress_timing_t * entry =
+      fd_bam_slot_ingress_timing_query_or_insert( ctx, max_schedule_slot, leader_slot );
+  if( FD_UNLIKELY( !entry ) ) return NULL;
+
+  if( FD_UNLIKELY( slot_end_ns ) ) {
+    entry->slot_end_ns = slot_end_ns;
+    entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > slot_end_ns );
+  }
+
+  _Bool have_slot_end = !!entry->slot_end_ns;
+  _Bool first_observation = !( entry->txn_before_slot_end |
+                               entry->txn_after_slot_end  |
+                               entry->txn_unknown_slot_end );
+  _Bool after_slot_end = have_slot_end
+    ? rx_ts_ns > entry->slot_end_ns
+    : !!( leader_slot!=ULONG_MAX && max_schedule_slot && max_schedule_slot < leader_slot );
+  if( FD_UNLIKELY( first_observation ) ) {
+    entry->first_rx_ts_ns          = rx_ts_ns;
+    entry->first_rx_after_slot_end = (uchar)after_slot_end;
+  }
+
+  ulong * txn_bucket = &entry->txn_unknown_slot_end;
+  if( FD_LIKELY( have_slot_end ) ) {
+    txn_bucket = after_slot_end ? &entry->txn_after_slot_end : &entry->txn_before_slot_end;
+  }
+  *txn_bucket += packet_cnt;
+
+  return entry;
+}
+
 void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
                       bam_types_AtomicTxnBatch const * batch ) {
   ulong max_schedule_slot = batch->max_schedule_slot;
-  ulong leader_slot       = ctx->bam_leader_state.slot;
-  long rx_ts_ns           = state->ingress_rx_ts_ns;
-  long slot_end_ns        = state->ingress_slot_end_ns;
   uchar packet_cnt = state->packet_cnt;
   uint scheduler_arrival_tspub = state->ingress_rx_tspub;
-  if( FD_UNLIKELY( !slot_end_ns && max_schedule_slot==leader_slot ) ) {
-    slot_end_ns = ctx->bam_leader_state.slot_end_ns;
-  }
-  fd_bam_slot_ingress_timing_t * entry = NULL;
-  if( FD_LIKELY( ( entry = fd_bam_slot_ingress_timing_query_or_insert( ctx, max_schedule_slot, leader_slot ) ) ) ) {
-    if( FD_UNLIKELY( slot_end_ns ) ) {
-      entry->slot_end_ns = slot_end_ns;
-      entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > slot_end_ns );
-    }
-
-    _Bool have_slot_end = !!entry->slot_end_ns;
-    _Bool first_observation = !( entry->txn_before_slot_end |
-                                 entry->txn_after_slot_end  |
-                                 entry->txn_unknown_slot_end );
-    _Bool after_slot_end = have_slot_end
-      ? rx_ts_ns > entry->slot_end_ns
-      : !!( leader_slot!=ULONG_MAX && max_schedule_slot && max_schedule_slot < leader_slot );
-    if( FD_UNLIKELY( first_observation ) ) {
-      entry->first_rx_ts_ns          = rx_ts_ns;
-      entry->first_rx_after_slot_end = (uchar)after_slot_end;
-    }
-
-    ulong * txn_bucket = &entry->txn_unknown_slot_end;
-    if( FD_LIKELY( have_slot_end ) ) {
-      txn_bucket = after_slot_end ? &entry->txn_after_slot_end : &entry->txn_before_slot_end;
-    }
-    *txn_bucket += packet_cnt;
-  }
+  ulong leader_slot = ctx->bam_leader_state.slot;
+  fd_bam_slot_ingress_timing_t * entry =
+      fd_bam_record_batch_ingress_timing( ctx, state, max_schedule_slot );
 
   if( FD_UNLIKELY( fd_bam_should_dump_batch( ctx, max_schedule_slot ) ) ) {
     char * msg = fd_bam_dump_log_buf;
@@ -489,7 +515,11 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     fd_bam_slot_ingress_timing_t const empty_entry = {0};
     fd_bam_slot_ingress_timing_t const * timing = entry ? entry : &empty_entry;
     long   first_rx_ts_ns = timing->first_rx_ts_ns;
-    long   tracked_slot_end_ns = timing->slot_end_ns ? timing->slot_end_ns : slot_end_ns;
+    long   tracked_slot_end_ns = timing->slot_end_ns ? timing->slot_end_ns : state->ingress_slot_end_ns;
+    /* Debug-dump fallback only: preserve the pre-refactor log behavior for
+       same-slot batches when no timing entry was recorded. This does not feed
+       scheduling or metrics, only first_rx_minus_slot_end_ns in the dump. */
+    if( FD_UNLIKELY( !tracked_slot_end_ns && max_schedule_slot==leader_slot ) ) tracked_slot_end_ns = ctx->bam_leader_state.slot_end_ns;
     long   first_rx_minus_slot_end_ns = 0L;
     ulong  txn_before_slot_end = timing->txn_before_slot_end;
     ulong  txn_after_slot_end = timing->txn_after_slot_end;

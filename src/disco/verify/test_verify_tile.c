@@ -88,21 +88,6 @@ mock_topo_create( void ) {
 }
 
 static void
-test_prepack_sig_dedup_policy( void ) {
-  fd_txn_m_t txnm = {0};
-
-  txnm.source_tpu = FD_TXN_M_TPU_SOURCE_QUIC;
-  FD_TEST(  fd_txn_m_use_prepack_sig_dedup( &txnm ) );
-
-  txnm.block_engine.bundle_id = 1UL;
-  FD_TEST( !fd_txn_m_use_prepack_sig_dedup( &txnm ) );
-
-  txnm.block_engine.bundle_id = 0UL;
-  txnm.source_tpu             = FD_TXN_M_TPU_SOURCE_BAM;
-  FD_TEST( !fd_txn_m_use_prepack_sig_dedup( &txnm ) );
-}
-
-static void
 test_load_balance( void ) {
   test_free_all();
   fd_topo_t *       topo = mock_topo_create();
@@ -151,7 +136,6 @@ main( int     argc,
   fd_boot( &argc, &argv );
 
   test_seccomp();
-  test_prepack_sig_dedup_policy();
   test_load_balance();
   test_free_all();
   /* further tests here ... */

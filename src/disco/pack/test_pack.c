@@ -1749,19 +1749,19 @@ test_bundle_strategies( void ) {
   /* Schedule bundles only */
   ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==3UL );
-  for( ulong i=0; i<txn_cnt; i++ ) FD_TEST( outcome.results[i].flags & FD_TXN_P_FLAGS_BUNDLE );
+  for( ulong i=0; i<txn_cnt; i++ ) FD_TEST( outcome.results[i].txnp->flags & FD_TXN_P_FLAGS_BUNDLE );
   fd_pack_microblock_complete( pack, 0UL );
 
   /* Schedule next bundle */
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==2UL );
-  for( ulong i=0; i<txn_cnt; i++ ) FD_TEST( outcome.results[i].flags & FD_TXN_P_FLAGS_BUNDLE );
+  for( ulong i=0; i<txn_cnt; i++ ) FD_TEST( outcome.results[i].txnp->flags & FD_TXN_P_FLAGS_BUNDLE );
   fd_pack_microblock_complete( pack, 0UL );
 
   /* Schedule regular transactions */
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_TXN, outcome.results );
   FD_TEST( txn_cnt==2UL );
-  for( ulong i=0; i<txn_cnt; i++ ) FD_TEST( !(outcome.results[i].flags & FD_TXN_P_FLAGS_BUNDLE) );
+  for( ulong i=0; i<txn_cnt; i++ ) FD_TEST( !(outcome.results[i].txnp->flags & FD_TXN_P_FLAGS_BUNDLE) );
   fd_pack_microblock_complete( pack, 0UL );
   FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
 
@@ -1821,8 +1821,8 @@ test_bundle_account_conflicts( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
-/* BAM bundles with conflicting accesses keep seq order, while independent
-   bundles can bypass blocked conflicting work. */
+/* BAM-spec regression: conflicting BAM bundles keep seq_id order, while
+   independent BAM work can bypass blocked conflicting work. */
 static void
 test_bam_bundle_seq_conflict_order_and_bypass( void ) {
   pack_outcome_t outcome;
@@ -1855,19 +1855,19 @@ test_bam_bundle_seq_conflict_order_and_bypass( void ) {
 
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==1UL );
-  FD_TEST( test_txn_id( &outcome.results[0] )==100UL );
-  FD_TEST( outcome.results[0].bam.seq_id==10U );
-  FD_TEST( outcome.results[0].bam.batch_idx==0U );
+  FD_TEST( test_txn_id( outcome.results[0].txnp )==100UL );
+  FD_TEST( outcome.results[0].txnp->bam.seq_id==10U );
+  FD_TEST( outcome.results[0].txnp->bam.batch_idx==0U );
 
   /* seq=11 is blocked by outstanding seq=10, so seq=12 should bypass. */
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==2UL );
-  FD_TEST( test_txn_id( &outcome.results[0] )==102UL );
-  FD_TEST( test_txn_id( &outcome.results[1] )==103UL );
+  FD_TEST( test_txn_id( outcome.results[0].txnp )==102UL );
+  FD_TEST( test_txn_id( outcome.results[1].txnp )==103UL );
   for( ulong i=0UL; i<txn_cnt; i++ ) {
-    FD_TEST( outcome.results[i].bam.seq_id==12U );
-    FD_TEST( outcome.results[i].bam.batch_idx==(uchar)i );
-    FD_TEST( outcome.results[i].bam.revert_on_error==1U );
+    FD_TEST( outcome.results[i].txnp->bam.seq_id==12U );
+    FD_TEST( outcome.results[i].txnp->bam.batch_idx==(uchar)i );
+    FD_TEST( outcome.results[i].txnp->bam.revert_on_error==1U );
   }
   fd_pack_microblock_complete( pack, 1UL );
 
@@ -1879,17 +1879,18 @@ test_bam_bundle_seq_conflict_order_and_bypass( void ) {
   fd_pack_microblock_complete( pack, 0UL );
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==1UL );
-  FD_TEST( test_txn_id( &outcome.results[0] )==101UL );
-  FD_TEST( outcome.results[0].bam.seq_id==11U );
-  FD_TEST( outcome.results[0].bam.batch_idx==0U );
+  FD_TEST( test_txn_id( outcome.results[0].txnp )==101UL );
+  FD_TEST( outcome.results[0].txnp->bam.seq_id==11U );
+  FD_TEST( outcome.results[0].txnp->bam.batch_idx==0U );
   fd_pack_microblock_complete( pack, 0UL );
 
   FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
-/* Conflicting BAM bundles resolve by seq_id priority first.
-   Non-conflicting bundles may still bypass blocked conflicting work. */
+/* BAM-spec regression: conflicting BAM bundles resolve by seq_id priority
+   first regardless of insertion order, while independent BAM work may bypass
+   blocked conflicting work. */
 static void
 test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
   pack_outcome_t outcome;
@@ -1922,18 +1923,18 @@ test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
 
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==2UL );
-  FD_TEST( test_txn_id( &outcome.results[0] )==201UL );
-  FD_TEST( test_txn_id( &outcome.results[1] )==202UL );
+  FD_TEST( test_txn_id( outcome.results[0].txnp )==201UL );
+  FD_TEST( test_txn_id( outcome.results[1].txnp )==202UL );
   for( ulong i=0UL; i<txn_cnt; i++ ) {
-    FD_TEST( outcome.results[i].bam.seq_id==10U );
-    FD_TEST( outcome.results[i].bam.batch_idx==(uchar)i );
+    FD_TEST( outcome.results[i].txnp->bam.seq_id==10U );
+    FD_TEST( outcome.results[i].txnp->bam.batch_idx==(uchar)i );
   }
 
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==1UL );
-  FD_TEST( test_txn_id( &outcome.results[0] )==203UL );
-  FD_TEST( outcome.results[0].bam.seq_id==30U );
-  FD_TEST( outcome.results[0].bam.batch_idx==0U );
+  FD_TEST( test_txn_id( outcome.results[0].txnp )==203UL );
+  FD_TEST( outcome.results[0].txnp->bam.seq_id==30U );
+  FD_TEST( outcome.results[0].txnp->bam.batch_idx==0U );
   fd_pack_microblock_complete( pack, 1UL );
 
   /* seq=20 still conflicts with outstanding seq=10. */
@@ -1943,15 +1944,17 @@ test_bam_bundle_seq_conflict_order_independent_of_insertion( void ) {
   fd_pack_microblock_complete( pack, 0UL );
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==1UL );
-  FD_TEST( test_txn_id( &outcome.results[0] )==200UL );
-  FD_TEST( outcome.results[0].bam.seq_id==20U );
-  FD_TEST( outcome.results[0].bam.batch_idx==0U );
+  FD_TEST( test_txn_id( outcome.results[0].txnp )==200UL );
+  FD_TEST( outcome.results[0].txnp->bam.seq_id==20U );
+  FD_TEST( outcome.results[0].txnp->bam.batch_idx==0U );
   fd_pack_microblock_complete( pack, 0UL );
 
   FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
+/* BAM-spec regression: non-revert BAM singles still prioritize lower seq_id
+   over local fee priority when conflicts force ordering. */
 static void
 test_bam_nonrevert_seq_conflict_order( void ) {
   pack_outcome_t outcome;
@@ -1987,11 +1990,11 @@ test_bam_nonrevert_seq_conflict_order( void ) {
       ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_TXN, outcome.results );
       struct bam_nonrevert_txn_case const * txn_case = &cases[c].txn[ cases[c].expect_idx[i] ];
       FD_TEST( txn_cnt==1UL );
-      FD_TEST( test_txn_id( &outcome.results[0] )==txn_case->txn_id );
-      FD_TEST( outcome.results[0].source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
-      FD_TEST( outcome.results[0].bam.seq_id==txn_case->seq );
-      FD_TEST( outcome.results[0].bam.batch_idx==0U );
-      FD_TEST( outcome.results[0].bam.revert_on_error==0U );
+      FD_TEST( test_txn_id( outcome.results[0].txnp )==txn_case->txn_id );
+      FD_TEST( outcome.results[0].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+      FD_TEST( outcome.results[0].txnp->bam.seq_id==txn_case->seq );
+      FD_TEST( outcome.results[0].txnp->bam.batch_idx==0U );
+      FD_TEST( outcome.results[0].txnp->bam.revert_on_error==0U );
       fd_pack_microblock_complete( pack, 0UL );
     }
 
@@ -2000,7 +2003,7 @@ test_bam_nonrevert_seq_conflict_order( void ) {
   }
 }
 
-/* Test initializer bundle state machine */
+/* Generic pack regression: initializer-bundle state machine behavior. */
 static void
 test_initializer_bundle_state_machine( void ) {
   pack_outcome_t outcome;
@@ -2028,7 +2031,7 @@ test_initializer_bundle_state_machine( void ) {
   /* Now IB should schedule, transitioning to [Pending] */
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==1UL );
-  FD_TEST( outcome.results[0].flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
+  FD_TEST( outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
   fd_pack_microblock_complete( pack, 0UL );
 
   /* State: [Pending] - Cannot schedule regular bundle yet */
@@ -2045,12 +2048,12 @@ test_initializer_bundle_state_machine( void ) {
   /* State: [Ready] - Now regular bundle should schedule */
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==2UL );
-  FD_TEST( !(outcome.results[0].flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) );
+  FD_TEST( !(outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) );
 
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
-/* Test multiple bundles with priority ordering */
+/* Generic pack regression: bundle scheduling order outside BAM semantics. */
 static void
 test_bundle_priority_ordering( void ) {
   pack_outcome_t outcome;
@@ -2083,7 +2086,7 @@ test_bundle_priority_ordering( void ) {
       ulong expected_bundle = i;
       ulong expected_txn_id = expected_bundle*2UL + j;
       ulong actual_txn_id = 0UL;
-      fd_memcpy( &actual_txn_id, outcome.results[j].payload + 1UL, sizeof(ulong) );
+      fd_memcpy( &actual_txn_id, outcome.results[j].txnp->payload + 1UL, sizeof(ulong) );
       FD_TEST( actual_txn_id==expected_txn_id );
     }
     fd_pack_microblock_complete( pack, 0UL );
@@ -2117,7 +2120,7 @@ test_bundle_varying_sizes( void ) {
     ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
     FD_TEST( txn_cnt==size );
     for( ulong i=0UL; i<txn_cnt; i++ ) {
-      FD_TEST( outcome.results[i].flags & FD_TXN_P_FLAGS_BUNDLE );
+      FD_TEST( outcome.results[i].txnp->flags & FD_TXN_P_FLAGS_BUNDLE );
     }
     fd_pack_microblock_complete( pack, 0UL );
   }
@@ -2190,7 +2193,7 @@ test_bundle_multi_bank( void ) {
   for( ulong bank_tile=0UL; bank_tile<4UL; bank_tile++ ) {
     ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, bank_tile, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
     FD_TEST( txn_cnt==2UL );
-    for( ulong j=0UL; j<txn_cnt; j++ ) FD_TEST( outcome.results[j].flags & FD_TXN_P_FLAGS_BUNDLE );
+    for( ulong j=0UL; j<txn_cnt; j++ ) FD_TEST( outcome.results[j].txnp->flags & FD_TXN_P_FLAGS_BUNDLE );
     /* Don't complete yet - test parallel execution */
   }
 
@@ -2262,7 +2265,7 @@ test_initializer_bundle_replacement( void ) {
   /* Only the second IB should be scheduled */
   ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==1UL );
-  FD_TEST( outcome.results[0].flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
+  FD_TEST( outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
 
   fd_pack_delete( fd_pack_leave( pack ) );
 }
@@ -2377,7 +2380,7 @@ test_bundle_vote_mixing( void ) {
   /* Schedule bundle first */
   ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.5f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==2UL );
-  FD_TEST( outcome.results[0].flags & FD_TXN_P_FLAGS_BUNDLE );
+  FD_TEST( outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_BUNDLE );
   fd_pack_microblock_complete( pack, 0UL );
 
   /* Schedule votes and txns - should get votes + regular transactions */
@@ -2388,7 +2391,7 @@ test_bundle_vote_mixing( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
-/* Test bundle deletion */
+/* Generic pack regression: deleting one txn from a bundle removes the bundle. */
 static void
 test_bundle_deletion( void ) {
   pack_outcome_t outcome;
@@ -2546,15 +2549,15 @@ test_bundle_nonce_mixed( void ) {
   FD_TEST( txn_cnt==3UL );
 
   /* Verify nonce flags are set correctly */
-  FD_TEST( outcome.results[0].flags & FD_TXN_P_FLAGS_DURABLE_NONCE );
-  FD_TEST( !(outcome.results[1].flags & FD_TXN_P_FLAGS_DURABLE_NONCE) );
-  FD_TEST( outcome.results[2].flags & FD_TXN_P_FLAGS_DURABLE_NONCE );
+  FD_TEST( outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_DURABLE_NONCE );
+  FD_TEST( !(outcome.results[1].txnp->flags & FD_TXN_P_FLAGS_DURABLE_NONCE) );
+  FD_TEST( outcome.results[2].txnp->flags & FD_TXN_P_FLAGS_DURABLE_NONCE );
   fd_pack_microblock_complete( pack, 0UL );
 
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
-/* Test bundle metadata persistence across scheduling */
+/* Generic pack regression: opaque bundle metadata storage and lifetime. */
 static void
 test_bundle_metadata_persistence( void ) {
   typedef struct {
@@ -2626,7 +2629,7 @@ test_ib_then_multiple_bundles( void ) {
   /* Schedule IB */
   ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==1UL );
-  FD_TEST( outcome.results[0].flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
+  FD_TEST( outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
   fd_pack_microblock_complete( pack, 0UL );
 
   /* Simulate IB success */
@@ -2640,7 +2643,7 @@ test_ib_then_multiple_bundles( void ) {
   for( ulong i=0UL; i<3UL; i++ ) {
     txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
     FD_TEST( txn_cnt==2UL );
-    FD_TEST( !(outcome.results[0].flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) );
+    FD_TEST( !(outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) );
     fd_pack_microblock_complete( pack, 0UL );
   }
 
@@ -2675,12 +2678,14 @@ main( int     argc,
   test_nonce();
   test_bundle_nonce();
 
-  /* BAM Bundle Tests */
-  test_bundle_strategies();
-  test_bundle_account_conflicts();
+  /* BAM-spec ordering regressions */
   test_bam_bundle_seq_conflict_order_and_bypass();
   test_bam_bundle_seq_conflict_order_independent_of_insertion();
   test_bam_nonrevert_seq_conflict_order();
+
+  /* Generic bundle/initializer-pack regressions */
+  test_bundle_strategies();
+  test_bundle_account_conflicts();
   test_initializer_bundle_state_machine();
   test_bundle_priority_ordering();
   test_bundle_varying_sizes();
