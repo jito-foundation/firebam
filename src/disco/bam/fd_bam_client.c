@@ -1155,10 +1155,16 @@ fd_bam_client_step( fd_bam_tile_t * ctx,
     else              ctx->metrics.healthy_disconnects_cnt++;
   }
   ctx->bam_status_counted = status;
-  if( FD_UNLIKELY( healthy_now != ( ctx->bam_status_logged == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) ) {
+  if( FD_UNLIKELY( status!=ctx->bam_status_logged ) ) {
     long ts = fd_log_wallclock();
     if( FD_LIKELY( ts-(ctx->last_bam_status_log_nanos) >= (long)1e6 ) ) {
-      if( healthy_now ) {
+      if( FD_UNLIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED ) ) {
+        FD_LOG_WARNING(( "Disconnected from BAM node" ));
+      } else if( FD_UNLIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) ) {
+        FD_LOG_INFO(( "BAM connection state CONNECTING" ));
+      } else if( FD_UNLIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY ) ) {
+        FD_LOG_INFO(( "BAM connection state CONNECTED_UNHEALTHY" ));
+      } else if( FD_UNLIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) {
         char const * scheme = "http";
 # if FD_HAS_OPENSSL
         if( ctx->is_ssl ) scheme = "https";
@@ -1168,11 +1174,10 @@ fd_bam_client_step( fd_bam_tile_t * ctx,
                         ctx->server_fqdn,
                         FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
                         ctx->server_tcp_port ));
-      } else {
-        FD_LOG_WARNING(( "Disconnected from BAM node" ));
       }
+
       ctx->last_bam_status_log_nanos = ts;
-      ctx->bam_status_logged = status;
+      ctx->bam_status_logged         = status;
     }
   }
 }
@@ -1240,10 +1245,13 @@ fd_bam_client_grpc_rx_msg(
       fd_bam_tile_backoff( ctx, fd_bam_now() );
     }
     break;
-  case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
+  case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig: {
+    FD_LOG_INFO(( "GetBuilderConfig response received in %.3f ms",
+      (double)(rx_ts_ns - ctx->bam_last_config_poll_ns) / 1e6 ));
     fd_bam_handle_config( ctx, protobuf, protobuf_sz );
     ctx->bam_config_inflight = 0;
     break;
+  }
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
     fd_bam_handle_scheduler_response( ctx,
                                       protobuf,
