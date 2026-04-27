@@ -2440,6 +2440,72 @@ test_bam_scheduler_stream_starts_without_builder_info( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_missing_config_repolls_despite_valid_builder_info( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn_empty( env );
+  fd_bam_tile_t * state = env->state;
+  test_bam_env_mock_h2_hs( state );
+  test_bam_prepare_scheduler_stream( state );
+
+  g_clock = (long)5e9;
+  long now = g_clock;
+  test_bam_keepalive_sync( state, now );
+
+  state->builder_info_valid_until = now + (long)( 60e9 * 5. );
+  state->bam_config_received      = 0U;
+  state->bam_config_inflight      = 0U;
+  state->bam_last_config_poll_ns  = 0L;
+
+  int busy = fd_bam_test_client_step_reconnect( state, now );
+
+  FD_TEST( busy == 1 );
+  FD_TEST( state->bam_config_inflight == 1U );
+  FD_TEST( state->bam_last_config_poll_ns == now );
+  FD_TEST( state->grpc_client->stream_cnt >= 2UL );
+  fd_grpc_h2_stream_t * stream = &state->grpc_client->stream_pool[ state->grpc_client->stream_cnt-1UL ];
+  FD_TEST( stream->request_ctx == FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_missing_config_uses_short_repoll_throttle( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn_empty( env );
+  fd_bam_tile_t * state = env->state;
+  test_bam_env_mock_h2_hs( state );
+
+  g_clock = (long)5e9;
+  long now = g_clock;
+  test_bam_keepalive_sync( state, now );
+  state->keepalive->ts_next_tx = now + (long)10e9;
+
+  state->builder_info_valid_until = now + (long)( 60e9 * 5. );
+  state->bam_config_received      = 0U;
+  state->bam_config_inflight      = 0U;
+  state->bam_last_config_poll_ns  = now;
+  state->bam_auth_ready           = 0U;
+  state->bam_auth_inflight        = 1U;
+
+  int busy = fd_bam_test_client_step_reconnect( state, now + (long)1e9 - 1L );
+  FD_TEST( busy == 0 );
+  FD_TEST( state->bam_config_inflight == 0U );
+
+  busy = fd_bam_test_client_step_reconnect( state, now + (long)1e9 );
+
+  FD_TEST( busy == 1 );
+  FD_TEST( state->bam_config_inflight == 1U );
+  FD_TEST( state->bam_last_config_poll_ns == now + (long)1e9 );
+  FD_TEST( state->grpc_client->stream_cnt >= 1UL );
+  fd_grpc_h2_stream_t * stream = &state->grpc_client->stream_pool[ state->grpc_client->stream_cnt-1UL ];
+  FD_TEST( stream->request_ctx == FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_scheduler_heartbeat_publishes_message( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -4643,6 +4709,8 @@ main( int     argc,
   test_bam_auth_challenge_response_sets_signature( wksp );
   test_bam_scheduler_auth_proof_publishes_message( wksp );
   test_bam_scheduler_stream_starts_without_builder_info( wksp );
+  test_bam_missing_config_repolls_despite_valid_builder_info( wksp );
+  test_bam_missing_config_uses_short_repoll_throttle( wksp );
   test_bam_scheduler_heartbeat_publishes_message( wksp );
   test_bam_scheduler_ping_publishes_message( wksp );
   test_bam_scheduler_leader_state_publishes_message( wksp );

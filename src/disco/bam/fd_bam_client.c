@@ -938,11 +938,16 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
     fd_bam_try_start_stream( ctx );
   }
 
-  /* Poll builder config on a throttle to keep stream settings fresh. */
-  long const throttle_ns = ctx->builder_info_valid_until ? (long)5e9 : (long)1e9;
+  /* Poll config on a throttle to keep stream settings fresh.  The
+     builder-info TTL only covers block-engine builder metadata; missing BAM
+     config must force polling independently because it gates healthy status. */
+  _Bool const need_bam_config = !ctx->bam_config_received;
+  long const throttle_ns = need_bam_config ? (long)1e9 :
+                           ( ctx->builder_info_valid_until ? (long)5e9 : (long)1e9 );
   _Bool const never_polled = ctx->bam_last_config_poll_ns == 0L;
   _Bool const poll_due = never_polled || now - ctx->bam_last_config_poll_ns >= throttle_ns;
-  _Bool const refresh_needed = !ctx->builder_info_valid_until ||
+  _Bool const refresh_needed = need_bam_config ||
+                               !ctx->builder_info_valid_until ||
                                ( now + (long)5e9 >= ctx->builder_info_valid_until );
   if( FD_UNLIKELY( !ctx->bam_config_inflight && refresh_needed && poll_due ) ) {
     fd_bam_request_config( ctx, now );
