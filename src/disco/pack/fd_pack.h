@@ -212,7 +212,7 @@ typedef struct fd_pack_private fd_pack_t;
 
    bank_tile_cnt sets the number of bank tiles to which this pack object
    can schedule transactions.  bank_tile_cnt must be in [1,
-   FD_PACK_MAX_BANK_TILES].
+   FD_PACK_MAX_EXECLE_TILES].
 
    limits sets various limits for the blocks and microblocks that pack
    can produce. */
@@ -272,7 +272,7 @@ FD_FN_PURE ulong fd_pack_current_block_cost( fd_pack_t const * pack );
 /* fd_pack_bank_tile_cnt: returns the value of bank_tile_cnt provided in
    pack when the pack object was initialized with fd_pack_new.  pack
    must be a valid local join.  The result will be in [1,
-   FD_PACK_MAX_BANK_TILES]. */
+   FD_PACK_MAX_EXECLE_TILES]. */
 FD_FN_PURE ulong fd_pack_bank_tile_cnt( fd_pack_t const * pack );
 
 /* fd_pack_set_block_limits: Updates the limits provided fd_pack_new to

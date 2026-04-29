@@ -1,5 +1,9 @@
 FD_HAS_FUZZ:=1
 
+ifeq ($(FD_USING_CLANG),1)
+CPPFLAGS+=-Wno-unknown-attributes
+endif
+
 ifndef AFL_LIB
 $(error AFL_LIB is not set. Please point it to your installation dir. E.g.: /usr/local/lib/afl ...)
 endif

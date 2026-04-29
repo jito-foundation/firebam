@@ -72,7 +72,7 @@ help:
 	# "make cov-report" creates an LCOV coverage report from LLVM profdata. Requires make run-unit-test EXTRAS="llvm-cov"
 	# Fuzzing (requires fuzzing profile):
 	#   "make fuzz-test" makes all fuzz-tests for the current platform
-	#   "make run-fuzz-test" re-runs all fuzz tests over existing corpora
+	#   "make run-fuzz-test" re-runs all fuzz tests over existing corpora (builds missing fuzz binaries first)
 	#   "make fuzz_TARGET_unit" re-runs a specific fuzz-test over the existing corpus
 	#   "make fuzz_TARGET_run" runs a specific fuzz-test in explore mode for 600 seconds
 
@@ -236,7 +236,7 @@ $(eval $(call _make-exe,$(1),$(2),$(3),fuzz-test,fuzz-test,$(LDFLAGS_FUZZ) $(FUZ
 $(OBJDIR)/fuzz-test/$(1): $(FUZZ_EXTRA)
 
 .PHONY: $(1)_unit
-$(1)_unit:
+$(1)_unit: $(OBJDIR)/fuzz-test/$(1)
 	$(MKDIR) "corpus/$(1)" && \
 $(MKDIR) -p "$(OBJDIR)/cov/raw" && \
 FD_LOG_PATH="" \
@@ -244,7 +244,7 @@ LLVM_PROFILE_FILE="$(OBJDIR)/cov/raw/$(1)_unit.profraw" \
 $(FIND) corpus/$(1) -type f -exec $(OBJDIR)/fuzz-test/$(1) $(FUZZFLAGS) {} +
 
 .PHONY: $(1)_run
-$(1)_run:
+$(1)_run: $(OBJDIR)/fuzz-test/$(1)
 	$(MKDIR) "corpus/$(1)/explore" && \
 $(MKDIR) -p "$(OBJDIR)/cov/raw" && \
 FD_LOG_PATH="" \
