@@ -46,7 +46,7 @@ Environment overrides (defaults shown):
   DUMMY_KEY_OWNER=      # optional owner for newly generated dummy key
   CLUSTER_RPC_URL=https://api.mainnet.solana.com
   SKIP_CLUSTER_CHECK=0  # set to 1 to skip checking target identity + interface is already in use
-  DELINQUENT_SLOT_DISTANCE=8 # allow staked promote when slot lag is greater than this value
+  DELINQUENT_SLOT_DISTANCE=4 # allow staked promote when slot lag is greater than this value
 USAGE
 }
 
@@ -91,7 +91,7 @@ SET_IDENTITY_FORCE="${SET_IDENTITY_FORCE:-0}"
 ALLOW_NON_SYMLINK="${ALLOW_NON_SYMLINK:-0}"
 CLUSTER_RPC_URL="${CLUSTER_RPC_URL:-https://api.mainnet.solana.com}"
 SKIP_CLUSTER_CHECK="${SKIP_CLUSTER_CHECK:-0}"
-DELINQUENT_SLOT_DISTANCE="${DELINQUENT_SLOT_DISTANCE:-8}"
+DELINQUENT_SLOT_DISTANCE="${DELINQUENT_SLOT_DISTANCE:-4}"
 
 if [[ "$MODE" == "firedancer" && -z "$FD_PATH_OVERRIDES" ]]; then
   fd_pid= fd_key=
