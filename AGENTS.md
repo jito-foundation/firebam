@@ -47,3 +47,43 @@ Firedancer Tile Flow Diagram
     pack_bam_ldr carries latest-value-wins `fd_bam_leader_state_t` snapshots.
     pack_bam_res and bank_bam carry durable FIFO `fd_bam_bundle_result_t` feedback.
 ```
+
+**Testing**
+- Build unit tests before running them. `make run-unit-test` does not build test executables or the automatic test manifest.
+- Many unit tests require a higher locked-memory limit than the default shell limit. Raise `MEMLOCK` in the same shell before running the suite.
+
+Unit test workflow:
+
+```bash
+sudo src/util/shmem/fd_shmem_cfg alloc 2 gigantic 0
+sudo prlimit --pid $$ --memlock=-1:-1
+./contrib/make-j unit-test
+make run-unit-test
+```
+
+Single-test workflow:
+
+```bash
+make -j4 test_bam_tile
+sudo prlimit --pid $$ --memlock=-1:-1
+build/native/gcc/unit-test/test_bam_tile
+```
+
+Broader local test pass:
+
+```bash
+sudo src/util/shmem/fd_shmem_cfg alloc 2 gigantic 0
+sudo prlimit --pid $$ --memlock=-1:-1
+FIREDANCER_CI_COMMIT=none ./contrib/make-j all integration-test fdctl firedancer
+make run-unit-test
+make run-script-test
+make run-fuzz-test
+make run-test-vectors
+make run-integration-test
+DUMP=../dump make run-solcap-tests
+```
+
+Notes:
+- `make run-unit-test` expects `build/native/gcc/unit-test/automatic.txt` to exist, so run `./contrib/make-j unit-test` first.
+- Integration tests may change system configuration.
+- If `make run-unit-test` fails with `fd_numa_mlock(... ENOMEM)` or missing workspace errors, the usual cause is that `MEMLOCK` was not raised in the current shell.
