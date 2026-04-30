@@ -940,14 +940,16 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
   /* Poll config on a throttle to keep stream settings fresh.  The
      builder-info TTL only covers block-engine builder metadata; missing BAM
      config must force polling independently because it gates healthy status. */
-  _Bool const need_bam_config = !ctx->bam_config_received;
-  long const throttle_ns = need_bam_config ? (long)1e9 :
-                           ( ctx->builder_info_valid_until ? (long)5e9 : (long)1e9 );
-  _Bool const never_polled = ctx->bam_last_config_poll_ns == 0L;
-  _Bool const poll_due = never_polled || now - ctx->bam_last_config_poll_ns >= throttle_ns;
-  _Bool const refresh_needed = need_bam_config ||
-                               !ctx->builder_info_valid_until ||
-                               ( now + (long)5e9 >= ctx->builder_info_valid_until );
+  _Bool const missing_bam_config    = !ctx->bam_config_received;
+  _Bool const missing_builder_info  = !ctx->builder_info_valid_until;
+  _Bool const builder_info_expiring = ctx->builder_info_valid_until &&
+                                      now + (long)5e9 >= ctx->builder_info_valid_until;
+  _Bool const refresh_needed = missing_bam_config ||
+                               missing_builder_info ||
+                               builder_info_expiring;
+  long const throttle_ns = ( missing_bam_config || missing_builder_info ) ? (long)1e9 : (long)5e9;
+  _Bool const poll_due = !ctx->bam_last_config_poll_ns ||
+                         now - ctx->bam_last_config_poll_ns >= throttle_ns;
   if( FD_UNLIKELY( !ctx->bam_config_inflight && refresh_needed && poll_due ) ) {
     fd_bam_request_config( ctx, now );
     busy = 1;
