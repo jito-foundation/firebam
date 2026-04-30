@@ -873,6 +873,7 @@ pack_tile_enqueue_bam_result( fd_pack_ctx_t *               ctx,
                               fd_bam_bundle_result_t const * res ) {
   ulong result_queue_cap = 2UL*ctx->max_pending_transactions;
   if( FD_UNLIKELY( ctx->bam_pending_result_cnt >= result_queue_cap ) ) {
+    FD_MCNT_INC( BAM, FEEDBACK_RESULTS_DROPPED, 1UL );
     FD_LOG_WARNING(( "dropping BAM result because pack result queue is full seq_id=%u slot=%lu pending_results=%lu cap=%lu",
                      res->seq_id, res->slot, ctx->bam_pending_result_cnt, result_queue_cap ));
     return 0;
