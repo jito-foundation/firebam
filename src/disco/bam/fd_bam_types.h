@@ -34,7 +34,7 @@ static char const * const FD_BAM_ERR_GENERIC_INVALID_STRINGS[] = {
   [ FD_BAM_ERR_GENERIC_INVALID_BUILDER_INFO_UNAVAILABLE ] = FD_BAM_ERR_MSG_BUILDER_INFO_UNAVAILABLE,
 };
 
-#define FD_BAM_SHRED_SOCK_MAX          32UL
+#define FD_BAM_SHRED_SOCK_MAX          8UL
 
 typedef struct {
   uint  seq_id;            /* Uniquely assigned for a single leader rotation. 0 is valid seq_id. UINT_MAX is never produced. */
@@ -82,7 +82,7 @@ typedef struct {
 } fd_bam_contact_update_t;
 
 typedef struct {
-  ulong         shred_sock_cnt;                       /* Number of active BAM shred receivers. */
+  uchar         shred_sock_cnt;                       /* Number of active BAM shred receivers. */
   fd_ip4_port_t shred_sock[ FD_BAM_SHRED_SOCK_MAX ]; /* BAM shred receivers in net order. */
 } fd_bam_shred_update_t;
 

@@ -453,7 +453,7 @@ void
 fd_bam_shred_update( fd_bam_tile_t *    ctx,
                      fd_stem_context_t * stem,
                      _Bool               use_bam ) {
-  ulong desired_cnt = use_bam ? ctx->bam_shred_sock_cnt : 0UL;
+  uchar desired_cnt = use_bam ? ctx->bam_shred_sock_cnt : 0U;
   if( FD_LIKELY( ctx->published_shred_sock_cnt == desired_cnt &&
                  0==memcmp( ctx->published_shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) ) ) ) {
     return;
@@ -462,7 +462,7 @@ fd_bam_shred_update( fd_bam_tile_t *    ctx,
   ctx->published_shred_sock_cnt = desired_cnt;
   fd_memcpy( ctx->published_shred_sock, ctx->bam_shred_sock, desired_cnt * sizeof(fd_ip4_port_t) );
 
-  FD_LOG_NOTICE(( "Publishing BAM shred receivers active=%u count=%lu", (uint)use_bam, desired_cnt ));
+  FD_LOG_NOTICE(( "Publishing BAM shred receivers active=%u count=%u", (uint)use_bam, (uint)desired_cnt ));
 
   if( FD_UNLIKELY( !ctx->shred_out.mem ) ) return;
 
@@ -1345,8 +1345,8 @@ unprivileged_init( fd_topo_t *      topo,
 
   ctx->bam_tpu         = (fd_ip4_port_t){0};
   ctx->bam_tpu_fwd     = (fd_ip4_port_t){0};
-  ctx->bam_shred_sock_cnt = 0UL;
-  ctx->published_shred_sock_cnt = 0UL;
+  ctx->bam_shred_sock_cnt = 0U;
+  ctx->published_shred_sock_cnt = 0U;
   ctx->default_tpu     = (fd_ip4_port_t){0};
   ctx->default_tpu_fwd = (fd_ip4_port_t){0};
   ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;

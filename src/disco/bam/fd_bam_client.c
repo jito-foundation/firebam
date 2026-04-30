@@ -540,11 +540,11 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   bam_types_BamConfig const * cfg = &resp.bam_config;
   fd_ip4_port_t prev_tpu     = ctx->bam_tpu;
   fd_ip4_port_t prev_tpu_fwd = ctx->bam_tpu_fwd;
-  ulong         prev_shred_sock_cnt = ctx->bam_shred_sock_cnt;
+  uchar         prev_shred_sock_cnt = ctx->bam_shred_sock_cnt;
   fd_ip4_port_t new_tpu     = {0};
   fd_ip4_port_t new_tpu_fwd = {0};
-  fd_ip4_port_t new_shred_sock[ FD_BAM_SHRED_SOCK_MAX ] = {0};
-  ulong         new_shred_sock_cnt = 0UL;
+  fd_ip4_port_t new_shred_sock[ FD_BAM_SHRED_SOCK_MAX ];
+  uchar         new_shred_sock_cnt = 0U;
 
   if( cfg->has_tpu_sock ) {
     uint ip4;
@@ -597,8 +597,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   }
 
   _Bool shred_changed = ( prev_shred_sock_cnt != new_shred_sock_cnt ) ||
-                        ( new_shred_sock_cnt &&
-                          0!=memcmp( ctx->bam_shred_sock, new_shred_sock, new_shred_sock_cnt * sizeof(fd_ip4_port_t) ) );
+                        ( 0!=memcmp( ctx->bam_shred_sock, new_shred_sock, new_shred_sock_cnt * sizeof(fd_ip4_port_t) ) );
   if( FD_UNLIKELY( shred_changed ) ) {
     ctx->bam_shred_sock_cnt = new_shred_sock_cnt;
     fd_memcpy( ctx->bam_shred_sock, new_shred_sock, new_shred_sock_cnt * sizeof(fd_ip4_port_t) );

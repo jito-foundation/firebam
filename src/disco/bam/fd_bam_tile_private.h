@@ -224,9 +224,9 @@ struct fd_bam_tile {
   uint               fee_cfg_version;  /* Last version published to fee_cfg */
   fd_ip4_port_t bam_tpu;               /* Latest TPU socket advertised by BAM */
   fd_ip4_port_t bam_tpu_fwd;           /* Latest TPU Forward socket advertised by BAM */
-  ulong         bam_shred_sock_cnt;    /* Latest shred receiver count advertised by BAM */
+  uchar         bam_shred_sock_cnt;    /* Latest shred receiver count advertised by BAM */
   fd_ip4_port_t bam_shred_sock[ FD_BAM_SHRED_SOCK_MAX ]; /* Latest shred receivers advertised by BAM */
-  ulong         published_shred_sock_cnt; /* Last effective shred receiver count published to shred tiles */
+  uchar         published_shred_sock_cnt; /* Last effective shred receiver count published to shred tiles */
   fd_ip4_port_t published_shred_sock[ FD_BAM_SHRED_SOCK_MAX ]; /* Last effective shred receivers published to shred tiles */
   fd_ip4_port_t default_tpu;           /* TPU socket Agave booted with (non-BAM) */
   fd_ip4_port_t default_tpu_fwd;       /* TPU Forward socket Agave booted with */

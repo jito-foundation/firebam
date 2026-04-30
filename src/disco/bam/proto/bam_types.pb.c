@@ -72,7 +72,8 @@ PB_BIND(bam_types_TransactionCommittedResult, bam_types_TransactionCommittedResu
 PB_BIND(bam_types_BlockEngineBuilderConfig, bam_types_BlockEngineBuilderConfig, AUTO)
 
 
-PB_BIND(bam_types_BamConfig, bam_types_BamConfig, AUTO)
+PB_BIND(bam_types_BamConfig, bam_types_BamConfig, 2)
+
 
 
 

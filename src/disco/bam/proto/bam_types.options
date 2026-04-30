@@ -21,4 +21,4 @@ bam_types.BlockEngineBuilderConfig.builder_pubkey max_size:64
 # Base58 pubkeys are 44 chars
 bam_types.BamConfig.prio_fee_recipient_pubkey max_size:64
 
-bam_types.BamConfig.shred_sock max_count:32
+bam_types.BamConfig.shred_sock max_count:8

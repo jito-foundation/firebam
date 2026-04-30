@@ -140,15 +140,6 @@ typedef union {
 } fd_shred_in_ctx_t;
 
 typedef struct {
-  ulong receiver_update_applied_cnt;
-  ulong receiver_update_truncated_cnt;
-  ulong forwarded_shred_cnt;
-  ulong forwarded_packet_cnt;
-  ulong skipped_no_receivers_cnt;
-  ulong skipped_outside_window_cnt;
-} fd_shred_bam_obs_cnt_t;
-
-typedef struct {
   fd_shredder_t      * shredder;
   fd_fec_resolver_t  * resolver;
   fd_pubkey_t          identity_key[1]; /* Just the public key */
@@ -186,7 +177,7 @@ typedef struct {
   fd_shred_dest_weighted_t adtl_dests_leader    [ FD_TOPO_ADTL_DESTS_MAX ];
   ulong                    adtl_dests_retransmit_cnt;
   fd_shred_dest_weighted_t adtl_dests_retransmit[ FD_TOPO_ADTL_DESTS_MAX ];
-  ulong                    bam_dests_cnt;
+  uchar                    bam_dests_cnt;
   fd_shred_dest_weighted_t bam_dests[ FD_BAM_SHRED_SOCK_MAX ];
 
   fd_ip4_udp_hdrs_t data_shred_net_hdr  [1];
@@ -235,11 +226,6 @@ typedef struct {
 
   fd_gossip_update_message_t gossip_upd_buf[1];
   fd_bam_shred_update_t      bam_shred_upd_buf[1];
-  struct {
-    fd_shred_bam_obs_cnt_t cnt;
-    fd_shred_bam_obs_cnt_t last_cnt;
-    long  last_log_ns;
-  } bam_obs[1];
 
   struct {
     fd_histf_t contact_info_cnt[ 1 ];
@@ -343,22 +329,6 @@ during_housekeeping( fd_shred_ctx_t * ctx ) {
     fd_stake_ci_set_identity( ctx->stake_ci, ctx->identity_key );
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
   }
-
-  long now_ns = fd_log_wallclock();
-  if( FD_UNLIKELY( !ctx->bam_obs->last_log_ns || now_ns - ctx->bam_obs->last_log_ns >= (long)30e9 ) ) {
-    if( FD_UNLIKELY( 0!=memcmp( &ctx->bam_obs->cnt, &ctx->bam_obs->last_cnt, sizeof(fd_shred_bam_obs_cnt_t) ) ) ) {
-      FD_LOG_NOTICE(( "BAM shred forwarding summary receivers=%lu updates=%lu truncated=%lu forwarded_shreds=%lu forwarded_packets=%lu skipped_no_receivers=%lu skipped_window=%lu",
-                      ctx->bam_dests_cnt,
-                      ctx->bam_obs->cnt.receiver_update_applied_cnt,
-                      ctx->bam_obs->cnt.receiver_update_truncated_cnt,
-                      ctx->bam_obs->cnt.forwarded_shred_cnt,
-                      ctx->bam_obs->cnt.forwarded_packet_cnt,
-                      ctx->bam_obs->cnt.skipped_no_receivers_cnt,
-                      ctx->bam_obs->cnt.skipped_outside_window_cnt ));
-      ctx->bam_obs->last_cnt = ctx->bam_obs->cnt;
-    }
-    ctx->bam_obs->last_log_ns = now_ns;
-  }
 }
 
 static inline void
@@ -407,36 +377,6 @@ handle_new_cluster_contact_info( fd_shred_ctx_t * ctx,
 static inline void
 finalize_new_cluster_contact_info( fd_shred_ctx_t * ctx ) {
   fd_stake_ci_dest_add_fini( ctx->stake_ci, ctx->new_dest_cnt );
-}
-
-static inline void
-send_shred( fd_shred_ctx_t                 * ctx,
-            fd_stem_context_t              * stem,
-            fd_shred_t const               * shred,
-            fd_shred_dest_weighted_t const * dest,
-            ulong                            tsorig );
-
-static inline void
-fd_shred_send_bam_shred( fd_shred_ctx_t *    ctx,
-                         fd_stem_context_t * stem,
-                         fd_shred_t const *  shred ) {
-  if( FD_UNLIKELY( !ctx->bam_dests_cnt ) ) {
-    ctx->bam_obs->cnt.skipped_no_receivers_cnt++;
-    return;
-  }
-
-  for( ulong off=0UL; off<3UL; off++ ) {
-    ulong slot = shred->slot + off;
-    fd_pubkey_t const * leader = fd_epoch_leaders_get( fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot ), slot );
-    if( FD_UNLIKELY( !leader || !fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) ) ) continue;
-
-    ctx->bam_obs->cnt.forwarded_shred_cnt++;
-    ctx->bam_obs->cnt.forwarded_packet_cnt += ctx->bam_dests_cnt;
-    for( ulong i=0UL; i<ctx->bam_dests_cnt; i++ ) send_shred( ctx, stem, shred, ctx->bam_dests + i, ctx->tsorig );
-    return;
-  }
-
-  ctx->bam_obs->cnt.skipped_outside_window_cnt++;
 }
 
 static inline int
@@ -918,6 +858,37 @@ send_shred( fd_shred_ctx_t                 * ctx,
   ctx->net_out_chunk = fd_dcache_compact_next( chunk, pkt_sz, ctx->net_out_chunk0, ctx->net_out_wmark );
 }
 
+static inline void
+fd_shred_send_bam_shred( fd_shred_ctx_t *    ctx,
+                         fd_stem_context_t * stem,
+                         fd_shred_t const *  shred,
+                         int                 is_retransmit ) {
+  if( FD_UNLIKELY( !ctx->bam_dests_cnt ) ) return;
+
+  int should_send = 0;
+  if( is_retransmit ) {
+    /* Stop forwarding older retransmits once local leader shredding starts. */
+    if( FD_UNLIKELY( ctx->slot!=ULONG_MAX && shred->slot<ctx->slot ) ) return;
+
+    for( ulong off=1UL; off<3UL; off++ ) {
+      ulong slot = shred->slot + off;
+      fd_epoch_leaders_t const * lsched = fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot );
+      if( FD_UNLIKELY( !lsched || (slot-lsched->slot0)%FD_EPOCH_SLOTS_PER_ROTATION ) ) continue;
+      fd_pubkey_t const * leader = fd_epoch_leaders_get( lsched, slot );
+      if( FD_UNLIKELY( !leader || !fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) ) ) continue;
+      should_send = 1;
+      break;
+    }
+  } else {
+    fd_pubkey_t const * leader = fd_epoch_leaders_get( fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, shred->slot ), shred->slot );
+    should_send = !!( leader && fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) );
+  }
+
+  if( FD_UNLIKELY( !should_send ) ) return;
+
+  for( ulong i=0UL; i<ctx->bam_dests_cnt; i++ ) send_shred( ctx, stem, shred, ctx->bam_dests + i, ctx->tsorig );
+}
+
 static void
 after_frag( fd_shred_ctx_t *    ctx,
             ulong               in_idx,
@@ -981,18 +952,11 @@ after_frag( fd_shred_ctx_t *    ctx,
   }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BAM_SHRED ) ) {
-    ctx->bam_dests_cnt = fd_ulong_min( ctx->bam_shred_upd_buf->shred_sock_cnt, FD_BAM_SHRED_SOCK_MAX );
-    if( FD_UNLIKELY( ctx->bam_shred_upd_buf->shred_sock_cnt > FD_BAM_SHRED_SOCK_MAX ) ) {
-      ctx->bam_obs->cnt.receiver_update_truncated_cnt++;
-      FD_LOG_WARNING(( "Dropping excess BAM shred receivers cnt=%lu max=%lu",
-                       ctx->bam_shred_upd_buf->shred_sock_cnt, FD_BAM_SHRED_SOCK_MAX ));
-    }
+    ctx->bam_dests_cnt = ctx->bam_shred_upd_buf->shred_sock_cnt;
     for( ulong i=0UL; i<ctx->bam_dests_cnt; i++ ) {
       ctx->bam_dests[ i ].ip4  = ctx->bam_shred_upd_buf->shred_sock[ i ].addr;
       ctx->bam_dests[ i ].port = fd_ushort_bswap( ctx->bam_shred_upd_buf->shred_sock[ i ].port );
     }
-    ctx->bam_obs->cnt.receiver_update_applied_cnt++;
-    FD_LOG_NOTICE(( "Applied BAM shred receiver update count=%lu", ctx->bam_dests_cnt ));
     return;
   }
 
@@ -1065,7 +1029,7 @@ after_frag( fd_shred_ctx_t *    ctx,
           fd_shred_dest_idx_t * dests = fd_shred_dest_compute_children( sdest, &shred, 1UL, ctx->scratchpad_dests, 1UL, fanout, fanout, max_dest_cnt );
           if( FD_UNLIKELY( !dests ) ) break;
 
-          fd_shred_send_bam_shred( ctx, stem, *out_shred );
+          fd_shred_send_bam_shred( ctx, stem, *out_shred, 1 );
           for( ulong i=0UL; i<ctx->adtl_dests_retransmit_cnt; i++ ) send_shred( ctx, stem, *out_shred, ctx->adtl_dests_retransmit+i, ctx->tsorig );
           for( ulong j=0UL; j<*max_dest_cnt; j++ ) send_shred( ctx, stem, *out_shred, fd_shred_dest_idx_to_dest( sdest, dests[ j ] ), ctx->tsorig );
         } while( 0 );
@@ -1244,7 +1208,7 @@ after_frag( fd_shred_ctx_t *    ctx,
     fd_shred_dest_idx_t * dests;
     if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_NET ) ) {
       for( ulong i=0UL; i<k; i++ ) {
-        fd_shred_send_bam_shred( ctx, stem, new_shreds[ i ] );
+        fd_shred_send_bam_shred( ctx, stem, new_shreds[ i ], 1 );
         for( ulong j=0UL; j<ctx->adtl_dests_retransmit_cnt; j++ ) send_shred( ctx, stem, new_shreds[ i ], ctx->adtl_dests_retransmit+j, ctx->tsorig );
       }
       out_stride = k;
@@ -1254,7 +1218,7 @@ after_frag( fd_shred_ctx_t *    ctx,
       dests = fd_shred_dest_compute_children( sdest, new_shreds, k, ctx->scratchpad_dests, k, fanout, fanout, max_dest_cnt );
     } else {
       for( ulong i=0UL; i<k; i++ ) {
-        fd_shred_send_bam_shred( ctx, stem, new_shreds[ i ] );
+        fd_shred_send_bam_shred( ctx, stem, new_shreds[ i ], 0 );
         for( ulong j=0UL; j<ctx->adtl_dests_leader_cnt; j++ ) send_shred( ctx, stem, new_shreds[ i ], ctx->adtl_dests_leader+j, ctx->tsorig );
       }
       out_stride = 1UL;
@@ -1461,10 +1425,7 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->adtl_dests_leader[i].ip4  = tile->shred.adtl_dests_leader[i].ip;
     ctx->adtl_dests_leader[i].port = tile->shred.adtl_dests_leader[i].port;
   }
-  ctx->bam_dests_cnt = 0UL;
-  fd_memset( ctx->bam_dests, 0, sizeof(ctx->bam_dests) );
-  fd_memset( ctx->bam_shred_upd_buf, 0, sizeof(*ctx->bam_shred_upd_buf) );
-  fd_memset( ctx->bam_obs, 0, sizeof(ctx->bam_obs) );
+  ctx->bam_dests_cnt = 0U;
   fd_memset( ctx->in, 0, sizeof(ctx->in) );
   fd_memset( ctx->in_kind, 0, sizeof(ctx->in_kind) );
 
