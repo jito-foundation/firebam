@@ -342,12 +342,12 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
     goto publish;
   }
 
-  FD_LOG_NOTICE(( "Prepare to set TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, use_bam: %d", /* FIXME: change to INFO level */
-                  FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                  fd_ushort_bswap( tpu.port ),
-                  FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                  fd_ushort_bswap( tpu_fwd.port ),
-                  use_bam ));
+  FD_LOG_INFO(( "Prepare to set TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, use_bam: %d",
+                FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                fd_ushort_bswap( tpu.port ),
+                FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                fd_ushort_bswap( tpu_fwd.port ),
+                use_bam ));
 
   int set_rc = 0;
   do {
@@ -418,11 +418,11 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                      fd_ushort_bswap( tpu_fwd.port ) ));
     ctx->tpu_update_state = desired_pending;
   } else {
-    FD_LOG_NOTICE(( "Updated TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu", /* FIXME: change to INFO level */
-                    FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                    fd_ushort_bswap( tpu.port ),
-                    FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                    fd_ushort_bswap( tpu_fwd.port ) ));
+    FD_LOG_INFO(( "Updated TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                  FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                  fd_ushort_bswap( tpu.port ),
+                  FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                  fd_ushort_bswap( tpu_fwd.port ) ));
     ctx->tpu_update_state = desired_applied;
   }
 
@@ -482,6 +482,40 @@ fd_bam_shred_update( fd_bam_tile_t *    ctx,
                                                  sizeof(fd_bam_shred_update_t),
                                                  ctx->shred_out.chunk0,
                                                  ctx->shred_out.wmark );
+}
+
+void
+fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
+                             fd_stem_context_t * stem,
+                             _Bool               bam_active ) {
+  ulong prev_status = FD_LIKELY( ctx->bam_status_fseq ) ? fd_fseq_query( ctx->bam_status_fseq ) : 0UL;
+  _Bool prev_bam_active = !!( prev_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+
+  if( FD_UNLIKELY( !bam_active && ctx->bam_status_fseq && prev_status ) ) {
+    fd_fseq_update( ctx->bam_status_fseq, 0UL );
+  }
+
+  fd_bam_tpu_update_state_t tpu_update_state = ctx->tpu_update_state;
+  _Bool tpu_update_needed =
+      ( prev_bam_active != bam_active ) ||
+      tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ||
+      tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT ||
+      tpu_update_state == ( bam_active ? FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT : FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM ) ||
+      ( bam_active && tpu_update_state == FD_BAM_TPU_UPDATE_STATE_UNKNOWN );
+  if( FD_UNLIKELY( tpu_update_needed ) ) fd_bam_gossip_update( ctx, stem, bam_active );
+
+  fd_bam_shred_update( ctx, stem, bam_active );
+
+  if( FD_LIKELY( bam_active && ctx->bam_status_fseq ) ) {
+    _Bool current_slot_has_bam_work =
+        fd_bam_current_slot_has_bam_work( ctx, fd_log_wallclock() );
+    ulong bam_status =
+        FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE |
+        fd_ulong_if( current_slot_has_bam_work,
+                     FD_BAM_STATUS_FSEQ_CURRENT_SLOT_HAS_BAM_WORK,
+                     0UL );
+    fd_fseq_update( ctx->bam_status_fseq, bam_status );
+  }
 }
 
 static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
@@ -556,29 +590,9 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     tracker->counted = 1U;
   }
 
-  _Bool use_bam = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
-  _Bool current_slot_has_bam_work = use_bam && fd_bam_current_slot_has_bam_work( ctx, now_ns );
-  _Bool tpu_update_pending = ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ) |
-                            ( ctx->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
-  _Bool status_changed = ctx->bam_status_recent != status;
-  if( FD_UNLIKELY( status_changed || tpu_update_pending ) ) {
-    fd_bam_gossip_update( ctx, ctx->stem, use_bam );
-  }
-  if( FD_UNLIKELY( status_changed ) ) fd_bam_shred_update( ctx, ctx->stem, use_bam );
+  _Bool bam_active = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+  fd_bam_publish_active_state( ctx, ctx->stem, bam_active );
   ctx->bam_status_recent = status;
-  if( FD_LIKELY( ctx->bam_status_fseq ) ) {
-    /* Expose BAM connectivity via a shared latch. The verify tile uses
-       this to pause QUIC/bundle traffic when BAM has taken over leader
-       duties.  fd_bam_client_status only returns CONNECTED once the
-       transport, auth, and scheduler stream are fully live, else
-       immediately release the TPU back to default Firedancer behaviour */
-    ulong bam_status =
-        fd_ulong_if( use_bam, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE, 0UL ) |
-        fd_ulong_if( current_slot_has_bam_work,
-                     FD_BAM_STATUS_FSEQ_CURRENT_SLOT_HAS_BAM_WORK,
-                     0UL );
-    fd_fseq_update( ctx->bam_status_fseq, bam_status );
-  }
 
   if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch ) == FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
     fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
@@ -913,11 +927,6 @@ finalize:
     ctx->backoff_until = 0; /* Clear any backoff so admin-triggered changes take effect immediately. */
     ctx->backoff_reset = 0;
     ctx->backoff_iter  = 0;
-    if( FD_UNLIKELY( !ctx->enabled && ctx->bam_status_fseq ) )
-      /* Force the shared status latch low immediately when BAM is
-         disabled so downstream tiles resume QUIC/bundle input without
-         waiting for TCP timeouts. */
-      fd_fseq_update( ctx->bam_status_fseq, 0UL );
   }
 
   if ( FD_UNLIKELY( fd_bam_tile_ctrl_update_current( ctx ) < 0 ) ) {

@@ -86,10 +86,12 @@ static struct {
   ulong                       reply_cnt;
   ulong                       reply_idx;
 } test_bam_admin_rpc_mock;
+static ulong * test_bam_admin_rpc_expect_fseq_zero;
 
 static void
 test_bam_admin_rpc_mock_reset( void ) {
   fd_memset( &test_bam_admin_rpc_mock, 0, sizeof(test_bam_admin_rpc_mock) );
+  test_bam_admin_rpc_expect_fseq_zero = NULL;
 }
 
 static void
@@ -109,6 +111,9 @@ fd_bam_admin_rpc_request( char const * admin_rpc_path,
                           ulong        response_max ) {
   FD_TEST( test_bam_admin_rpc_mock.reply_idx < test_bam_admin_rpc_mock.reply_cnt );
   FD_TEST( test_bam_admin_rpc_mock.request_cnt < TEST_BAM_ADMIN_RPC_MAX_CALLS );
+  if( FD_UNLIKELY( test_bam_admin_rpc_expect_fseq_zero ) ) {
+    FD_TEST( fd_fseq_query( test_bam_admin_rpc_expect_fseq_zero ) == 0UL );
+  }
 
   ulong req_idx = test_bam_admin_rpc_mock.request_cnt++;
   strlcpy( test_bam_admin_rpc_mock.paths[ req_idx ], admin_rpc_path ? admin_rpc_path : "", PATH_MAX );
@@ -3480,8 +3485,20 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   FD_TEST( fseq_shmem );
   ulong * fseq = fd_fseq_join( fseq_shmem );
   FD_TEST( fseq );
-  fd_fseq_update( fseq, 1UL );
   ctx->bam_status_fseq = fseq;
+  fd_bam_publish_active_state( ctx, ctx->stem, 1 );
+  FD_TEST( fd_fseq_query( fseq ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+
+  strlcpy( ctx->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof(ctx->admin_rpc_path) );
+  FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &ctx->default_tpu.addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &ctx->default_tpu_fwd.addr ) );
+  ctx->default_tpu.port     = fd_ushort_bswap( 4242U );
+  ctx->default_tpu_fwd.port = fd_ushort_bswap( 4343U );
+  ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
+
+  test_bam_admin_rpc_mock_reset();
+  test_bam_admin_rpc_expect_fseq_zero = fseq;
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":1}" );
 
   ctrl.command = FD_BAM_CTRL_CMD_ENABLE;
   ctrl.enable  = 0U;
@@ -3493,8 +3510,10 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   FD_TEST( ctrl.enable == 0U );
   FD_TEST( ctx->enabled == 0 );
   FD_TEST( fd_fseq_query( fseq ) == 0UL );
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 1UL );
   FD_TEST( !strcmp( ctrl.url, "http://testnet.bam.jito.wtf:80" ) );
 
+  test_bam_admin_rpc_expect_fseq_zero = NULL;
   FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
   FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
   ctx->bam_status_fseq = NULL;
@@ -3947,6 +3966,8 @@ test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( fd_wks
   FD_TEST( updates[1].tpu_fwd.port == state->default_tpu_fwd.port );
 
   state->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING;
+  state->bam_stream_live = 0U;
+  state->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
 
   resp = (bam_api_ConfigResponse)bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
@@ -4181,7 +4202,7 @@ test_bam_shred_update_disconnect_uses_empty_without_clearing_receivers( fd_wksp_
 }
 
 static void
-test_bam_config_requires_full_contact_before_gossip_override( fd_wksp_t * wksp ) {
+test_bam_config_reuses_cached_contact_for_incomplete_refresh( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -4211,31 +4232,26 @@ test_bam_config_requires_full_contact_before_gossip_override( fd_wksp_t * wksp )
   strlcpy( resp.bam_config.tpu_fwd_sock.ip, "6.6.6.6", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 6000U;
 
+  fd_ip4_port_t expected_tpu = { .port = fd_ushort_bswap( 5000U ) };
+  fd_ip4_port_t expected_tpu_fwd = { .port = fd_ushort_bswap( 6000U ) };
+  FD_TEST( fd_cstr_to_ip4_addr( "5.5.5.5", &expected_tpu.addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( "6.6.6.6", &expected_tpu_fwd.addr ) );
+
   uchar pb_buf[ 256 ];
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
 
-  fd_bam_contact_update_t updates[ 3 ] = {0};
-  ulong update_cnt = 0UL;
   ulong publish_chunk = state->gossip_out.chunk;
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
-  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
 
-  uint expected_tpu_addr = 0U;
-  uint expected_tpu_fwd_addr = 0U;
-  FD_TEST( fd_cstr_to_ip4_addr( "5.5.5.5", &expected_tpu_addr ) );
-  FD_TEST( fd_cstr_to_ip4_addr( "6.6.6.6", &expected_tpu_fwd_addr ) );
-  FD_TEST( state->bam_tpu.addr == expected_tpu_addr );
-  FD_TEST( fd_ushort_bswap( state->bam_tpu.port ) == 5000U );
-  FD_TEST( state->bam_tpu_fwd.addr == expected_tpu_fwd_addr );
-  FD_TEST( fd_ushort_bswap( state->bam_tpu_fwd.port ) == 6000U );
-  FD_TEST( updates[0].tpu.addr == expected_tpu_addr );
-  FD_TEST( fd_ushort_bswap( updates[0].tpu.port ) == 5000U );
-  FD_TEST( updates[0].tpu_fwd.addr == expected_tpu_fwd_addr );
-  FD_TEST( fd_ushort_bswap( updates[0].tpu_fwd.port ) == 6000U );
+  FD_TEST( state->bam_tpu.l == expected_tpu.l );
+  FD_TEST( state->bam_tpu_fwd.l == expected_tpu_fwd.l );
+  FD_TEST( update.tpu.l == expected_tpu.l );
+  FD_TEST( update.tpu_fwd.l == expected_tpu_fwd.l );
 
   resp = (bam_api_ConfigResponse)bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
@@ -4250,40 +4266,12 @@ test_bam_config_requires_full_contact_before_gossip_override( fd_wksp_t * wksp )
                              pb_buf,
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
-  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
 
-  FD_TEST( state->bam_tpu.addr == expected_tpu_addr );
-  FD_TEST( fd_ushort_bswap( state->bam_tpu.port ) == 5000U );
-  FD_TEST( state->bam_tpu_fwd.addr == expected_tpu_fwd_addr );
-  FD_TEST( fd_ushort_bswap( state->bam_tpu_fwd.port ) == 6000U );
-  FD_TEST( updates[1].tpu.addr == state->default_tpu.addr );
-  FD_TEST( updates[1].tpu.port == state->default_tpu.port );
-  FD_TEST( updates[1].tpu_fwd.addr == state->default_tpu_fwd.addr );
-  FD_TEST( updates[1].tpu_fwd.port == state->default_tpu_fwd.port );
-
-  resp = (bam_api_ConfigResponse)bam_api_ConfigResponse_init_default;
-  resp.has_bam_config = true;
-  resp.bam_config.has_tpu_sock = false;
-  resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "8.8.8.8", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
-  resp.bam_config.tpu_fwd_sock.port = 8000U;
-  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
-  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
-  publish_chunk = state->gossip_out.chunk;
-  fd_bam_client_grpc_rx_msg( state,
-                             pb_buf,
-                             ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
-  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-
-  FD_TEST( state->bam_tpu.addr == expected_tpu_addr );
-  FD_TEST( fd_ushort_bswap( state->bam_tpu.port ) == 5000U );
-  FD_TEST( state->bam_tpu_fwd.addr == expected_tpu_fwd_addr );
-  FD_TEST( fd_ushort_bswap( state->bam_tpu_fwd.port ) == 6000U );
-  FD_TEST( updates[2].tpu.addr == state->default_tpu.addr );
-  FD_TEST( updates[2].tpu.port == state->default_tpu.port );
-  FD_TEST( updates[2].tpu_fwd.addr == state->default_tpu_fwd.addr );
-  FD_TEST( updates[2].tpu_fwd.port == state->default_tpu_fwd.port );
+  FD_TEST( state->bam_tpu.l == expected_tpu.l );
+  FD_TEST( state->bam_tpu_fwd.l == expected_tpu_fwd.l );
+  FD_TEST( update.tpu.l == expected_tpu.l );
+  FD_TEST( update.tpu_fwd.l == expected_tpu_fwd.l );
 
   test_bam_env_destroy( env );
 }
@@ -4754,7 +4742,7 @@ main( int     argc,
   test_bam_runtime_toggle_updates_gossip( wksp );
   test_bam_shred_update_publishes_receiver_list( wksp );
   test_bam_shred_update_disconnect_uses_empty_without_clearing_receivers( wksp );
-  test_bam_config_requires_full_contact_before_gossip_override( wksp );
+  test_bam_config_reuses_cached_contact_for_incomplete_refresh( wksp );
 
   /* Config and fees */
   test_bam_config_updates_contact_info( wksp );

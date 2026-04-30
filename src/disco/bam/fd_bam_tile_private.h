@@ -559,6 +559,11 @@ fd_bam_shred_update( fd_bam_tile_t *    ctx,
                      fd_stem_context_t * stem,
                      _Bool               use_bam );
 
+void
+fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
+                             fd_stem_context_t * stem,
+                             _Bool               bam_active );
+
 /* fd_bam_tile_should_stall returns 1 if forward progress should be
    temporarily prevented due to an error. */
 

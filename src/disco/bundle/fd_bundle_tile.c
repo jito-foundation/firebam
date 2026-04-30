@@ -96,22 +96,22 @@ metrics_write( fd_bundle_tile_t * ctx ) {
 
 void
 fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
+  long now_ns = fd_log_wallclock();
   ulong bam_status = ctx->bam_status_fseq ? fd_fseq_query( ctx->bam_status_fseq ) : 0UL;
-  _Bool bam_override = !!( bam_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
-  if( FD_UNLIKELY( bam_override!=ctx->bam_override_active ) ) {
-    ctx->bam_override_active = bam_override;
-    if( bam_override ) {
-      /* Disconnect while BAM is healthy. */
+  _Bool bam_active = !!( bam_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  if( FD_UNLIKELY( bam_active!=ctx->bam_override_active ) ) {
+    ctx->bam_override_active = bam_active;
+    ctx->last_bundle_status_log_nanos = now_ns;
+    if( bam_active ) {
       fd_bundle_client_reset( ctx );
       ctx->bundle_status_plugin = 127;
       ctx->bundle_status_recent = FD_BUNDLE_BLOCK_ENGINE_STATUS_DISCONNECTED;
       ctx->bundle_status_logged = ctx->bundle_status_recent;
-      ctx->last_bundle_status_log_nanos = fd_log_wallclock();
-      FD_LOG_NOTICE(( "BAM healthy; pausing bundle gRPC connection" ));
+      FD_LOG_NOTICE(( "BAM active; pausing bundle gRPC connection" ));
     } else {
       ctx->backoff_until = 0;
       ctx->defer_reset   = 0;
-      FD_LOG_NOTICE(( "BAM not healthy; resuming bundle gRPC connection" ));
+      FD_LOG_NOTICE(( "BAM inactive; resuming bundle gRPC connection" ));
     }
   }
 
@@ -119,7 +119,6 @@ fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
     long log_interval_ns = (long)30e9;
     int status = fd_bundle_client_status( ctx );
     long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
-    long now_ns          = fd_log_wallclock();
     if( FD_UNLIKELY( status!=FD_BUNDLE_BLOCK_ENGINE_STATUS_CONNECTED && now_ns>log_next_ns ) ) {
       FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
       ctx->last_bundle_status_log_nanos = now_ns;

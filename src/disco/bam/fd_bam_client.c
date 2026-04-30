@@ -10,7 +10,6 @@
 #include "../fd_txn_m.h"
 #include "../plugin/fd_plugin.h"
 #include "../metrics/fd_metrics.h"
-#include "../../tango/fseq/fd_fseq.h"
 #include "../../waltz/h2/fd_h2_conn.h"
 #include "../../waltz/http/fd_url.h" /* fd_url_unescape */
 #include "../../ballet/base58/fd_base58.h"
@@ -111,10 +110,9 @@ void
 fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   long now = fd_bam_now();
 
-  /* Drop the shared BAM-status latch immediately so downstream tiles
-     can resume QUIC/bundle ingestion without waiting for housekeeping. */
-  if( FD_LIKELY( ctx->bam_status_fseq ) ) fd_fseq_update( ctx->bam_status_fseq, 0UL );
-  fd_bam_shred_update( ctx, ctx->stem, 0 );
+  /* Publish BAM inactive immediately so downstream tiles can resume
+     QUIC/bundle ingestion without waiting for housekeeping. */
+  fd_bam_publish_active_state( ctx, ctx->stem, 0 );
 
   if( FD_UNLIKELY( ctx->tcp_sock >= 0 ) ) {
     if( FD_UNLIKELY( 0 != close( ctx->tcp_sock ) ) ) {
@@ -538,12 +536,9 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   ctx->bam_config_received = 1U;
 
   bam_types_BamConfig const * cfg = &resp.bam_config;
-  fd_ip4_port_t prev_tpu     = ctx->bam_tpu;
-  fd_ip4_port_t prev_tpu_fwd = ctx->bam_tpu_fwd;
-  uchar         prev_shred_sock_cnt = ctx->bam_shred_sock_cnt;
   fd_ip4_port_t new_tpu     = {0};
   fd_ip4_port_t new_tpu_fwd = {0};
-  fd_ip4_port_t new_shred_sock[ FD_BAM_SHRED_SOCK_MAX ];
+  fd_ip4_port_t new_shred_sock[ FD_BAM_SHRED_SOCK_MAX ] = {0};
   uchar         new_shred_sock_cnt = 0U;
 
   if( cfg->has_tpu_sock ) {
@@ -586,31 +581,32 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   /* A disconnect means Firedancer should resume advertising its local
      TPU ports so TPU clients do not get stuck targeting the BAM host. */
-  _Bool has_valid_contact = !!new_tpu.addr && !!new_tpu.port && !!new_tpu_fwd.addr && !!new_tpu_fwd.port;
-  if ( FD_LIKELY( has_valid_contact ) ) {
+  _Bool has_valid_new_contact = !!new_tpu.addr && !!new_tpu.port && !!new_tpu_fwd.addr && !!new_tpu_fwd.port;
+  if( FD_LIKELY( has_valid_new_contact ) ) {
+    if( FD_UNLIKELY( ctx->bam_tpu.l != new_tpu.l || ctx->bam_tpu_fwd.l != new_tpu_fwd.l ) )
+      ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
     ctx->bam_tpu     = new_tpu;
     ctx->bam_tpu_fwd = new_tpu_fwd;
-    _Bool tpu_changed = ( prev_tpu.l != ctx->bam_tpu.l || prev_tpu_fwd.l != ctx->bam_tpu_fwd.l );
-    if( FD_UNLIKELY( tpu_changed ) ) ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
   } else {
     FD_LOG_WARNING(( "Received incomplete or invalid TPU config; preserving prior BAM TPU config" ));
   }
 
-  _Bool shred_changed = ( prev_shred_sock_cnt != new_shred_sock_cnt ) ||
-                        ( 0!=memcmp( ctx->bam_shred_sock, new_shred_sock, new_shred_sock_cnt * sizeof(fd_ip4_port_t) ) );
-  if( FD_UNLIKELY( shred_changed ) ) {
+  if( FD_UNLIKELY( ctx->bam_shred_sock_cnt != new_shred_sock_cnt ||
+                   0!=memcmp( ctx->bam_shred_sock, new_shred_sock, new_shred_sock_cnt * sizeof(fd_ip4_port_t) ) ) ) {
     ctx->bam_shred_sock_cnt = new_shred_sock_cnt;
     fd_memcpy( ctx->bam_shred_sock, new_shred_sock, new_shred_sock_cnt * sizeof(fd_ip4_port_t) );
   }
 
   ctx->gui_dirty = 1U;
-  /* Only switch TPU adverts to BAM when the client is actually healthy.
-     Config responses can arrive while connecting or after an admin disable,
-     and should not force a BAM TPU override. */
-  fd_bam_gossip_update( ctx, ctx->stem, ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) && has_valid_contact );
-  if( FD_UNLIKELY( shred_changed ) ) {
-    fd_bam_shred_update( ctx, ctx->stem, status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-  }
+  _Bool has_effective_contact = !!ctx->bam_tpu.addr && !!ctx->bam_tpu.port &&
+                                !!ctx->bam_tpu_fwd.addr && !!ctx->bam_tpu_fwd.port;
+  /* Only publish BAM active when the client is actually healthy and has
+     complete effective contact data. Config responses can arrive while
+     connecting or after an admin disable, and incomplete refreshes should
+     not force a BAM TPU override unless a prior valid contact is cached. */
+  fd_bam_publish_active_state( ctx,
+                               ctx->stem,
+                               ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) && has_effective_contact );
 
   // update fee config
   _Bool bam_config_fee_updated = false;
