@@ -1491,6 +1491,7 @@ fd_executor_setup_txn_account( fd_runtime_t *      runtime,
 static void
 fd_executor_setup_executable_account( fd_runtime_t *            runtime,
                                       fd_bank_t *               bank,
+                                      fd_txn_in_t const *       txn_in,
                                       fd_account_meta_t const * program_meta,
                                       ushort *                  executable_idx ) {
   fd_bpf_upgradeable_loader_state_t program_loader_state[1];
@@ -1511,6 +1512,21 @@ fd_executor_setup_executable_account( fd_runtime_t *            runtime,
   fd_funk_txn_xid_t xid             = { .ul = { fd_bank_slot_get( bank ), bank->data->idx } };
 
   fd_accdb_ro_t * ro = &runtime->accounts.executable[ *executable_idx ];
+  if( FD_UNLIKELY( txn_in->bundle.is_bundle ) ) {
+    /* Programdata can be written by an earlier bundle transaction that
+       has not been committed to funk yet. */
+    for( ulong i=txn_in->bundle.prev_txn_cnt; i>0UL; i-- ) {
+      fd_txn_out_t * prev_txn_out = txn_in->bundle.prev_txn_outs[ i-1UL ];
+      for( ushort j=0UL; j<prev_txn_out->accounts.cnt; j++ ) {
+        if( fd_pubkey_eq( &prev_txn_out->accounts.keys[ j ], programdata_acc ) && prev_txn_out->accounts.is_writable[ j ] ) {
+          fd_accdb_ro_init_nodb( ro, programdata_acc, prev_txn_out->accounts.account[ j ].meta );
+          (*executable_idx)++;
+          return;
+        }
+      }
+    }
+  }
+
   ro = fd_accdb_open_ro( runtime->accdb, ro, &xid, programdata_acc );
   if( FD_LIKELY( ro ) ) (*executable_idx)++;
 }
@@ -1554,7 +1570,7 @@ fd_executor_setup_accounts_for_txn( fd_runtime_t *      runtime,
     fd_account_meta_t * meta = txn_out->accounts.account[ i ].meta;
 
     if( FD_UNLIKELY( meta && memcmp( meta->owner, fd_solana_bpf_loader_upgradeable_program_id.key, sizeof(fd_pubkey_t) ) == 0 ) ) {
-      fd_executor_setup_executable_account( runtime, bank, meta, &executable_idx );
+      fd_executor_setup_executable_account( runtime, bank, txn_in, meta, &executable_idx );
     }
   }
 

@@ -8,6 +8,7 @@
 #include "sysvar/fd_sysvar_stake_history.h"
 #include "sysvar/fd_sysvar_clock.h"
 #include "sysvar/fd_sysvar_cache.h"
+#include "program/fd_bpf_loader_program.h"
 #include "../accdb/fd_accdb_admin_v1.h"
 #include "../accdb/fd_accdb_impl_v1.h"
 #include "../features/fd_features.h"
@@ -65,6 +66,15 @@ create_test_account( fd_accdb_user_t *         user,
   rw->meta->executable = 0;
   memcpy( rw->meta->owner, owner->uc, 32UL );
   fd_accdb_close_rw( user, rw );
+}
+
+static void
+encode_loader_state( uchar *                              data,
+                     ulong                                data_sz,
+                     fd_bpf_upgradeable_loader_state_t *  state ) {
+  memset( data, 0, data_sz );
+  fd_bincode_encode_ctx_t ctx = { .data = data, .dataend = data + data_sz };
+  FD_TEST( fd_bpf_upgradeable_loader_state_encode( state, &ctx )==FD_BINCODE_SUCCESS );
 }
 
 static void
@@ -636,7 +646,68 @@ test_execute_bundles( fd_wksp_t * wksp ) {
   FD_TEST( starting_ro_active == env->accdb->base.ro_active );
   FD_TEST( starting_rw_active == env->accdb->base.rw_active );
 
-/* Test 5: Account reclaim divergence between bundle and replay mode. */
+  /* Test 5: Bundle executable accounts use prior writable programdata. */
+
+  fd_pubkey_t program_key     = { .ul[0] = 0xB0FUL };
+  fd_pubkey_t programdata_key = { .ul[0] = 0xDADAUL };
+
+  uchar program_data[ SIZE_OF_PROGRAM ];
+  fd_bpf_upgradeable_loader_state_t program_state[1];
+  fd_bpf_upgradeable_loader_state_new_disc( program_state, fd_bpf_upgradeable_loader_state_enum_program );
+  program_state->inner.program.programdata_address = programdata_key;
+  encode_loader_state( program_data, sizeof(program_data), program_state );
+
+  uchar programdata_data[ PROGRAMDATA_METADATA_SIZE ];
+  fd_bpf_upgradeable_loader_state_t programdata_state[1];
+  fd_bpf_upgradeable_loader_state_new_disc( programdata_state, fd_bpf_upgradeable_loader_state_enum_program_data );
+  programdata_state->inner.program_data.slot = 9UL;
+  programdata_state->inner.program_data.has_upgrade_authority_address = 0;
+  encode_loader_state( programdata_data, sizeof(programdata_data), programdata_state );
+
+  create_test_account( env->accdb, &env->xid, &program_key,     1000000UL, SIZE_OF_PROGRAM,           program_data,     10UL, &fd_solana_bpf_loader_upgradeable_program_id );
+  create_test_account( env->accdb, &env->xid, &programdata_key, 1000000UL, PROGRAMDATA_METADATA_SIZE, programdata_data, 10UL, &fd_solana_bpf_loader_upgradeable_program_id );
+
+  fd_pubkey_t programdata_txn_keys[2] = { pubkey1, programdata_key };
+  sz = txn_serialize( txn_p.payload, 1, &signature, 1UL, 0UL, 0UL, 2UL, programdata_txn_keys, &dummy_hash );
+  FD_TEST( fd_txn_parse( txn_p.payload, sz, TXN( &txn_p ), NULL ) );
+
+  env->txn_in.txn                 = &txn_p;
+  env->txn_in.bundle.is_bundle    = 1;
+  env->txn_in.bundle.prev_txn_cnt = 0;
+  fd_runtime_prepare_and_execute_txn( env->runtime, env->bank, &env->txn_in, &env->txn_out[0] );
+  FD_TEST( env->txn_out[0].err.is_committable );
+  FD_TEST( env->txn_out[0].err.txn_err==FD_RUNTIME_EXECUTE_SUCCESS );
+  FD_TEST( fd_pubkey_eq( &env->txn_out[0].accounts.keys[1], &programdata_key ) );
+  FD_TEST( env->txn_out[0].accounts.is_writable[1] );
+  fd_account_meta_t * closed_programdata_meta = env->txn_out[0].accounts.account[1].meta;
+  memset( closed_programdata_meta, 0, sizeof(fd_account_meta_t) );
+  closed_programdata_meta->slot = fd_bank_slot_get( env->bank );
+
+  fd_pubkey_t program_txn_keys[2] = { pubkey1, program_key };
+  sz = txn_serialize( txn_p.payload, 1, &signature, 1UL, 0UL, 1UL, 2UL, program_txn_keys, &dummy_hash );
+  FD_TEST( fd_txn_parse( txn_p.payload, sz, TXN( &txn_p ), NULL ) );
+
+  env->txn_in.txn                     = &txn_p;
+  env->txn_in.bundle.is_bundle        = 1;
+  env->txn_in.bundle.prev_txn_cnt     = 1;
+  env->txn_in.bundle.prev_txn_outs[0] = &env->txn_out[0];
+  fd_runtime_prepare_and_execute_txn( env->runtime, env->bank, &env->txn_in, &env->txn_out[1] );
+  FD_TEST( env->txn_out[1].err.is_committable );
+  FD_TEST( env->txn_out[1].err.txn_err==FD_RUNTIME_EXECUTE_SUCCESS );
+  FD_TEST( env->runtime->accounts.executable_cnt==1UL );
+  FD_TEST( fd_pubkey_eq( fd_accdb_ref_address( &env->runtime->accounts.executable[0] ), &programdata_key ) );
+  FD_TEST( !fd_account_meta_exists( env->runtime->accounts.executable[0].meta ) );
+
+  env->txn_out[1].err.is_committable = 0;
+  fd_runtime_cancel_txn( env->runtime, &env->txn_out[1] );
+  env->txn_out[0].err.is_committable = 0;
+  fd_runtime_cancel_txn( env->runtime, &env->txn_out[0] );
+
+  FD_TEST( fd_acc_pool_free( env->runtime->acc_pool ) == TEST_ACC_POOL_ACCOUNT_CNT );
+  FD_TEST( starting_ro_active == env->accdb->base.ro_active );
+  FD_TEST( starting_rw_active == env->accdb->base.rw_active );
+
+  /* Test 6: Account reclaim divergence between bundle and replay mode. */
 
   fd_pubkey_t some_program = { .ul[0] = 0xDEADBEEFUL };
   fd_pubkey_t victim       = { .ul[0] = 0xCAFEUL };
