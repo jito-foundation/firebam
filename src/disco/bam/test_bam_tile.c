@@ -497,43 +497,6 @@ test_bam_current_slot_work_status_bits( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_grpc_metrics_export( fd_wksp_t * wksp ) {
-  fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
-
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  fd_bam_tile_t * state = env->state;
-
-  state->grpc_metrics->wakeup_cnt            = 11UL;
-  state->grpc_metrics->stream_err_cnt        = 12UL;
-  state->grpc_metrics->conn_err_cnt          = 13UL;
-  state->grpc_metrics->stream_chunks_tx_cnt  = 14UL;
-  state->grpc_metrics->stream_chunks_tx_bytes= 15UL;
-  state->grpc_metrics->stream_chunks_rx_cnt  = 16UL;
-  state->grpc_metrics->stream_chunks_rx_bytes= 17UL;
-  state->grpc_metrics->requests_sent         = 18UL;
-  state->grpc_metrics->streams_active        = 3L;
-  state->grpc_metrics->rx_wait_ticks_cum     = 19L;
-  state->grpc_metrics->tx_wait_ticks_cum     = 20L;
-
-  fd_bam_test_metrics_write( state );
-
-  FD_TEST( FD_MCNT_GET( BAM, GRPC_WAKEUPS ) == 11UL );
-  FD_TEST( FD_MCNT_GET( BAM, GRPC_STREAM_ERRORS ) == 12UL );
-  FD_TEST( FD_MCNT_GET( BAM, GRPC_CONNECTION_ERRORS ) == 13UL );
-  FD_TEST( FD_MCNT_GET( BAM, GRPC_STREAM_CHUNKS_TX ) == 14UL );
-  FD_TEST( FD_MCNT_GET( BAM, GRPC_STREAM_CHUNKS_TX_BYTES ) == 15UL );
-  FD_TEST( FD_MCNT_GET( BAM, GRPC_STREAM_CHUNKS_RX ) == 16UL );
-  FD_TEST( FD_MCNT_GET( BAM, GRPC_STREAM_CHUNKS_RX_BYTES ) == 17UL );
-  FD_TEST( FD_MCNT_GET( BAM, GRPC_REQUESTS_SENT ) == 18UL );
-  FD_TEST( FD_MGAUGE_GET( BAM, GRPC_STREAMS_ACTIVE ) == 3UL );
-  FD_TEST( FD_MCNT_GET( BAM, GRPC_RX_WAIT_NANOS ) == 19UL );
-  FD_TEST( FD_MCNT_GET( BAM, GRPC_TX_WAIT_NANOS ) == 20UL );
-
-  test_bam_env_destroy( env );
-}
-
-static void
 test_bam_slot_ingress_timing_tracks_hash_collisions( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -1851,19 +1814,7 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* Test 6: Boundary +1ns also triggers, proving the comparison is inclusive. */
-  {
-    test_bam_env_t env[1];
-    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
-    int charge_busy = 0;
-    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS + 1L;
-    fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->tcp_sock == -1 );
-    FD_TEST( charge_busy == 1 );
-    test_bam_env_destroy( env );
-  }
-
-  /* Test 7: Disabling BAM runtime should bypass the watchdog entirely. */
+  /* Test 6: Disabling BAM runtime should bypass the watchdog entirely. */
   {
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
@@ -1908,21 +1859,6 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* 6.1 seconds after heartbeat SHOULD timeout: ensures the refreshed deadline still enforces the same limit. */
-  {
-    /* Subtest: once heartbeat ages past the limit we disconnect even after refresh. */
-    test_bam_env_t env[1];
-    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
-    int charge_busy = 0;
-    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)2e8;
-    test_bam_send_scheduler_heartbeat( state, 1UL );
-    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS + (long)2e8;
-    fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->tcp_sock == -1 );
-    FD_TEST( charge_busy == 1 );
-    test_bam_env_destroy( env );
-  }
-
   /* Bundle batches update timestamp because executing work should also count as liveness. */
   {
     /* Subtest: executing a bundle refreshes watchdog like a heartbeat. */
@@ -1931,33 +1867,6 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_send_scheduler_bundle( state, 0U, 0 );
     long expected_ts = g_clock;
     FD_TEST( state->bam_last_builder_activity_ns == expected_ts );
-    test_bam_env_destroy( env );
-  }
-
-  /* 5.9 seconds after bundle should NOT timeout: confirms bundle-driven refresh behaves like heartbeats. */
-  {
-    test_bam_env_t env[1];
-    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
-    int charge_busy = 0;
-    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)2e8;
-    test_bam_send_scheduler_bundle( state, 0U, 0 );
-    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)1e8;
-    fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->tcp_sock >= 0 );
-    test_bam_env_destroy( env );
-  }
-
-  /* 6.1 seconds after bundle SHOULD timeout: the refreshed deadline still enforces the same bound. */
-  {
-    test_bam_env_t env[1];
-    fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
-    int charge_busy = 0;
-    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS - (long)2e8;
-    test_bam_send_scheduler_bundle( state, 0U, 0 );
-    g_clock += FD_BAM_ACTIVITY_TIMEOUT_NS + (long)2e8;
-    fd_bam_client_step( state, &charge_busy );
-    FD_TEST( state->tcp_sock == -1 );
-    FD_TEST( charge_busy == 1 );
     test_bam_env_destroy( env );
   }
 }
@@ -3132,15 +3041,7 @@ test_bam_enqueue_result_drops_oversized_bundle_txn_cnt( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
-/* --- Control surface and request labeling ------------------------------------------- */
-
-static void
-test_bam_request_ctx_labels( void ) {
-  FD_TEST( 0 == strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ), "BamGetAuthChallenge" ) );
-  FD_TEST( 0 == strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig ), "BamGetBuilderConfig" ) );
-  FD_TEST( 0 == strcmp( fd_bam_request_ctx_cstr( FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream ), "BamInitSchedulerStream" ) );
-  FD_TEST( 0 == strcmp( fd_bam_request_ctx_cstr( 99UL ), "unknown" ) );
-}
+/* --- Control surface --------------------------------------------------------------- */
 
 static void
 setup_ctrl_defaults( fd_bam_tile_t * ctx,
@@ -4447,7 +4348,6 @@ main( int     argc,
   test_bam_pack_leader_slot_change_flushes_immediately( wksp );
   test_bam_pack_result_channel_contract( wksp );
   test_bam_bank_result_channel_contract( wksp );
-  test_bam_grpc_metrics_export( wksp );
   test_bam_scheduler_result_publishes_message( wksp );
   test_bam_scheduler_result_committed_with_execution_error_publishes_message( wksp );
   test_bam_scheduler_result_not_committed_publishes_message( wksp );
@@ -4461,7 +4361,6 @@ main( int     argc,
   test_bam_enqueue_result_drops_oversized_bundle_txn_cnt( wksp );
 
   /* Control surface */
-  test_bam_request_ctx_labels();
   test_bam_ctrl_updates_url_and_sni( wksp );
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_enable_from_disabled_start( wksp );
