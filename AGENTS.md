@@ -24,28 +24,65 @@ Purpose: Outline Firedancer and BAM coordination in this branch.
 - Feedback/control: Pack publishes latest-value-wins leader snapshots, and pack/bank publish durable bundle results, into the BAM tile. The BAM tile forwards both over the existing scheduler gRPC stream; mode switches follow runtime selection in BAM_Validator_Spec.md.
 
 ```
-Firedancer Tile Flow Diagram
+Current Full Firedancer Tile Flow (src/app/firedancer/topology.c)
 
-  TPU QUIC port (tiles.quic.quic_transaction_listen_port – default 9007)
-          │
-          ▼
-  ┌────────────┐ net_quic  ┌───────────┐ quic_verify ┌──────────────┐ verify_dedup ┌────────────┐ dedup_resolv ┌─────────────┐ resolv_pack ┌──────────┐ pack_bank ┌────────┐
-  │ net tile(s)├──────────▶│ quic tile │────────────▶│ verify tiles │─────────────▶│ dedup tile │─────────────▶│ resolv tile │────────────▶│ pack tile│──────────▶│ bank   │
-  └────────────┘           └───────────┘             └──────────────┘              └────────────┘              └─────────────┘             └──────────┘           └────────┘
-                                                                    ▲ bundle_verif / bam_verif fan-in
-                                                                    │
-   bundle gRPC/TLS feed ──▶ bundle tile ────────────────────────────┤
-   BAM gRPC feed ─────────▶ bam tile ───────────────────────────────┘
+  TPU QUIC port (tiles.quic.quic_transaction_listen_port - default 9007)
+          |
+          v
+  net/sock --net_quic--> quic --quic_verify--> verify --verify_dedup--> dedup --dedup_resolv--> resolv --resolv_pack--> pack --pack_execle--> execle --execle_poh--> poh --poh_shred--> shred --shred_net--> net/sock
+                                                        ^                                                                                 |
+                                                        |                                                                                 +--pack_poh--> poh
+   bundle gRPC/TLS feed -- bundle tile --bundle_verif---+
 
-  Feedback/control links
-    pack tile ──pack_bundle──▶ bundle tile         bank tile ──bank_bundle──▶ bundle tile
-    pack tile ──pack_bam_ldr──▶ bam tile
-    pack tile ──pack_bam_res──▶ bam tile         bank tile ──bank_bam─────▶ bam tile
-    bam tile ──bam_status fseq──▶ verify tiles (suppresses QUIC/bundle while BAM owns TPU)
+  Full Firedancer feedback/control links
+    execle tile --execle_busy fseq--> pack tile
+    repair tile --rnonce_ss shared object--> shred tile
+    bundle tile --bundle_sign--> sign tile --sign_bundle--> bundle tile
+    pack tile --pack_sign--> sign tile --sign_pack--> pack tile
+
+  Current fdctl/Frankendancer BAM Overlay (src/app/fdctl/topology.c only)
+
+  BAM scheduler gRPC/TLS feed --> bam tile --bam_verif--> verify --verify_dedup--> dedup --dedup_resolh--> resolh --resolh_pack--> pack --pack_bank--> bank --bank_pohh--> pohh --pohh_shred--> shred
+
+  BAM feedback/control links
+    pack tile --pack_bam_ldr--> bam tile
+    pack tile --pack_bam_res--> bam tile
+    bank/verify tiles --bank_bam--> bam tile
+    bam tile --bam_shred--> shred tile
+    bam tile --bam_plugi--> plugin tile (plugin/GUI enabled)
+    bam tile --bam_status fseq--> quic/bundle tiles; mapped read-only into verify
+    bam tile <-> bam_ctrl shared object; bam tile --bam_fee_cfg--> pack tile
+    bam tile --bam_sign--> sign tile --sign_bam--> bam tile
 
   Semantics
-    pack_bam_ldr carries latest-value-wins `fd_bam_leader_state_t` snapshots.
-    pack_bam_res and bank_bam carry durable FIFO `fd_bam_bundle_result_t` feedback.
+    The full Firedancer topology does not currently instantiate a BAM tile or BAM links.
+    The BAM overlay above is currently wired in fdctl/Frankendancer and should be ported onto
+    the full Firedancer execle/poh path.
+
+  BAM feedback/control link roles
+    pack_bam_ldr: Pack publishes `fd_bam_leader_state_t` snapshots with slot, tick,
+      remaining CU budget, slot end time, and whether the current slot has BAM work.
+      BAM treats this as latest-value-wins and sends the newest live snapshot upstream.
+    pack_bam_res: Pack publishes `fd_bam_bundle_result_t` scheduling/assembly feedback
+      for BAM bundles, including pack-side rejection results. BAM queues these as durable
+      FIFO results across scheduler stream reconnects.
+    bank_bam: Bank tiles publish executed `fd_bam_bundle_result_t` outcomes, while verify
+      tiles publish parse/signature failure results for BAM transactions. BAM merges all
+      bank_bam producers into the same durable FIFO result stream as pack_bam_res.
+    bam_shred: BAM publishes `fd_bam_shred_update_t` receiver-list updates. Shred tiles
+      replace their BAM destinations and forward leader/retransmit shreds to those receivers
+      while BAM shred forwarding is active.
+    bam_plugi: BAM publishes `fd_plugin_msg_bam_update_t` status/config updates for the
+      plugin/GUI path when plugin output is enabled.
+    bam_status fseq: BAM writes override/current-work bits. QUIC and bundle tiles consult
+      this latch to suppress normal ingress while BAM owns TPU work; verify maps it read-only
+      in the current fdctl topology but does not currently query it.
+    bam_ctrl: Shared admin-control object used by CLI/RPC and BAM for set/get BAM URL,
+      enable/disable state, and success/error/current-status handoff.
+    bam_fee_cfg: Shared fee configuration written by BAM from scheduler config and read by
+      pack to apply BAM priority-fee recipient and commission metadata.
+    bam_sign/sign_bam: Synchronous keyguard request/response pair. BAM asks the sign tile
+      to sign auth challenges with `FD_KEYGUARD_ROLE_BAM`; sign_bam returns the signature.
 ```
 
 **Testing**
