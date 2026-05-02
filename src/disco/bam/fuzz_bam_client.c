@@ -189,6 +189,7 @@ bam_fuzz_env_init( int *    pargc,
 
   bam_fuzz_ctx.tile = bam_fuzz_ctx.tile_storage;
   fd_memset( bam_fuzz_ctx.tile, 0, sizeof( fd_bam_tile_t ) );
+  bam_fuzz_ctx.tile->bam_leader_state.slot = ULONG_MAX;
 
   /* Build two outputs: verify (0) and gossip (1) */
   bam_fuzz_setup_out( BAM_FUZZ_OUT_VERIFY, 128UL, FD_TPU_PARSED_MTU);
@@ -461,6 +462,7 @@ static void
 bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
   fd_memset( ctx, 0, sizeof( fd_bam_tile_t ) );
+  ctx->bam_leader_state.slot = ULONG_MAX;
 
   /* Wiring for publish paths */
   ctx->stem       = &bam_fuzz_ctx.stem;

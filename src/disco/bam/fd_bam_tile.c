@@ -1153,6 +1153,7 @@ privileged_init( fd_topo_t *      topo,
   ctx->grpc_client_mem = grpc_mem;
   ctx->grpc_buf_max    = tile->bam.buf_sz;
   ctx->tcp_sock        = -1;
+  ctx->bam_leader_state.slot = ULONG_MAX;
   ctx->pack_bam_leader_in_idx = ULONG_MAX;
   ctx->pack_bam_result_in_idx = ULONG_MAX;
   ctx->bundle_max_schedule_slot = 0UL;

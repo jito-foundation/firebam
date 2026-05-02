@@ -5,7 +5,8 @@
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../ballet/nanopb/pb_decode.h"
 #include "../bundle/fd_bundle_crank.h"
-#include <limits.h>
+#include <fcntl.h>
+#include <netinet/in.h>
 
 static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
 
@@ -1640,6 +1641,52 @@ test_bam_bundle_rejects_missing_batches( fd_wksp_t * wksp ) {
 /* --- Connection lifecycle and watchdog ----------------------------------------------- */
 
 static void
+test_bam_tcp_connect_completion_uses_so_error( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  int listen_sock = socket( AF_INET, SOCK_STREAM|SOCK_CLOEXEC, 0 );
+  FD_TEST( listen_sock >= 0 );
+
+  struct sockaddr_in addr = {
+    .sin_family      = AF_INET,
+    .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ),
+    .sin_port        = 0
+  };
+  FD_TEST( 0 == bind( listen_sock, fd_type_pun( &addr ), sizeof(addr) ) );
+  FD_TEST( 0 == listen( listen_sock, 1 ) );
+
+  socklen_t addr_len = sizeof(addr);
+  FD_TEST( 0 == getsockname( listen_sock, fd_type_pun( &addr ), &addr_len ) );
+
+  int client_sock = socket( AF_INET, SOCK_STREAM|SOCK_CLOEXEC, 0 );
+  FD_TEST( client_sock >= 0 );
+  FD_TEST( 0 == connect( client_sock, fd_type_pun_const( &addr ), sizeof(addr) ) );
+
+  int server_sock = accept4( listen_sock, NULL, NULL, SOCK_CLOEXEC );
+  FD_TEST( server_sock >= 0 );
+  FD_TEST( 0 == close( listen_sock ) );
+
+  int flags = fcntl( client_sock, F_GETFL, 0 );
+  FD_TEST( flags >= 0 );
+  FD_TEST( 0 == fcntl( client_sock, F_SETFL, flags|O_NONBLOCK ) );
+
+  state->tcp_sock           = client_sock;
+  state->tcp_sock_connected = 0U;
+
+  int charge_busy = 0;
+  fd_bam_client_step( state, &charge_busy );
+
+  FD_TEST( charge_busy == 1 );
+  FD_TEST( state->tcp_sock == client_sock );
+  FD_TEST( state->tcp_sock_connected == 1U );
+
+  FD_TEST( 0 == close( server_sock ) );
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   /* Stream closures (error or OK) should clear bam_stream state without forcing
      a reset. */
@@ -1748,6 +1795,73 @@ test_bam_heartbeat_env_start( test_bam_env_t * env,
   FD_TEST( state->bam_last_builder_activity_ns == g_clock );
   FD_TEST( state->bam_last_validator_heartbeat_ns == g_clock );
   return state;
+}
+
+static void
+test_bam_scheduler_stream_replays_only_retained_leader_state( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn_empty( env );
+  fd_bam_tile_t * state = env->state;
+  test_bam_env_mock_h2_hs( state );
+
+  g_clock = (long)8e9;
+  test_bam_keepalive_sync( state, g_clock );
+  state->keepalive->ts_next_tx = LONG_MAX;
+  state->builder_info_valid_until = g_clock + (long)60e9;
+  state->bam_config_received      = 1U;
+  state->bam_last_config_poll_ns  = g_clock;
+  state->bam_last_validator_heartbeat_ns = g_clock;
+
+  test_bam_prepare_scheduler_stream( state );
+  state->bam_stream_live       = 0U;
+  state->bam_stream_connecting = 1U;
+
+  FD_TEST( state->bam_leader_state.slot == ULONG_MAX );
+  fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( state->bam_leader_pending == 0U );
+
+  state->bam_leader_state = (fd_bam_leader_state_t){
+    .slot = 41UL,
+    .tick = 12U,
+    .slot_cu_budget_remaining = 321U,
+    .slot_end_ns = g_clock - 1L,
+    .current_slot_has_bam_work = 1U
+  };
+  state->bam_leader_pending = 1U;
+
+  fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( state->bam_leader_pending == 0U );
+  FD_TEST( fd_bam_test_client_step_reconnect( state, g_clock ) == 0 );
+
+  state->bam_leader_state = (fd_bam_leader_state_t){
+    .slot = 42UL,
+    .tick = 7U,
+    .slot_cu_budget_remaining = 123U,
+    .slot_end_ns = g_clock + (long)1e9,
+    .current_slot_has_bam_work = 1U
+  };
+  state->bam_leader_pending = 0U;
+  state->bam_stream_live       = 0U;
+  state->bam_stream_connecting = 1U;
+
+  fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( state->bam_leader_pending == 1U );
+
+  int busy = fd_bam_test_client_step_reconnect( state, g_clock );
+  FD_TEST( busy == 1 );
+  FD_TEST( state->bam_leader_pending == 0U );
+
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.which_versioned_msg == bam_api_SchedulerMessage_v0_tag );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_leader_state_tag );
+  bam_types_LeaderState const * ls = &decoded.msg.versioned_msg.v0.msg.leader_state;
+  FD_TEST( ls->slot == 42UL );
+  FD_TEST( ls->tick == 7U );
+  FD_TEST( ls->slot_cu_budget_remaining == 123U );
+
+  test_bam_env_destroy( env );
 }
 
 static void
@@ -4328,6 +4442,7 @@ main( int     argc,
   test_bam_bundle_rejects_missing_batches( wksp );
 
   /* Connection lifecycle and watchdog */
+  test_bam_tcp_connect_completion_uses_so_error( wksp );
   test_bam_grpc_end_handling( wksp );
   test_bam_grpc_timeout( wksp );
   test_bam_heartbeat_timeout_forces_disconnect( wksp );
@@ -4343,6 +4458,7 @@ main( int     argc,
   test_bam_scheduler_heartbeat_publishes_message( wksp );
   test_bam_scheduler_ping_publishes_message( wksp );
   test_bam_scheduler_leader_state_publishes_message( wksp );
+  test_bam_scheduler_stream_replays_only_retained_leader_state( wksp );
   test_bam_leader_state_supersede_counts_drop( wksp );
   test_bam_pack_leader_channel_contract( wksp );
   test_bam_pack_leader_slot_change_flushes_immediately( wksp );

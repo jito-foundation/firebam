@@ -165,22 +165,6 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   fd_bam_drop_pending_leader_state( ctx, FD_BAM_LEADER_PENDING_DROP_CLIENT_RESET );
 }
 
-static int
-fd_bam_client_do_connect( fd_bam_tile_t const * ctx,
-                             uint               ip4_addr ) {
-  struct sockaddr_in addr = {
-    .sin_family      = AF_INET,
-    .sin_addr.s_addr = ip4_addr,
-    .sin_port        = fd_ushort_bswap( ctx->server_tcp_port )
-  };
-  int err = connect( ctx->tcp_sock, fd_type_pun_const( &addr ), sizeof(struct sockaddr_in) );
-  /* FD_LIKELY is used here as EINPROGRESS is expected even to local tcp ports */
-  if( FD_LIKELY( err==-1 ) ) {
-    return errno;
-  }
-  return 0;
-}
-
 static void
 fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
   fd_bam_client_reset( ctx );
@@ -231,18 +215,23 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
                 FD_IP4_ADDR_FMT_ARGS( ip4_addr ), ctx->server_tcp_port,
                 (int)ctx->server_sni_len, ctx->server_sni ));
 
-  int connect_err = fd_bam_client_do_connect( ctx, ip4_addr );
-  if( FD_LIKELY( connect_err ) ) {
-    if( FD_UNLIKELY( connect_err != EINPROGRESS ) ) {
-      fd_bam_client_reset( ctx );
-      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ]++;
-      FD_LOG_WARNING(( "connect(tcp_sock," FD_IP4_ADDR_FMT ":%u) failed (%i-%s) (fqdn=%s sni=%.*s); retrying in %.3f ms",
-                       FD_IP4_ADDR_FMT_ARGS( ip4_addr ), ctx->server_tcp_port,
-                       connect_err, fd_io_strerror( connect_err ),
-                       ctx->server_fqdn, (int)ctx->server_sni_len, ctx->server_sni,
-                       fd_bam_client_retry_ms( ctx ) ));
-      return;
-    }
+  struct sockaddr_in addr = {
+    .sin_family      = AF_INET,
+    .sin_addr.s_addr = ip4_addr,
+    .sin_port        = fd_ushort_bswap( ctx->server_tcp_port )
+  };
+  int connect_err = connect( ctx->tcp_sock, fd_type_pun_const( &addr ), sizeof(addr) );
+  /* FD_LIKELY is used here as EINPROGRESS is expected even to local tcp ports */
+  if( FD_LIKELY( connect_err==-1 ) ) connect_err = errno;
+  if( FD_UNLIKELY( connect_err && connect_err != EINPROGRESS ) ) {
+    fd_bam_client_reset( ctx );
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ]++;
+    FD_LOG_WARNING(( "connect(tcp_sock," FD_IP4_ADDR_FMT ":%u) failed (%i-%s) (fqdn=%s sni=%.*s); retrying in %.3f ms",
+                     FD_IP4_ADDR_FMT_ARGS( ip4_addr ), ctx->server_tcp_port,
+                     connect_err, fd_io_strerror( connect_err ),
+                     ctx->server_fqdn, (int)ctx->server_sni_len, ctx->server_sni,
+                     fd_bam_client_retry_ms( ctx ) ));
+    return;
   }
 
 # if FD_HAS_OPENSSL
@@ -1021,34 +1010,26 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     }
     if( poll_res == 0 ) return;
 
-    if( pfds[0].revents & (POLLERR|POLLHUP) ) {
-      int connect_err = fd_bam_client_do_connect( ctx, 0U );
+    short const revents = pfds[0].revents;
+    int so_err = 0;
+    socklen_t so_err_sz = sizeof(so_err);
+    int connect_result = getsockopt( ctx->tcp_sock, SOL_SOCKET, SO_ERROR, &so_err, &so_err_sz )
+                         ? errno
+                         : so_err;
+    if( FD_UNLIKELY( ( revents & (POLLERR|POLLHUP|POLLNVAL) ) || connect_result ) ) {
+      if( FD_UNLIKELY( !connect_result ) ) connect_result = ECONNABORTED;
       FD_LOG_WARNING(( "BAM gRPC connect attempt failed (%i-%s) while dialing %s/" FD_IP4_ADDR_FMT ":%hu; retrying in %.3f ms",
-        connect_err, fd_io_strerror( connect_err ),
+        connect_result, fd_io_strerror( connect_result ),
         ctx->server_fqdn,
         FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
         ctx->server_tcp_port,
         fd_bam_client_retry_ms( ctx ) ));
-      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ]++;
       fd_bam_client_reset( ctx );
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ]++;
       *charge_busy = 1;
       return;
     }
-    if( pfds[0].revents & POLLOUT ) {
-      int connect_err = fd_bam_client_do_connect( ctx, 0U );
-      if( connect_err==EINPROGRESS || connect_err==EALREADY ) return;
-      if( FD_UNLIKELY( connect_err ) ) {
-        FD_LOG_WARNING(( "BAM TCP socket reported writable but connect failed (%i-%s) to %s/" FD_IP4_ADDR_FMT ":%hu; retrying in %.3f ms",
-          connect_err, fd_io_strerror( connect_err ),
-          ctx->server_fqdn,
-          FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
-          ctx->server_tcp_port,
-          fd_bam_client_retry_ms( ctx ) ));
-        fd_bam_client_reset( ctx );
-        ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ]++;
-        *charge_busy = 1;
-        return;
-      }
+    if( FD_LIKELY( revents & POLLOUT ) ) {
       FD_LOG_DEBUG(( "BAM TCP socket connected" ));
       ctx->tcp_sock_connected = 1;
       *charge_busy = 1;
@@ -1226,6 +1207,12 @@ fd_bam_client_grpc_rx_start(
     ctx->bam_stream_connecting  = 0;
     ctx->bam_last_validator_heartbeat_ns = now;
     ctx->bam_last_builder_activity_ns    = now;
+    if( ctx->bam_leader_state.slot != ULONG_MAX &&
+        ctx->bam_leader_state.slot_end_ns > now ) {
+      ctx->bam_leader_pending = 1U;
+    } else {
+      ctx->bam_leader_pending = 0U;
+    }
     break;
   }
   }

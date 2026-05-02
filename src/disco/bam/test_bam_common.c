@@ -460,6 +460,7 @@ test_bam_env_create( test_bam_env_t * env,
   state->plugin_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
   state->gossip_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
   state->shred_out  = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
+  state->bam_leader_state.slot = ULONG_MAX;
   state->pack_bam_leader_in_idx = ULONG_MAX;
   state->pack_bam_result_in_idx = ULONG_MAX;
   state->heap_wksp       = wksp;
