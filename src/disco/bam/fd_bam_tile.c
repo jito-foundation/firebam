@@ -1428,7 +1428,7 @@ populate_allowed_fds( fd_topo_t const *      topo,
   return out_cnt;
 }
 
-#define STEM_BURST (5UL)
+#define STEM_BURST (40UL)
 #define STEM_LAZY ((long)10e6)
 
 #define STEM_CALLBACK_CONTEXT_TYPE  fd_bam_tile_t

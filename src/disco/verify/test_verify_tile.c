@@ -123,8 +123,8 @@ test_load_balance( void ) {
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 0UL )==1 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 2UL, 0UL )==1 );
   FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 0UL )==0 );
-  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 0UL )==1 );
-  FD_TEST( before_frag( ctx, IN_IDX_BAM,    2UL, 0UL )==1 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    2UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   0UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   1UL, 0UL )==1 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   2UL, 0UL )==1 );

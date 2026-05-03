@@ -353,7 +353,7 @@ fd_topo_initialize( config_t * config ) {
     fd_topob_wksp( topo, "bam_ctrl"    );
     fd_topob_wksp( topo, "bam_fee_cfg" );
 
-    /**/                 fd_topob_link( topo, "bam_verif",  "bam_verif",  config->tiles.verify.receive_buffer_size, FD_TPU_PARSED_MTU,          1UL );
+    /**/                 fd_topob_link( topo, "bam_verif",  "bam_verif",  config->tiles.verify.receive_buffer_size, FD_TPU_PARSED_MTU,          40UL );
     /**/                 fd_topob_link( topo, "bam_sign",   "bam_sign",   65536UL,                                  256UL,                       1UL );
     /**/                 fd_topob_link( topo, "sign_bam",   "sign_bam",   128UL,                                    64UL,                        1UL );
     /* Keep pack->bam leader snapshots and result feedback on separate
