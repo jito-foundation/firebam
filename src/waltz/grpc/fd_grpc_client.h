@@ -395,10 +395,14 @@ fd_grpc_client_is_connected( fd_grpc_client_t * client );
 
 /* fd_grpc_client_request_is_blocked returns 1 if a call to
    fd_grpc_client_request_start would certainly fail.  Reasons include
-   SSL / HTTP/2 handshake not complete, or buffers blocked. */
+   SSL / HTTP/2 handshake not complete, a partially sent request body,
+   or buffers blocked. */
 
 int
 fd_grpc_client_request_is_blocked( fd_grpc_client_t * client );
+
+/* fd_grpc_client_request_stream_busy returns 1 while a request body
+   has bytes still waiting to be copied into HTTP/2 TX frames. */
 
 int
 fd_grpc_client_request_stream_busy( fd_grpc_client_t * client );

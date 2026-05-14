@@ -377,7 +377,7 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_bam",     0UL                                                );
 
     /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_bam_ldr", 0UL                                                );
-    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam_ldr", 0UL,            FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam_ldr", 0UL,            FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
     /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_bam_res", 0UL                                                );
     /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam_res", 0UL,            FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
     FOR(bank_tile_cnt)   fd_topob_tile_out( topo, "bank",   i,                          "bank_bam",     i                                                  );

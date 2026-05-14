@@ -449,7 +449,9 @@ metric introduced.
 <enum name="BamSchedulerPongSendOutcome">
     <int value="0" name="NoLiveStream" label="Scheduler Ping arrived while no live scheduler stream was available for a Pong send attempt" />
     <int value="1" name="Enqueued" label="Pong message was accepted by fd_grpc_client_stream_send on a live scheduler stream" />
-    <int value="2" name="EnqueueFail" label="Pong send was attempted on a live scheduler stream but fd_grpc_client_stream_send returned failure" />
+    <int value="2" name="FrameTxBusy" label="Scheduler Ping arrived on a live stream but the local HTTP/2 TX frame buffer was not empty, so Pong was skipped" />
+    <int value="3" name="RequestBusy" label="Scheduler Ping arrived on a live stream but a gRPC request body was still sending, so Pong was skipped" />
+    <int value="4" name="SendFail" label="Pong send was attempted on a live scheduler stream after local readiness checks but fd_grpc_client_stream_send returned failure" />
 </enum>
 
 <tile name="bam">
@@ -494,7 +496,7 @@ metric introduced.
     <counter name="SlotIngressTransactions" enum="BamSlotIngressTxnTiming" summary="Cumulative number of BAM ingress transactions counted in finalized ingress rollups using scheduler-receive callback timestamps, bucketed as before-end or after-end only when slot_end_ns was known at observation time, else unknown or unresolved when no slot attribution was available" />
     <counter name="LeaderSlotEndStatus" enum="BamLeaderSlotEndStatus" summary="Cumulative number of local leader slots whose slot_end_ns was observed and recorded, bucketed by BAM client status at slot end reconstructed from the local BAM status history" />
     <counter name="HealthyLeaderSlotResult" enum="BamHealthyLeaderSlotResult" summary="Cumulative number of local leader slots that reached slot_end_ns while BAM status was CONNECTED_HEALTHY, bucketed by whether fresh current-slot BAM work had arrived before slot end" />
-    <counter name="SchedulerPongSendOutcome" enum="BamSchedulerPongSendOutcome" summary="Cumulative number of BAM scheduler Ping-to-Pong send outcomes, including no-live-stream skips and live-stream fd_grpc_client_stream_send results" />
+    <counter name="SchedulerPongSendOutcome" enum="BamSchedulerPongSendOutcome" summary="Cumulative number of BAM scheduler Ping-to-Pong send outcomes, including no-live-stream skips, local send-boundary contention, and live-stream fd_grpc_client_stream_send results" />
     <gauge name="KeepaliveRttSample" summary="Latest HTTP/2 keepalive round-trip time sample captured at scrape time (nanoseconds)" />
     <gauge name="KeepaliveRttSmoothed" summary="Exponentially smoothed HTTP/2 keepalive round-trip time estimate (nanoseconds)" />
     <gauge name="KeepaliveRttDeviation" summary="Smoothed HTTP/2 keepalive RTT variation estimate (nanoseconds)" />
@@ -506,7 +508,7 @@ metric introduced.
         <summary>Distribution of remote BuilderHeartBeat timestamp to local scheduler-stream receive callback delta (nanoseconds); includes clock offset and is intended only for relative trend analysis</summary>
     </histogram>
     <histogram name="SchedulerPongSendNanos" min="1" max="100000000">
-        <summary>Distribution of local BAM scheduler Ping-to-Pong stream_send turnaround from scheduler-message receive callback to fd_grpc_client_stream_send outcome on a live scheduler stream (nanoseconds). Sampled for both successful and failed send attempts. This is local processing and send-boundary latency, not network RTT.</summary>
+        <summary>Distribution of local BAM scheduler Ping-to-Pong send-boundary turnaround from scheduler-message receive callback to local readiness classification or fd_grpc_client_stream_send outcome on a live scheduler stream (nanoseconds). This is local processing and send-boundary latency, not network RTT.</summary>
     </histogram>
 </tile>
 

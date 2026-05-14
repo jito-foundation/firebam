@@ -2381,6 +2381,23 @@ test_bam_scheduler_heartbeat_publishes_message( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_deliver_scheduler_ping( fd_bam_tile_t * state,
+                                 uint32_t        ping_id ) {
+  uchar protobuf[64];
+  bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
+  resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
+  resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_ping_tag;
+  resp.versioned_msg.v0.resp.ping.id = ping_id;
+
+  pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, sizeof(protobuf) );
+  FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+}
+
+static void
 test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
   /* BAM proto Ping is a scheduler-stream latency probe. Firedancer must answer
      with Pong, but this must not touch heartbeat/watchdog or HTTP/2 keepalive
@@ -2393,6 +2410,10 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     fd_bam_tile_t * state = env->state;
 
     test_bam_prepare_scheduler_stream( state );
+    /* Completed streaming sends can leave request_stream attached with no
+       pending request body. That must not block the next Pong. */
+    state->grpc_client->request_stream = state->bam_stream;
+    state->grpc_client->request_tx_op->chunk_sz = 0UL;
 
     g_clock = (long)9e9;
     long builder_ts = g_clock - (long)1e8;
@@ -2405,18 +2426,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     ulong latency_samples_before      = test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos );
 
     uint32_t ping_id = 0x00c0ffeeU;
-    uchar protobuf[64];
-    bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
-    resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
-    resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_ping_tag;
-    resp.versioned_msg.v0.resp.ping.id = ping_id;
-
-    pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, sizeof(protobuf) );
-    FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
-    fd_bam_client_grpc_rx_msg( state,
-                               protobuf,
-                               ostream.bytes_written,
-                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    test_bam_deliver_scheduler_ping( state, ping_id );
 
     FD_TEST( state->defer_reset == 0U );
     FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
@@ -2426,9 +2436,7 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos ) == ping_samples_before + 1UL );
     FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == latency_samples_before );
     FD_TEST( fd_histf_sum( state->metrics.scheduler_pong_send_nanos ) == 0UL );
-    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_NO_LIVE_STREAM_IDX ] == 0UL );
     FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] == 1UL );
-    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX ] == 0UL );
 
     test_bam_decoded_message_t decoded;
     test_bam_decode_last_message( state, &decoded );
@@ -2447,31 +2455,81 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
 
     test_bam_prepare_scheduler_stream( state );
 
+    g_clock = (long)95e8;
+    ulong ping_samples_before = test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos );
+    FD_TEST( fd_h2_tx_ping( fd_grpc_client_h2_conn( state->grpc_client ),
+                            fd_grpc_client_rbuf_tx( state->grpc_client ) ) );
+
+    test_bam_deliver_scheduler_ping( state, 0xfeedbeefU );
+
+    FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos ) == ping_samples_before + 1UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] == 0UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_FRAME_TX_BUSY_IDX ] == 1UL );
+
+    test_bam_env_destroy( env );
+  }
+
+  {
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    test_bam_env_mock_conn( env );
+    fd_bam_tile_t * state = env->state;
+
+    test_bam_prepare_scheduler_stream( state );
+    state->grpc_client->request_stream = state->bam_stream;
+    state->grpc_client->request_tx_op->chunk_sz = 1UL;
+
+    g_clock = (long)96e8;
+    ulong ping_samples_before = test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos );
+    test_bam_deliver_scheduler_ping( state, 0x12345678U );
+
+    FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos ) == ping_samples_before + 1UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] == 0UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_REQUEST_BUSY_IDX ] == 1UL );
+
+    test_bam_env_destroy( env );
+  }
+
+  {
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    test_bam_env_mock_conn( env );
+    fd_bam_tile_t * state = env->state;
+
+    test_bam_prepare_scheduler_stream( state );
+    state->bam_stream->s.state = FD_H2_STREAM_STATE_CLOSED;
+
+    g_clock = (long)97e8;
+    ulong ping_samples_before = test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos );
+    test_bam_deliver_scheduler_ping( state, 0x87654321U );
+
+    FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos ) == ping_samples_before + 1UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] == 0UL );
+    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_SEND_FAIL_IDX ] == 1UL );
+
+    test_bam_env_destroy( env );
+  }
+
+  {
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    test_bam_env_mock_conn( env );
+    fd_bam_tile_t * state = env->state;
+
+    test_bam_prepare_scheduler_stream( state );
+
     g_clock = (long)10e9;
     state->bam_last_builder_activity_ns = g_clock - FD_BAM_ACTIVITY_TIMEOUT_NS - (long)1e8;
     test_bam_keepalive_sync( state, g_clock );
     FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
 
-    uchar protobuf[64];
-    bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
-    resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
-    resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_ping_tag;
-    resp.versioned_msg.v0.resp.ping.id = 7U;
-
-    pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, sizeof(protobuf) );
-    FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
-    fd_bam_client_grpc_rx_msg( state,
-                               protobuf,
-                               ostream.bytes_written,
-                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    test_bam_deliver_scheduler_ping( state, 7U );
 
     FD_TEST( state->bam_last_builder_activity_ns == g_clock - FD_BAM_ACTIVITY_TIMEOUT_NS - (long)1e8 );
     FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
     FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos ) == 1UL );
     FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 0UL );
-    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_NO_LIVE_STREAM_IDX ] == 0UL );
     FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] == 1UL );
-    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX ] == 0UL );
 
     int charge_busy = 0;
     fd_bam_client_step( state, &charge_busy );
@@ -2490,23 +2548,11 @@ test_bam_scheduler_ping_publishes_message( fd_wksp_t * wksp ) {
     g_clock = (long)11e9;
     state->bam_last_builder_activity_ns = g_clock - (long)1e8;
 
-    uchar protobuf[64];
-    bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
-    resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
-    resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_ping_tag;
-    resp.versioned_msg.v0.resp.ping.id = 9U;
-
-    pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, sizeof(protobuf) );
-    FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
-    fd_bam_client_grpc_rx_msg( state,
-                               protobuf,
-                               ostream.bytes_written,
-                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    test_bam_deliver_scheduler_ping( state, 9U );
 
     FD_TEST( test_hist_total_cnt( state->metrics.scheduler_pong_send_nanos ) == 0UL );
     FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_NO_LIVE_STREAM_IDX ] == 1UL );
     FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] == 0UL );
-    FD_TEST( state->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUE_FAIL_IDX ] == 0UL );
     FD_TEST( state->bam_last_builder_activity_ns == g_clock - (long)1e8 );
 
     test_bam_env_destroy( env );

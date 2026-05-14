@@ -443,18 +443,30 @@ fd_grpc_client_is_connected( fd_grpc_client_t * client ) {
 }
 
 int
+fd_grpc_client_request_stream_busy( fd_grpc_client_t * client ) {
+  return !!( client && client->request_stream && client->request_tx_op->chunk_sz );
+}
+
+int
 fd_grpc_client_request_is_blocked( fd_grpc_client_t * client ) {
   if( FD_UNLIKELY( !client                                          ) ) return 1;
   if( FD_UNLIKELY( client->conn->flags & FD_H2_CONN_FLAGS_DEAD      ) ) return 1;
   if( FD_UNLIKELY( !client->h2_hs_done                              ) ) return 1;
   if( FD_UNLIKELY( !fd_h2_rbuf_is_empty( client->frame_tx )         ) ) return 1;
+  if( FD_UNLIKELY( fd_grpc_client_request_stream_busy( client )     ) ) return 1;
   if( FD_UNLIKELY( !fd_grpc_client_stream_acquire_is_safe( client ) ) ) return 1;
   return 0;
 }
 
-int
-fd_grpc_client_request_stream_busy( fd_grpc_client_t * client ) {
-  return client->request_stream != NULL;
+static int
+fd_grpc_client_stream_send_is_blocked( fd_grpc_client_t *    client,
+                                       fd_grpc_h2_stream_t * stream ) {
+  if( FD_UNLIKELY( !client || !stream ) ) return 1;
+  if( FD_UNLIKELY( client->conn->flags & FD_H2_CONN_FLAGS_DEAD ) ) return 1;
+  if( FD_UNLIKELY( !fd_h2_rbuf_is_empty( client->frame_tx ) ) ) return 1;
+  if( FD_UNLIKELY( client->request_stream && client->request_stream!=stream ) ) return 1;
+  if( FD_UNLIKELY( fd_grpc_client_request_stream_busy( client ) ) ) return 1;
+  return 0;
 }
 
 fd_grpc_h2_stream_t *
@@ -641,10 +653,7 @@ fd_grpc_client_stream_send_msg(
     pb_msgdesc_t const * fields,
     void const *         message
 ) {
-  if( FD_UNLIKELY( !client || !stream ) ) return 0;
-  if( FD_UNLIKELY( client->conn->flags & FD_H2_CONN_FLAGS_DEAD ) ) return 0;
-  if( FD_UNLIKELY( !fd_h2_rbuf_is_empty( client->frame_tx ) ) ) return 0;
-  if( FD_UNLIKELY( client->request_stream != NULL && client->request_stream != stream ) ) return 0; /* Another stream has a request in progress */
+  if( FD_UNLIKELY( fd_grpc_client_stream_send_is_blocked( client, stream ) ) ) return 0;
 
   /* Encode message */
   FD_TEST( client->nanopb_tx_max > sizeof(fd_grpc_hdr_t) );
@@ -682,11 +691,8 @@ fd_grpc_client_stream_send(
     void const *          message,
     _Bool                 end_stream
 ) {
-  if( FD_UNLIKELY( !client || !stream ) ) return 0;
+  if( FD_UNLIKELY( fd_grpc_client_stream_send_is_blocked( client, stream ) ) ) return 0;
   if( FD_UNLIKELY( stream->s.state==FD_H2_STREAM_STATE_CLOSED ) ) return 0;
-  if( FD_UNLIKELY( client->conn->flags & FD_H2_CONN_FLAGS_DEAD ) ) return 0;
-  if( FD_UNLIKELY( !fd_h2_rbuf_is_empty( client->frame_tx ) ) ) return 0;
-  if( FD_UNLIKELY( client->request_stream != NULL && client->request_stream != stream ) ) return 0; /* Another stream has a request in progress */
 
   FD_TEST( client->nanopb_tx_max > sizeof(fd_grpc_hdr_t) );
   uchar * proto_buf = client->nanopb_tx + sizeof(fd_grpc_hdr_t);
@@ -720,10 +726,7 @@ fd_grpc_client_stream_send_msg1(
     uchar const *         protobuf,
     ulong                 protobuf_sz
 ) {
-  if( FD_UNLIKELY( !client || !stream ) ) return 0;
-  if( FD_UNLIKELY( client->conn->flags & FD_H2_CONN_FLAGS_DEAD ) ) return 0;
-  if( FD_UNLIKELY( !fd_h2_rbuf_is_empty( client->frame_tx ) ) ) return 0;
-  if( FD_UNLIKELY( client->request_stream != NULL && client->request_stream != stream ) ) return 0; /* Another stream has a request in progress */
+  if( FD_UNLIKELY( fd_grpc_client_stream_send_is_blocked( client, stream ) ) ) return 0;
 
   /* Validate protobuf size */
   FD_TEST( client->nanopb_tx_max > sizeof(fd_grpc_hdr_t) );

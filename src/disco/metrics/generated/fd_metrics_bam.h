@@ -98,7 +98,9 @@ enum {
   FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_OFF,
   FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_NO_LIVE_STREAM_OFF = FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_OFF,
   FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_ENQUEUED_OFF,
-  FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_ENQUEUE_FAIL_OFF,
+  FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_FRAME_TX_BUSY_OFF,
+  FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_REQUEST_BUSY_OFF,
+  FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_SEND_FAIL_OFF,
   FD_METRICS_GAUGE_BAM_KEEPALIVE_RTT_SAMPLE_OFF,
   FD_METRICS_GAUGE_BAM_KEEPALIVE_RTT_SMOOTHED_OFF,
   FD_METRICS_GAUGE_BAM_KEEPALIVE_RTT_DEVIATION_OFF,
@@ -334,9 +336,9 @@ enum {
 
 #define FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_NAME "bam_scheduler_pong_send_outcome"
 #define FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_TYPE (FD_METRICS_TYPE_COUNTER)
-#define FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_DESC "Cumulative number of BAM scheduler Ping-to-Pong send outcomes, including no-live-stream skips and live-stream fd_grpc_client_stream_send results"
+#define FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_DESC "Cumulative number of BAM scheduler Ping-to-Pong send outcomes, including no-live-stream skips, local send-boundary contention, and live-stream fd_grpc_client_stream_send results"
 #define FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_CVT  (FD_METRICS_CONVERTER_NONE)
-#define FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_CNT  (3UL)
+#define FD_METRICS_COUNTER_BAM_SCHEDULER_PONG_SEND_OUTCOME_CNT  (5UL)
 
 #define FD_METRICS_GAUGE_BAM_KEEPALIVE_RTT_SAMPLE_NAME "bam_keepalive_rtt_sample"
 #define FD_METRICS_GAUGE_BAM_KEEPALIVE_RTT_SAMPLE_TYPE (FD_METRICS_TYPE_GAUGE)
@@ -383,12 +385,12 @@ enum {
 
 #define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_SEND_NANOS_NAME "bam_scheduler_pong_send_nanos"
 #define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_SEND_NANOS_TYPE (FD_METRICS_TYPE_HISTOGRAM)
-#define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_SEND_NANOS_DESC "Distribution of local BAM scheduler Ping-to-Pong stream_send turnaround from scheduler-message receive callback to fd_grpc_client_stream_send outcome on a live scheduler stream (nanoseconds). Sampled for both successful and failed send attempts. This is local processing and send-boundary latency, not network RTT."
+#define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_SEND_NANOS_DESC "Distribution of local BAM scheduler Ping-to-Pong send-boundary turnaround from scheduler-message receive callback to local readiness classification or fd_grpc_client_stream_send outcome on a live scheduler stream (nanoseconds). This is local processing and send-boundary latency, not network RTT."
 #define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_SEND_NANOS_CVT  (FD_METRICS_CONVERTER_NONE)
 #define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_SEND_NANOS_MIN  (1UL)
 #define FD_METRICS_HISTOGRAM_BAM_SCHEDULER_PONG_SEND_NANOS_MAX  (100000000UL)
 
-#define FD_METRICS_BAM_TOTAL (94UL)
+#define FD_METRICS_BAM_TOTAL (96UL)
 extern const fd_metrics_meta_t FD_METRICS_BAM[FD_METRICS_BAM_TOTAL];
 
 #endif /* HEADER_fd_src_disco_metrics_generated_fd_metrics_bam_h */

@@ -1470,7 +1470,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Scheduler Ping-to-Pong local send delay inside the BAM client, measured from Ping receive callback to the attempted Pong send on a live scheduler stream. Failed live-stream sends are included here; no-live-stream cases are counted separately in bam_scheduler_pong_send_outcome.",
+      "description": "Scheduler Ping-to-Pong local send-boundary delay inside the BAM client, measured from Ping receive callback to local readiness classification or attempted Pong send on a live scheduler stream. No-live-stream cases are counted separately in bam_scheduler_pong_send_outcome.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5002,7 +5002,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of BAM scheduler Ping-to-Pong send outcomes. Use this with the send-delay histogram to distinguish no-live-stream skips from enqueued and enqueue-failed live-stream attempts.",
+      "description": "Rate (events/sec) of BAM scheduler Ping-to-Pong send outcomes. Use this with the send-delay histogram to distinguish no-live-stream skips, local send-boundary contention, successful enqueues, and unexpected send failures.",
       "fieldConfig": {
         "defaults": {
           "color": {
