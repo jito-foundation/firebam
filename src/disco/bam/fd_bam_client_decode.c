@@ -490,11 +490,11 @@ fd_bam_record_batch_ingress_timing( fd_bam_tile_t *            ctx,
     entry->first_rx_after_slot_end = (uchar)after_slot_end;
   }
 
-  ulong * txn_bucket = &entry->txn_unknown_slot_end;
+  uint * txn_bucket = &entry->txn_unknown_slot_end;
   if( FD_LIKELY( have_slot_end ) ) {
     txn_bucket = after_slot_end ? &entry->txn_after_slot_end : &entry->txn_before_slot_end;
   }
-  *txn_bucket += packet_cnt;
+  *txn_bucket = fd_uint_sat_add( *txn_bucket, (uint)packet_cnt );
 
   return entry;
 }

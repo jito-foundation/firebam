@@ -64,7 +64,33 @@ payload = json.loads(urlopen(url).read())
 validators = payload.get("validators") or []
 if not validators:
     raise SystemExit("clusterInfo payload is missing validators[]")
-skipped_validator = validators[-1]
+
+node_pubkey = payload.get("node_pubkey")
+vote_pubkey = payload.get("vote_pubkey")
+skipped_validator = None
+if node_pubkey or vote_pubkey:
+    skipped_validator = next(
+        (
+            validator
+            for validator in validators
+            if (
+                not node_pubkey
+                or validator.get("node_pubkey") == node_pubkey
+                or validator.get("identity_pubkey") == node_pubkey
+            )
+            and (not vote_pubkey or validator.get("vote_pubkey") == vote_pubkey)
+        ),
+        None,
+    )
+if skipped_validator is None and payload.get("node_keypair") and payload.get("vote_keypair"):
+    skipped_validator = payload
+if skipped_validator is None:
+    skipped_validator = validators[-1]
+
+if "node_keypair" not in skipped_validator:
+    raise SystemExit("clusterInfo payload is missing skipped validator node_keypair")
+if "vote_keypair" not in skipped_validator:
+    raise SystemExit("clusterInfo payload is missing skipped validator vote_keypair")
 
 target_dir.mkdir(parents=True, exist_ok=True)
 

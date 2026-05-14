@@ -410,6 +410,13 @@ metric introduced.
     <int value="3" name="StreamTimeout" label="Pending leader-state cleared because scheduler stream timed out" />
 </enum>
 
+<enum name="BamLeaderStateSuppressReason">
+    <int value="0" name="NotLeader" label="Leader-state send suppressed because pack reported no active leader slot" />
+    <int value="1" name="Expired" label="Leader-state send suppressed because slot_end_ns was known and already elapsed" />
+    <int value="2" name="SlotRegression" label="Leader-state send suppressed because the incoming slot regressed behind the latest local leader-state slot" />
+    <int value="3" name="SchedulerRejected" label="Retained leader state cleared because the scheduler rejected it as outside the valid slot range" />
+</enum>
+
 <enum name="BamLeaderSlotEndStatus">
     <int value="0" name="Disabled" label="Local leader slot end recorded while BAM was disabled" />
     <int value="1" name="Disconnected" label="Local leader slot end recorded while BAM was disconnected" />
@@ -491,6 +498,7 @@ metric introduced.
     <counter name="OutboundEnqueueOutcome" enum="BamEnqueueOutcome" summary="Cumulative number of BAM outbound leader-state/result enqueue outcomes and heartbeat stream_send outcomes at the gRPC send boundary" />
     <counter name="StreamTransition" enum="BamStreamTransition" summary="Cumulative number of scheduler stream live-state transitions" />
     <counter name="LeaderPendingDropped" enum="BamLeaderPendingDropReason" summary="Cumulative number of pending leader-state updates cleared before send because the BAM client reset, the scheduler request failed, or the stream ended/timed out" />
+    <counter name="LeaderStateSuppressed" enum="BamLeaderStateSuppressReason" summary="Cumulative number of pack-provided BAM leader-state updates suppressed or cleared because the state was not locally live" />
     <counter name="LeaderPendingReplaced" summary="Cumulative number of pending leader-state updates replaced by a newer leader-state update before send" />
     <counter name="SlotIngressResult" enum="BamSlotIngressResult" summary="Cumulative number of BAM slot-ingress records finalized after they aged out of the local retention window, bucketed by the first scheduler-receive callback for that slot relative to slot end or as unresolved when no slot attribution was available" />
     <counter name="SlotIngressTransactions" enum="BamSlotIngressTxnTiming" summary="Cumulative number of BAM ingress transactions counted in finalized ingress rollups using scheduler-receive callback timestamps, bucketed as before-end or after-end only when slot_end_ns was known at observation time, else unknown or unresolved when no slot attribution was available" />

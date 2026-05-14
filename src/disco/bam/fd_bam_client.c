@@ -81,6 +81,45 @@ fd_bam_set_stream_live( fd_bam_tile_t * ctx,
   ctx->bam_stream_live = live;
 }
 
+static int
+fd_bam_parse_scheduler_leader_state_reject( char const * msg,
+                                            uint         msg_len,
+                                            ulong *      rejected_slot,
+                                            ulong *      valid_min_slot,
+                                            ulong *      valid_max_slot ) {
+  char cstr[ 1009 ];
+  ulong const len = fd_ulong_min( (ulong)msg_len, sizeof(cstr)-1UL );
+  fd_memcpy( cstr, msg, len );
+  cstr[ len ] = '\0';
+
+  return 3==sscanf( cstr,
+                    "Leader state slot %lu is outside of valid range %lu..=%lu",
+                    rejected_slot,
+                    valid_min_slot,
+                    valid_max_slot );
+}
+
+static inline void
+fd_bam_clear_scheduler_rejected_leader_state( fd_bam_tile_t * ctx,
+                                              ulong           rejected_slot,
+                                              ulong           valid_min_slot,
+                                              ulong           valid_max_slot ) {
+  if( FD_LIKELY( ctx->bam_leader_state.slot!=rejected_slot ) ) return;
+
+  long now = fd_bam_now();
+  fd_bam_note_leader_state_suppressed( ctx,
+                                       &ctx->bam_leader_state,
+                                       FD_BAM_LEADER_STATE_SUPPRESS_SCHEDULER_REJECTED,
+                                       now );
+  FD_LOG_WARNING(( "clearing retained BAM leader state slot=%lu after scheduler rejected valid_range=%lu..=%lu",
+                   rejected_slot,
+                   valid_min_slot,
+                   valid_max_slot ));
+
+  ctx->bam_leader_state = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
+  ctx->bam_leader_pending = 0U;
+}
+
 static inline void
 fd_bam_drop_pending_leader_state( fd_bam_tile_t *                       ctx,
                                   fd_bam_leader_pending_drop_reason_t    reason ) {
@@ -842,6 +881,18 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
 int
 fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
                           fd_bam_leader_state_t const *  state ) {
+  long now = fd_bam_now();
+  fd_bam_leader_state_suppress_reason_t reason;
+  if( FD_UNLIKELY( fd_bam_leader_state_suppress_reason( ctx, state, now, 0, &reason ) ) ) {
+    fd_bam_note_leader_state_suppressed( ctx, state, reason, now );
+    ctx->bam_leader_pending = 0U;
+    if( FD_UNLIKELY( reason==FD_BAM_LEADER_STATE_SUPPRESS_NOT_LEADER ||
+                     reason==FD_BAM_LEADER_STATE_SUPPRESS_EXPIRED ) ) {
+      ctx->bam_leader_state = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
+    }
+    return 0;
+  }
+
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) {
     ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_NO_STREAM_IDX ]++;
     return 0;
@@ -1207,8 +1258,14 @@ fd_bam_client_grpc_rx_start(
     ctx->bam_stream_connecting  = 0;
     ctx->bam_last_validator_heartbeat_ns = now;
     ctx->bam_last_builder_activity_ns    = now;
+    fd_bam_leader_state_suppress_reason_t reason;
     if( ctx->bam_leader_state.slot != ULONG_MAX &&
-        ctx->bam_leader_state.slot_end_ns > now ) {
+        fd_bam_leader_state_suppress_reason( ctx, &ctx->bam_leader_state, now, 0, &reason ) ) {
+      fd_bam_note_leader_state_suppressed( ctx, &ctx->bam_leader_state, reason, now );
+      ctx->bam_leader_state = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
+      ctx->bam_leader_pending = 0U;
+    } else if( ctx->bam_leader_state.slot != ULONG_MAX &&
+               ctx->bam_leader_state.slot_end_ns > now ) {
       ctx->bam_leader_pending = 1U;
     } else {
       ctx->bam_leader_pending = 0U;
@@ -1319,6 +1376,20 @@ fd_bam_client_grpc_rx_end(
                      fd_bam_request_ctx_cstr( request_ctx ),
                      resp->grpc_status, fd_grpc_status_cstr( resp->grpc_status ),
                      (int)resp->grpc_msg_len, resp->grpc_msg ));
+
+    ulong rejected_slot;
+    ulong valid_min_slot;
+    ulong valid_max_slot;
+    if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream &&
+                     resp->grpc_status==FD_GRPC_STATUS_INVALID_ARGUMENT &&
+                     fd_bam_parse_scheduler_leader_state_reject( resp->grpc_msg,
+                                                                 resp->grpc_msg_len,
+                                                                 &rejected_slot,
+                                                                 &valid_min_slot,
+                                                                 &valid_max_slot ) ) ) {
+      fd_bam_clear_scheduler_rejected_leader_state( ctx, rejected_slot, valid_min_slot, valid_max_slot );
+    }
+
     fd_bam_client_request_failed( ctx, request_ctx );
     if( resp->grpc_status == FD_GRPC_STATUS_UNAUTHENTICATED ||
         resp->grpc_status == FD_GRPC_STATUS_PERMISSION_DENIED ) {

@@ -71,6 +71,7 @@ struct fd_bam_metrics {
   ulong outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_CNT ];
   ulong stream_transition_cnt[ FD_METRICS_ENUM_BAM_STREAM_TRANSITION_CNT ];
   ulong leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_CNT ];
+  ulong leader_state_suppressed_cnt[ FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_CNT ];
   ulong leader_pending_replaced_cnt;
   ulong slot_ingress_result_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_CNT ];
   ulong slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_CNT ];
@@ -90,13 +91,15 @@ typedef struct {
   ulong slot;
   long  first_rx_ts_ns;
   long  slot_end_ns;
-  ulong txn_before_slot_end;
-  ulong txn_after_slot_end;
-  ulong txn_unknown_slot_end;
+  uint  txn_before_slot_end;
+  uint  txn_after_slot_end;
+  uint  txn_unknown_slot_end;
   uchar first_rx_after_slot_end;
   uchar summary_emitted;
   uchar valid;
 } fd_bam_slot_ingress_timing_t;
+
+FD_STATIC_ASSERT( sizeof(fd_bam_slot_ingress_timing_t)==40UL, fd_bam_slot_ingress_timing_t );
 
 #define FD_BAM_LEADER_SLOT_END_TRACKER_CNT 64UL
 typedef struct {
@@ -467,6 +470,85 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
 
   ctx->bam_leader_state = *state;
   ctx->bam_leader_pending = 1U;
+}
+
+typedef enum {
+  FD_BAM_LEADER_STATE_SUPPRESS_NOT_LEADER = 0,
+  FD_BAM_LEADER_STATE_SUPPRESS_EXPIRED,
+  FD_BAM_LEADER_STATE_SUPPRESS_SLOT_REGRESSION,
+  FD_BAM_LEADER_STATE_SUPPRESS_SCHEDULER_REJECTED
+} fd_bam_leader_state_suppress_reason_t;
+
+FD_FN_CONST static inline ulong
+fd_bam_leader_state_suppress_reason_idx( fd_bam_leader_state_suppress_reason_t reason ) {
+  switch( reason ) {
+  case FD_BAM_LEADER_STATE_SUPPRESS_NOT_LEADER:
+    return FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_NOT_LEADER_IDX;
+  case FD_BAM_LEADER_STATE_SUPPRESS_EXPIRED:
+    return FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_EXPIRED_IDX;
+  case FD_BAM_LEADER_STATE_SUPPRESS_SLOT_REGRESSION:
+    return FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_SLOT_REGRESSION_IDX;
+  case FD_BAM_LEADER_STATE_SUPPRESS_SCHEDULER_REJECTED:
+    return FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_SCHEDULER_REJECTED_IDX;
+  default:
+    return FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_EXPIRED_IDX;
+  }
+}
+
+FD_FN_CONST static inline char const *
+fd_bam_leader_state_suppress_reason_cstr( fd_bam_leader_state_suppress_reason_t reason ) {
+  switch( reason ) {
+  case FD_BAM_LEADER_STATE_SUPPRESS_NOT_LEADER:       return "not_leader";
+  case FD_BAM_LEADER_STATE_SUPPRESS_EXPIRED:          return "expired";
+  case FD_BAM_LEADER_STATE_SUPPRESS_SLOT_REGRESSION:  return "slot_regression";
+  case FD_BAM_LEADER_STATE_SUPPRESS_SCHEDULER_REJECTED: return "scheduler_rejected";
+  default:                                            return "unknown";
+  }
+}
+
+static inline int
+fd_bam_leader_state_suppress_reason( fd_bam_tile_t const *                  ctx,
+                                     fd_bam_leader_state_t const *          state,
+                                     long                                   now_ns,
+                                     int                                    check_slot_regression,
+                                     fd_bam_leader_state_suppress_reason_t * reason ) {
+  if( FD_UNLIKELY( state->slot==ULONG_MAX ) ) {
+    *reason = FD_BAM_LEADER_STATE_SUPPRESS_NOT_LEADER;
+    return 1;
+  }
+
+  if( FD_UNLIKELY( check_slot_regression &&
+                   ctx->bam_leader_state.slot!=ULONG_MAX &&
+                   state->slot<ctx->bam_leader_state.slot ) ) {
+    *reason = FD_BAM_LEADER_STATE_SUPPRESS_SLOT_REGRESSION;
+    return 1;
+  }
+
+  if( FD_UNLIKELY( state->slot_end_ns && state->slot_end_ns<=now_ns ) ) {
+    *reason = FD_BAM_LEADER_STATE_SUPPRESS_EXPIRED;
+    return 1;
+  }
+
+  return 0;
+}
+
+static inline void
+fd_bam_note_leader_state_suppressed( fd_bam_tile_t *                       ctx,
+                                     fd_bam_leader_state_t const *         state,
+                                     fd_bam_leader_state_suppress_reason_t reason,
+                                     long                                  now_ns ) {
+  ctx->metrics.leader_state_suppressed_cnt[ fd_bam_leader_state_suppress_reason_idx( reason ) ]++;
+
+  FD_LOG_WARNING(( "dropping BAM leader state slot=%lu tick=%u slot_end_ns=%ld now_ns=%ld reason=%s current_slot=%lu current_slot_end_ns=%ld pending=%u current_slot_has_bam_work=%u",
+                   state->slot,
+                   (uint)state->tick,
+                   state->slot_end_ns,
+                   now_ns,
+                   fd_bam_leader_state_suppress_reason_cstr( reason ),
+                   ctx->bam_leader_state.slot,
+                   ctx->bam_leader_state.slot_end_ns,
+                   (uint)ctx->bam_leader_pending,
+                   (uint)state->current_slot_has_bam_work ));
 }
 
 FD_FN_PURE static inline _Bool

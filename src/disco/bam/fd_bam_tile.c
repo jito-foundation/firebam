@@ -67,9 +67,9 @@ fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
                   entry->first_rx_ts_ns,
                   first_rx_minus_slot_end_ns,
                   (uint)entry->first_rx_after_slot_end,
-                  entry->txn_before_slot_end,
-                  entry->txn_after_slot_end,
-                  entry->txn_unknown_slot_end,
+                  (ulong)entry->txn_before_slot_end,
+                  (ulong)entry->txn_after_slot_end,
+                  (ulong)entry->txn_unknown_slot_end,
                   current_leader_slot ));
   entry->summary_emitted = 1U;
 }
@@ -89,7 +89,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   fd_grpc_client_metrics_t const * grpc_metrics = ctx->grpc_metrics;
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   long now_ns = fd_log_wallclock();
-  ulong current_slot_first_ingress_state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_CNT ] = {0};
+  uchar current_slot_first_ingress_state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_CNT ] = {0};
   long  current_slot_first_ingress_minus_slot_end_ns = LONG_MIN;
   ulong current_slot_first_ingress_state_idx = FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_NO_INGRESS_IDX;
   ulong leader_slot = ctx->bam_leader_state.slot;
@@ -107,7 +107,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
       current_slot_first_ingress_minus_slot_end_ns = delta;
     }
   }
-  current_slot_first_ingress_state[ current_slot_first_ingress_state_idx ] = 1UL;
+  current_slot_first_ingress_state[ current_slot_first_ingress_state_idx ] = 1U;
   FD_MCNT_SET( BAM, TRANSACTION_PUBLISHED,   ctx->metrics.transaction_published_cnt          );
   FD_MCNT_SET( BAM, ATOMIC_BATCH_PUBLISHED,  ctx->metrics.atomic_batch_published_cnt );
   FD_MCNT_SET( BAM, FEEDBACK_RESULTS_DROPPED, ctx->metrics.feedback_results_dropped_cnt   );
@@ -135,6 +135,7 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_ENUM_COPY( BAM, OUTBOUND_ENQUEUE_OUTCOME,  ctx->metrics.outbound_enqueue_outcome_cnt );
   FD_MCNT_ENUM_COPY( BAM, STREAM_TRANSITION,      ctx->metrics.stream_transition_cnt     );
   FD_MCNT_ENUM_COPY( BAM, LEADER_PENDING_DROPPED, ctx->metrics.leader_pending_dropped_cnt );
+  FD_MCNT_ENUM_COPY( BAM, LEADER_STATE_SUPPRESSED, ctx->metrics.leader_state_suppressed_cnt );
   FD_MCNT_SET( BAM, LEADER_PENDING_REPLACED,      ctx->metrics.leader_pending_replaced_cnt );
   FD_MCNT_ENUM_COPY( BAM, SLOT_INGRESS_RESULT,       ctx->metrics.slot_ingress_result_cnt );
   FD_MCNT_ENUM_COPY( BAM, SLOT_INGRESS_TRANSACTIONS, ctx->metrics.slot_ingress_transactions_cnt );

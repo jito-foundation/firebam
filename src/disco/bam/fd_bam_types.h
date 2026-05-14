@@ -56,12 +56,14 @@ typedef struct {
 } fd_bam_bundle_result_t;
 
 typedef struct {
-  ulong slot;
-  uint  tick;
-  uint  slot_cu_budget_remaining;
-  long  slot_end_ns;
-  uint  current_slot_has_bam_work; /* Latched once BAM work for the live leader slot arrives before slot end. */
+  ulong  slot;
+  long   slot_end_ns;
+  uint   slot_cu_budget_remaining;
+  ushort tick;
+  uchar  current_slot_has_bam_work; /* Latched once BAM work for the live leader slot arrives before slot end. */
 } fd_bam_leader_state_t;
+
+FD_STATIC_ASSERT( sizeof(fd_bam_leader_state_t)==24UL, fd_bam_leader_state_t );
 
 FD_FN_PURE static inline _Bool
 fd_bam_leader_state_eq( fd_bam_leader_state_t const * a,

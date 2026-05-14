@@ -348,7 +348,7 @@ bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
 
   ctx->bam_leader_state = (fd_bam_leader_state_t){
     .slot                    = (ulong)( size>2 ? data[2] : 0U ),
-    .tick                    = (uint)( size>3 ? data[3] : 0U ),
+    .tick                    = (ushort)( size>3 ? data[3] : 0U ),
     .slot_cu_budget_remaining = (uint)( size>4 ? data[4] : 0U ),
   };
   ctx->bam_leader_pending = 1U;

@@ -820,10 +820,10 @@ pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
                            (uint)became_leader->ticks_per_slot )
             : 0U;
 
-  fd_bam_leader_state_t state = { .slot = ctx->leader_slot, .tick = tick,
+  fd_bam_leader_state_t state = { .slot = ctx->leader_slot, .tick = (ushort)fd_uint_min( tick, (uint)USHORT_MAX ),
     .slot_cu_budget_remaining = (uint)fd_ulong_sat_sub( ctx->limits.slot_max_cost, fd_pack_current_block_cost( ctx->pack ) ),
     .slot_end_ns = ctx->slot_end_ns,
-    .current_slot_has_bam_work = ctx->bam_current_slot_has_bam_work
+    .current_slot_has_bam_work = (uchar)ctx->bam_current_slot_has_bam_work
   };
 
   if( FD_LIKELY( fd_bam_leader_state_eq( &state, &ctx->last_bam_leader_state ) ) ) return;
