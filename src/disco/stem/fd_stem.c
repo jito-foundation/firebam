@@ -228,7 +228,7 @@ STEM_(scratch_footprint)( ulong in_cnt,
   l = FD_LAYOUT_APPEND( l, alignof(ulong),             out_cnt*sizeof(ulong)                ); /* cr_avail */
   l = FD_LAYOUT_APPEND( l, alignof(ulong),             out_cnt*sizeof(ulong)                ); /* out_depth */
   l = FD_LAYOUT_APPEND( l, alignof(ulong),             out_cnt*sizeof(ulong)                ); /* out_seq */
-  l = FD_LAYOUT_APPEND( l, alignof(int),               out_cnt*sizeof(int)                  ); /* out_reliable */
+  l = FD_LAYOUT_APPEND( l, alignof(_Bool),             out_cnt*sizeof(_Bool)                ); /* out_reliable */
   l = FD_LAYOUT_APPEND( l, alignof(ulong const *),     cons_cnt*sizeof(ulong const *)       ); /* cons_fseq */
   l = FD_LAYOUT_APPEND( l, alignof(ulong *),           cons_cnt*sizeof(ulong *)             ); /* cons_slow */
   l = FD_LAYOUT_APPEND( l, alignof(ulong),             cons_cnt*sizeof(ulong)               ); /* cons_out */
@@ -262,7 +262,7 @@ STEM_(run1)( ulong                        in_cnt,
   /* out frag stream state */
   ulong *        out_depth; /* ==fd_mcache_depth( out_mcache[out_idx] ) for out_idx in [0, out_cnt) */
   ulong *        out_seq;  /* next mux frag sequence number to publish for out_idx in [0, out_cnt) ]*/
-  int *          out_reliable; /* out_reliable[out_idx] is 1 if out_idx has at least one reliable consumer, else 0 */
+  _Bool *        out_reliable; /* out_reliable[out_idx] is true if out_idx has at least one reliable consumer */
 
   /* out flow control state */
   ulong *        cr_avail;     /* number of flow control credits available to publish downstream across all outs */
@@ -331,7 +331,7 @@ STEM_(run1)( ulong                        in_cnt,
 
   out_depth  = (ulong *)FD_SCRATCH_ALLOC_APPEND( l, alignof(ulong), out_cnt*sizeof(ulong) );
   out_seq    = (ulong *)FD_SCRATCH_ALLOC_APPEND( l, alignof(ulong), out_cnt*sizeof(ulong) );
-  out_reliable = (int *)FD_SCRATCH_ALLOC_APPEND( l, alignof(int),   out_cnt*sizeof(int)   );
+  out_reliable = (_Bool *)FD_SCRATCH_ALLOC_APPEND( l, alignof(_Bool), out_cnt*sizeof(_Bool) );
 
   ulong cr_max = fd_ulong_if( !out_cnt || !cons_cnt, 128UL, ULONG_MAX );
 
