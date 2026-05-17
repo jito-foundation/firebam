@@ -173,7 +173,7 @@ before_frag( fd_bank_ctx_t * ctx,
 }
 
 extern int    fd_ext_bank_execute_and_commit_bundle( void const * bank, void * txns, ulong txn_cnt, int * out_transaction_err, uint * actual_execution_cus, uint * actual_acct_data_cus, ulong * out_timestamps, ulong * out_tips, int * remove_simple_vote_from_cost_model, ulong * out_feepayer_balance_lamports, uint * out_loaded_accounts_data_size );
-extern void * fd_ext_bank_load_and_execute_txns( void const * bank, void * txns, ulong txn_cnt, int * out_processing_results, int * out_transaction_err, uint * out_consumed_exec_cus, uint * out_consumed_acct_data_cus, ulong * out_timestamps, ulong * out_tips, int * remove_simple_vote_from_cost_model, ulong * out_feepayer_balance_lamports, uint * out_loaded_accounts_data_size );
+extern void * fd_ext_bank_load_and_execute_txns( void const * bank, void * txns, ulong txn_cnt, int drop_on_failure, int all_or_nothing, int * out_processing_results, int * out_transaction_err, uint * out_consumed_exec_cus, uint * out_consumed_acct_data_cus, ulong * out_timestamps, ulong * out_tips, int * remove_simple_vote_from_cost_model, ulong * out_feepayer_balance_lamports, uint * out_loaded_accounts_data_size );
 extern void   fd_ext_bank_commit_txns( void const * bank, void const * txns, ulong txn_cnt , void * load_and_execute_output );
 extern void   fd_ext_bank_release_thunks( void * load_and_execute_output );
 
@@ -288,6 +288,8 @@ handle_microblock( fd_bank_ctx_t *     ctx,
   void * load_and_execute_output = fd_ext_bank_load_and_execute_txns( ctx->_bank,
                                                                       ctx->txn_abi_mem,
                                                                       sanitized_txn_cnt,
+                                                                      0,
+                                                                      0,
                                                                       processing_results,
                                                                       transaction_err,
                                                                       consumed_exec_cus,
@@ -696,8 +698,19 @@ after_frag( fd_bank_ctx_t *     ctx,
     ctx->rebates_for_slot = slot;
   }
 
-  if( FD_UNLIKELY( ctx->_is_bundle ) ) handle_bundle( ctx, seq, sig, sz, tspub, stem );
-  else                                 handle_microblock( ctx, seq, sig, sz, tspub, stem );
+  if( FD_UNLIKELY( ctx->_is_bundle ) ) {
+    ulong txn_cnt = (sz-sizeof(fd_microblock_execle_trailer_t))/sizeof(fd_txn_e_t);
+    fd_txn_p_t const * txns = (fd_txn_p_t const *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
+    if( FD_UNLIKELY( txn_cnt &&
+                     txns[0].source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                     !txns[0].bam.revert_on_error ) ) {
+      handle_microblock( ctx, seq, sig, sz, tspub, stem );
+    } else {
+      handle_bundle( ctx, seq, sig, sz, tspub, stem );
+    }
+  } else {
+    handle_microblock( ctx, seq, sig, sz, tspub, stem );
+  }
 
   /* TODO: Use fancier logic to coalesce rebates e.g. and move this to
      after_credit */

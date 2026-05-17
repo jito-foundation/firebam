@@ -100,14 +100,8 @@ FD_IMPORT( wait_duration, "src/disco/pack/pack_delay.bin", ulong, 6, "" );
    fast enough to drain this buffer once we do become leader, we set
    this buffer size to be quite large. */
 
-struct fd_pack_ctx {
-  fd_txn_e_t txn;
-  ulong      bam_max_schedule_slot; /* Sidecar for extra-storage BAM txns; fd_txn_p_t does not carry this hint. */
-  ulong      bam_funnel_slot;       /* Slot bucket assigned when the BAM txn first reached pack ingress. */
-} fd_pack_extra_txn_t;
-
 #define DEQUE_NAME extra_txn_deq
-#define DEQUE_T    fd_pack_extra_txn_t
+#define DEQUE_T    fd_txn_e_t
 #define DEQUE_MAX  (128UL*1024UL)
 #include "../../../../util/tmpl/fd_deque.c"
 
@@ -122,15 +116,15 @@ static char const * const schedule_strategy_strings[2] = { "PRF", "BAL" };
 #define FD_PACK_BAM_RECENT_SLOT_CNT 32UL
 
 typedef enum {
-  PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE = 0, /* dropped when a newer seq arrives before current BAM bundle is complete */
-  PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_LEADER_SLOT_END,             /* dropped at normal leader-slot end */
-  PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT,                 /* dropped when PoH wallclock deadline ends the leader slot */
+  PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE = 0,
+  PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_LEADER_SLOT_END,
+  PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT,
 } pack_tile_bam_bundle_assembly_abandon_reason_t;
 
 typedef enum {
-  PACK_TILE_BAM_INVALID_NONE = 0,          /* Work remains valid under the local slot and blockhash view. */
-  PACK_TILE_BAM_INVALID_OUTSIDE_SLOT,      /* max_schedule_slot trails the slot required to execute this work. */
-  PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED, /* blockhash_slot fell outside the recent-blockhash lifetime. */
+  PACK_TILE_BAM_INVALID_NONE = 0,
+  PACK_TILE_BAM_INVALID_OUTSIDE_SLOT,
+  PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED,
 } pack_tile_bam_invalid_reason_t;
 
 typedef enum {
@@ -189,7 +183,7 @@ typedef struct {
   ulong scheduled_txns;
   ulong landed_items;
   ulong landed_txns;
-  uint  first_debug_seq_id; /* UINT_MAX means unset; otherwise the seq_id of the first BAM batch in this slot whose downstream drop logs should print under dump_bam_slot_first_txn. */
+  uint  first_debug_seq_id; /* UINT_MAX means unset */
 } pack_bam_recent_slot_t;
 
 typedef struct {
@@ -227,14 +221,12 @@ typedef struct {
   ulong       wmark;
   ulong       chunk;
 } pack_bam_out_ctx_t;
-/* pack_bam_out_ctx_t tracks publication state for one pack->bam link. */
 
 struct fd_pack_ctx {
   fd_pack_t *  pack;
   fd_txn_e_t * cur_spot;
   uchar        bundle_kind; /* PACK_TILE_BUNDLE_KIND_* (none/BE/BAM) */
   uchar        dump_bam_mode;
-  ulong        bam_txn_max_schedule_slot; /* Current single-txn BAM slot hint; carried here because fd_txn_p_t.bam has no max_schedule_slot. */
 
   uchar executed_txn_sig[ 64UL ];
   uchar txn_committed;
@@ -338,7 +330,7 @@ struct fd_pack_ctx {
   /* In addition to the available transactions that pack knows about, we
      also store a larger ring buffer for handling cases when pack is
      full.  This is an fd_deque. */
-  fd_pack_extra_txn_t * extra_txn_deq;
+  fd_txn_e_t * extra_txn_deq;
   int                  insert_to_extra; /* whether the last insert was into pack or the extra deq */
 #endif
 
@@ -427,109 +419,27 @@ struct fd_pack_ctx {
     fd_txn_e_t * const * bundle; /* points to _txn when non-NULL */
   } current_bundle[1];
 
-  /* State for assembling a BAM AtomicTxnBatch with revert_on_error==true.
-
-     BAM bundles arrive to pack as *individual* transactions (one frag per
-     transaction) with BAM metadata in fd_txn_m_t.bam:
-       - seq_id / batch_cnt / batch_idx identify the batch and position
-       - max_schedule_slot is a scheduler-provided slot hint
-
-     Pack must buffer until all indices [0,batch_cnt) have arrived, then
-     insert the batch as a pack "bundle" so the bank tile executes it
-     atomically (bundle semantics / revert-on-error behaviour).
-
-     Important notes / edge cases:
-       - seq_id==0 is valid, so |bundle!=NULL| is the only reliable
-         "this accumulator is active" sentinel.
-       - Transactions may arrive out of order (we index by batch_idx).
-       - If a new seq_id arrives before the current batch completes,
-         pack abandons the partial batch and reports missing indices as
-         SIGNATURE_FAILURE (upstream sigverify/resolv likely dropped them).
-       - max_schedule_slot is a concrete scheduler-provided slot limit.
-         Pack drops the bundle if it becomes leader *after*
-         max_schedule_slot. */
+  /* State for assembling BAM AtomicTxnBatch fragments. All BAM work is
+     inserted through fd_pack's bundle treap for FIFO ordering. */
   struct {
-    /* BAM AtomicTxnBatch.seq_id. Unique only within one leader rotation.
-       Used for correlating bundle results back to the scheduler. */
     uint  seq_id;
-
-    /* Expected number of transactions in this batch (batch_cnt).
-       Range: [1,FD_PACK_MAX_TXN_PER_BUNDLE]. Constant for the lifetime
-       of an active batch. */
     uchar txn_cnt;
-
-    /* Number of unique batch indices received so far. Incremented only
-       the first time each batch_idx is observed (see received[]).
-       When txn_received==txn_cnt, the bundle is complete and can be
-       inserted into fd_pack via fd_pack_insert_bundle_fini(). */
     uchar txn_received;
-
-    /* Minimum reference_blockhash slot across all transactions received
-       in this batch. This is derived from the incoming frag |sig| (the
-       blockhash slot computed upstream by resolv).
-
-       Used as the |expires_at| argument to fd_pack_insert_bundle_fini()
-       so the bundle expires as soon as the "earliest" blockhash in the
-       batch would expire. Initialised to ULONG_MAX when starting a new
-       batch. */
     ulong min_blockhash_slot;
-
-    /* BAM AtomicTxnBatch.max_schedule_slot. Pack enforces that the
-       bundle only schedules in slots <= this value. */
     ulong max_schedule_slot;
-
-    /* Slot bucket used for recent-slot BAM funnel accounting. This is
-       derived when the first transaction for the bundle reaches pack. */
     ulong slot;
-
-    /* Per-index receipt tracker (size is the max bundle size, but only
-       indices [0,txn_cnt) are meaningful). A value of 1 means we have
-       received and populated _txn[ i ] for that batch_idx. */
     uchar received[ FD_PACK_MAX_TXN_PER_BUNDLE ];
-
-    /* Backing storage for fd_pack_insert_bundle_init(). Indices correspond
-       to batch_idx (not arrival order). The array itself is inline and
-       never NULL; it is zeroed at init, then _init populates [0,txn_cnt)
-       while bundle!=NULL. After _fini/_cancel entries are stale and must
-       not be used (they are not cleared). */
     fd_txn_e_t * _txn[ FD_PACK_MAX_TXN_PER_BUNDLE ];
-
-    /* Pointer returned by fd_pack_insert_bundle_init(). When non-NULL,
-       points to _txn and indicates this accumulator currently owns txn_cnt
-       pool entries. Must be cancelled with fd_pack_insert_bundle_cancel()
-       on abandon or after insertion failures. */
-    fd_txn_e_t * const * bundle;
+    fd_txn_e_t * const * bundle; /* points to _txn when non-NULL */
   } current_bam_bundle[1];
 
-  /* Scratch bundle metadata passed into fd_pack_insert_bundle_fini().
-     Stored by fd_pack alongside the bundle head txn and later consumed
-     by the bundle crank logic.
-
-     pack fills this for:
-       - Block engine bundles (builder commission from txnm->block_engine)
-       - BAM bundles (builder info best-effort derived from bam_fee_cfg)
-
-     Defaults: overwritten before each bundle insertion; contents are only
-     meaningful for the immediate fd_pack_insert_bundle_fini() call that
-     consumes it. */
+  /* Scratch metadata for the next bundle insertion. */
   block_builder_info_t bundle_meta[1];
 
-  /* Optional shared-memory BAM fee configuration (populated by the BAM
-     tile via gRPC config). When present and has_prio_fee_recipient!=0,
-     pack uses it to populate bundle_meta for BAM bundles so the
-     bundle crank can direct priority-fee commission correctly.
-
-     Defaults / edge cases:
-       - NULL when BAM is disabled or the topology does not provide the
-         bam_fee_cfg object.
-       - Values may update asynchronously; reads are treated best-effort. */
+  /* Optional BAM fee config shared object. */
   fd_bam_fee_cfg_t const * bam_fee_cfg;
 
-  /* Last leader-state message published to pack_bam_ldr. Used to avoid spamming
-     identical updates.
-
-     Sentinel: slot==ULONG_MAX means "no cached publish yet", which is safe
-     because leader-state publishes only happen while leader_slot is live. */
+  /* Last leader-state message published to pack_bam_ldr. */
   fd_bam_leader_state_t last_bam_leader_state;
 
   struct {
@@ -555,15 +465,10 @@ struct fd_pack_ctx {
   ulong pending_rebate_sz;
   union{ fd_pack_rebate_t rebate[1]; uchar footprint[USHORT_MAX]; } rebate[1];
 
-  /* Single queued BAM result used when a partial bundle must be abandoned
-     from during_frag, where we cannot publish immediately.
-
-     Sentinel: bundle_txn_cnt==0 means "no queued result". This is safe
-     because only non-empty BAM batches are ever queued here. */
+  /* Queued result from during_frag; bundle_txn_cnt==0 means none. */
   fd_bam_bundle_result_t pending_bam_result[1];
 
-  /* BAM batches accepted into fd_pack but not yet handed off to bank.
-     Used to clean up buffered BAM work when slot or blockhash validity changes. */
+  /* BAM batches accepted into fd_pack but not yet handed off to bank. */
   pack_bam_work_t * bam_work;
   fd_bam_bundle_result_t * bam_result_queue;
   ulong             bam_result_queue_head;
@@ -1690,7 +1595,6 @@ before_credit( fd_pack_ctx_t *     ctx,
 
   if( FD_UNLIKELY( (ctx->cur_spot!=NULL) & (ctx->bundle_kind==PACK_TILE_BUNDLE_KIND_NONE) ) ) {
     *charge_busy = 1;
-    fd_txn_p_t const * txnp = ctx->cur_spot->txnp;
 
     /* If we were overrun while processing a frag from an in, then
        cur_spot is left dangling and not cleaned up, so clean it up here
@@ -1700,88 +1604,9 @@ before_credit( fd_pack_ctx_t *     ctx,
        see we never got the full bundle and cancel the whole last
        bundle, returning all the storage to the pool. */
 #if FD_PACK_USE_EXTRA_STORAGE
-    if( FD_LIKELY( !ctx->insert_to_extra ) ) {
-      if( FD_UNLIKELY( txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
-        pack_tile_log_bam_drop( ctx,
-                                   "overrun",
-                                   "overrun_cleanup",
-                                   0U,
-                                   0U,
-                                   0U,
-                                   0,
-                                   txnp->bam.seq_id,
-                                   1U,
-                                   "staging",
-                                   pack_tile_bam_funnel_slot( ctx, ctx->bam_txn_max_schedule_slot ),
-                                   ctx->bam_txn_max_schedule_slot,
-                                   ULONG_MAX,
-                                   txnp->scheduler_arrival_time_nanos,
-                                   1U,
-                                   (uint)txnp->bam.revert_on_error,
-                                   1U,
-                                   (uint)txnp->bam.batch_idx,
-                                   1UL,
-                                   1UL,
-                                   0U,
-                                   0U,
-                                   txnp->payload + 1UL );
-      }
-      fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
-    } else {
-      fd_pack_extra_txn_t const * extra = extra_txn_deq_peek_tail( ctx->extra_txn_deq );
-      if( FD_UNLIKELY( extra->txn.txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
-        pack_tile_log_bam_drop( ctx,
-                                   "overrun",
-                                   "overrun_cleanup",
-                                   0U,
-                                   0U,
-                                   0U,
-                                   0,
-                                   extra->txn.txnp->bam.seq_id,
-                                   1U,
-                                   "extra_buffer",
-                                   extra->bam_funnel_slot,
-                                   extra->bam_max_schedule_slot,
-                                   extra->txn.txnp->blockhash_slot,
-                                   extra->txn.txnp->scheduler_arrival_time_nanos,
-                                   1U,
-                                   (uint)extra->txn.txnp->bam.revert_on_error,
-                                   1U,
-                                   (uint)extra->txn.txnp->bam.batch_idx,
-                                   1UL,
-                                   1UL,
-                                   0U,
-                                   0U,
-                                   extra->txn.txnp->payload + 1UL );
-      }
-      extra_txn_deq_remove_tail( ctx->extra_txn_deq );
-    }
+    if( FD_LIKELY( !ctx->insert_to_extra ) ) fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
+    else                                     extra_txn_deq_remove_tail( ctx->extra_txn_deq );
 #else
-    if( FD_UNLIKELY( txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
-      pack_tile_log_bam_drop( ctx,
-                                 "overrun",
-                                 "overrun_cleanup",
-                                 0U,
-                                 0U,
-                                 0U,
-                                 0,
-                                 txnp->bam.seq_id,
-                                 1U,
-                                 "staging",
-                                 pack_tile_bam_funnel_slot( ctx, ctx->bam_txn_max_schedule_slot ),
-                                 ctx->bam_txn_max_schedule_slot,
-                                 ULONG_MAX,
-                                 txnp->scheduler_arrival_time_nanos,
-                                 1U,
-                                 (uint)txnp->bam.revert_on_error,
-                                 1U,
-                                 (uint)txnp->bam.batch_idx,
-                                 1UL,
-                                 1UL,
-                                 0U,
-                                 0U,
-                                 txnp->payload + 1UL );
-    }
     fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
 #endif
     ctx->cur_spot = NULL;
@@ -1797,60 +1622,13 @@ before_credit( fd_pack_ctx_t *     ctx,
 static inline int
 insert_from_extra( fd_pack_ctx_t *     ctx,
                    fd_stem_context_t * stem ) {
+  (void)stem;
+
   fd_txn_e_t             * spot          = fd_pack_insert_txn_init( ctx->pack );
-  fd_pack_extra_txn_t const * insert     = extra_txn_deq_peek_head( ctx->extra_txn_deq );
-  fd_txn_e_t       const * insert_txne   = &insert->txn;
+  fd_txn_e_t       const * insert_txne   = extra_txn_deq_peek_head( ctx->extra_txn_deq );
   fd_txn_t         const * insert_txn    = TXN(insert_txne->txnp);
   fd_txn_p_t       const * insert_txnp   = insert_txne->txnp;
-  _Bool                    is_bam        = insert_txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
-  uint                     bam_seq_id    = insert_txnp->bam.seq_id;
-  ulong                    bam_slot      = insert->bam_max_schedule_slot;
-  ulong                    bam_funnel_slot = insert->bam_funnel_slot;
   ulong                    blockhash_slot = insert_txnp->blockhash_slot;
-  fd_ed25519_sig_t         bam_sig[1]    = {0};
-
-  if( FD_UNLIKELY( is_bam ) ) {
-    pack_tile_bam_invalid_reason_t invalid_reason =
-        pack_tile_bam_invalid_reason( pack_tile_bam_best_known_slot( ctx ), bam_slot, blockhash_slot );
-    if( FD_UNLIKELY( invalid_reason!=PACK_TILE_BAM_INVALID_NONE ) ) {
-      fd_pack_insert_txn_cancel( ctx->pack, spot );
-      extra_txn_deq_remove_head( ctx->extra_txn_deq );
-      pack_tile_log_bam_drop( ctx,
-                                 "pre_pending_validation",
-                                 invalid_reason==PACK_TILE_BAM_INVALID_OUTSIDE_SLOT
-                                     ? "rejected_pre_pending_outside_slot"
-                                     : "rejected_pre_pending_blockhash_expired",
-                                 1U,
-                                 (uint)invalid_reason,
-                                 0U,
-                                 0,
-                                 bam_seq_id,
-                                 1U,
-                                 "extra_buffer",
-                                 bam_funnel_slot,
-                                 bam_slot,
-                                 blockhash_slot,
-                                 insert_txnp->scheduler_arrival_time_nanos,
-                                 1U,
-                                 (uint)insert_txnp->bam.revert_on_error,
-                                 1U,
-                                 (uint)insert_txnp->bam.batch_idx,
-                                 1UL,
-                                 1UL,
-                                 0U,
-                                 0U,
-                                 insert_txnp->payload + 1UL );
-      pack_tile_record_bam_invalid_reason_count( ctx->bam_work_rejected_pre_pending_cnt, invalid_reason, 1U );
-      pack_tile_note_bam_first_outcome( ctx,
-                                        FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_REJECTED_PRE_PENDING_IDX,
-                                        insert_txnp->scheduler_arrival_time_nanos,
-                                        pack_tile_now_ns( ctx ) );
-      pack_tile_note_bam_rejected_pre_pending( ctx, bam_funnel_slot, 1UL, 1UL );
-      pack_tile_publish_bam_invalid_result( ctx, stem, bam_seq_id, bam_slot, 1U, invalid_reason );
-      return -1;
-    }
-    fd_memcpy( bam_sig, insert_txnp->payload + 1UL, sizeof(fd_ed25519_sig_t) );
-  }
 
   fd_memcpy( spot->txnp->payload, insert_txnp->payload, insert_txnp->payload_sz                                                     );
   fd_memcpy( TXN(spot->txnp),     insert_txn,          fd_txn_footprint( insert_txn->instr_cnt, insert_txn->addr_table_lookup_cnt ) );
@@ -1871,65 +1649,6 @@ insert_from_extra( fd_pack_ctx_t *     ctx,
   FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
   ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ]++;
   fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
-  if( FD_LIKELY( !is_bam ) ) {
-    FD_MCNT_INC( PACK, TRANSACTION_INSERTED_FROM_EXTRA, 1UL );
-    return result;
-  }
-
-  if( FD_UNLIKELY( result<0 ) ) {
-    pack_tile_log_bam_drop( ctx,
-                               "insert",
-                               pack_tile_bam_pack_insert_reason_cstr( result ),
-                               0U,
-                               0U,
-                               1U,
-                               result,
-                               bam_seq_id,
-                               1U,
-                               "extra_buffer",
-                               bam_funnel_slot,
-                               bam_slot,
-                               blockhash_slot,
-                               insert_txnp->scheduler_arrival_time_nanos,
-                               1U,
-                               (uint)insert_txnp->bam.revert_on_error,
-                               1U,
-                               (uint)insert_txnp->bam.batch_idx,
-                               1UL,
-                               1UL,
-                               0U,
-                               0U,
-                               insert_txnp->payload + 1UL );
-    pack_tile_note_bam_first_outcome( ctx,
-                                      FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_REJECTED_PRE_PENDING_IDX,
-                                      insert_txnp->scheduler_arrival_time_nanos,
-                                      pack_tile_now_ns( ctx ) );
-    pack_tile_note_bam_rejected_pre_pending( ctx, bam_funnel_slot, 1UL, 1UL );
-    fd_bam_bundle_result_t res = {
-      .seq_id           = bam_seq_id,
-      .slot             = bam_slot,
-      .bundle_txn_cnt   = 1U,
-      .scheduling_error = FD_BAM_SCHED_ERR_NONE,
-    };
-    res.transaction_err[ 0 ] = pack_tile_bam_txn_err_from_pack_insert( result );
-    res.transaction_err_count = 1U;
-    res.sanitize_success[ 0 ] = 1U;
-    pack_tile_publish_or_enqueue_bam_result( ctx, stem, &res );
-  } else {
-    if( FD_UNLIKELY( !pack_tile_track_bam_work( ctx,
-                                                bam_sig[ 0 ],
-                                                insert_txnp->scheduler_arrival_time_nanos,
-                                                bam_seq_id,
-                                                bam_funnel_slot,
-                                                bam_slot,
-                                                blockhash_slot,
-                                                1U ) ) ) {
-      pack_tile_publish_bam_tracking_reject( ctx, stem, bam_sig[ 0 ], insert_txnp->scheduler_arrival_time_nanos, bam_seq_id, bam_funnel_slot, bam_slot, blockhash_slot, 1U, (uint)insert_txnp->bam.revert_on_error, 1U );
-    } else {
-      pack_tile_note_bam_accepted( ctx, bam_funnel_slot, 1UL, 1UL );
-      pack_tile_note_first_bam_insert( ctx, stem, pack_tile_now_ns( ctx ), pack_tile_bam_fresh_slot_for_hint( ctx, bam_slot ) );
-    }
-  }
   FD_MCNT_INC( PACK, TRANSACTION_INSERTED_FROM_EXTRA, 1UL );
   return result;
 }
@@ -2367,9 +2086,10 @@ during_frag( fd_pack_ctx_t * ctx,
       FD_MCNT_INC( PACK, TRANSACTION_EXPIRED, exp_cnt );
     }
 
-    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.revert_on_error ) ) {
+    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
       FD_TEST( txnm->bam.txn_cnt>0UL && txnm->bam.txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
       FD_TEST( txnm->bam.batch_idx<txnm->bam.txn_cnt );
+      FD_TEST( txnm->bam.revert_on_error || txnm->bam.txn_cnt==1UL );
 
       ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_BAM;
 
@@ -2428,36 +2148,10 @@ during_frag( fd_pack_ctx_t * ctx,
         ctx->insert_to_extra = 0;
       } else {
         if( FD_UNLIKELY( extra_txn_deq_full( ctx->extra_txn_deq ) ) ) {
-          fd_pack_extra_txn_t const * evicted = extra_txn_deq_peek_head( ctx->extra_txn_deq );
-          if( FD_UNLIKELY( evicted->txn.txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
-            pack_tile_log_bam_drop( ctx,
-                                       "extra_queue",
-                                       "extra_queue_head_evicted",
-                                       0U,
-                                       0U,
-                                       0U,
-                                       0,
-                                       evicted->txn.txnp->bam.seq_id,
-                                       1U,
-                                       "extra_buffer",
-                                       evicted->bam_funnel_slot,
-                                       evicted->bam_max_schedule_slot,
-                                       evicted->txn.txnp->blockhash_slot,
-                                       evicted->txn.txnp->scheduler_arrival_time_nanos,
-                                       1U,
-                                       (uint)evicted->txn.txnp->bam.revert_on_error,
-                                       1U,
-                                       (uint)evicted->txn.txnp->bam.batch_idx,
-                                       1UL,
-                                       1UL,
-                                       0U,
-                                       0U,
-                                       evicted->txn.txnp->payload + 1UL );
-          }
           extra_txn_deq_remove_head( ctx->extra_txn_deq );
           FD_MCNT_INC( PACK, TRANSACTION_DROPPED_FROM_EXTRA, 1UL );
         }
-        ctx->cur_spot = &extra_txn_deq_peek_tail( extra_txn_deq_insert_tail( ctx->extra_txn_deq ) )->txn;
+        ctx->cur_spot = extra_txn_deq_peek_tail( extra_txn_deq_insert_tail( ctx->extra_txn_deq ) );
         ctx->insert_to_extra                = 1;
         FD_MCNT_INC( PACK, TRANSACTION_INSERTED_TO_EXTRA, 1UL );
       }
@@ -2481,7 +2175,6 @@ during_frag( fd_pack_ctx_t * ctx,
       ctx->cur_spot->txnp->bam.seq_id          = txnm->bam.seq_id;
       ctx->cur_spot->txnp->bam.batch_idx       = txnm->bam.batch_idx;
       ctx->cur_spot->txnp->bam.revert_on_error = txnm->bam.revert_on_error;
-      ctx->bam_txn_max_schedule_slot           = txnm->bam.max_schedule_slot;
     } else {
       ctx->cur_spot->txnp->bam.seq_id          = 0U;
       ctx->cur_spot->txnp->bam.batch_idx       = 0U;
@@ -2489,25 +2182,9 @@ during_frag( fd_pack_ctx_t * ctx,
     }
 #if FD_PACK_USE_EXTRA_STORAGE
     if( FD_UNLIKELY( ctx->insert_to_extra ) ) {
-      /* Extra-storage txns bypass fd_pack until they are replayed later, so
-         persist the metadata needed to revalidate BAM work on reinsertion. */
-      fd_pack_extra_txn_t * extra = extra_txn_deq_peek_tail( ctx->extra_txn_deq );
       ctx->cur_spot->txnp->blockhash_slot = sig;
-      extra->bam_max_schedule_slot = 0UL;
-      extra->bam_funnel_slot       = ULONG_MAX;
-      if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
-        extra->bam_max_schedule_slot = txnm->bam.max_schedule_slot;
-        extra->bam_funnel_slot       = pack_tile_bam_funnel_slot( ctx, txnm->bam.max_schedule_slot );
-      }
     }
 #endif
-    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
-      ulong bam_recent_seq_slot = txnm->bam.revert_on_error
-                                  ? ctx->current_bam_bundle->slot
-                                  : pack_tile_bam_funnel_slot( ctx, txnm->bam.max_schedule_slot );
-      if( FD_UNLIKELY( !txnm->bam.revert_on_error ) ) pack_tile_note_bam_received( ctx, bam_recent_seq_slot, txnm->bam.seq_id, 1UL, 1UL );
-    }
-
     break;
   }
   case IN_KIND_EXECUTED_TXN: {
@@ -2687,6 +2364,7 @@ after_frag( fd_pack_ctx_t *     ctx,
 
       ulong max_schedule_slot = ctx->current_bam_bundle->max_schedule_slot;
       long first_rx_ts_ns = pack_tile_current_bam_bundle_first_rx_ts_ns( ctx );
+      uint revert_on_error = (uint)ctx->current_bam_bundle->bundle[ 0 ]->txnp->bam.revert_on_error;
       pack_tile_bam_invalid_reason_t invalid_reason =
           pack_tile_bam_invalid_reason( pack_tile_bam_best_known_slot( ctx ),
                                         max_schedule_slot,
@@ -2710,7 +2388,7 @@ after_frag( fd_pack_ctx_t *     ctx,
                                    ctx->current_bam_bundle->min_blockhash_slot,
                                    first_rx_ts_ns,
                                    1U,
-                                   1U,
+                                   revert_on_error,
                                    0U,
                                    0U,
                                    ctx->current_bam_bundle->txn_cnt,
@@ -2783,7 +2461,7 @@ after_frag( fd_pack_ctx_t *     ctx,
                                    ctx->current_bam_bundle->min_blockhash_slot,
                                    first_rx_ts_ns,
                                    1U,
-                                   1U,
+                                   revert_on_error,
                                    0U,
                                    0U,
                                    ctx->current_bam_bundle->txn_cnt,
@@ -2821,7 +2499,7 @@ after_frag( fd_pack_ctx_t *     ctx,
                                                max_schedule_slot,
                                                ctx->current_bam_bundle->min_blockhash_slot,
                                                1U,
-                                               1U,
+                                               revert_on_error,
                                                ctx->current_bam_bundle->txn_cnt );
         break;
       }
@@ -2834,63 +2512,6 @@ after_frag( fd_pack_ctx_t *     ctx,
     }
     case PACK_TILE_BUNDLE_KIND_NONE:
     default: {
-      fd_txn_p_t const * txnp = ctx->cur_spot->txnp;
-      _Bool is_bam            = txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
-      uint  bam_seq_id        = txnp->bam.seq_id;
-      ulong bam_slot          = 0UL;
-      ulong bam_funnel_slot   = ULONG_MAX;
-      pack_tile_bam_invalid_reason_t invalid_reason = PACK_TILE_BAM_INVALID_NONE;
-      fd_ed25519_sig_t bam_sig[1] = {0};
-      if( FD_UNLIKELY( is_bam ) ) {
-        bam_slot = ctx->bam_txn_max_schedule_slot;
-        bam_funnel_slot = pack_tile_bam_funnel_slot( ctx, bam_slot );
-        fd_memcpy( bam_sig, txnp->payload + 1UL, sizeof(fd_ed25519_sig_t) );
-        invalid_reason = pack_tile_bam_invalid_reason( pack_tile_bam_best_known_slot( ctx ), bam_slot, sig );
-      }
-
-      if( FD_UNLIKELY( invalid_reason!=PACK_TILE_BAM_INVALID_NONE ) ) {
-#if FD_PACK_USE_EXTRA_STORAGE
-        if( FD_UNLIKELY( ctx->insert_to_extra ) ) extra_txn_deq_remove_tail( ctx->extra_txn_deq );
-        else                                       fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
-#else
-        fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
-#endif
-        pack_tile_log_bam_drop( ctx,
-                                   "pre_pending_validation",
-                                   invalid_reason==PACK_TILE_BAM_INVALID_OUTSIDE_SLOT
-                                       ? "rejected_pre_pending_outside_slot"
-                                       : "rejected_pre_pending_blockhash_expired",
-                                   1U,
-                                   (uint)invalid_reason,
-                                   0U,
-                                   0,
-                                   bam_seq_id,
-                                   1U,
-                                   "staging",
-                                   bam_funnel_slot,
-                                   bam_slot,
-                                   sig,
-                                   txnp->scheduler_arrival_time_nanos,
-                                   1U,
-                                   (uint)txnp->bam.revert_on_error,
-                                   1U,
-                                   (uint)txnp->bam.batch_idx,
-                                   1UL,
-                                   1UL,
-                                   0U,
-                                   0U,
-                                   txnp->payload + 1UL );
-        pack_tile_record_bam_invalid_reason_count( ctx->bam_work_rejected_pre_pending_cnt, invalid_reason, 1U );
-        pack_tile_note_bam_first_outcome( ctx,
-                                          FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_REJECTED_PRE_PENDING_IDX,
-                                          txnp->scheduler_arrival_time_nanos,
-                                          pack_tile_now_ns( ctx ) );
-        pack_tile_note_bam_rejected_pre_pending( ctx, bam_funnel_slot, 1UL, 1UL );
-        pack_tile_publish_bam_invalid_result( ctx, stem, bam_seq_id, bam_slot, 1U, invalid_reason );
-        ctx->cur_spot = NULL;
-        break;
-      }
-
 #if FD_PACK_USE_EXTRA_STORAGE
       if( FD_UNLIKELY( ctx->insert_to_extra ) ) break;
 #endif
@@ -2903,56 +2524,6 @@ after_frag( fd_pack_ctx_t *     ctx,
       fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
       if( FD_LIKELY( result>=0 ) ) {
         ctx->last_successful_insert = now;
-        if( FD_LIKELY( !is_bam ) ) break;
-        if( FD_UNLIKELY( !pack_tile_track_bam_work( ctx,
-                                                    bam_sig[ 0 ],
-                                                    txnp->scheduler_arrival_time_nanos,
-                                                    bam_seq_id,
-                                                    bam_funnel_slot,
-                                                    bam_slot,
-                                                    sig,
-                                                    1U ) ) ) {
-          pack_tile_publish_bam_tracking_reject( ctx, stem, bam_sig[ 0 ], txnp->scheduler_arrival_time_nanos, bam_seq_id, bam_funnel_slot, bam_slot, sig, 1U, (uint)txnp->bam.revert_on_error, 1U );
-        } else {
-          pack_tile_note_bam_accepted( ctx, bam_funnel_slot, 1UL, 1UL );
-          pack_tile_note_first_bam_insert( ctx,
-                                           stem,
-                                           pack_tile_now_ns( ctx ),
-                                           pack_tile_bam_fresh_slot_for_hint( ctx, bam_slot ) );
-        }
-        break;
-      }
-
-      if( FD_UNLIKELY( is_bam ) ) {
-        pack_tile_log_bam_drop( ctx,
-                                   "insert",
-                                   pack_tile_bam_pack_insert_reason_cstr( result ),
-                                   0U,
-                                   0U,
-                                   1U,
-                                   result,
-                                   bam_seq_id,
-                                   1U,
-                                   "staging",
-                                   bam_funnel_slot,
-                                   bam_slot,
-                                   sig,
-                                   txnp->scheduler_arrival_time_nanos,
-                                   1U,
-                                   (uint)txnp->bam.revert_on_error,
-                                   1U,
-                                   (uint)txnp->bam.batch_idx,
-                                   1UL,
-                                   1UL,
-                                   0U,
-                                   0U,
-                                   txnp->payload + 1UL );
-        pack_tile_note_bam_first_outcome( ctx,
-                                          FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_REJECTED_PRE_PENDING_IDX,
-                                          txnp->scheduler_arrival_time_nanos,
-                                          pack_tile_now_ns( ctx ) );
-        pack_tile_note_bam_rejected_pre_pending( ctx, bam_funnel_slot, 1UL, 1UL );
-        pack_tile_publish_bam_insert_reject( ctx, stem, bam_seq_id, bam_slot, 1U, result );
       }
       break;
     }
@@ -3155,7 +2726,6 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->cur_spot                      = NULL;
   ctx->bundle_kind                   = PACK_TILE_BUNDLE_KIND_NONE;
   ctx->dump_bam_mode                 = tile->pack.dump_bam_mode;
-  ctx->bam_txn_max_schedule_slot     = 0UL;
   ctx->bam_work_cnt                  = 0UL;
   ctx->bam_result_queue_head         = 0UL;
   ctx->bam_pending_work_cnt          = 0UL;
