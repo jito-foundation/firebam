@@ -191,8 +191,29 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
     ? FD_BAM_TPU_UPDATE_STATE_PENDING_BAM
     : FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT;
 
+  _Bool have_default_tpu = !!( ctx->default_tpu.addr     &&
+                               ctx->default_tpu.port     &&
+                               ctx->default_tpu_fwd.addr &&
+                               ctx->default_tpu_fwd.port );
+  if( FD_UNLIKELY( !have_default_tpu &&
+                   ctx->configured_default_tpu.addr &&
+                   ctx->configured_default_tpu.port &&
+                   ( ctx->configured_default_tpu.l!=ctx->bam_tpu.l ||
+                     ctx->configured_default_tpu.l!=ctx->bam_tpu_fwd.l ) ) ) {
+    ctx->default_tpu     = ctx->configured_default_tpu;
+    ctx->default_tpu_fwd = ctx->configured_default_tpu;
+    have_default_tpu     = true;
+    FD_LOG_NOTICE(( "Using configured default TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
+                    FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu.addr ),
+                    fd_ushort_bswap( ctx->default_tpu.port ),
+                    FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu_fwd.addr ),
+                    fd_ushort_bswap( ctx->default_tpu_fwd.port ) ));
+  }
+
   if( FD_LIKELY( ctx->tpu_update_state == desired_applied ) ) goto publish;
   if( FD_UNLIKELY( !ctx->admin_rpc_path[0] ) ) {
+    if( FD_UNLIKELY( !use_bam && !have_default_tpu ) )
+      FD_LOG_WARNING(( "No default TPU configured for BAM gossip revert" ));
     ctx->tpu_update_state = desired_applied;
     goto publish;
   }
@@ -278,27 +299,10 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
     goto publish;
   }
 
-  _Bool have_default_tpu = !!( ctx->default_tpu.addr     &&
-                               ctx->default_tpu.port     &&
-                               ctx->default_tpu_fwd.addr &&
-                               ctx->default_tpu_fwd.port );
-
   /* Cache the non-BAM TPU to restore it if BAM is disabled/disconnects.
      This can't be done in init() since agave takes a long time to start. */
   if( FD_UNLIKELY( !have_default_tpu ) ) {
-    if( FD_LIKELY( ctx->configured_default_tpu.addr &&
-                   ctx->configured_default_tpu.port &&
-                   ( ctx->configured_default_tpu.l!=ctx->bam_tpu.l ||
-                     ctx->configured_default_tpu.l!=ctx->bam_tpu_fwd.l ) ) ) {
-      ctx->default_tpu     = ctx->configured_default_tpu;
-      ctx->default_tpu_fwd = ctx->configured_default_tpu;
-      have_default_tpu     = true;
-      FD_LOG_NOTICE(( "Using configured default TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu.",
-                      FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu.addr ),
-                      fd_ushort_bswap( ctx->default_tpu.port ),
-                      FD_IP4_ADDR_FMT_ARGS( ctx->default_tpu_fwd.addr ),
-                      fd_ushort_bswap( ctx->default_tpu_fwd.port ) ));
-    } else if( FD_UNLIKELY( !current_tpu.addr || !current_tpu_fwd.addr || !current_tpu.port || !current_tpu_fwd.port ) ) {
+    if( FD_UNLIKELY( !current_tpu.addr || !current_tpu_fwd.addr || !current_tpu.port || !current_tpu_fwd.port ) ) {
       FD_LOG_WARNING(( "Failed to cache default TPU, invalid ip/port. tpu=" FD_IP4_ADDR_FMT ":%hu, tpu_fwd=" FD_IP4_ADDR_FMT ":%hu)",
                        FD_IP4_ADDR_FMT_ARGS( current_tpu.addr ), fd_ushort_bswap( current_tpu.port ),
                        FD_IP4_ADDR_FMT_ARGS( current_tpu_fwd.addr ), fd_ushort_bswap( current_tpu_fwd.port ) ) );

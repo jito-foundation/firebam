@@ -3583,12 +3583,21 @@ test_bam_admin_rpc_path_empty_skips_frankendancer_apply( fd_wksp_t * wksp ) {
   FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
   state->bam_tpu.port     = fd_ushort_bswap( 7000 );
   state->bam_tpu_fwd.port = fd_ushort_bswap( 7001 );
+  FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->configured_default_tpu.addr ) );
+  state->configured_default_tpu.port = fd_ushort_bswap( 4242 );
 
   test_bam_admin_rpc_mock_reset();
   fd_bam_gossip_update( state, state->stem, 1 );
 
   FD_TEST( test_bam_admin_rpc_mock.request_cnt == 0UL );
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM );
+
+  fd_bam_gossip_update( state, state->stem, 0 );
+
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 0UL );
+  FD_TEST( state->default_tpu.l == state->configured_default_tpu.l );
+  FD_TEST( state->default_tpu_fwd.l == state->configured_default_tpu.l );
+  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
 
   test_bam_env_destroy( env );
 }

@@ -124,16 +124,16 @@ typedef struct {
   uchar               deser_reason;                            /* bam_types_DeserializationErrorReason enum value */
 } fd_bam_batch_ctx_t;
 
-/* fd_bam_tpu_update_state_t tracks what Frankendancer Agave's TPU value, and if update attempt is required.
+/* fd_bam_tpu_update_state_t tracks which TPU contact was last applied or still needs retry.
    Issue:
    - Two independent code paths can call fd_bam_gossip_update() around the same
      time (e.g. ConfigResponse arrival + BAM status edge). Without
-     dedupe, both paths can immediately invoke admin RPC updates back-to-back.
+     dedupe, both paths can immediately publish or invoke admin RPC updates back-to-back.
 
    How it is used:
    - fd_bam_gossip_update() compares the desired "applied" state
      (BAM vs default TPU) to ctx->tpu_update_state. If it already matches,
-     it skips the admin RPC update, preventing duplicate updates.
+     it skips duplicate updates.
    - On failure (admin RPC unavailable or apply failure),
      it records a PENDING_* state so fd_bam_tile_housekeeping() will retry later.
    - When BAM TPU sockets change (new ConfigResponse), we set UNKNOWN so the
@@ -231,11 +231,11 @@ struct fd_bam_tile {
   fd_ip4_port_t bam_shred_sock[ FD_BAM_SHRED_SOCK_MAX ]; /* Latest shred receivers advertised by BAM */
   uchar         published_shred_sock_cnt; /* Last effective shred receiver count published to shred tiles */
   fd_ip4_port_t published_shred_sock[ FD_BAM_SHRED_SOCK_MAX ]; /* Last effective shred receivers published to shred tiles */
-  fd_ip4_port_t default_tpu;           /* TPU socket Agave booted with (non-BAM) */
-  fd_ip4_port_t default_tpu_fwd;       /* TPU Forward socket Agave booted with */
-  fd_ip4_port_t configured_default_tpu; /* Startup TPU base port derived from local Frankendancer config when the advertised IP is locally knowable. Frankendancer BAM restore derives QUIC as base+6 for both TPU and TPU forwards. */
-  char admin_rpc_path[ PATH_MAX ];     /* Frankendancer Agave admin socket path; empty disables the cross-process admin path. */
-  fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for admin-RPC TPU advert updates (Frankendancer) */
+  fd_ip4_port_t default_tpu;           /* Non-BAM TPU socket to restore on disable/disconnect */
+  fd_ip4_port_t default_tpu_fwd;       /* Non-BAM TPU Forward socket to restore on disable/disconnect */
+  fd_ip4_port_t configured_default_tpu; /* Startup default TPU base port derived from local validator config. */
+  char admin_rpc_path[ PATH_MAX ];     /* Frankendancer Agave admin socket path; empty uses full-Firedancer gossip updates only. */
+  fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for TPU advert updates */
 
   /* Bundle state */
   uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle). */
