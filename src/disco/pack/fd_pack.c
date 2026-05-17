@@ -448,6 +448,12 @@ typedef struct fd_pack_penalty_treap fd_pack_penalty_treap_t;
    on rebates. */
 #define FD_PACK_SKIP_CNT 50UL
 
+enum {
+  FD_PACK_BAM_MIN_NONREVERT = 0,
+  FD_PACK_BAM_MIN_BUNDLE    = 1,
+  FD_PACK_BAM_MIN_CNT       = 2
+};
+
 /* Finally, we can now declare the main pack data structure */
 struct fd_pack_private {
   ulong      pack_depth;
@@ -499,6 +505,11 @@ struct fd_pack_private {
   treap_t pending[1];
   treap_t pending_votes[1];
   treap_t pending_bundles[1];
+
+  /* Cached minimum BAM seq_id by queue.  Dirty caches are recomputed on
+     demand; UINT_MAX means no tracked BAM work is present. */
+  uint pending_bam_min_seq  [ FD_PACK_BAM_MIN_CNT ];
+  int  pending_bam_min_dirty[ FD_PACK_BAM_MIN_CNT ];
 
   /* penalty_treaps: an fd_map_dynamic mapping hotly contended account
      addresses to treaps of transactions that write to them.  We try not
@@ -660,6 +671,11 @@ static inline void insert_bundle_impl( fd_pack_t * pack, ulong bundle_idx, ulong
 static inline ulong fd_pack_bundle_idx( fd_pack_ord_txn_t const * txn );
 static inline treap_rev_iter_t fd_pack_bundle_next( treap_rev_iter_t cur, fd_pack_ord_txn_t * pool );
 static inline int fd_pack_txn_is_bam_nonrevert( fd_pack_ord_txn_t const * txn );
+static inline void fd_pack_bam_min_seq_reset( fd_pack_t * pack );
+static inline void fd_pack_bam_min_seq_insert( fd_pack_t * pack, fd_pack_ord_txn_t const * txn );
+static inline void fd_pack_bam_min_seq_remove( fd_pack_t * pack, fd_pack_ord_txn_t const * txn );
+static uint fd_pack_bam_min_seq( fd_pack_t * pack, int kind );
+static uint fd_pack_bam_min_seq_exact( fd_pack_t * pack, int kind );
 static int fd_pack_try_schedule_bundle_candidate( fd_pack_t * pack, ulong bank_tile, fd_txn_e_t * out, treap_rev_iter_t _txn0, ulong bundle_idx, int is_ib );
 
 FD_FN_PURE ulong
@@ -798,6 +814,7 @@ fd_pack_new( void                   * mem,
   pack->pending_smallest->bytes       = ULONG_MAX;
   pack->pending_votes_smallest->cus   = ULONG_MAX;
   pack->pending_votes_smallest->bytes = ULONG_MAX;
+  fd_pack_bam_min_seq_reset( pack );
 
   expq_new( _expq, pack_depth );
 
@@ -1413,6 +1430,7 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
 
   if( FD_LIKELY( is_vote ) ) insert_into = pack->pending_votes;
 
+  fd_pack_bam_min_seq_insert( pack, ord );
   treap_ele_insert( insert_into, ord, pack->pool );
   return (is_vote) | (replaces<<1) | (is_durable_nonce<<2);
 }
@@ -1456,6 +1474,81 @@ fd_pack_bundle_next( treap_rev_iter_t   cur,
 static inline int
 fd_pack_txn_is_bam_nonrevert( fd_pack_ord_txn_t const * txn ) {
   return txn->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txn->txn->bam.revert_on_error;
+}
+
+static inline void
+fd_pack_bam_min_seq_reset( fd_pack_t * pack ) {
+  for( ulong i=0UL; i<FD_PACK_BAM_MIN_CNT; i++ ) {
+    pack->pending_bam_min_seq  [ i ] = UINT_MAX;
+    pack->pending_bam_min_dirty[ i ] = 0;
+  }
+}
+
+static uint
+fd_pack_bam_min_seq_exact( fd_pack_t * pack,
+                           int         kind ) {
+  /* TODO(BAM): This is an O(n) fallback over the relevant pending queue.
+     Dirty minima should be rare, but if BAM traffic churns the current min
+     heavily, replace this lazy recompute with a per-kind heap or refcounted
+     seq_id index. */
+  int bundles = kind==FD_PACK_BAM_MIN_BUNDLE;
+  fd_pack_ord_txn_t * pool = pack->pool;
+  treap_t * treap = bundles ? pack->pending_bundles : pack->pending;
+  uint min_seq = UINT_MAX;
+
+  for( treap_rev_iter_t _cur=treap_rev_iter_init( treap, pool ); !treap_rev_iter_done( _cur );
+       _cur=bundles ? fd_pack_bundle_next( _cur, pool ) : treap_rev_iter_next( _cur, pool ) ) {
+    fd_pack_ord_txn_t const * cur = treap_rev_iter_ele_const( _cur, pool );
+    if( bundles ) {
+      if( FD_LIKELY( cur->txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
+    } else {
+      if( FD_LIKELY( !fd_pack_txn_is_bam_nonrevert( cur ) ) ) continue;
+    }
+    min_seq = fd_uint_min( min_seq, cur->txn->bam.seq_id );
+  }
+
+  return min_seq;
+}
+
+static uint
+fd_pack_bam_min_seq( fd_pack_t * pack,
+                     int         kind ) {
+  uint * min_seq = &pack->pending_bam_min_seq  [ kind ];
+  int  * dirty   = &pack->pending_bam_min_dirty[ kind ];
+
+  if( FD_UNLIKELY( *dirty ) ) {
+    *min_seq = fd_pack_bam_min_seq_exact( pack, kind );
+    *dirty = 0;
+  }
+
+  return *min_seq;
+}
+
+static inline int
+fd_pack_bam_min_seq_kind( fd_pack_ord_txn_t const * txn ) {
+  switch( txn->root & FD_ORD_TXN_ROOT_TAG_MASK ) {
+    case FD_ORD_TXN_ROOT_PENDING:
+      return fd_pack_txn_is_bam_nonrevert( txn ) ? FD_PACK_BAM_MIN_NONREVERT : -1;
+    case FD_ORD_TXN_ROOT_PENDING_BUNDLE:
+      return txn->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ? FD_PACK_BAM_MIN_BUNDLE : -1;
+    default:
+      return -1;
+  }
+}
+
+static inline void
+fd_pack_bam_min_seq_insert( fd_pack_t *               pack,
+                            fd_pack_ord_txn_t const * txn ) {
+  int kind = fd_pack_bam_min_seq_kind( txn );
+  if( FD_LIKELY( kind<0 ) ) return;
+  pack->pending_bam_min_seq[ kind ] = fd_uint_min( pack->pending_bam_min_seq[ kind ], txn->txn->bam.seq_id );
+}
+
+static inline void
+fd_pack_bam_min_seq_remove( fd_pack_t *               pack,
+                            fd_pack_ord_txn_t const * txn ) {
+  int kind = fd_pack_bam_min_seq_kind( txn );
+  if( FD_UNLIKELY( kind>=0 && txn->txn->bam.seq_id==pack->pending_bam_min_seq[ kind ] ) ) pack->pending_bam_min_dirty[ kind ] = 1;
 }
 
 static void
@@ -1510,6 +1603,27 @@ fd_pack_conflict_map_txn_conflicts( fd_pack_addr_use_t *     temp_map,
   }
 
   return 0;
+}
+
+static int
+fd_pack_txn_conflicts_bundle( fd_pack_t *               pack,
+                              fd_pack_ord_txn_t const * txn,
+                              treap_rev_iter_t          bundle0 ) {
+  fd_pack_addr_use_t * temp_map = pack->bundle_temp_map;
+  fd_pack_ord_txn_t *  pool     = pack->pool;
+
+  acct_uses_clear( temp_map );
+
+  ulong const bundle_idx = fd_pack_bundle_idx( treap_rev_iter_ele( bundle0, pool ) );
+  for( treap_rev_iter_t _cur=bundle0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
+    fd_pack_ord_txn_t const * cur = treap_rev_iter_ele_const( _cur, pool );
+    if( FD_UNLIKELY( fd_pack_bundle_idx( cur )!=bundle_idx ) ) break;
+    fd_pack_conflict_map_insert_txn( temp_map, cur );
+  }
+
+  int conflict = fd_pack_conflict_map_txn_conflicts( temp_map, txn );
+  acct_uses_clear( temp_map );
+  return conflict;
 }
 
 /* Returns non-zero if bundle a0 conflicts with bundle b0 under the same
@@ -1833,6 +1947,8 @@ insert_bundle_impl( fd_pack_t           * pack,
     expq_insert( pack->expiration_q, temp );
   }
 
+  if( FD_LIKELY( txn_cnt ) ) fd_pack_bam_min_seq_insert( pack, bundle[ 0 ] );
+
 }
 
 void const *
@@ -2097,16 +2213,31 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
       fd_pack_addr_use_t * temp_map = pack->bundle_temp_map;
       acct_uses_clear( temp_map );
 
-      for( treap_rev_iter_t _other=treap_rev_iter_init( sched_from, pack->pool ); !treap_rev_iter_done( _other ); _other=treap_rev_iter_next( _other, pack->pool ) ) {
-        fd_pack_ord_txn_t const * other = treap_rev_iter_ele_const( _other, pack->pool );
+      for( treap_rev_iter_t _other=treap_rev_iter_init( sched_from, pool );
+           !conflicts && !treap_rev_iter_done( _other );
+           _other=treap_rev_iter_next( _other, pool ) ) {
+        fd_pack_ord_txn_t const * other = treap_rev_iter_ele_const( _other, pool );
         if( FD_LIKELY( !fd_pack_txn_is_bam_nonrevert( other ) ) ) continue;
         if( FD_LIKELY(  other->txn->bam.seq_id>=seq ) ) continue;
-        if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) continue;
 
         fd_pack_conflict_map_insert_txn( temp_map, other );
         conflicts = (ulong)fd_pack_conflict_map_txn_conflicts( temp_map, cur );
         acct_uses_clear( temp_map );
-        if( FD_UNLIKELY( conflicts ) ) break;
+      }
+
+      if( FD_LIKELY( !conflicts ) &&
+          FD_UNLIKELY( fd_pack_bam_min_seq( pack, FD_PACK_BAM_MIN_BUNDLE )<seq ) ) {
+        /* TODO(BAM): This scans pending BAM bundles to enforce cross-queue
+           seq_id order. Consider an account-lock dependency index keyed by
+           seq_id if mixed bundle/non-revert BAM traffic makes this hot. */
+        for( treap_rev_iter_t _other=treap_rev_iter_init( pack->pending_bundles, pool ); !treap_rev_iter_done( _other ); _other=fd_pack_bundle_next( _other, pool ) ) {
+          fd_pack_ord_txn_t const * other = treap_rev_iter_ele_const( _other, pool );
+          if( FD_LIKELY( other->txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
+          if( FD_LIKELY( other->txn->bam.seq_id>=seq ) ) continue;
+
+          conflicts = (ulong)fd_pack_txn_conflicts_bundle( pack, cur, _other );
+          if( FD_UNLIKELY( conflicts ) ) break;
+        }
       }
 
       if( FD_UNLIKELY( conflicts ) ) {
@@ -2251,6 +2382,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
     if( FD_UNLIKELY( cur->txn->flags & FD_TXN_P_FLAGS_DURABLE_NONCE ) ) noncemap_ele_remove_fast( pack->noncemap, cur, pack->pool );
     sig2txn_ele_remove_fast( pack->signature_map, cur, pool );
 
+    fd_pack_bam_min_seq_remove( pack, cur );
     cur->root = FD_ORD_TXN_ROOT_FREE;
     expq_remove( pack->expiration_q, cur->expq_idx );
     treap_idx_remove( sched_from, _cur, pool );
@@ -2414,8 +2546,8 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   fd_pack_ord_txn_t * pool    = pack->pool;
   treap_t           * bundles = pack->pending_bundles;
 
-  int saw_conflict   = 0;
-  int saw_doesnt_fit = 0;
+  _Bool saw_conflict   = 0;
+  _Bool saw_doesnt_fit = 0;
 
   for( treap_rev_iter_t _txn0=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _txn0 ); _txn0=fd_pack_bundle_next( _txn0, pool ) ) {
     fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
@@ -2429,36 +2561,74 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
       continue;
     }
 
-    int is_ib = !!(txn0->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
+    _Bool is_ib = !!(txn0->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
     if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_NOT_INITIALIZED) & !is_ib ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
 
-    int blocked_by_prior = 0;
+    _Bool cand_is_bam = txn0->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+    uint  cand_seq    = 0U;
+    if( FD_UNLIKELY( cand_is_bam ) ) cand_seq = txn0->txn->bam.seq_id;
+
+    /* A skipped lower-seq BAM bundle still orders before this candidate,
+       but should not suppress normal txn fallback. */
+    _Bool blocked_by_live_prior     = 0;
+    _Bool blocked_by_deferred_prior = 0;
     /* Conflicting BAM bundles resolve by lower seq_id first; insertion order is
        only the tie-breaker after that priority. */
+    /* TODO(BAM): Bundle-vs-bundle ordering is currently checked by scanning
+       candidate bundles and rebuilding temporary account footprints. This is
+       correctness-first but can become O(bundle_cnt^2 * bundle_size) under
+       heavy pending BAM load. */
     for( treap_rev_iter_t _other=treap_rev_iter_init( bundles, pool ); !treap_rev_iter_done( _other ); _other=fd_pack_bundle_next( _other, pool ) ) {
       if( FD_UNLIKELY( _other==_txn0 ) ) continue;
       fd_pack_ord_txn_t * other = treap_rev_iter_ele( _other, pool );
-      ulong const other_bundle_idx = fd_pack_bundle_idx( other );
-      if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) continue;
       if( FD_LIKELY( !fd_pack_bundle_conflicts( pack, _other, _txn0 ) ) ) continue;
 
-      if( FD_UNLIKELY( other->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
-                       txn0->txn->source_tpu ==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+      if( FD_UNLIKELY( cand_is_bam && other->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
         uint const other_seq = other->txn->bam.seq_id;
-        uint const cand_seq  = txn0->txn->bam.seq_id;
         if( FD_LIKELY( other_seq>cand_seq ) ) continue;
         if( FD_UNLIKELY( other_seq<cand_seq ) ) {
-          blocked_by_prior = 1;
+          if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) blocked_by_deferred_prior = 1;
+          else                                                          blocked_by_live_prior     = 1;
           break;
         }
       }
+      if( FD_UNLIKELY( other->skip==pack->compressed_slot_number ) ) continue;
+      ulong const other_bundle_idx = fd_pack_bundle_idx( other );
       if( FD_LIKELY( other_bundle_idx>bundle_idx ) ) continue;
 
-      blocked_by_prior = 1;
+      blocked_by_live_prior = 1;
       break;
     }
-    if( FD_UNLIKELY( blocked_by_prior ) ) {
+
+    if( FD_UNLIKELY( cand_is_bam && !blocked_by_live_prior && !blocked_by_deferred_prior &&
+                     fd_pack_bam_min_seq( pack, FD_PACK_BAM_MIN_NONREVERT )<cand_seq ) ) {
+      _Bool blocked_by_txn = 0;
+      /* TODO(BAM): This cross-queue dependency check scans pending non-revert
+         singles and rebuilds the candidate bundle footprint for each lower
+         seq_id probe. Cache per-bundle account footprints or add an account to
+         lowest-seq dependency map if this shows up in pack profiles. */
+      for( treap_rev_iter_t _other=treap_rev_iter_init( pack->pending, pool );
+           !blocked_by_txn && !treap_rev_iter_done( _other );
+           _other=treap_rev_iter_next( _other, pool ) ) {
+        fd_pack_ord_txn_t * other = treap_rev_iter_ele( _other, pool );
+        if( FD_LIKELY( !fd_pack_txn_is_bam_nonrevert( other ) ) ) continue;
+        if( FD_LIKELY( other->txn->bam.seq_id>=cand_seq ) ) continue;
+
+        blocked_by_txn = fd_pack_txn_conflicts_bundle( pack, other, _txn0 );
+      }
+      if( FD_UNLIKELY( blocked_by_txn ) ) {
+        /* The txn path can schedule the lower non-revert single first. */
+        saw_doesnt_fit = 1;
+        continue;
+      }
+    }
+
+    if( FD_UNLIKELY( blocked_by_live_prior ) ) {
       saw_conflict = 1;
+      continue;
+    }
+    if( FD_UNLIKELY( blocked_by_deferred_prior ) ) {
+      saw_doesnt_fit = 1;
       continue;
     }
 
@@ -2471,7 +2641,6 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
       saw_doesnt_fit = 1;
     }
   }
-
   if( FD_UNLIKELY( saw_conflict   ) ) return TRY_BUNDLE_HAS_CONFLICTS;
   if( FD_UNLIKELY( saw_doesnt_fit ) ) return TRY_BUNDLE_DOES_NOT_FIT;
   return TRY_BUNDLE_NO_READY_BUNDLES;
@@ -2702,6 +2871,7 @@ fd_pack_try_schedule_bundle_candidate( fd_pack_t       * pack,
     if( FD_UNLIKELY( cur->txn->flags & FD_TXN_P_FLAGS_DURABLE_NONCE ) ) noncemap_ele_remove_fast( pack->noncemap, cur, pack->pool );
     sig2txn_ele_remove_fast( pack->signature_map, cur, pack->pool );
 
+    fd_pack_bam_min_seq_remove( pack, cur );
     cur->root = FD_ORD_TXN_ROOT_FREE;
     expq_remove( pack->expiration_q, cur->expq_idx );
     treap_idx_remove( pack->pending_bundles, _cur, pack->pool );
@@ -3064,6 +3234,7 @@ fd_pack_clear_all( fd_pack_t * pack ) {
   pack->pending_smallest->bytes       = ULONG_MAX;
   pack->pending_votes_smallest->cus   = ULONG_MAX;
   pack->pending_votes_smallest->bytes = ULONG_MAX;
+  fd_pack_bam_min_seq_reset( pack );
 
   release_tree( pack->pending,         pack->signature_map, pack->noncemap, pack->pool );
   release_tree( pack->pending_votes,   pack->signature_map, pack->noncemap, pack->pool );
@@ -3220,6 +3391,7 @@ delete_transaction( fd_pack_t         * pack,
     noncemap_ele_remove_fast( pack->noncemap, containing, pack->pool );
   }
   expq_remove( pack->expiration_q, containing->expq_idx );
+  fd_pack_bam_min_seq_remove( pack, containing );
   containing->root = FD_ORD_TXN_ROOT_FREE;
   treap_ele_remove( root, containing, pack->pool );
   sig2txn_ele_remove_fast( pack->signature_map, containing, pack->pool );
@@ -3406,6 +3578,12 @@ fd_pack_verify( fd_pack_t * pack,
         FD_PACK_BITSET_CLEARN( complement, q->bit );
       }
       VERIFY_TEST( FD_PACK_BITSET_INTERSECT4_EMPTY( complement, complement, cur->rw_bitset,  cur->rw_bitset ), "extra in rw bitset" );
+    }
+  }
+
+  for( int kind=0; kind<FD_PACK_BAM_MIN_CNT; kind++ ) {
+    if( FD_LIKELY( !pack->pending_bam_min_dirty[ kind ] ) ) {
+      VERIFY_TEST( pack->pending_bam_min_seq[ kind ]==fd_pack_bam_min_seq_exact( pack, kind ), "bad pending BAM min seq" );
     }
   }
 
