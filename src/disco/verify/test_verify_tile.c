@@ -67,17 +67,20 @@ mock_topo_create( void ) {
 
   mock_link_create( topo, "quic_verify"  );
   mock_link_create( topo, "bundle_verif" );
+  mock_link_create( topo, "bam_verif"    );
   mock_link_create( topo, "gossip_out"   );
   mock_link_create( topo, "txsend_out"   );
 
   /* Declare link ins in opposite order than IN_KIND_* to check for in
      idx confusion */
-#define IN_IDX_SEND   0
+#define IN_IDX_TXSEND 0
 #define IN_IDX_GOSSIP 1
-#define IN_IDX_BUNDLE 2
-#define IN_IDX_QUIC   3
+#define IN_IDX_BAM    2
+#define IN_IDX_BUNDLE 3
+#define IN_IDX_QUIC   4
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "txsend_out",   0UL, 0, 1 );
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "gossip_out",   0UL, 0, 1 );
+  fd_topob_tile_in( topo, "verify", 0UL, "wksp", "bam_verif",    0UL, 0, 1 );
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "bundle_verif", 0UL, 0, 1 );
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "quic_verify",  0UL, 0, 1 );
 
@@ -100,6 +103,10 @@ test_load_balance( void ) {
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 0UL, 1UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 1UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   0UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   1UL, 0UL )==0 );
 
@@ -108,11 +115,16 @@ test_load_balance( void ) {
   ctx->round_robin_cnt = 4UL;
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 0UL, 1UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 1UL )==0 );
 
   /* Tile 0 should load balance other traffic */
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 0UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 0UL )==1 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 2UL, 0UL )==1 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    2UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   0UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   1UL, 0UL )==1 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   2UL, 0UL )==1 );

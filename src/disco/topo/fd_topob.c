@@ -503,6 +503,76 @@ fd_topob_auto_layout_cpus( fd_topo_t *      topo,
      tiles to CPU cores in NUMA sequential order, except for a few tiles
      which should be floating. */
 
+  char const * FLOATING[] = {
+    "netlnk",
+    "metric",
+    "diag",
+    "bencho",
+    "genesi", /* FIREDANCER ONLY */
+    "ipecho", /* FIREDANCER ONLY */
+    "snapwr", /* FIREDANCER ONLY */
+  };
+
+  char const * ORDERED[] = {
+    "backt",
+    "benchg",
+    "benchs",
+    "net",
+    "sock",
+    "quic",
+    "bundle",
+    "bam",
+    "verify",
+    "dedup",
+    "resolh", /* FRANK only */
+    "resolv", /* FIREDANCER only */
+    "pack",
+    "bank",   /* FRANK only */
+    "execle", /* FIREDANCER only */
+    "poh",    /* FRANK only */
+    "pohh",   /* FIREDANCER only */
+    "shred",
+    "event",  /* FIREADNCER only */
+    "store",  /* FRANK only */
+    "sign",
+    "plugin", /* FRANK only */
+    "gui",
+    "rpc",    /* FIREDANCER only */
+    "gossvf", /* FIREDANCER only */
+    "gossip", /* FIREDANCER only */
+    "repair", /* FIREDANCER only */
+    "replay", /* FIREDANCER only */
+    "execrp", /* FIREDANCER only */
+    "txsend", /* FIREDANCER only */
+    "tower",  /* FIREDANCER only */
+    "pktgen",
+    "snapct", /* FIREDANCER only */
+    "snapld", /* FIREDANCER only */
+    "snapdc", /* FIREDANCER only */
+    "snapin", /* FIREDANCER only */
+    "snapwm", /* FIREDANCER only */
+    "snapwh", /* FIREDANCER only */
+    "snapla", /* FIREDANCER only */
+    "snapls", /* FIREDANCER only */
+    "snaplh", /* FIREDANCER only */
+    "snaplv", /* FIREDANCER only */
+    "arch_f", /* FIREDANCER only */
+    "arch_w", /* FIREDANCER only */
+    "accdb",  /* FIREDANCER only */
+  };
+
+  char const * CRITICAL_TILES[] = {
+    "pack",
+    "poh",
+    "pohh",
+    "gui",
+    "snapld", /* TODO: Snapshot loading speed depends on having full core */
+    "snapdc", /* TODO: Snapshot loading speed depends on having full core */
+    "snapin", /* TODO: Snapshot loading speed depends on having full core */
+    "snapwm", /* TODO: Snapshot loading speed depends on having full core */
+    "snapwh", /* TODO: Snapshot loading speed depends on having full core */
+  };
+
   for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
     fd_topo_tile_t * tile = &topo->tiles[ i ];
     tile->cpu_idx = ULONG_MAX;
