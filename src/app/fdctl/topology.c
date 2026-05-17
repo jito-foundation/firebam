@@ -457,7 +457,9 @@ fd_topo_initialize( config_t * config ) {
   if( FD_UNLIKELY( config->tiles.bam.enabled)) {
     fd_topo_obj_t * bam_status_obj = fd_topob_obj( topo, "fseq", "bam_status" );
     fd_topo_tile_t * bam_tile      = &topo->tiles[ fd_topo_find_tile( topo, "bam", 0UL ) ];
+    fd_topo_tile_t * pack_tile     = &topo->tiles[ fd_topo_find_tile( topo, "pack", 0UL ) ];
     fd_topob_tile_uses( topo, bam_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+    fd_topob_tile_uses( topo, pack_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
     for( ulong i=0UL; i<verify_tile_cnt; i++ ) {
       fd_topo_tile_t * verify_tile = &topo->tiles[ fd_topo_find_tile( topo, "verify", i ) ];
       fd_topob_tile_uses( topo, verify_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
@@ -478,7 +480,6 @@ fd_topo_initialize( config_t * config ) {
 
     fd_topo_obj_t * bam_fee_cfg_obj = fd_topob_obj( topo, "bam_fee_cfg", "bam_fee_cfg" );
     fd_topob_tile_uses( topo, bam_tile, bam_fee_cfg_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-    fd_topo_tile_t * pack_tile = &topo->tiles[ fd_topo_find_tile( topo, "pack", 0UL ) ];
     fd_topob_tile_uses( topo, pack_tile, bam_fee_cfg_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
     FD_TEST( fd_pod_insertf_ulong( topo->props, bam_fee_cfg_obj->id, "bam_fee_cfg" ) );
   }

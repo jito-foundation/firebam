@@ -6,6 +6,7 @@
 #include "../../ballet/base58/fd_base58.h"
 #include "../../ballet/base64/fd_base64.h"
 #include "../../disco/metrics/fd_metrics.h"
+#include <math.h>
 #include "../../disco/fd_txn_m.h"
 
 #if FD_USING_GCC && __GNUC__ >= 15
@@ -55,6 +56,7 @@ struct pack_outcome {
 typedef struct pack_outcome pack_outcome_t;
 
 pack_outcome_t outcome;
+
 
 static fd_pack_t *
 init_all_with_meta( ulong pack_depth,
@@ -1776,6 +1778,41 @@ test_bam_nonrevert_seq_conflict_order( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
+static void
+test_bam_only_schedule_filters_non_bam_work( void ) {
+  pack_outcome_t outcome;
+  ulong _deleted;
+
+  fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, 64UL, &outcome );
+
+  fd_txn_e_t * txn = fd_pack_insert_txn_init( pack );
+  make_transaction1( txn->txnp, 500UL, 2000U, 32U, 20.0, "a", "", NULL, NULL );
+  txn->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_UDP;
+  FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &_deleted )>=0 );
+
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_TXN | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==0UL );
+
+  fd_pack_set_initializer_bundles_ready( pack );
+
+  fd_txn_e_t * _bundle[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
+  make_transaction1( bundle[0]->txnp, 510UL, 2000U, 32U, 20.0, "b", "", NULL, NULL );
+  bundle[0]->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_UDP;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted )>=0 );
+
+  bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
+  make_transaction1( bundle[0]->txnp, 511UL, 2000U, 32U, 1.0, "c", "", NULL, NULL );
+  bundle[0]->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted )>=0 );
+
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==1UL );
+  FD_TEST( outcome.results[0].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+  fd_pack_microblock_complete( pack, 0UL );
+
+  fd_pack_clear_all( pack );
+  fd_pack_delete( fd_pack_leave( pack ) );
+}
+
 /* Generic pack regression: initializer-bundle state machine behavior. */
 static void
 test_initializer_bundle_state_machine( void ) {
@@ -2031,6 +2068,7 @@ main( int     argc,
   test_bundle_nonce();
 
   test_bam_nonrevert_seq_conflict_order();
+  test_bam_only_schedule_filters_non_bam_work();
 
   /* Generic bundle/initializer-pack regressions */
   test_bundle_account_conflicts();

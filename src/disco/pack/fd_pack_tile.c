@@ -394,6 +394,7 @@ struct fd_pack_ctx {
   fd_histf_t no_sched_duration[ 1 ];
   fd_histf_t insert_duration  [ 1 ];
   fd_histf_t complete_duration[ 1 ];
+  ulong *    bam_status_fseq;
 
   struct {
     uint metric_state;
@@ -1879,6 +1880,9 @@ after_credit( fd_pack_ctx_t *     ctx,
                                       | fd_int_if( i<pacing_execle_cnt, FD_PACK_SCHEDULE_TXN,    0 );
         break;
     }
+    if( FD_UNLIKELY( ctx->bam_status_fseq && ( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) ) ) {
+      flags |= FD_PACK_SCHEDULE_BAM_ONLY;
+    }
 
     fd_txn_e_t * microblock_dst = fd_chunk_to_laddr( ctx->execle_out_mem, ctx->execle_out_chunk );
     long schedule_duration = -fd_tickcount();
@@ -2829,6 +2833,12 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->bam_fee_cfg = FD_LIKELY( bam_fee_cfg_obj_id!=ULONG_MAX )
                    ? (fd_bam_fee_cfg_t const *)fd_topo_obj_laddr( topo, bam_fee_cfg_obj_id )
                    : NULL;
+
+  ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
+  ctx->bam_status_fseq = FD_LIKELY( bam_status_obj_id!=ULONG_MAX )
+                       ? fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) )
+                       : NULL;
+  if( FD_UNLIKELY( bam_status_obj_id!=ULONG_MAX && !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "pack tile missing bam_status fseq" ));
 
   /* Initialize metrics storage */
   memset( ctx->insert_result, '\0', FD_PACK_INSERT_RETVAL_CNT * sizeof(ulong) );

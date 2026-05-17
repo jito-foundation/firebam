@@ -635,6 +635,7 @@ void fd_pack_set_initializer_bundles_ready( fd_pack_t * pack );
 #define FD_PACK_SCHEDULE_VOTE   1
 #define FD_PACK_SCHEDULE_BUNDLE 2
 #define FD_PACK_SCHEDULE_TXN    4
+#define FD_PACK_SCHEDULE_BAM_ONLY 8
 
 /* fd_pack_schedule_next_microblock schedules pending transactions.
    These transaction either form a microblock, which is a set of

@@ -672,7 +672,7 @@ fd_pack_footprint( ulong                    pack_depth,
   ulong max_w_per_block    = fd_ulong_min( limits->max_cost_per_block / FD_PACK_COST_PER_WRITABLE_ACCT,
                                            max_txn_per_mblk * limits->max_microblocks_per_block * FD_TXN_ACCT_ADDR_MAX );
   ulong written_list_max   = fd_ulong_min( max_w_per_block>>1, DEFAULT_WRITTEN_LIST_MAX );
-  ulong bundle_temp_accts  = FD_TXN_ACCT_ADDR_MAX * fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE, 1UL );
+  ulong bundle_temp_accts  = fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE*FD_TXN_ACCT_ADDR_MAX, 1UL );
   ulong sig_chain_cnt      = sig2txn_chain_cnt_est( pack_depth );
   ulong nonce_chain_cnt    = noncemap_chain_cnt_est( pack_depth );
 
@@ -720,7 +720,7 @@ fd_pack_new( void                   * mem,
   ulong max_w_per_block    = fd_ulong_min( limits->max_cost_per_block / FD_PACK_COST_PER_WRITABLE_ACCT,
                                            max_txn_per_mblk * limits->max_microblocks_per_block * FD_TXN_ACCT_ADDR_MAX );
   ulong written_list_max   = fd_ulong_min( max_w_per_block>>1, DEFAULT_WRITTEN_LIST_MAX );
-  ulong bundle_temp_accts  = FD_TXN_ACCT_ADDR_MAX * fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE, 1UL );
+  ulong bundle_temp_accts  = fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE*FD_TXN_ACCT_ADDR_MAX, 1UL );
   ulong sig_chain_cnt      = sig2txn_chain_cnt_est( pack_depth );
   ulong nonce_chain_cnt    = noncemap_chain_cnt_est( pack_depth );
 
@@ -867,7 +867,7 @@ fd_pack_join( void * mem ) {
   ulong max_w_per_block    = fd_ulong_min( pack->lim->max_cost_per_block / FD_PACK_COST_PER_WRITABLE_ACCT,
                                            max_txn_per_microblock * pack->lim->max_microblocks_per_block * FD_TXN_ACCT_ADDR_MAX );
   ulong written_list_max   = fd_ulong_min( max_w_per_block>>1, DEFAULT_WRITTEN_LIST_MAX );
-  ulong bundle_temp_accts  = FD_TXN_ACCT_ADDR_MAX * fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE, 1UL );
+  ulong bundle_temp_accts  = fd_ulong_if( enable_bundles, FD_PACK_MAX_TXN_PER_BUNDLE*FD_TXN_ACCT_ADDR_MAX, 1UL );
   ulong sig_chain_cnt      = sig2txn_chain_cnt_est( pack_depth );
   ulong nonce_chain_cnt    = noncemap_chain_cnt_est( pack_depth );
 
@@ -1666,6 +1666,9 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
      Note that this is all checked by a proof of the code translated
      into Z3.  Unfortunately CBMC was too slow to prove this code
      directly. */
+#define BUNDLE_L_PRIME 37896771UL
+#define BUNDLE_N       312671UL
+
   if( FD_UNLIKELY( pack->relative_bundle_idx>BUNDLE_N ) ) {
     FD_LOG_WARNING(( "Too many bundles inserted without allowing pending bundles to go empty. "
                      "Ordering of bundles may be incorrect." ));
@@ -2260,6 +2263,7 @@ fd_pack_microblock_complete( fd_pack_t * pack,
 static inline int
 fd_pack_try_schedule_bundle( fd_pack_t  * pack,
                              ulong        bank_tile,
+                             _Bool        bam_only,
                              fd_txn_e_t * out ) {
   int state = pack->initializer_bundle_state;
   if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_PENDING) | (state==FD_PACK_IB_STATE_FAILED ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
@@ -2282,6 +2286,25 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
   if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
 
+  if( FD_UNLIKELY( bam_only ) ) {
+    fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
+    while( !(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) && cur->txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) {
+      ulong skipped_bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+      do {
+        _cur = treap_rev_iter_next( _cur, pool );
+        if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
+        cur = treap_rev_iter_ele( _cur, pool );
+      } while( FD_UNLIKELY( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )==skipped_bundle_idx ) );
+
+      while( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) {
+        _cur = treap_rev_iter_next( _cur, pool );
+        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
+        if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
+        cur = treap_rev_iter_ele( _cur, pool );
+      }
+    }
+  }
+
   treap_rev_iter_t   _txn0 = _cur;
   fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
   int is_ib = !!(txn0->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
@@ -2291,6 +2314,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
   /* At this point, we have our candidate bundle, so we'll schedule it
      if we can.  If we can't, we won't schedule anything. */
+
 
   fd_pack_addr_use_t * bundle_temp_inserted[ FD_PACK_MAX_TXN_PER_BUNDLE * FD_TXN_ACCT_ADDR_MAX ];
   ulong bundle_temp_inserted_cnt = 0UL;
@@ -2558,6 +2582,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   return retval;
 }
 
+
 ulong
 fd_pack_schedule_next_microblock( fd_pack_t *  pack,
                                   ulong        total_cus,
@@ -2592,6 +2617,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
   ulong alloc_limit = pack->lim->max_allocated_data_per_block - pack->alloc_consumed;
 
   sched_return_t status = {0}, status1 = {0};
+  _Bool bam_only = !!( schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY );
 
   if( FD_LIKELY( schedule_flags & FD_PACK_SCHEDULE_VOTE ) ) {
     /* Schedule vote transactions */
@@ -2614,7 +2640,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
   /* Bundle can't mix with votes, so only try to schedule a bundle if we
      didn't get any votes. */
   if( FD_UNLIKELY( !!(schedule_flags & FD_PACK_SCHEDULE_BUNDLE) & (status1.txns_scheduled==0UL) ) ) {
-    int bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, out );
+    int bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, bam_only, out );
     if( FD_UNLIKELY( bundle_result>0                         ) ) return (ulong)bundle_result;
     if( FD_UNLIKELY( bundle_result==TRY_BUNDLE_HAS_CONFLICTS ) ) return 0UL;
     /* in the NO_READY_BUNDLES or DOES_NOT_FIT case, we schedule like
@@ -2626,7 +2652,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
 
 
   /* Fill any remaining space with non-vote transactions */
-  if( FD_LIKELY( schedule_flags & FD_PACK_SCHEDULE_TXN ) ) {
+  if( FD_LIKELY( (schedule_flags & FD_PACK_SCHEDULE_TXN) && !bam_only ) ) {
     status = fd_pack_schedule_impl( pack, pack->pending,       cu_limit, txn_limit,          byte_limit, alloc_limit, bank_tile,
         pack->pending_smallest,       use_by_bank_txn, out+scheduled );
 
