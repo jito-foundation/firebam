@@ -37,7 +37,7 @@ typedef struct {
   ulong             depths[ 1 ];
   ulong             cr_avail[ 1 ];
   ulong             min_cr_avail;
-  int               out_reliable[ 1 ];
+  _Bool            out_reliable[ 1 ];
   fd_stem_context_t stem;
 } test_pack_tile_out_t;
 
