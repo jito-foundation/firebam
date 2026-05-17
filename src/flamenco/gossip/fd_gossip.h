@@ -138,6 +138,11 @@ fd_gossip_set_shred_version( fd_gossip_t * gossip,
                              long          now );
 
 void
+fd_gossip_set_my_contact_info( fd_gossip_t *                    gossip,
+                               fd_gossip_contact_info_t const * contact_info,
+                               long                             now );
+
+void
 fd_gossip_stakes_update( fd_gossip_t *             gossip,
                          fd_stake_weight_t const * stake_weights,
                          ulong                     stake_weights_cnt );
