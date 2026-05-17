@@ -496,6 +496,13 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   }
 
   size_t challenge_len = strnlen( resp.challenge_to_sign, sizeof(resp.challenge_to_sign) );
+  if( FD_UNLIKELY( !challenge_len ) ) {
+    ctx->bam_auth_inflight = 0;
+    ctx->bam_auth_ready    = 0;
+    ctx->challenge_to_sign[ 0 ] = '\0';
+    FD_LOG_WARNING(( "AuthChallengeResponse challenge is empty" ));
+    return 0;
+  }
   if( FD_UNLIKELY( challenge_len == sizeof(resp.challenge_to_sign) ) ) {
     ctx->bam_auth_inflight = 0;
     ctx->bam_auth_ready    = 0;
@@ -507,9 +514,9 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   ctx->bam_auth_inflight = 0;
   fd_memcpy( ctx->challenge_to_sign, resp.challenge_to_sign, sizeof(ctx->challenge_to_sign) );
 
-  uchar  sign_payload[ FD_BAM_AUTH_LABEL_LEN + sizeof(bam_api_AuthChallengeResponse) ]; // the null is to be included
+  uchar  sign_payload[ FD_BAM_AUTH_LABEL_LEN + sizeof(resp.challenge_to_sign) ];
   fd_memcpy( sign_payload, FD_BAM_AUTH_LABEL, FD_BAM_AUTH_LABEL_LEN );
-  fd_memcpy( sign_payload + FD_BAM_AUTH_LABEL_LEN, resp.challenge_to_sign, sizeof(bam_api_AuthChallengeResponse) );
+  fd_memcpy( sign_payload + FD_BAM_AUTH_LABEL_LEN, resp.challenge_to_sign, challenge_len );
 
   uchar signature[ 64 ];
   fd_keyguard_client_sign( ctx->keyguard_client, signature, sign_payload, FD_BAM_AUTH_LABEL_LEN + challenge_len, FD_KEYGUARD_SIGN_TYPE_ED25519 );
