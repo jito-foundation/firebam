@@ -1,5 +1,6 @@
 #if FD_HAS_OPENSSL
 #include "../../util/bits/fd_bits.h"
+#include "fd_openssl.h"
 #include "fd_openssl_tile.h"
 
 #include <dirent.h>
@@ -10,94 +11,11 @@
 FD_TL fd_alloc_t * fd_ossl_alloc        = NULL;
 FD_TL ulong        fd_ossl_alloc_errors = 0UL;
 
-/* OpenSSL tries to read files and allocate memory and other dumb things
-   on a thread local basis, so we need a special initializer process to
-   make OpenSSL use our custom allocators before seccomp kicks in.
-
-   OpenSSL allows us to specify custom memory allocation functions,
-   which we want to point to an fd_alloc_t, but it does not let us use a
-   context object.  Instead we stash it in this thread local, which is
-   OK because the parent workspace exists for the duration of the SSL
-   context, and the process only has one thread.
-
-   Currently fd_alloc doesn't support realloc, so it's implemented on
-   top of malloc and free, and then also it doesn't support getting the
-   size of an allocation from the pointer, which we need for realloc, so
-   we pad each alloc by 8 bytes and stuff the size into the first 8
-   bytes. */
-
-static void *
-crypto_malloc( ulong        num,
-               char const * file,
-               int          line ) {
-  (void)file;
-  (void)line;
-  ulong alloc_sz;
-  if( FD_UNLIKELY( __builtin_uaddl_overflow( num, 8UL, &alloc_sz ) ) ) {
-    fd_ossl_alloc_errors++;
-    return NULL;
-  }
-  void * result = fd_alloc_malloc( fd_ossl_alloc, 8UL, alloc_sz );
-  if( FD_UNLIKELY( !result ) ) {
-    fd_ossl_alloc_errors++;
-    return NULL;
-  }
-  *(ulong*)result = num;
-  return (uchar*)result + 8UL;
-}
-
-static void
-crypto_free( void *       addr,
-             char const * file,
-             int          line ) {
-  (void)file;
-  (void)line;
-
-  if( FD_UNLIKELY( !addr ) ) return;
-  fd_alloc_free( fd_ossl_alloc, (uchar*)addr - 8UL );
-}
-
-static void *
-crypto_realloc( void *       addr,
-                ulong        num,
-                char const * file,
-                int          line ) {
-  (void)file;
-  (void)line;
-
-  if( FD_UNLIKELY( !addr ) ) return crypto_malloc( num, file, line );
-  if( FD_UNLIKELY( !num ) ) {
-    crypto_free( addr, file, line );
-    return NULL;
-  }
-
-  ulong alloc_sz;
-  if( FD_UNLIKELY( __builtin_uaddl_overflow( num, 8UL, &alloc_sz ) ) ) {
-    fd_ossl_alloc_errors++;
-    return NULL;
-  }
-  void * new = fd_alloc_malloc( fd_ossl_alloc, 8UL, alloc_sz );
-  if( FD_UNLIKELY( !new ) ) return NULL;
-
-  ulong old_num = *(ulong*)( (uchar*)addr - 8UL );
-  fd_memcpy( (uchar*)new + 8, (uchar*)addr, fd_ulong_min( old_num, num ) );
-  fd_alloc_free( fd_ossl_alloc, (uchar*)addr - 8UL );
-  *(ulong*)new = num;
-  return (uchar*)new + 8UL;
-}
-
 void
 fd_ossl_tile_init( fd_alloc_t * alloc ) {
-  /* OpenSSL's CRYPTO_set_mem_functions is a global operation so it can
-     only be called once for all threads/processes. */
-  FD_ONCE_BEGIN {
-    if( FD_UNLIKELY( !CRYPTO_set_mem_functions( crypto_malloc, crypto_realloc, crypto_free ) ) ) {
-      FD_LOG_ERR(( "CRYPTO_set_mem_functions failed" ));
-    }
-  } FD_ONCE_END;
-
   FD_TEST( alloc );
   fd_ossl_alloc = alloc;
+  fd_openssl_set_thread_alloc( alloc );
 
   FD_ONCE_BEGIN {
     OPENSSL_init_ssl(

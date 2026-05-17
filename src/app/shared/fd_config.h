@@ -4,6 +4,7 @@
 #include "../../disco/topo/fd_topo.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../util/net/fd_net_headers.h"
+#include "../../waltz/http/fd_url.h"
 
 #include <net/if.h>
 
@@ -355,6 +356,13 @@ struct fd_config {
     } event;
 
     struct {
+      char ssl_key_log_file[ PATH_MAX ];
+      uint buffer_size_kib;
+      int  dump_bam_txns;
+      int  dump_bam_slot_first_txn;
+    } bam;
+
+    struct {
       char affinity[ AFFINITY_SZ ];
       char fake_dst_ip[ 16 ];
     } pktgen;
@@ -419,8 +427,8 @@ struct fd_config {
 
     struct {
       int  enabled;
-      char url[ 256 ];
-      char tls_domain_name[ 256 ];
+      char url[ FD_URL_MAX ];
+      char tls_domain_name[ FD_SNI_BUF_MAX ];
       char tip_distribution_program_addr[ FD_BASE58_ENCODED_32_SZ ];
       char tip_payment_program_addr[ FD_BASE58_ENCODED_32_SZ ];
       char tip_distribution_authority[ FD_BASE58_ENCODED_32_SZ ];
@@ -428,6 +436,14 @@ struct fd_config {
       ulong keepalive_interval_millis;
       int   tls_cert_verify;
     } bundle;
+
+    struct {
+      int  enabled;
+      char url[ FD_URL_MAX ];
+      char tls_domain_name[ FD_SNI_BUF_MAX ];
+      ulong keepalive_interval_millis;
+      int   tls_cert_verify;
+    } bam;
 
     struct {
       uint max_pending_transactions;
