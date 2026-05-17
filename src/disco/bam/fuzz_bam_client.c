@@ -39,6 +39,7 @@ static struct {
 
   ulong seqs    [ BAM_FUZZ_OUT_MAX ]; /* Current publish seq per out (monotonic) */
   ulong cr_avail[ BAM_FUZZ_OUT_MAX ]; /* Credit counters; seeded to ULONG_MAX */
+  _Bool out_reliable[ BAM_FUZZ_OUT_MAX ]; /* Fuzzer outputs use reliable stem accounting */
   ulong min_cr_avail;                 /* Min credit observed (tracks exhaustion) */
 
   fd_stem_context_t stem; /* Stem wiring for fd_stem_publish */
@@ -223,13 +224,17 @@ bam_fuzz_env_init( int *    pargc,
   fd_metrics_register( metrics_mem );
 
   bam_fuzz_ctx.min_cr_avail = ULONG_MAX;
+  for( ulong out_idx=0UL; out_idx<BAM_FUZZ_OUT_MAX; out_idx++ ) {
+    bam_fuzz_ctx.out_reliable[ out_idx ] = 1;
+  }
   bam_fuzz_ctx.stem = (fd_stem_context_t) {
       .mcaches             = bam_fuzz_ctx.mcaches,
       .seqs                = bam_fuzz_ctx.seqs,
       .depths              = bam_fuzz_ctx.depths,
       .cr_avail            = bam_fuzz_ctx.cr_avail,
       .min_cr_avail        = &bam_fuzz_ctx.min_cr_avail,
-      .cr_decrement_amount = 0UL
+      .cr_decrement_amount = 0UL,
+      .out_reliable        = bam_fuzz_ctx.out_reliable
   };
 
   fd_histf_new( bam_fuzz_ctx.builder_heartbeat_arrival_delta,
@@ -379,7 +384,7 @@ bam_fuzz_build_auth_challenge_payload( uchar selector,
 
   uchar challenge_len;
   switch( case_id & 0x3U ) {
-  case 0: challenge_len = 0UL; info.expect_decode_ok = 1; break;                     /* Empty challenge */
+  case 0: challenge_len = 0UL; info.expect_decode_ok = 0; break;                     /* Empty challenge */
   case 1: challenge_len = (uchar)fd_ulong_sat_sub( sizeof( tmp.challenge_to_sign ), 1UL ); info.expect_decode_ok = 1; break; /* Max valid size */
   case 2: challenge_len = sizeof( tmp.challenge_to_sign ); info.expect_decode_ok = 0; break;                 /* Forces decode failure / NUL check */
   default: challenge_len = fd_uchar_min( sizeof( tmp.challenge_to_sign )/2 + (selector&0x0fU), sizeof( tmp.challenge_to_sign )-1UL ); info.expect_decode_ok = 1; break;
@@ -620,7 +625,7 @@ LLVMFuzzerInitialize( int *argc,
                       char ***argv ) {
   putenv( "FD_LOG_BACKTRACE=0" );
   fd_boot( argc, argv );
-  fd_log_level_core_set( 3 ); /* fail fast on warnings */
+  fd_log_level_core_set( 4 ); /* fail fast on errors */
   bam_fuzz_env_init( argc, argv );
   atexit( fd_halt );
   return 0;
