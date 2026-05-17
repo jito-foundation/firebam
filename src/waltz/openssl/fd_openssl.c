@@ -8,10 +8,60 @@
 
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
+#include <openssl/crypto.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+
+static FD_TL fd_alloc_t * fd_openssl_alloc_ctx = NULL;
+
+static void *
+fd_openssl_crypto_malloc( ulong        num,
+                          char const * file,
+                          int          line ) {
+  (void)file; (void)line;
+  ulong alloc_sz;
+  if( FD_UNLIKELY( __builtin_uaddl_overflow( num, 8UL, &alloc_sz ) ) ) return NULL;
+  void * result = fd_alloc_malloc( fd_openssl_alloc_ctx, 16UL, alloc_sz );
+  if( FD_UNLIKELY( !result ) ) return NULL;
+  *(ulong *)result = num;
+  return (uchar *)result + 8UL;
+}
+
+static void
+fd_openssl_crypto_free( void *       addr,
+                        char const * file,
+                        int          line ) {
+  (void)file;
+  (void)line;
+
+  if( FD_UNLIKELY( !addr ) ) return;
+  fd_alloc_free( fd_openssl_alloc_ctx, (uchar *)addr - 8UL );
+}
+
+static void *
+fd_openssl_crypto_realloc( void *       addr,
+                           ulong        num,
+                           char const * file,
+                           int          line ) {
+  if( FD_UNLIKELY( !addr ) ) return fd_openssl_crypto_malloc( num, file, line );
+  if( FD_UNLIKELY( !num ) ) {
+    fd_openssl_crypto_free( addr, file, line );
+    return NULL;
+  }
+
+  ulong alloc_sz;
+  if( FD_UNLIKELY( __builtin_uaddl_overflow( num, 8UL, &alloc_sz ) ) ) return NULL;
+  void * new = fd_alloc_malloc( fd_openssl_alloc_ctx, 16UL, alloc_sz );
+  if( FD_UNLIKELY( !new ) ) return NULL;
+
+  ulong old_num = *(ulong *)( (uchar *)addr - 8UL );
+  fd_memcpy( (uchar *)new + 8UL, (uchar *)addr, fd_ulong_min( old_num, num ) );
+  fd_alloc_free( fd_openssl_alloc_ctx, (uchar *)addr - 8UL );
+  *(ulong *)new = num;
+  return (uchar *)new + 8UL;
+}
 
 FD_FN_CONST char const *
 fd_openssl_ssl_strerror( int ssl_err ) {
@@ -171,4 +221,17 @@ fd_openssl_bio_new_socket( int fd,
   if( FD_UNLIKELY( !bio ) ) return NULL;
   BIO_set_fd( bio, fd, close_flag );
   return bio;
+}
+
+void
+fd_openssl_set_thread_alloc( fd_alloc_t * alloc ) {
+  fd_openssl_alloc_ctx = alloc;
+
+  FD_ONCE_BEGIN {
+    if( FD_UNLIKELY( !CRYPTO_set_mem_functions( fd_openssl_crypto_malloc,
+                                                fd_openssl_crypto_realloc,
+                                                fd_openssl_crypto_free ) ) ) {
+      FD_LOG_ERR(( "CRYPTO_set_mem_functions failed" ));
+    }
+  } FD_ONCE_END;
 }

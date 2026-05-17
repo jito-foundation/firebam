@@ -145,6 +145,7 @@ metrics_write( fd_replay_tile_t * ctx ) {
     FD_MGAUGE_SET( REPLAY, LEADER_SLOT, 0UL );
   }
   FD_MGAUGE_SET( REPLAY, RESET_SLOT, ctx->reset_slot==ULONG_MAX ? 0UL : ctx->reset_slot );
+  FD_MGAUGE_SET( REPLAY, SLOT_DURATION_NANOS, ctx->slot_duration_nanos>0.0 ? (ulong)ctx->slot_duration_nanos : 0UL );
 
   FD_MGAUGE_SET( REPLAY, LIVE_BANKS, fd_banks_pool_used_cnt( ctx->banks ) );
 
