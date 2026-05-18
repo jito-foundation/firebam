@@ -219,15 +219,14 @@ fd_topo_initialize( config_t * config ) {
   FOR(shred_tile_cnt)  fd_topob_tile_out( topo, "shred",  i,                          "shred_net",    i                                                  );
   FOR(shred_tile_cnt)  fd_topob_tile_in(  topo, "store",  0UL,           "metric_in", "shred_store",  i,            FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
 
-  /* Sign links don't need to be reliable because they are synchronous,
-     so there's at most one fragment in flight at a time anyway.  The
-     sign links are also not polled by fd_stem, instead the tiles will
-     read the sign responses out of band in a dedicated spin loop. */
+  /* Sign requests are polled by the sign tile.  The matching response
+     links are synchronous and unpolled; receiving tiles read them out
+     of band in a dedicated spin loop.  Add the shred response inputs
+     after optional polled inputs below. */
 
   for( ulong i=0UL; i<shred_tile_cnt; i++ ) {
     /**/               fd_topob_tile_in(  topo, "sign",   0UL,           "metric_in", "shred_sign",     i,          FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
     /**/               fd_topob_tile_out( topo, "shred",  i,                          "shred_sign",     i                                                  );
-    /**/               fd_topob_tile_in(  topo, "shred",  i,             "metric_in", "sign_shred",     i,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
     /**/               fd_topob_tile_out( topo, "sign",   0UL,                        "sign_shred",     i                                                  );
   }
 
@@ -373,8 +372,6 @@ fd_topo_initialize( config_t * config ) {
 
     /**/                 fd_topob_tile_in(  topo, "sign",   0UL,           "metric_in", "bam_sign",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_sign",     0UL                                                );
-    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "sign_bam",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
-    /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_bam",     0UL                                                );
 
     /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_bam_ldr", 0UL                                                );
     /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam_ldr", 0UL,            FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
@@ -387,6 +384,10 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_shred",    0UL                                                );
     FOR(shred_tile_cnt)  fd_topob_tile_in(  topo, "shred",  i,             "metric_in", "bam_shred",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
 
+    /* sign_bam is read out of band, so keep it after BAM's polled feedback inputs. */
+    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "sign_bam",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
+    /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_bam",     0UL                                                );
+
     if( plugins_enabled ) {
       fd_topob_wksp( topo, "bam_plugi" );
       /* bam_plugi must be kind of deep, to prevent exhausting shared
@@ -395,6 +396,10 @@ fd_topo_initialize( config_t * config ) {
       fd_topob_tile_in(  topo, "plugin", 0UL, "metric_in", "bam_plugi", 0UL, FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
       fd_topob_tile_out( topo, "bam", 0UL, "bam_plugi", 0UL );
     }
+  }
+
+  for( ulong i=0UL; i<shred_tile_cnt; i++ ) {
+    /**/               fd_topob_tile_in(  topo, "shred",  i,             "metric_in", "sign_shred",     i,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
   }
 
 
