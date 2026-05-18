@@ -168,8 +168,6 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( ctx->builder_info_valid_until && now >= ctx->builder_info_valid_until ) ) {
     ctx->builder_info_valid_until = 0L;
   }
-  ctx->bundle_max_schedule_slot = 0UL;
-
   memset( ctx->rtt, 0, sizeof(fd_rtt_estimate_t) );
 
 # if FD_HAS_OPENSSL
@@ -318,48 +316,7 @@ fd_bam_client_drive_io( fd_bam_tile_t * ctx,
   return fd_grpc_client_rxtx_socket( ctx->grpc_client, ctx->tcp_sock, charge_busy )>=0;
 }
 
-/* Forwards a bundle transaction to the tango message bus. */
-void
-fd_bam_tile_publish_bundle_txn(
-    fd_bam_tile_t * ctx,
-    void const *       txn,
-    ushort             txn_sz,  /* <= FD_TXN_MTU */
-    uchar              bundle_txn_cnt,
-    uchar              batch_idx,
-    uint               scheduler_arrival_tspub,
-    uint               source_ipv4
-) {
-  fd_txn_m_t * txnm = fd_chunk_to_laddr( ctx->verify_out.mem, ctx->verify_out.chunk );
-  *txnm = (fd_txn_m_t) {
-    .reference_slot = 0UL,
-    .payload_sz     = txn_sz,
-    .txn_t_sz       = 0U,
-    .source_ipv4    = source_ipv4,
-    .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
-    .scheduler_arrival_tspub = scheduler_arrival_tspub,
-    .block_engine   = {0},
-    .bam = {
-      .max_schedule_slot = ctx->bundle_max_schedule_slot,
-      .seq_id            = ctx->bundle_seq,
-      .txn_cnt         = bundle_txn_cnt,
-      .batch_idx         = batch_idx,
-      .revert_on_error   = 1, // FIXME: check if this is correct
-    },
-  };
-  fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
-
-  ulong sz  = fd_txn_m_realized_footprint( txnm, 0, 0 );
-
-  if( FD_UNLIKELY( !ctx->stem ) ) {
-    FD_LOG_CRIT(( "ctx->stem not set. This is a bug." ));
-  }
-
-  fd_stem_publish( ctx->stem, ctx->verify_out.idx, 1, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
-  ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
-  ctx->metrics.transaction_published_cnt++;
-}
-
-/* Forwards a regular transaction to the tango message bus. */
+/* Forwards a scheduler transaction to the tango message bus. */
 void
 fd_bam_tile_publish_txn(
     fd_bam_tile_t * ctx,
@@ -369,7 +326,7 @@ fd_bam_tile_publish_txn(
     uint               seq_id,
     uchar              batch_idx,
     uchar              batch_cnt,
-    uchar              revert_on_error,
+    _Bool              revert_on_error,
     uint               scheduler_arrival_tspub,
     uint               source_ipv4
 ) {
@@ -381,13 +338,18 @@ fd_bam_tile_publish_txn(
     .source_ipv4    = source_ipv4,
     .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
     .scheduler_arrival_tspub = scheduler_arrival_tspub,
-    .block_engine   = {0},
+    .block_engine   = {
+      /* Pack reuses block-engine bundle metadata for atomic BAM assembly.
+         bundle_id 0 means "not a bundle", so seq_id is shifted by one. */
+      .bundle_id      = revert_on_error ? ((ulong)seq_id) + 1UL : 0UL,
+      .bundle_txn_cnt = (revert_on_error && !batch_idx) ? (ulong)batch_cnt : 0UL,
+    },
     .bam = {
       .max_schedule_slot = max_schedule_slot,
       .seq_id            = seq_id,
-      .txn_cnt         = batch_cnt,
+      .txn_cnt           = batch_cnt,
       .batch_idx         = batch_idx,
-      .revert_on_error   = !!revert_on_error,
+      .revert_on_error   = revert_on_error,
     },
   };
   fd_memcpy( fd_txn_m_payload( txnm ), txn, txn_sz );
@@ -398,7 +360,7 @@ fd_bam_tile_publish_txn(
     FD_LOG_CRIT(( "ctx->stem not set. This is a bug." ));
   }
 
-  fd_stem_publish( ctx->stem, ctx->verify_out.idx, 0, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
+  fd_stem_publish( ctx->stem, ctx->verify_out.idx, revert_on_error ? 1UL : 0UL, ctx->verify_out.chunk, sz, 0UL, 0UL, fd_frag_meta_ts_comp( fd_bam_now() ) );
   ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
   ctx->metrics.transaction_published_cnt++;
 }

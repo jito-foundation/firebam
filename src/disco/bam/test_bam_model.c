@@ -192,14 +192,14 @@ typedef struct {
   ulong max_schedule_slot;
   uchar batch_idx;
   uchar batch_cnt;
-  uchar revert_on_error;
+  _Bool revert_on_error;
   bam_model_txn_spec_t spec;
 } bam_model_stage_txn_t;
 
 typedef struct {
   uint  seq_id;
   ulong max_schedule_slot;
-  uchar revert_on_error;
+  _Bool revert_on_error;
   uchar txn_cnt;
   bam_model_stage_txn_t txn[ FD_PACK_MAX_TXN_PER_BUNDLE ];
 } bam_model_batch_t;
@@ -207,7 +207,7 @@ typedef struct {
 typedef struct {
   uint  seq_id;
   ulong max_schedule_slot;
-  uchar revert_on_error;
+  _Bool revert_on_error;
   uchar txn_cnt;
   uchar seen[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   bam_model_stage_txn_t txn[ FD_PACK_MAX_TXN_PER_BUNDLE ];
@@ -232,7 +232,7 @@ typedef struct {
   uint  seq_id;
   uchar batch_idx;
   uchar batch_cnt;
-  uchar revert_on_error;
+  _Bool revert_on_error;
   ulong max_schedule_slot;
   uchar work_id;
 } bam_model_trace_t;
@@ -299,7 +299,7 @@ typedef struct {
 typedef struct {
   uint  seq_id;
   ulong max_schedule_slot;
-  uchar revert_on_error;
+  _Bool revert_on_error;
   uchar txn_cnt;
   bam_model_txn_spec_t txn[ FD_PACK_MAX_TXN_PER_BUNDLE ];
 } bam_model_batch_def_t;
@@ -1227,7 +1227,7 @@ bam_model_assert_wire_matches_model( bam_model_harness_t * h ) {
 static bam_model_batch_def_t
 bam_model_make_batch( uint  seq_id,
                     ulong max_schedule_slot,
-                    uchar revert_on_error,
+                    _Bool revert_on_error,
                     uchar txn_cnt ) {
   bam_model_batch_def_t def;
   fd_memset( &def, 0, sizeof(def) );

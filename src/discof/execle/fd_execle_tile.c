@@ -221,31 +221,10 @@ bam_fill_txn_result( fd_bam_bundle_result_t * res,
   else if( FD_UNLIKELY( txn_out->accounts.rollback_fee_payer ) )
     feepayer_balance_lamports = txn_out->accounts.rollback_fee_payer->lamports;
 
-  res->sanitize_success[ idx ]          = 1U;
+  fd_bam_result_mark_sanitize_success( res, idx );
   res->consumed_cus[ idx ]              = actual_execution_cus + actual_acct_data_cus;
   res->feepayer_balance_lamports[ idx ] = feepayer_balance_lamports;
   res->loaded_accounts_data_size[ idx ] = (uint)fd_ulong_min( txn_out->details.loaded_accounts_data_size, (ulong)UINT_MAX );
-}
-
-static inline void
-bam_set_txn_error( fd_bam_bundle_result_t * res,
-                   ulong                    idx,
-                   int                      err ) {
-  bam_types_TransactionErrorReason reason = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
-  switch( err ) {
-  case FD_RUNTIME_TXN_ERR_BLOCKHASH_NONCE_ALREADY_ADVANCED:
-  case FD_RUNTIME_TXN_ERR_BLOCKHASH_FAIL_ADVANCE_NONCE_INSTR:
-  case FD_RUNTIME_TXN_ERR_BLOCKHASH_FAIL_WRONG_NONCE:
-    reason = bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
-    break;
-  default:
-    if( FD_LIKELY( err<=FD_RUNTIME_TXN_ERR_ACCOUNT_IN_USE && err>=FD_RUNTIME_TXN_ERR_COMMIT_CANCELLED ) )
-      reason = (bam_types_TransactionErrorReason)( -err - 1 );
-    break;
-  }
-
-  res->transaction_err[ idx ] = reason;
-  res->sanitize_success[ idx ] = 1U;
 }
 
 static inline void
@@ -304,14 +283,10 @@ handle_microblock( fd_execle_tile_t *  ctx,
 
     fd_runtime_prepare_and_execute_txn( ctx->runtime, bank, txn_in, txn_out );
 
-    int bam_independent = txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txn->bam.revert_on_error;
+    _Bool bam_independent = txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txn->bam.revert_on_error;
     fd_bam_bundle_result_t bam_res[1];
     if( FD_UNLIKELY( bam_independent ) ) {
-      memset( bam_res, 0, sizeof(fd_bam_bundle_result_t) );
-      bam_res->seq_id           = txn->bam.seq_id;
-      bam_res->slot             = slot;
-      bam_res->bundle_txn_cnt   = 1U;
-      bam_res->scheduling_error = FD_BAM_SCHED_ERR_NONE;
+      *bam_res = fd_bam_result_base( txn->bam.seq_id, slot, 1U );
     }
 
     /* Stash the result in the flags value so that pack can inspect it. */
@@ -340,7 +315,7 @@ handle_microblock( fd_execle_tile_t *  ctx,
       if( FD_UNLIKELY( bam_independent ) ) {
         bam_res->execution_success     = 0U;
         bam_res->transaction_err_count = 1U;
-        bam_set_txn_error( bam_res, 0UL, txn_out->err.txn_err );
+        fd_bam_result_set_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
         bam_fill_txn_result( bam_res, 0UL, txn_out );
         publish_bam_result( ctx, stem, bam_res );
       }
@@ -367,7 +342,7 @@ handle_microblock( fd_execle_tile_t *  ctx,
       bam_res->execution_success = 1U;
       if( FD_UNLIKELY( txn_out->err.txn_err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
         bam_res->transaction_err_count = 1U;
-        bam_set_txn_error( bam_res, 0UL, txn_out->err.txn_err );
+        fd_bam_result_set_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
       }
       bam_fill_txn_result( bam_res, 0UL, txn_out );
     }
@@ -528,14 +503,10 @@ handle_bundle( fd_execle_tile_t *  ctx,
 
   int   execution_success = 1;
   ulong failed_idx        = ULONG_MAX;
-  int   is_bam_revert     = !!( txn_cnt && txns->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txns[0].bam.revert_on_error );
+  _Bool is_bam_revert     = !!( txn_cnt && txns->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txns[0].bam.revert_on_error );
   fd_bam_bundle_result_t bam_res[1];
   if( FD_UNLIKELY( is_bam_revert ) ) {
-    memset( bam_res, 0, sizeof(fd_bam_bundle_result_t) );
-    bam_res->seq_id           = txns[0].bam.seq_id;
-    bam_res->slot             = slot;
-    bam_res->bundle_txn_cnt   = (uchar)txn_cnt;
-    bam_res->scheduling_error = FD_BAM_SCHED_ERR_NONE;
+    *bam_res = fd_bam_result_base( txns[0].bam.seq_id, slot, (uchar)txn_cnt );
   }
 
   /* Every transaction in the bundle should be executed in order against
@@ -647,10 +618,10 @@ handle_bundle( fd_execle_tile_t *  ctx,
       bam_res->execution_success = 0U;
       bam_res->transaction_err_count = (uchar)txn_cnt;
       for( ulong i=0UL; i<txn_cnt; i++ ) {
-        bam_res->sanitize_success[ i ] = 1U;
-        bam_res->transaction_err[ i ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+        fd_bam_result_mark_sanitize_success( bam_res, i );
+        fd_bam_result_set_txn_error( bam_res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
       }
-      bam_set_txn_error( bam_res, failed_idx, ctx->txn_out[ failed_idx ].err.txn_err );
+      fd_bam_result_set_txn_error( bam_res, failed_idx, fd_bam_txn_err_from_runtime_err( ctx->txn_out[ failed_idx ].err.txn_err ) );
       for( ulong i=0UL; i<=failed_idx; i++ ) bam_fill_txn_result( bam_res, i, &ctx->txn_out[ i ] );
       publish_bam_result( ctx, stem, bam_res );
     }

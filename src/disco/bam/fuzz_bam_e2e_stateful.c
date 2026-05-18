@@ -39,7 +39,7 @@ typedef struct {
 
 typedef struct {
   uint  seq_id;
-  uchar revert_on_error;
+  _Bool revert_on_error;
   uchar txn_cnt;
   uchar work_id[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   uchar mode[ FD_PACK_MAX_TXN_PER_BUNDLE ];
@@ -271,7 +271,7 @@ bam_model_apply_event( bam_model_t *      m,
     case BAM_EVT_DUP_SEQ: {
       if( FD_UNLIKELY( !m->has_last_batch ) ) return 1;
       bam_model_batch_t b = m->last_batch;
-      b.revert_on_error = (uchar)(ev->a & 1U);
+      b.revert_on_error = !!( ev->a & 1U );
       return bam_model_execute_batch( m, &b, reason, reason_sz );
     }
     case BAM_EVT_NEW_SEQ_SAME_PAYLOAD: {
