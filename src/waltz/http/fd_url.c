@@ -2,11 +2,6 @@
 #include "../../util/cstr/fd_cstr.h"
 #include "../../util/log/fd_log.h"
 
-#include "../../util/cstr/fd_cstr.h"
-#include "../../util/log/fd_log.h"
-
-#include <limits.h>
-
 fd_url_t *
 fd_url_parse_cstr( fd_url_t *   const url,
                    char const * const url_str,
