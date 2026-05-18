@@ -59,7 +59,6 @@ class HistogramConverter(Enum):
     NONE = 0
     SECONDS = 1
     NANOSECONDS = 2
-    SIGNED_NONE = 3
 
 class EnumValue:
     def __init__(self, value: int, name: str, label: str):

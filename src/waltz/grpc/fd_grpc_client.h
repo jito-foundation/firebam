@@ -272,19 +272,6 @@ fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
    - rbuf_tx is empty.  (HTTP/2 frames all flushed out to sockets) */
 
 fd_grpc_h2_stream_t *
-fd_grpc_client_request_start_ex(
-    fd_grpc_client_t *   client,
-    char const *         path,
-    ulong                path_len, /* in [0,128) */
-    ulong                request_ctx,
-    pb_msgdesc_t const * fields,
-    void const *         message,
-    char const *         auth_token,
-    ulong                auth_token_sz,
-    _Bool                end_stream
-);
-
-fd_grpc_h2_stream_t *
 fd_grpc_client_request_start(
     fd_grpc_client_t *   client,
     char const *         path,
@@ -359,15 +346,6 @@ fd_grpc_client_stream_close(
     fd_grpc_h2_stream_t * stream
 );
 
-int
-fd_grpc_client_stream_send(
-    fd_grpc_client_t *   client,
-    fd_grpc_h2_stream_t * stream,
-    pb_msgdesc_t const * fields,
-    void const *         message,
-    _Bool                end_stream
-);
-
 /* fd_grpc_client_deadline_set sets a request deadline (used to
    configure timeouts).  deadline_kind is FD_GRPC_DEADLINE_*.  Logs
    error and aborts app if deadline_kind is unsupported.
@@ -396,14 +374,10 @@ fd_grpc_client_is_connected( fd_grpc_client_t * client );
 
 /* fd_grpc_client_request_is_blocked returns 1 if a call to
    fd_grpc_client_request_start would certainly fail.  Reasons include
-   SSL / HTTP/2 handshake not complete, a partially sent request body,
-   or buffers blocked. */
+   SSL / HTTP/2 handshake not complete, or buffers blocked. */
 
 int
 fd_grpc_client_request_is_blocked( fd_grpc_client_t * client );
-
-/* fd_grpc_client_request_stream_busy returns 1 while a request body
-   has bytes still waiting to be copied into HTTP/2 TX frames. */
 
 int
 fd_grpc_client_request_stream_busy( fd_grpc_client_t * client );

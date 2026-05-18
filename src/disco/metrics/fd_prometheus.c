@@ -46,9 +46,6 @@ format_metric_value( char                          buf[ static 64 ],
   case FD_METRICS_CONVERTER_NONE:
     FD_TEST( fd_cstr_printf_check( buf, 64UL, NULL, "%lu", value ) );
     return;
-  case FD_METRICS_CONVERTER_SIGNED_NONE:
-    FD_TEST( fd_cstr_printf_check( buf, 64UL, NULL, "%ld", (long)value ) );
-    return;
   default:
     FD_LOG_ERR(( "unknown converter %i", metric->converter ));
   }

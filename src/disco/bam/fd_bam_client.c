@@ -400,13 +400,13 @@ fd_bam_request_auth_challenge( fd_bam_tile_t * ctx ) {
 
   bam_api_AuthChallengeRequest req = bam_api_AuthChallengeRequest_init_default;
   static char const path[] = "/bam_api.BamNodeApi/GetAuthChallenge";
-  fd_grpc_h2_stream_t * request = fd_grpc_client_request_start_ex(
+  fd_grpc_h2_stream_t * request = fd_grpc_client_request_start(
       ctx->grpc_client,
       path, sizeof(path)-1,
       FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge,
       &bam_api_AuthChallengeRequest_msg, &req,
       NULL, 0,
-      1
+      0
   );
   if( FD_UNLIKELY( !request ) ) return;
 
@@ -423,13 +423,13 @@ fd_bam_request_config( fd_bam_tile_t * ctx,
 
   bam_api_ConfigRequest req = bam_api_ConfigRequest_init_default;
   static char const path[] = "/bam_api.BamNodeApi/GetBuilderConfig";
-  fd_grpc_h2_stream_t * request = fd_grpc_client_request_start_ex(
+  fd_grpc_h2_stream_t * request = fd_grpc_client_request_start(
       ctx->grpc_client,
       path, sizeof(path)-1,
       FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig,
       &bam_api_ConfigRequest_msg, &req,
       NULL, 0,
-      1
+      0
   );
   if( FD_UNLIKELY( !request ) ) return;
 
@@ -663,13 +663,13 @@ fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
   msg.versioned_msg.v0.msg.auth_proof   = proof;
 
   static char const path[] = "/bam_api.BamNodeApi/InitSchedulerStream";
-  fd_grpc_h2_stream_t * stream = fd_grpc_client_request_start_ex(
+  fd_grpc_h2_stream_t * stream = fd_grpc_client_request_start(
       ctx->grpc_client,
       path, sizeof(path)-1,
       FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream,
       &bam_api_SchedulerMessage_msg, &msg,
       NULL, 0,
-      0
+      1
   );
   if( FD_UNLIKELY( !stream ) ) {
     size_t challenge_len = strnlen( proof.challenge_to_sign, sizeof( proof.challenge_to_sign ) );
@@ -698,7 +698,7 @@ fd_bam_send_heartbeat( fd_bam_tile_t * ctx,
   bam_types_ValidatorHeartBeat hb = bam_types_ValidatorHeartBeat_init_default;
   hb.time_sent_microseconds = (ulong)fd_long_max(now / 1000, 0);
   msg.versioned_msg.v0.msg.heart_beat = hb;
-  int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
+  int send_res = fd_grpc_client_stream_send_msg( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg );
   if( FD_LIKELY( send_res ) ) ctx->bam_last_validator_heartbeat_ns = now;
   ctx->metrics.outbound_enqueue_outcome_cnt[
       send_res
@@ -839,7 +839,7 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
   msg.versioned_msg.v0.which_msg                 = bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag;
   msg.versioned_msg.v0.msg.multiple_atomic_txn_batch_result = multi;
 
-  int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
+  int send_res = fd_grpc_client_stream_send_msg( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg );
   ctx->metrics.outbound_enqueue_outcome_cnt[
       send_res
       ? FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_ENQUEUED_IDX
@@ -877,7 +877,7 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
   msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_leader_state_tag;
   msg.versioned_msg.v0.msg.leader_state = ls;
 
-  int send_res = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
+  int send_res = fd_grpc_client_stream_send_msg( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg );
   ctx->metrics.outbound_enqueue_outcome_cnt[
       send_res
       ? FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_LEADER_STATE_ENQUEUED_IDX
@@ -1150,7 +1150,7 @@ fd_bam_client_step( fd_bam_tile_t * ctx,
     for( ulong i=0UL; i<FD_BAM_LEADER_SLOT_END_TRACKER_CNT; i++ ) {
       fd_bam_leader_slot_end_tracker_t * tracker = &ctx->leader_slot_end[ i ];
       if( FD_UNLIKELY( !tracker->valid || tracker->counted || ts_ns>tracker->slot_end_ns ) ) continue;
-      tracker->status_at_end = status;
+      tracker->healthy_at_end = (uchar)healthy_now;
     }
   }
   if( FD_UNLIKELY( healthy_now != healthy_before ) ) {
