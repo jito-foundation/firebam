@@ -47,6 +47,7 @@ Environment overrides (defaults shown):
   CLUSTER_RPC_URL=https://api.mainnet.solana.com
   SKIP_CLUSTER_CHECK=0  # set to 1 to skip checking target identity + interface is already in use
   DELINQUENT_SLOT_DISTANCE=4 # allow staked promote when slot lag is greater than this value
+  CLUSTER_POLL_INTERVAL_SECS=1 # seconds between cluster polls while waiting to promote staked identity
 USAGE
 }
 
@@ -92,6 +93,7 @@ ALLOW_NON_SYMLINK="${ALLOW_NON_SYMLINK:-0}"
 CLUSTER_RPC_URL="${CLUSTER_RPC_URL:-https://api.mainnet.solana.com}"
 SKIP_CLUSTER_CHECK="${SKIP_CLUSTER_CHECK:-0}"
 DELINQUENT_SLOT_DISTANCE="${DELINQUENT_SLOT_DISTANCE:-4}"
+CLUSTER_POLL_INTERVAL_SECS="${CLUSTER_POLL_INTERVAL_SECS:-1}"
 
 if [[ "$MODE" == "firedancer" && -z "$FD_PATH_OVERRIDES" ]]; then
   fd_pid= fd_key=
@@ -202,6 +204,11 @@ else
   exit 1
 fi
 
+if [[ "$SET_IDENTITY_FORCE" -eq 1 ]]; then
+  cmd+=(--force)
+fi
+cmd+=("$TARGET_IDENTITY")
+
 if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
   INTERFACE_IP="$(ip -4 route get 8.8.8.8 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}')"
   if [[ -z "$INTERFACE_IP" ]]; then
@@ -209,100 +216,74 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
     exit 1
   fi
 
-  CLUSTER_JSON="$(curl -s --fail --max-time 10 \
-    -X POST -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' \
-    "$CLUSTER_RPC_URL")" || {
-      echo "error: getClusterNodes RPC failed: $CLUSTER_RPC_URL"
-      exit 1
-    }
-
-  # Match scope from getClusterNodes gossip address:
-  # "our" = target pubkey on this host IP, "other" = target pubkey on a different IP, "none" = target pubkey absent.
-  TARGET_MATCH_SCOPE="$(echo "$CLUSTER_JSON" | jq --raw-output --exit-status --arg pubkey "$TARGET_PUBKEY" --arg iface "$INTERFACE_IP" '
-    .result
-    | map(select(.pubkey == $pubkey))
-    | if length == 0 then
-        "none"
-      elif any(
-        .[];
-        .gossip
-        | type == "string"
-        and (
-          startswith($iface + ":")
-          or startswith("[" + $iface + "]:")
-        )
-      ) then
-        "our"
-      else
-        "other"
-      end
-  ')" || {
-    echo "error: could not parse getClusterNodes response from $CLUSTER_RPC_URL"
-    exit 1
-  }
-
-  # If promoting to staked identity, allow hotswap when the staked identity
-  # is present in gossip but has fallen behind by DELINQUENT_SLOT_DISTANCE slots.
-  # This keeps duplicate-identity protection for active validators.
-  ALLOW_DELINQUENT_STAKED_PROMOTE=0
-  if [[ "$TARGET_MODE" == "staked" && "$TARGET_MATCH_SCOPE" != "none" ]]; then
-    CURRENT_SLOT=-1
-    STAKED_LAST_VOTE=-1
-    SLOT_LAG=-1
-    CURRENT_SLOT_JSON="$(curl -s --fail --max-time 10 \
-      -X POST -H "Content-Type: application/json" \
-      -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' \
-      "$CLUSTER_RPC_URL")" || {
-        echo "error: getSlot RPC failed while checking staked promote eligibility: $CLUSTER_RPC_URL"
-        exit 1
-      }
-    CURRENT_SLOT="$(echo "$CURRENT_SLOT_JSON" | jq --raw-output --exit-status '.result | tonumber')" || {
-      echo "error: could not parse getSlot response while checking staked promote eligibility"
-      exit 1
-    }
-
-    VOTE_ACCOUNTS_JSON="$(curl -s --fail --max-time 10 \
-      -X POST -H "Content-Type: application/json" \
-      -d '{"jsonrpc":"2.0","id":1,"method":"getVoteAccounts","params":[{"keepUnstakedDelinquents":true}]}' \
-      "$CLUSTER_RPC_URL")" || {
-        echo "error: getVoteAccounts RPC failed while checking staked promote eligibility: $CLUSTER_RPC_URL"
-        exit 1
-      }
-    STAKED_LAST_VOTE="$(echo "$VOTE_ACCOUNTS_JSON" | jq --raw-output --exit-status --arg pubkey "$STAKED_PUBKEY" '
-      .result as $r
-      | [($r.current // []), ($r.delinquent // [])]
-      | add
-      | map(select(.nodePubkey == $pubkey))
-      | map(.lastVote | tonumber?)
-      | max // -1
+  RPC_CURL=(curl -s --fail --max-time 10 -X POST -H "Content-Type: application/json")
+  while :; do
+    CLUSTER_STATE="$("${RPC_CURL[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' "$CLUSTER_RPC_URL" | jq --raw-output --exit-status --arg target "$TARGET_PUBKEY" --arg staked "$STAKED_PUBKEY" --arg dummy "$DUMMY_PUBKEY" --arg iface "$INTERFACE_IP" '
+      .result as $nodes
+      | [$nodes[] | select(.pubkey == $staked) | .gossip // empty] as $staked_gossip
+      | [
+          (if any($nodes[]; .pubkey == $target) then
+            if any($nodes[]; .pubkey == $target and ((.gossip // "") | startswith($iface + ":"))) then
+              "our"
+            else
+              "other"
+            end
+          else
+            "none"
+          end),
+          (if any($nodes[]; .pubkey == $dummy and (.gossip as $gossip | ($staked_gossip | index($gossip)))) then
+            "yes"
+          else
+            "no"
+          end),
+          ($staked_gossip | join(","))
+        ]
+      | @tsv
     ')" || {
-      echo "error: could not parse getVoteAccounts response while checking staked promote eligibility"
+      echo "error: getClusterNodes RPC failed or response could not be parsed: $CLUSTER_RPC_URL"
       exit 1
     }
+    IFS=$'\t' read -r TARGET_MATCH_SCOPE DUMMY_AT_STAKED_GOSSIP STAKED_GOSSIP_ADDRS <<< "$CLUSTER_STATE"
 
-    if (( STAKED_LAST_VOTE >= 0 )); then
-      SLOT_LAG=$(( CURRENT_SLOT > STAKED_LAST_VOTE ? CURRENT_SLOT - STAKED_LAST_VOTE : 0 ))
-      if (( SLOT_LAG > DELINQUENT_SLOT_DISTANCE )); then
-        ALLOW_DELINQUENT_STAKED_PROMOTE=1
-        echo "warning: staked identity $STAKED_PUBKEY has slot lag $SLOT_LAG (> $DELINQUENT_SLOT_DISTANCE); allowing hotswap"
-      fi
-    fi
-  fi
-
-  if [[ "$TARGET_MATCH_SCOPE" != "none" && ! ( "$TARGET_MODE" == "staked" && "$ALLOW_DELINQUENT_STAKED_PROMOTE" -eq 1 ) ]]; then
-    SCOPE_DESC=$([[ "$TARGET_MATCH_SCOPE" == "our" ]] && echo "local interface $INTERFACE_IP" || echo "another interface")
-    if [[ "$TARGET_MODE" == "staked" ]]; then
-      if (( STAKED_LAST_VOTE < 0 )); then
-        echo "error: staked promote denied: target identity $TARGET_PUBKEY is already visible on $SCOPE_DESC and has no vote account entry; require cluster absence or slot_lag > $DELINQUENT_SLOT_DISTANCE"
+    if [[ "$TARGET_MATCH_SCOPE" == "none" ]]; then
+      if [[ "$TARGET_MODE" == "staked" ]]; then
+        echo "info: staked identity $STAKED_PUBKEY is absent from getClusterNodes; trying hotswap"
       else
-        echo "error: staked promote denied: target identity $TARGET_PUBKEY is already visible on $SCOPE_DESC with slot_lag=$SLOT_LAG (current=$CURRENT_SLOT last_vote=$STAKED_LAST_VOTE); require slot_lag > $DELINQUENT_SLOT_DISTANCE"
+        break
       fi
     else
-      echo "error: swap denied: target identity $TARGET_PUBKEY is already visible on $SCOPE_DESC; require absence from getClusterNodes"
+      SCOPE_DESC=$([[ "$TARGET_MATCH_SCOPE" == "our" ]] && echo "local interface $INTERFACE_IP" || echo "another interface")
+      if [[ "$TARGET_MODE" != "staked" ]]; then
+        echo "error: swap denied: target identity $TARGET_PUBKEY is already visible on $SCOPE_DESC; require absence from getClusterNodes"
+        exit 1
+      fi
+
+      if [[ "$DUMMY_AT_STAKED_GOSSIP" == "yes" ]]; then
+        echo "info: dummy identity $DUMMY_PUBKEY is visible at staked gossip address $STAKED_GOSSIP_ADDRS; trying hotswap"
+      else
+        STAKED_DELINQUENT="$("${RPC_CURL[@]}" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getVoteAccounts\",\"params\":[{\"keepUnstakedDelinquents\":true,\"delinquentSlotDistance\":$DELINQUENT_SLOT_DISTANCE}]}" "$CLUSTER_RPC_URL" | jq --raw-output --exit-status --arg pubkey "$STAKED_PUBKEY" '
+          any(.result.delinquent[]?; .nodePubkey == $pubkey)
+        ')" || {
+          echo "error: getVoteAccounts RPC failed or response could not be parsed while checking staked promote eligibility: $CLUSTER_RPC_URL"
+          exit 1
+        }
+        if [[ "$STAKED_DELINQUENT" == "true" ]]; then
+          echo "info: staked identity $STAKED_PUBKEY is delinquent with slot distance $DELINQUENT_SLOT_DISTANCE; trying hotswap"
+        else
+          echo "info: staked identity $STAKED_PUBKEY is visible on $SCOPE_DESC and is not delinquent with slot distance $DELINQUENT_SLOT_DISTANCE; waiting"
+          sleep "$CLUSTER_POLL_INTERVAL_SECS"
+          continue
+        fi
+      fi
     fi
-    exit 1
-  fi
+
+    if run "${cmd[@]}"; then
+      run ln -sf "$TARGET_IDENTITY" "$IDENTITY_LINK_PATH"
+      exit 0
+    fi
+    echo "warning: set-identity failed; polling cluster and retrying" >&2
+    sleep "$CLUSTER_POLL_INTERVAL_SECS"
+  done
 fi
 
 if [[ "$WAIT" -eq 1 ]]; then
@@ -313,9 +294,5 @@ if [[ "$WAIT" -eq 1 ]]; then
     echo "warning: --wait is only supported for agave mode; ignoring" >&2
   fi
 fi
-if [[ "$SET_IDENTITY_FORCE" -eq 1 ]]; then
-  cmd+=(--force)
-fi
-cmd+=("$TARGET_IDENTITY")
 run "${cmd[@]}"
 run ln -sf "$TARGET_IDENTITY" "$IDENTITY_LINK_PATH"
