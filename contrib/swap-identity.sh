@@ -261,8 +261,8 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
       if [[ "$DUMMY_AT_STAKED_GOSSIP" == "yes" ]]; then
         echo "info: dummy identity $DUMMY_PUBKEY is visible at staked gossip address $STAKED_GOSSIP_ADDRS; trying hotswap"
       else
-        STAKED_DELINQUENT="$("${RPC_CURL[@]}" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getVoteAccounts\",\"params\":[{\"keepUnstakedDelinquents\":true,\"delinquentSlotDistance\":$DELINQUENT_SLOT_DISTANCE}]}" "$CLUSTER_RPC_URL" | jq --raw-output --exit-status --arg pubkey "$STAKED_PUBKEY" '
-          any(.result.delinquent[]?; .nodePubkey == $pubkey)
+        STAKED_DELINQUENT="$("${RPC_CURL[@]}" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getVoteAccounts\",\"params\":[{\"keepUnstakedDelinquents\":true,\"delinquentSlotDistance\":$DELINQUENT_SLOT_DISTANCE}]}" "$CLUSTER_RPC_URL" | jq --raw-output --arg pubkey "$STAKED_PUBKEY" '
+          if .result then any(.result.delinquent[]?; .nodePubkey == $pubkey) else error(.error.message // "missing result") end
         ')" || {
           echo "error: getVoteAccounts RPC failed or response could not be parsed while checking staked promote eligibility: $CLUSTER_RPC_URL"
           exit 1
