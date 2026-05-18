@@ -118,7 +118,7 @@ typedef struct {
   uint                ingress_rx_tspub;                        /* Compact fd_tickcount() timestamp from the scheduler receive callback. 0 means unknown. */
   bam_types_Packet    packets[ FD_PACK_MAX_TXN_PER_BUNDLE ];   /* decoded packet cache; indices [0,packet_cnt) valid */
   uchar               packet_cnt;                              /* number of packets collected; [0,FD_PACK_MAX_TXN_PER_BUNDLE) */
-  uchar               revert_on_error;                         /* 0/1 value for the most recently collected packet; missing flags default to 0 */
+  _Bool               revert_on_error;                         /* value for the most recently collected packet; missing flags default to false */
   uchar               has_deser_err;                           /* 0/1 value if we have batch-level not-committed reason */
   uchar               deser_index;                             /* zero-based transaction index tied to deserialization error */
   uchar               deser_reason;                            /* bam_types_DeserializationErrorReason enum value */
@@ -238,8 +238,6 @@ struct fd_bam_tile {
   fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for TPU advert updates */
 
   /* Bundle state */
-  uint  bundle_seq;                               /* Monotonic bundle identifier (0 before first bundle). */
-  ulong bundle_max_schedule_slot;                 /* Highest slot allowed by scheduler, or 0 when no BAM bundle is active. */
   fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by max_schedule_slot for debug captures. */
   ulong dump_bam_last_slot;                       /* Most recent max_schedule_slot dumped under FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST. */
   uchar dump_bam_last_slot_valid;                 /* Whether dump_bam_last_slot has been initialized */
@@ -700,16 +698,6 @@ fd_bam_client_grpc_rx_timeout(
 );
 
 void
-fd_bam_tile_publish_bundle_txn(
-    fd_bam_tile_t * ctx,
-    void const *       txn,
-    ushort             txn_sz,
-    uchar              bundle_txn_cnt,
-    uchar              batch_idx,
-    uint               scheduler_arrival_tspub,
-    uint               source_ipv4 );
-
-void
 fd_bam_tile_publish_txn(
     fd_bam_tile_t * ctx,
     void const *       txn,
@@ -718,7 +706,7 @@ fd_bam_tile_publish_txn(
     uint               seq_id,
     uchar              batch_idx,
     uchar              batch_cnt,
-    uchar              revert_on_error,
+    _Bool              revert_on_error,
     uint               scheduler_arrival_tspub,
     uint               source_ipv4 );
 
