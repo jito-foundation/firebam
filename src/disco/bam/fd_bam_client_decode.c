@@ -314,9 +314,9 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     return false;
   }
 
-  uchar packet_revert_on_error = 0U;
+  _Bool packet_revert_on_error = 0;
   if( packet.has_meta && packet.meta.has_flags ) {
-    packet_revert_on_error = packet.meta.flags.revert_on_error;
+    packet_revert_on_error = !!packet.meta.flags.revert_on_error;
   }
 
   if( FD_UNLIKELY( state->packet_cnt && state->revert_on_error != packet_revert_on_error ) ) {
@@ -384,7 +384,6 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .deser_index       = state->deser_index
     };
     fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = 0UL;
     return 0;
   }
 
@@ -401,11 +400,10 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .deser_index       = 0
     };
     fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = 0UL;
     return 0;
   }
 
-  if( FD_UNLIKELY( (!state->revert_on_error) && state->packet_cnt>1U ) ) {
+  if( FD_UNLIKELY( !state->revert_on_error && state->packet_cnt>1U ) ) {
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ]++;
     /* For now, revert_on_error=0 batches are assumed to contain exactly one
        packet so we can return one result per seq_id without BAM-node changes. */
@@ -420,7 +418,6 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .deser_index       = 0
     };
     fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = 0UL;
     return 0;
   }
 
@@ -447,7 +444,6 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .deser_index       = (uchar)simple_vote_idx,
     };
     fd_bam_enqueue_result( ctx, &res );
-    ctx->bundle_max_schedule_slot = 0UL;
     return 0;
   }
 
@@ -557,35 +553,19 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     FD_LOG_NOTICE(( "%s", msg ));
   }
 
-  if( state->revert_on_error ) {
-    ctx->bundle_seq               = batch->seq_id;
-    ctx->bundle_max_schedule_slot = max_schedule_slot;
-
-    for( uchar i=0; i<packet_cnt; i++ ) {
-      fd_bam_tile_publish_bundle_txn( ctx,
-                                      state->packets[i].data.bytes,
-                                      (ushort)state->packets[i].data.size,
-                                      packet_cnt,
-                                      i,
-                                      scheduler_arrival_tspub,
-                                      0 );
-    }
-    ctx->metrics.atomic_batch_published_cnt++;
-  } else {
-    for( uchar i=0; i<packet_cnt; i++ ) {
-      fd_bam_tile_publish_txn( ctx,
-                               state->packets[i].data.bytes,
-                               state->packets[i].data.size,
-                               max_schedule_slot,
-                               batch->seq_id,
-                               i,
-                               packet_cnt,
-                               state->revert_on_error,
-                               scheduler_arrival_tspub,
-                               0 );
-    }
+  for( uchar i=0; i<packet_cnt; i++ ) {
+    fd_bam_tile_publish_txn( ctx,
+                             state->packets[i].data.bytes,
+                             state->packets[i].data.size,
+                             max_schedule_slot,
+                             batch->seq_id,
+                             i,
+                             packet_cnt,
+                             state->revert_on_error,
+                             scheduler_arrival_tspub,
+                             0 );
   }
-  ctx->bundle_max_schedule_slot = 0UL;
+  if( FD_UNLIKELY( state->revert_on_error ) ) ctx->metrics.atomic_batch_published_cnt++;
 }
 
 /* Decodes one bam_types.AtomicTxnBatch message into staged state only.
@@ -772,7 +752,6 @@ fd_bam_commit_multiple_atomic_txn_batch( fd_bam_tile_t *                      ct
     /* Reject counters are recorded at the decode site where err_result was staged
        (overflow/empty wrapper) so the batch/message taxonomy remains accurate. */
     fd_bam_enqueue_result( ctx, &decoded_multi->err_result );
-    ctx->bundle_max_schedule_slot = 0UL;
   }
 }
 

@@ -1161,7 +1161,6 @@ privileged_init( fd_topo_t *      topo,
   ctx->bam_leader_state.slot = ULONG_MAX;
   ctx->pack_bam_leader_in_idx = ULONG_MAX;
   ctx->pack_bam_result_in_idx = ULONG_MAX;
-  ctx->bundle_max_schedule_slot = 0UL;
 
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
   fd_memcpy( ctx->bam_identity_pubkey, public_key, 32UL );
