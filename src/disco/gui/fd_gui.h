@@ -768,11 +768,6 @@ struct fd_gui {
     ulong  ingress_batch_rejected_non_revert_multi_packet;
     ulong  ingress_message_rejected_empty_message;
     ulong  ingress_message_rejected_overflow_message;
-    ulong  leader_slot_end_status_disabled;
-    ulong  leader_slot_end_status_disconnected;
-    ulong  leader_slot_end_status_connecting;
-    ulong  leader_slot_end_status_connected_unhealthy;
-    ulong  leader_slot_end_status_connected_healthy;
   } bam;
 
   struct {

@@ -443,34 +443,23 @@ fd_grpc_client_is_connected( fd_grpc_client_t * client ) {
 }
 
 int
-fd_grpc_client_request_stream_busy( fd_grpc_client_t * client ) {
-  return !!( client && client->request_stream && client->request_tx_op->chunk_sz );
-}
-
-int
 fd_grpc_client_request_is_blocked( fd_grpc_client_t * client ) {
   if( FD_UNLIKELY( !client                                          ) ) return 1;
   if( FD_UNLIKELY( client->conn->flags & FD_H2_CONN_FLAGS_DEAD      ) ) return 1;
   if( FD_UNLIKELY( !client->h2_hs_done                              ) ) return 1;
   if( FD_UNLIKELY( !fd_h2_rbuf_is_empty( client->frame_tx )         ) ) return 1;
-  if( FD_UNLIKELY( fd_grpc_client_request_stream_busy( client )     ) ) return 1;
+  if( FD_UNLIKELY( client->request_stream && client->request_tx_op->chunk_sz ) ) return 1;
   if( FD_UNLIKELY( !fd_grpc_client_stream_acquire_is_safe( client ) ) ) return 1;
   return 0;
 }
 
-static int
-fd_grpc_client_stream_send_is_blocked( fd_grpc_client_t *    client,
-                                       fd_grpc_h2_stream_t * stream ) {
-  if( FD_UNLIKELY( !client || !stream ) ) return 1;
-  if( FD_UNLIKELY( client->conn->flags & FD_H2_CONN_FLAGS_DEAD ) ) return 1;
-  if( FD_UNLIKELY( !fd_h2_rbuf_is_empty( client->frame_tx ) ) ) return 1;
-  if( FD_UNLIKELY( client->request_stream && client->request_stream!=stream ) ) return 1;
-  if( FD_UNLIKELY( fd_grpc_client_request_stream_busy( client ) ) ) return 1;
-  return 0;
+int
+fd_grpc_client_request_stream_busy( fd_grpc_client_t * client ) {
+  return client->request_stream && client->request_tx_op->chunk_sz;
 }
 
 fd_grpc_h2_stream_t *
-fd_grpc_client_request_start_ex(
+fd_grpc_client_request_start(
     fd_grpc_client_t *   client,
     char const *         path,
     ulong                path_len,
@@ -479,7 +468,7 @@ fd_grpc_client_request_start_ex(
     void const *         message,
     char const *         auth_token,
     ulong                auth_token_sz,
-    _Bool                end_stream
+    int                  is_streaming
 ) {
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( client ) ) ) return NULL;
 
@@ -532,40 +521,17 @@ fd_grpc_client_request_start_ex(
 
   /* Queue request payload for send
      (Protobuf message might have to be fragmented into multiple HTTP/2
-     DATA frames if the client gets blocked) */
-  uint flags = end_stream ? FD_H2_FLAG_END_STREAM : 0U;
+     DATA frames if the client gets blocked)
+     For streaming requests, don't set END_STREAM flag yet */
+  uint flags = is_streaming ? 0U : FD_H2_FLAG_END_STREAM;
   fd_h2_tx_op_init( client->request_tx_op, client->nanopb_tx, payload_sz, flags );
   fd_grpc_client_request_continue1( client );
   client->metrics->requests_sent++;
   client->metrics->streams_active++;
 
-  FD_LOG_DEBUG(( "gRPC request path=%.*s sz=%lu end_stream=%d", (int)path_len, path, serialized_sz, (int)end_stream ));
+  FD_LOG_DEBUG(( "gRPC request path=%.*s sz=%lu streaming=%d", (int)path_len, path, serialized_sz, is_streaming ));
 
   return stream;
-}
-
-fd_grpc_h2_stream_t *
-fd_grpc_client_request_start(
-    fd_grpc_client_t *   client,
-    char const *         path,
-    ulong                path_len,
-    ulong                request_ctx,
-    pb_msgdesc_t const * fields,
-    void const *         message,
-    char const *         auth_token,
-    ulong                auth_token_sz,
-    int                  is_streaming
-) {
-  return fd_grpc_client_request_start_ex(
-      client,
-      path,
-      path_len,
-      request_ctx,
-      fields,
-      message,
-      auth_token,
-      auth_token_sz,
-      !is_streaming );
 }
 
 fd_grpc_h2_stream_t *
@@ -653,7 +619,11 @@ fd_grpc_client_stream_send_msg(
     pb_msgdesc_t const * fields,
     void const *         message
 ) {
-  if( FD_UNLIKELY( fd_grpc_client_stream_send_is_blocked( client, stream ) ) ) return 0;
+  if( FD_UNLIKELY( !client || !stream ) ) return 0;
+  if( FD_UNLIKELY( client->conn->flags & FD_H2_CONN_FLAGS_DEAD ) ) return 0;
+  if( FD_UNLIKELY( !fd_h2_rbuf_is_empty( client->frame_tx ) ) ) return 0;
+  if( FD_UNLIKELY( client->request_stream != NULL && ( client->request_stream != stream || client->request_tx_op->chunk_sz ) ) ) return 0; /* Another stream has a request in progress */
+  if( FD_UNLIKELY( stream->s.state==FD_H2_STREAM_STATE_CLOSED ) ) return 0;
 
   /* Encode message */
   FD_TEST( client->nanopb_tx_max > sizeof(fd_grpc_hdr_t) );
@@ -684,49 +654,17 @@ fd_grpc_client_stream_send_msg(
 }
 
 int
-fd_grpc_client_stream_send(
-    fd_grpc_client_t *    client,
-    fd_grpc_h2_stream_t * stream,
-    pb_msgdesc_t const *  fields,
-    void const *          message,
-    _Bool                 end_stream
-) {
-  if( FD_UNLIKELY( fd_grpc_client_stream_send_is_blocked( client, stream ) ) ) return 0;
-  if( FD_UNLIKELY( stream->s.state==FD_H2_STREAM_STATE_CLOSED ) ) return 0;
-
-  FD_TEST( client->nanopb_tx_max > sizeof(fd_grpc_hdr_t) );
-  uchar * proto_buf = client->nanopb_tx + sizeof(fd_grpc_hdr_t);
-  pb_ostream_t ostream = pb_ostream_from_buffer( proto_buf, client->nanopb_tx_max - sizeof(fd_grpc_hdr_t) );
-  if( FD_UNLIKELY( !pb_encode( &ostream, fields, message ) ) ) {
-    FD_LOG_WARNING(( "Failed to encode Protobuf message for stream_id=%u. This is a bug (insufficient buffer space?)", stream->s.stream_id ));
-    return 0;
-  }
-  ulong const serialized_sz = ostream.bytes_written;
-
-  fd_grpc_hdr_t hdr = {
-    .compressed=0,
-    .msg_sz=fd_uint_bswap( (uint)serialized_sz )
-  };
-  memcpy( client->nanopb_tx, &hdr, sizeof(fd_grpc_hdr_t) );
-  ulong const payload_sz = serialized_sz + sizeof(fd_grpc_hdr_t);
-
-  client->request_stream = stream;
-  fd_h2_tx_op_init( client->request_tx_op, client->nanopb_tx, payload_sz, end_stream ? FD_H2_FLAG_END_STREAM : 0U );
-  fd_grpc_client_request_continue1( client );
-
-  FD_LOG_DEBUG(( "gRPC stream_send stream_id=%u sz=%lu end_stream=%d", stream->s.stream_id, serialized_sz, (int)end_stream ));
-
-  return 1;
-}
-
-int
 fd_grpc_client_stream_send_msg1(
     fd_grpc_client_t *    client,
     fd_grpc_h2_stream_t * stream,
     uchar const *         protobuf,
     ulong                 protobuf_sz
 ) {
-  if( FD_UNLIKELY( fd_grpc_client_stream_send_is_blocked( client, stream ) ) ) return 0;
+  if( FD_UNLIKELY( !client || !stream ) ) return 0;
+  if( FD_UNLIKELY( client->conn->flags & FD_H2_CONN_FLAGS_DEAD ) ) return 0;
+  if( FD_UNLIKELY( !fd_h2_rbuf_is_empty( client->frame_tx ) ) ) return 0;
+  if( FD_UNLIKELY( client->request_stream != NULL && ( client->request_stream != stream || client->request_tx_op->chunk_sz ) ) ) return 0; /* Another stream has a request in progress */
+  if( FD_UNLIKELY( stream->s.state==FD_H2_STREAM_STATE_CLOSED ) ) return 0;
 
   /* Validate protobuf size */
   FD_TEST( client->nanopb_tx_max > sizeof(fd_grpc_hdr_t) );

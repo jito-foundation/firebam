@@ -90,7 +90,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   long now_ns = fd_log_wallclock();
   uchar current_slot_first_ingress_state[ FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_CNT ] = {0};
-  long  current_slot_first_ingress_minus_slot_end_ns = LONG_MIN;
   ulong current_slot_first_ingress_state_idx = FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_NO_INGRESS_IDX;
   ulong leader_slot = ctx->bam_leader_state.slot;
   fd_bam_slot_ingress_timing_t const * entry =
@@ -104,7 +103,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
           delta<0L ? FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_BEFORE_END_IDX
         : delta>0L ? FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_AFTER_END_IDX
                    : FD_METRICS_ENUM_BAM_CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE_V_AT_END_IDX;
-      current_slot_first_ingress_minus_slot_end_ns = delta;
     }
   }
   current_slot_first_ingress_state[ current_slot_first_ingress_state_idx ] = 1U;
@@ -139,7 +137,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MCNT_SET( BAM, LEADER_PENDING_REPLACED,      ctx->metrics.leader_pending_replaced_cnt );
   FD_MCNT_ENUM_COPY( BAM, SLOT_INGRESS_RESULT,       ctx->metrics.slot_ingress_result_cnt );
   FD_MCNT_ENUM_COPY( BAM, SLOT_INGRESS_TRANSACTIONS, ctx->metrics.slot_ingress_transactions_cnt );
-  FD_MCNT_ENUM_COPY( BAM, LEADER_SLOT_END_STATUS,     ctx->metrics.leader_slot_end_status_cnt );
   FD_MCNT_ENUM_COPY( BAM, HEALTHY_LEADER_SLOT_RESULT, ctx->metrics.healthy_leader_slot_result_cnt );
   FD_MCNT_ENUM_COPY( BAM, SCHEDULER_PONG_SEND_OUTCOME, ctx->metrics.scheduler_pong_send_outcome_cnt );
 
@@ -157,8 +154,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET( BAM, LEADER_STATE_SLOT_END_NANOS,
                  ctx->bam_leader_state.slot_end_ns>0L ? (ulong)ctx->bam_leader_state.slot_end_ns : 0UL );
   FD_MGAUGE_ENUM_COPY( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_STATE, current_slot_first_ingress_state );
-  FD_MGAUGE_SET( BAM, CURRENT_LEADER_SLOT_FIRST_INGRESS_MINUS_SLOT_END_NANOS,
-                 (ulong)current_slot_first_ingress_minus_slot_end_ns );
   FD_MHIST_COPY( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
   FD_MHIST_COPY( BAM, SCHEDULER_PONG_SEND_NANOS, ctx->metrics.scheduler_pong_send_nanos );
 
@@ -580,13 +575,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     fd_bam_leader_slot_end_tracker_t * tracker = &ctx->leader_slot_end[ i ];
     if( FD_UNLIKELY( !tracker->valid || tracker->counted || !tracker->slot_end_ns || now_ns<tracker->slot_end_ns ) ) continue;
 
-    ulong status_idx = (ulong)tracker->status_at_end;
-    if( FD_UNLIKELY( status_idx >= FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_CNT ) ) {
-      FD_LOG_ERR(( "unknown BAM status code %u", (uint)tracker->status_at_end ));
-    }
-
-    ctx->metrics.leader_slot_end_status_cnt[ status_idx ]++;
-    if( FD_LIKELY( tracker->status_at_end==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) {
+    if( FD_LIKELY( tracker->healthy_at_end ) ) {
       ulong result_idx = tracker->fresh_seen_before_end
         ? FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_V_FRESH_WORK_IDX
         : FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_V_NO_FRESH_WORK_IDX;
@@ -720,7 +709,6 @@ after_credit( fd_bam_tile_t *  ctx,
   ulong const * failure_cnt = metrics->failure_cnt;
   ulong const * ingress_batch_rejected_cnt = metrics->ingress_batch_rejected_cnt;
   ulong const * ingress_message_rejected_cnt = metrics->ingress_message_rejected_cnt;
-  ulong const * leader_slot_end_status_cnt = metrics->leader_slot_end_status_cnt;
   memset( update, 0, sizeof(fd_plugin_msg_bam_update_t) );
 
   strlcpy( update->name, "bam", sizeof( update->name ));
@@ -774,11 +762,6 @@ after_credit( fd_bam_tile_t *  ctx,
   update->ingress_batch_rejected_non_revert_multi_packet = ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ];
   update->ingress_message_rejected_empty_message = ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_EMPTY_MESSAGE_IDX ];
   update->ingress_message_rejected_overflow_message = ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ];
-  update->leader_slot_end_status_disabled = leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_DISABLED_IDX ];
-  update->leader_slot_end_status_disconnected = leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_DISCONNECTED_IDX ];
-  update->leader_slot_end_status_connecting = leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_CONNECTING_IDX ];
-  update->leader_slot_end_status_connected_unhealthy = leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_CONNECTED_UNHEALTHY_IDX ];
-  update->leader_slot_end_status_connected_healthy = leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_V_CONNECTED_HEALTHY_IDX ];
 
   ulong tspub = fd_frag_meta_ts_comp( fd_bam_now() );
   fd_stem_publish(
