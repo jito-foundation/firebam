@@ -508,9 +508,11 @@ after_frag( fd_resolv_ctx_t *   ctx,
   }
 
   int is_bundle_member = !!txnm->block_engine.bundle_id;
+  int is_bam           = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
   int is_durable_nonce = fd_resolv_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
 
-  if( FD_UNLIKELY( !is_bundle_member && !is_durable_nonce && !blockhash ) ) {
+  /* BAM scheduler traffic must preserve stream order into pack. */
+  if( FD_UNLIKELY( !is_bundle_member && !is_bam && !is_durable_nonce && !blockhash ) ) {
     ulong pool_idx;
     if( FD_UNLIKELY( !pool_free( ctx->pool ) ) ) {
       pool_idx = lru_list_idx_pop_tail( ctx->lru_list, ctx->pool );
