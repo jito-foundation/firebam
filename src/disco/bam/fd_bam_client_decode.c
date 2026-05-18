@@ -933,7 +933,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_pong_tag;
       msg.versioned_msg.v0.msg.pong.id = decoded_v0.ping_id;
 
-      int send_ok = fd_grpc_client_stream_send( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg, 0 );
+      int send_ok = fd_grpc_client_stream_send_msg( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg );
       if( FD_LIKELY( send_ok ) ) {
         outcome_idx = FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX;
       } else {

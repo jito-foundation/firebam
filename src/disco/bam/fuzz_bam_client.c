@@ -313,7 +313,7 @@ bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
                             ulong           size ) {
   if( FD_UNLIKELY( !ctx->grpc_client ) ) return;
 
-  /* Pretend the HTTP/2 handshake completed so request_start_ex / stream_send run. */
+  /* Pretend the HTTP/2 handshake completed so request_start / stream_send_msg run. */
   ctx->grpc_client->h2_hs_done  = 1U;
   ctx->grpc_client->ssl_hs_done = 1U;
   fd_h2_conn_t * conn = fd_grpc_client_h2_conn( ctx->grpc_client );
