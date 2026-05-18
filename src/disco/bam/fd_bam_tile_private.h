@@ -75,7 +75,6 @@ struct fd_bam_metrics {
   ulong leader_pending_replaced_cnt;
   ulong slot_ingress_result_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_RESULT_CNT ];
   ulong slot_ingress_transactions_cnt[ FD_METRICS_ENUM_BAM_SLOT_INGRESS_TXN_TIMING_CNT ];
-  ulong leader_slot_end_status_cnt[ FD_METRICS_ENUM_BAM_LEADER_SLOT_END_STATUS_CNT ];
   ulong healthy_leader_slot_result_cnt[ FD_METRICS_ENUM_BAM_HEALTHY_LEADER_SLOT_RESULT_CNT ];
   ulong scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_CNT ];
 
@@ -105,7 +104,7 @@ FD_STATIC_ASSERT( sizeof(fd_bam_slot_ingress_timing_t)==40UL, fd_bam_slot_ingres
 typedef struct {
   ulong                         slot;
   long                          slot_end_ns;
-  fd_plugin_bam_update_status_t status_at_end;
+  uchar                         healthy_at_end;
   uchar                         fresh_seen_before_end;
   uchar                         counted;
   uchar                         valid;
@@ -252,7 +251,7 @@ struct fd_bam_tile {
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_res and bank_bam; preserved across reconnect/reset until flushed */
   fd_bam_leader_state_t  bam_leader_state;               /* Latest pack_bam_ldr snapshot awaiting publication; newer unsent snapshots supersede older ones */
-  fd_bam_leader_slot_end_tracker_t leader_slot_end[ FD_BAM_LEADER_SLOT_END_TRACKER_CNT ]; /* Per-slot metric tracker used to record BAM status and fresh-work state at slot end without relying on transition-history reconstruction. */
+  fd_bam_leader_slot_end_tracker_t leader_slot_end[ FD_BAM_LEADER_SLOT_END_TRACKER_CNT ]; /* Per-slot metric tracker used to record whether healthy BAM-owned slots saw fresh work before slot end. */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
@@ -457,7 +456,7 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
         *tracker = (fd_bam_leader_slot_end_tracker_t){
           .slot          = state->slot,
           .slot_end_ns   = state->slot_end_ns,
-          .status_at_end = ctx->bam_status_counted,
+          .healthy_at_end = (uchar)( ctx->bam_status_counted==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ),
           .valid         = 1U
         };
       }

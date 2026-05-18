@@ -2532,11 +2532,6 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   gui->bam.ingress_batch_rejected_non_revert_multi_packet = update->ingress_batch_rejected_non_revert_multi_packet;
   gui->bam.ingress_message_rejected_empty_message = update->ingress_message_rejected_empty_message;
   gui->bam.ingress_message_rejected_overflow_message = update->ingress_message_rejected_overflow_message;
-  gui->bam.leader_slot_end_status_disabled = update->leader_slot_end_status_disabled;
-  gui->bam.leader_slot_end_status_disconnected = update->leader_slot_end_status_disconnected;
-  gui->bam.leader_slot_end_status_connecting = update->leader_slot_end_status_connecting;
-  gui->bam.leader_slot_end_status_connected_unhealthy = update->leader_slot_end_status_connected_unhealthy;
-  gui->bam.leader_slot_end_status_connected_healthy = update->leader_slot_end_status_connected_healthy;
 
   fd_gui_printf_bam( gui );
   fd_http_server_ws_broadcast( gui->http );

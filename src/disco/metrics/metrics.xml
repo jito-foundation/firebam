@@ -417,14 +417,6 @@ metric introduced.
     <int value="3" name="SchedulerRejected" label="Retained leader state cleared because the scheduler rejected it as outside the valid slot range" />
 </enum>
 
-<enum name="BamLeaderSlotEndStatus">
-    <int value="0" name="Disabled" label="Local leader slot end recorded while BAM was disabled" />
-    <int value="1" name="Disconnected" label="Local leader slot end recorded while BAM was disconnected" />
-    <int value="2" name="Connecting" label="Local leader slot end recorded while BAM was still connecting" />
-    <int value="3" name="ConnectedUnhealthy" label="Local leader slot end recorded while BAM transport and stream were up but heartbeat/config health was not yet healthy" />
-    <int value="4" name="ConnectedHealthy" label="Local leader slot end recorded while BAM was fully healthy and owned TPU ingress" />
-</enum>
-
 <enum name="BamHealthyLeaderSlotResult">
     <int value="0" name="FreshWork" label="Healthy BAM-owned leader slot ended after fresh current-slot BAM work arrived before slot end" />
     <int value="1" name="NoFreshWork" label="Healthy BAM-owned leader slot ended without fresh current-slot BAM work arriving before slot end" />
@@ -502,7 +494,6 @@ metric introduced.
     <counter name="LeaderPendingReplaced" summary="Cumulative number of pending leader-state updates replaced by a newer leader-state update before send" />
     <counter name="SlotIngressResult" enum="BamSlotIngressResult" summary="Cumulative number of BAM slot-ingress records finalized after they aged out of the local retention window, bucketed by the first scheduler-receive callback for that slot relative to slot end or as unresolved when no slot attribution was available" />
     <counter name="SlotIngressTransactions" enum="BamSlotIngressTxnTiming" summary="Cumulative number of BAM ingress transactions counted in finalized ingress rollups using scheduler-receive callback timestamps, bucketed as before-end or after-end only when slot_end_ns was known at observation time, else unknown or unresolved when no slot attribution was available" />
-    <counter name="LeaderSlotEndStatus" enum="BamLeaderSlotEndStatus" summary="Cumulative number of local leader slots whose slot_end_ns was observed and recorded, bucketed by BAM client status at slot end reconstructed from the local BAM status history" />
     <counter name="HealthyLeaderSlotResult" enum="BamHealthyLeaderSlotResult" summary="Cumulative number of local leader slots that reached slot_end_ns while BAM status was CONNECTED_HEALTHY, bucketed by whether fresh current-slot BAM work had arrived before slot end" />
     <counter name="SchedulerPongSendOutcome" enum="BamSchedulerPongSendOutcome" summary="Cumulative number of BAM scheduler Ping-to-Pong send outcomes, including no-live-stream skips, local send-boundary contention, and live-stream fd_grpc_client_stream_send results" />
     <gauge name="KeepaliveRttSample" summary="Latest HTTP/2 keepalive round-trip time sample captured at scrape time (nanoseconds)" />
@@ -511,7 +502,6 @@ metric introduced.
     <gauge name="KeepaliveRttValid" summary="Boolean gauge: 1 after the first HTTP/2 keepalive RTT sample has been observed, 0 before RTT estimates are initialized" />
     <gauge name="FeedbackQueueDepth" summary="Current number of BAM feedback results buffered for send" />
     <gauge name="CurrentLeaderSlotFirstIngressState" enum="BamCurrentLeaderSlotFirstIngressState" summary="One-hot state for the current leader slot's first observed scheduler-receive callback relative to slot end. Exactly one enum bucket is exported as 1 for the current local view; all others are 0." />
-    <gauge name="CurrentLeaderSlotFirstIngressMinusSlotEndNanos" converter="signed_none" summary="Signed nanosecond delta between the current leader slot's first observed scheduler-receive callback and slot_end_ns. Negative means before slot end, 0 means exactly at slot end, positive means after slot end, and LONG_MIN means no first ingress has been observed yet or slot_end_ns is still unknown." />
     <histogram name="BuilderHeartbeatArrivalDeltaNanos" min="10000" max="100000000">
         <summary>Distribution of remote BuilderHeartBeat timestamp to local scheduler-stream receive callback delta (nanoseconds); includes clock offset and is intended only for relative trend analysis</summary>
     </histogram>
