@@ -352,14 +352,14 @@ test_bam_decode_last_message( fd_bam_tile_t *             state,
 
 FD_FN_UNUSED static void
 test_bam_init_simple_vote_packet( bam_types_Packet * packet,
-                                  uchar              revert_on_error ) {
+                                  _Bool              revert_on_error ) {
   fd_memset( packet, 0, sizeof(*packet) );
   packet->data.size = (pb_size_t)test_bam_sample_vote_sz;
   fd_memcpy( packet->data.bytes, test_bam_sample_vote, test_bam_sample_vote_sz );
   packet->has_meta = 1U;
   packet->meta.size = (pb_size_t)test_bam_sample_vote_sz;
   packet->meta.has_flags = 1U;
-  packet->meta.flags.revert_on_error = !!revert_on_error;
+  packet->meta.flags.revert_on_error = revert_on_error;
   packet->meta.flags.simple_vote_tx  = 1U;
 }
 

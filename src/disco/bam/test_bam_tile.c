@@ -275,7 +275,7 @@ test_bam_build_scheduler_batch_msg(uchar *  out,
                                    size_t   out_sz,
                                    uint32_t seq_id,
                                    uchar    packet_cnt,
-                                   int      revert_on_error) {
+                                   _Bool    revert_on_error ) {
   bam_types_Packet packets[ packet_cnt ];
   fd_memset( packets, 0, sizeof( packets ) );
   for( size_t i=0; i<packet_cnt; i++ ) {
@@ -312,7 +312,7 @@ test_bam_send_scheduler_heartbeat( fd_bam_tile_t * state,
 static void
 test_bam_send_scheduler_bundle( fd_bam_tile_t * state,
                                 uint32_t        seq_id,
-                                int             revert_on_error ) {
+                                _Bool           revert_on_error ) {
   uchar protobuf[256];
   size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), seq_id, 2, revert_on_error);
   fd_bam_client_grpc_rx_msg( state,
@@ -357,7 +357,40 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( first->source_tpu    == FD_TXN_M_TPU_SOURCE_BAM );
   FD_TEST( first->bam.seq_id    == 0U );
   FD_TEST( first->bam.txn_cnt == 1UL );
+  FD_TEST( first->block_engine.bundle_id == 0UL );
+  FD_TEST( first->block_engine.bundle_txn_cnt == 0UL );
   FD_TEST( first->scheduler_arrival_tspub != 0U );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_atomic_batch_sets_internal_bundle_metadata( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  uchar protobuf[512];
+  size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 0U, 2, 1 );
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 1UL );
+  FD_TEST( state->metrics.transaction_published_cnt == 2UL );
+
+  fd_txn_m_t * first  = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, env->out_mcache[0].chunk );
+  fd_txn_m_t * second = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, env->out_mcache[1].chunk );
+
+  FD_TEST( first->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( second->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( first->bam.seq_id == 0U );
+  FD_TEST( second->bam.seq_id == 0U );
+  FD_TEST( first->block_engine.bundle_id == 1UL );
+  FD_TEST( second->block_engine.bundle_id == 1UL );
+  FD_TEST( first->block_engine.bundle_txn_cnt == 2UL );
+  FD_TEST( second->block_engine.bundle_txn_cnt == 0UL );
 
   test_bam_env_destroy( env );
 }
@@ -636,7 +669,6 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
 
   FD_TEST( state->metrics.transaction_published_cnt == 3UL );
   FD_TEST( state->metrics.atomic_batch_published_cnt == 1UL );
-  FD_TEST( state->bundle_seq == 7U );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   fd_frag_meta_t * meta = env->out_mcache;
@@ -651,18 +683,24 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( tx0->bam.seq_id == 6U );
   FD_TEST( tx0->bam.revert_on_error == 0U );
   FD_TEST( tx0->bam.txn_cnt == 1U );
+  FD_TEST( tx0->block_engine.bundle_id == 0UL );
+  FD_TEST( tx0->block_engine.bundle_txn_cnt == 0UL );
 
   FD_TEST( tx1->bam.seq_id == 7U );
   FD_TEST( tx1->bam.revert_on_error == 1U );
   FD_TEST( tx1->bam.txn_cnt == 2U );
   FD_TEST( tx1->bam.batch_idx == 0U );
   FD_TEST( tx1->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( tx1->block_engine.bundle_id == 8UL );
+  FD_TEST( tx1->block_engine.bundle_txn_cnt == 2UL );
 
   FD_TEST( tx2->bam.seq_id == 7U );
   FD_TEST( tx2->bam.revert_on_error == 1U );
   FD_TEST( tx2->bam.txn_cnt == 2U );
   FD_TEST( tx2->bam.batch_idx == 1U );
   FD_TEST( tx2->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( tx2->block_engine.bundle_id == 8UL );
+  FD_TEST( tx2->block_engine.bundle_txn_cnt == 0UL );
 
   uchar const * payload0 = fd_txn_m_payload( tx0 );
   uchar const * payload1 = fd_txn_m_payload( tx1 );
@@ -724,7 +762,6 @@ test_bam_multiple_batches_accept_limit_counts( fd_wksp_t * wksp ) {
 
   FD_TEST( state->metrics.transaction_published_cnt == expected_txn_cnt );
   FD_TEST( state->metrics.atomic_batch_published_cnt == TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
-  FD_TEST( state->bundle_seq == 700U + TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET - 1U );
 
   fd_frag_meta_t * meta = env->out_mcache;
   FD_TEST( meta[0].seq == 0UL );
@@ -1030,7 +1067,6 @@ test_bam_bundle_forwards_without_builder_info( fd_wksp_t * wksp ) {
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->metrics.atomic_batch_published_cnt == 1UL );
-  FD_TEST( state->bundle_seq == 2U );
   FD_TEST( state->metrics.transaction_published_cnt == 2UL );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
@@ -1040,7 +1076,11 @@ test_bam_bundle_forwards_without_builder_info( fd_wksp_t * wksp ) {
   FD_TEST( first->bam.seq_id == 2U );
   FD_TEST( first->bam.revert_on_error == 1U );
   FD_TEST( first->bam.batch_idx == 0U );
+  FD_TEST( first->block_engine.bundle_id == 3UL );
+  FD_TEST( first->block_engine.bundle_txn_cnt == 2UL );
   FD_TEST( second->bam.batch_idx == 1U );
+  FD_TEST( second->block_engine.bundle_id == 3UL );
+  FD_TEST( second->block_engine.bundle_txn_cnt == 0UL );
 
   test_bam_env_destroy( env );
 }
@@ -1053,7 +1093,7 @@ typedef struct {
     uchar payload;
     uchar has_meta;
     uchar has_flags;
-    uchar revert_on_error;
+    _Bool revert_on_error;
   } packet[ 2 ];
 } test_bam_revert_case_t;
 
@@ -4473,6 +4513,7 @@ main( int     argc,
 
   /* Scheduler ingestion/validation */
   test_bam_packets_forwarded( wksp );
+  test_bam_atomic_batch_sets_internal_bundle_metadata( wksp );
   test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_rejects_stale_arrival( wksp );
   test_bam_current_slot_work_status_bits( wksp );
   test_bam_slot_ingress_timing_tracks_hash_collisions( wksp );

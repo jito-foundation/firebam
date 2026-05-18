@@ -49,7 +49,7 @@ struct __attribute__((aligned(64))) fd_txn_p {
   struct {
     uint  seq_id;
     uchar batch_idx;
-    uchar revert_on_error;
+    _Bool revert_on_error;
   } bam;
   /* union {
     This would be ideal but doesn't work because of the flexible array member

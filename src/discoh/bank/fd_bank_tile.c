@@ -126,33 +126,19 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
   if( FD_UNLIKELY( txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM || txn->bam.revert_on_error ) ) return;
 
   _Bool committed = !!( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
-  fd_bam_bundle_result_t res = {0};
-  res.seq_id            = txn->bam.seq_id;
-  res.slot              = slot;
-  res.bundle_txn_cnt    = 1U;
+  fd_bam_bundle_result_t res = fd_bam_result_base( txn->bam.seq_id, slot, 1U );
   res.execution_success = committed;
-  res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-  res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
   res.consumed_cus[ 0 ] = txn->execle_cu.actual_consumed_cus;
   res.feepayer_balance_lamports[ 0 ] = feepayer_balance_lamports;
   res.loaded_accounts_data_size[ 0 ] = loaded_accounts_data_size;
-  res.sanitize_success[ 0 ] = sanitize_success;
+  if( FD_LIKELY( sanitize_success ) ) fd_bam_result_mark_sanitize_success( &res, 0UL );
 
   if( FD_UNLIKELY( !sanitize_success ) ) {
-    res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_SANITIZE_FAILURE;
-    res.transaction_err_count = 1U;
+    fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_SANITIZE_FAILURE );
   } else if( FD_UNLIKELY( transaction_err_idx!=FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ) ) {
-    if( FD_LIKELY( transaction_err_idx>=FD_METRICS_ENUM_TRANSACTION_ERROR_V_ACCOUNT_IN_USE_IDX &&
-                   transaction_err_idx<=FD_METRICS_ENUM_TRANSACTION_ERROR_V_COMMIT_CANCELLED_IDX ) ) {
-      uint idx = (uint)( transaction_err_idx - FD_METRICS_ENUM_TRANSACTION_ERROR_V_ACCOUNT_IN_USE_IDX );
-      res.transaction_err[ 0 ] = (bam_types_TransactionErrorReason)idx;
-    } else {
-      res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
-    }
-    res.transaction_err_count = 1U;
+    fd_bam_result_add_txn_error( &res, 0UL, fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) );
   } else if( FD_UNLIKELY( !committed ) ) {
-    res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
-    res.transaction_err_count = 1U;
+    fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
   }
 
   bank_tile_publish_bam_result( ctx, stem, &res );
@@ -592,17 +578,12 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   if( FD_LIKELY( txn_cnt ) ) {
     fd_txn_p_t const * first = &txns[ 0 ];
     if( FD_LIKELY( first->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && first->bam.revert_on_error ) ) {
-      fd_bam_bundle_result_t res = {0};
-      res.seq_id            = first->bam.seq_id;
-      res.slot              = slot;
-      res.bundle_txn_cnt    = (uchar)txn_cnt;
+      fd_bam_bundle_result_t res = fd_bam_result_base( first->bam.seq_id, slot, (uchar)txn_cnt );
       res.execution_success = execution_success;
-      res.scheduling_error  = FD_BAM_SCHED_ERR_NONE;
-      res.bundle_err        = FD_BAM_BUNDLE_ERR_NONE;
 
       for( ulong i=0UL; i<txn_cnt; i++ ) {
         _Bool sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
-        res.sanitize_success[ i ] = sanitize_success;
+        if( FD_LIKELY( sanitize_success ) ) fd_bam_result_mark_sanitize_success( &res, i );
         res.consumed_cus[ i ]     = txns[ i ].execle_cu.actual_consumed_cus;
       }
 
@@ -618,20 +599,14 @@ handle_bundle( fd_bank_ctx_t *     ctx,
         for( ulong i=0UL; i<txn_cnt; i++ ) {
           _Bool sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
           if( FD_UNLIKELY( !sanitize_success ) ) {
-            res.transaction_err[ i ] = bam_types_TransactionErrorReason_SANITIZE_FAILURE;
+            fd_bam_result_set_txn_error( &res, i, bam_types_TransactionErrorReason_SANITIZE_FAILURE );
             continue;
           }
           int transaction_err_idx = transaction_err[ i ];
           if( FD_UNLIKELY( transaction_err_idx==FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ) ) {
-            res.transaction_err[ i ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+            fd_bam_result_set_txn_error( &res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
           } else {
-            if( FD_LIKELY( transaction_err_idx>=FD_METRICS_ENUM_TRANSACTION_ERROR_V_ACCOUNT_IN_USE_IDX &&
-                           transaction_err_idx<=FD_METRICS_ENUM_TRANSACTION_ERROR_V_COMMIT_CANCELLED_IDX ) ) {
-              uint idx = (uint)( transaction_err_idx - FD_METRICS_ENUM_TRANSACTION_ERROR_V_ACCOUNT_IN_USE_IDX );
-              res.transaction_err[ i ] = (bam_types_TransactionErrorReason)idx;
-            } else {
-              res.transaction_err[ i ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
-            }
+            fd_bam_result_set_txn_error( &res, i, fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) );
           }
         }
       }

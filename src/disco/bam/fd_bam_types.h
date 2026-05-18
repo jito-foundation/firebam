@@ -4,6 +4,8 @@
 #include "../pack/fd_pack.h" /* FD_PACK_MAX_TXN_PER_BUNDLE */
 #include "proto/bam_types.pb.h"
 #include "../../util/net/fd_net_headers.h"
+#include "../metrics/generated/fd_metrics_enums.h"
+#include "../../flamenco/runtime/fd_runtime_err.h"
 
 /* Central definitions for user-visible BAM error strings.
    Keep format strings and prefixes in one place so tests can
@@ -102,5 +104,87 @@ typedef struct {
 #define FD_BAM_SCHED_ERR_POH_TIMEOUT     bam_types_SchedulingError_POH_TIMEOUT
 #define FD_BAM_SCHED_ERR_OUTSIDE_SLOT    bam_types_SchedulingError_OUTSIDE_LEADER_SLOT
 #define FD_BAM_SCHED_ERR_CONTAINER_FULL  bam_types_SchedulingError_CONTAINER_FULL
+
+static inline fd_bam_bundle_result_t
+fd_bam_result_base( uint  seq_id,
+                    ulong slot,
+                    uchar txn_cnt ) {
+  return (fd_bam_bundle_result_t) {
+    .seq_id           = seq_id,
+    .slot             = slot,
+    .bundle_txn_cnt   = txn_cnt,
+    .scheduling_error = FD_BAM_SCHED_ERR_NONE,
+    .bundle_err       = FD_BAM_BUNDLE_ERR_NONE,
+  };
+}
+
+static inline void
+fd_bam_result_mark_sanitize_success( fd_bam_bundle_result_t * res,
+                                     ulong                    idx ) {
+  if( FD_LIKELY( idx<FD_PACK_MAX_TXN_PER_BUNDLE ) ) res->sanitize_success[ idx ] = 1U;
+}
+
+static inline void
+fd_bam_result_mark_sanitize_success_all( fd_bam_bundle_result_t * res ) {
+  for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) res->sanitize_success[ i ] = 1U;
+}
+
+static inline void
+fd_bam_result_set_txn_error( fd_bam_bundle_result_t *      res,
+                             ulong                         idx,
+                             bam_types_TransactionErrorReason reason ) {
+  if( FD_LIKELY( idx<FD_PACK_MAX_TXN_PER_BUNDLE ) ) res->transaction_err[ idx ] = reason;
+}
+
+static inline void
+fd_bam_result_add_txn_error( fd_bam_bundle_result_t *      res,
+                             ulong                         idx,
+                             bam_types_TransactionErrorReason reason ) {
+  if( FD_UNLIKELY( idx>=FD_PACK_MAX_TXN_PER_BUNDLE ) ) return;
+  fd_bam_result_set_txn_error( res, idx, reason );
+  res->transaction_err_count++;
+}
+
+static inline bam_types_TransactionErrorReason
+fd_bam_txn_err_from_pack_insert( int pack_rc ) {
+  switch( pack_rc ) {
+  case FD_PACK_INSERT_REJECT_DUPLICATE:        return bam_types_TransactionErrorReason_ALREADY_PROCESSED;
+  case FD_PACK_INSERT_REJECT_UNAFFORDABLE:     return bam_types_TransactionErrorReason_INSUFFICIENT_FUNDS_FOR_FEE;
+  case FD_PACK_INSERT_REJECT_ADDR_LUT:         return bam_types_TransactionErrorReason_ADDRESS_LOOKUP_TABLE_NOT_FOUND;
+  case FD_PACK_INSERT_REJECT_EXPIRED:          return bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  case FD_PACK_INSERT_REJECT_TOO_LARGE:        return bam_types_TransactionErrorReason_WOULD_EXCEED_MAX_BLOCK_COST_LIMIT;
+  case FD_PACK_INSERT_REJECT_ACCOUNT_CNT:      return bam_types_TransactionErrorReason_TOO_MANY_ACCOUNT_LOCKS;
+  case FD_PACK_INSERT_REJECT_DUPLICATE_ACCT:   return bam_types_TransactionErrorReason_ACCOUNT_LOADED_TWICE;
+  case FD_PACK_INSERT_REJECT_ESTIMATION_FAIL:  return bam_types_TransactionErrorReason_SANITIZE_FAILURE;
+  case FD_PACK_INSERT_REJECT_WRITES_SYSVAR:    return bam_types_TransactionErrorReason_INVALID_WRITABLE_ACCOUNT;
+  case FD_PACK_INSERT_REJECT_INVALID_NONCE:    return bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
+  case FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST: return bam_types_TransactionErrorReason_PROGRAM_EXECUTION_TEMPORARILY_RESTRICTED;
+  case FD_PACK_INSERT_REJECT_NONCE_CONFLICT:   return bam_types_TransactionErrorReason_SANITIZE_FAILURE;
+  default:                                     return bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+  }
+}
+
+static inline bam_types_TransactionErrorReason
+fd_bam_txn_err_from_transaction_error_idx( int transaction_err_idx ) {
+  if( FD_LIKELY( transaction_err_idx>=FD_METRICS_ENUM_TRANSACTION_ERROR_V_ACCOUNT_IN_USE_IDX &&
+                 transaction_err_idx<=FD_METRICS_ENUM_TRANSACTION_ERROR_V_COMMIT_CANCELLED_IDX ) ) {
+    return (bam_types_TransactionErrorReason)( transaction_err_idx - FD_METRICS_ENUM_TRANSACTION_ERROR_V_ACCOUNT_IN_USE_IDX );
+  }
+  return bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+}
+
+static inline bam_types_TransactionErrorReason
+fd_bam_txn_err_from_runtime_err( int err ) {
+  switch( err ) {
+  case FD_RUNTIME_TXN_ERR_BLOCKHASH_NONCE_ALREADY_ADVANCED:
+  case FD_RUNTIME_TXN_ERR_BLOCKHASH_FAIL_ADVANCE_NONCE_INSTR:
+  case FD_RUNTIME_TXN_ERR_BLOCKHASH_FAIL_WRONG_NONCE:
+    return bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
+  default:
+    if( FD_LIKELY( err<=FD_RUNTIME_TXN_ERR_ACCOUNT_IN_USE && err>=FD_RUNTIME_TXN_ERR_COMMIT_CANCELLED ) )
+      return (bam_types_TransactionErrorReason)( -err - 1 );
+    return bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+  }
+}
 
 #endif /* HEADER_fd_src_disco_bam_fd_bam_types_h */
