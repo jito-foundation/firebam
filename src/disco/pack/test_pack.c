@@ -1792,6 +1792,15 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
 
   FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_TXN | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==0UL );
 
+  txn = fd_pack_insert_txn_init( pack );
+  make_transaction1( txn->txnp, 501UL, 2000U, 32U, 1.0, "b", "", NULL, NULL );
+  txn->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
+  FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &_deleted )>=0 );
+
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_TXN | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==1UL );
+  FD_TEST( outcome.results[0].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+  fd_pack_microblock_complete( pack, 0UL );
+
   fd_pack_set_initializer_bundles_ready( pack );
 
   fd_txn_e_t * _bundle[ FD_PACK_MAX_TXN_PER_BUNDLE ];
