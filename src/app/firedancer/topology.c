@@ -837,8 +837,6 @@ fd_topo_initialize( config_t * config ) {
 
     /**/                 fd_topob_tile_in(  topo, "sign",   0UL,           "metric_in", "bam_sign",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_sign",     0UL                                                );
-    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "sign_bam",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
-    /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_bam",     0UL                                                );
 
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_gossip",   0UL                                                );
     /**/                 fd_topob_tile_in(  topo, "gossip", 0UL,           "metric_in", "bam_gossip",   0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
@@ -853,6 +851,10 @@ fd_topo_initialize( config_t * config ) {
     FOR(verify_tile_cnt) fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     execle_tile_cnt+i, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_shred",    0UL                                                );
     FOR(shred_tile_cnt)  fd_topob_tile_in(  topo, "shred",  i,             "metric_in", "bam_shred",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+
+    /* sign_bam is read out of band, so keep it after BAM's polled feedback inputs. */
+    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "sign_bam",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
+    /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_bam",     0UL                                                );
   }
 
   FOR(shred_tile_cnt)    fd_topob_tile_in ( topo, "shred",   i,            "metric_in", "replay_epoch",  0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
