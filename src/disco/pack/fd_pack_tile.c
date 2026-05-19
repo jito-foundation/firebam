@@ -420,9 +420,8 @@ struct fd_pack_ctx {
     fd_txn_e_t * const * bundle; /* points to _txn when non-NULL */
   } current_bundle[1];
 
-  /* BAM metadata sidecar for current_bundle when it is assembling a
-     revert_on_error AtomicTxnBatch. The bundle storage itself is shared
-     with block-engine bundles. */
+  /* BAM metadata sidecar for current_bundle when it is assembling scheduler
+     work. The bundle storage itself is shared with block-engine bundles. */
   struct {
     ulong max_schedule_slot;
     _Bool is_bam;
@@ -1994,17 +1993,20 @@ during_frag( fd_pack_ctx_t * ctx,
       FD_MCNT_INC( PACK, TRANSACTION_EXPIRED, exp_cnt );
     }
 
-    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.revert_on_error ) ) {
+    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
       FD_TEST( txnm->bam.txn_cnt>0UL && txnm->bam.txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
       FD_TEST( txnm->bam.batch_idx<txnm->bam.txn_cnt );
-      FD_TEST( txnm->block_engine.bundle_id==((ulong)txnm->bam.seq_id)+1UL );
-      FD_TEST( txnm->bam.batch_idx ? !txnm->block_engine.bundle_txn_cnt : txnm->block_engine.bundle_txn_cnt==txnm->bam.txn_cnt );
+      ulong bam_bundle_id = ((ulong)txnm->bam.seq_id)+1UL;
+      FD_TEST( txnm->bam.revert_on_error || txnm->bam.txn_cnt==1UL );
+      FD_TEST( txnm->bam.revert_on_error || txnm->bam.batch_idx==0U );
+      FD_TEST( txnm->block_engine.bundle_id==fd_ulong_if( txnm->bam.revert_on_error, bam_bundle_id, 0UL ) );
+      FD_TEST( txnm->block_engine.bundle_txn_cnt==fd_ulong_if( txnm->bam.revert_on_error && !txnm->bam.batch_idx, (ulong)txnm->bam.txn_cnt, 0UL ) );
 
       ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_BAM;
 
       if( FD_LIKELY( !ctx->current_bundle->bundle ||
                      !ctx->current_bundle_bam->is_bam ||
-                     ctx->current_bundle->id!=txnm->block_engine.bundle_id ) ) {
+                     ctx->current_bundle->id!=bam_bundle_id ) ) {
         if( FD_UNLIKELY( ctx->current_bundle->bundle &&
                          ctx->current_bundle_bam->is_bam &&
                          ctx->current_bundle->txn_received!=ctx->current_bundle->txn_cnt ) ) {
@@ -2015,7 +2017,7 @@ during_frag( fd_pack_ctx_t * ctx,
           ctx->current_bundle->bundle = NULL;
         }
 
-        ctx->current_bundle->id                 = txnm->block_engine.bundle_id;
+        ctx->current_bundle->id                 = bam_bundle_id;
         ctx->current_bundle->txn_cnt            = txnm->bam.txn_cnt;
         ctx->current_bundle->txn_received       = 0UL;
         ctx->current_bundle->min_blockhash_slot = ULONG_MAX;
@@ -2026,6 +2028,7 @@ during_frag( fd_pack_ctx_t * ctx,
         pack_tile_note_bam_received( ctx, pack_tile_bam_funnel_slot( ctx, txnm->bam.max_schedule_slot ), txnm->bam.seq_id, 1UL, txnm->bam.txn_cnt );
       }
 
+      FD_TEST( txnm->bam.txn_cnt==ctx->current_bundle->txn_cnt );
       FD_TEST( txnm->bam.batch_idx==ctx->current_bundle->txn_received );
       ctx->cur_spot                           = ctx->current_bundle->bundle[ txnm->bam.batch_idx ];
       ctx->current_bundle->min_blockhash_slot = fd_ulong_min( ctx->current_bundle->min_blockhash_slot, sig );

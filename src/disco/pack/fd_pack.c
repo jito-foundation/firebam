@@ -1804,7 +1804,6 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
                        ulong                alloc_limit,
                        ulong                bank_tile,
                        fd_pack_smallest_t * smallest_in_treap,
-                       _Bool                bam_only,
                        ulong              * use_by_bank_txn,
                        fd_txn_e_t         * out ) {
 
@@ -1864,8 +1863,6 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
 
     min_cus   = fd_ulong_min( min_cus,   cur->compute_est     );
     min_bytes = fd_ulong_min( min_bytes, cur->txn->payload_sz );
-
-    if( FD_UNLIKELY( bam_only && cur->txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
 
     ulong conflicts = 0UL;
 
@@ -2520,6 +2517,10 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     out_txnp->source_ipv4                     = cur->txn->source_ipv4;
     out_txnp->flags                           = cur->txn->flags;
     out_txnp->bam                             = cur->txn->bam;
+    _Bool bam_independent = out_txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !out_txnp->bam.revert_on_error;
+    if( FD_UNLIKELY( txn_cnt==1UL && bam_independent ) ) {
+      out_txnp->flags &= ~FD_TXN_P_FLAGS_BUNDLE;
+    }
     /* Copy the ALT accounts from the source fd_txn_e_t */
     ulong alt_acct_cnt = (ulong)txn->addr_table_adtl_cnt;
     fd_memcpy( out->alt_accts, cur->txn_e->alt_accts, alt_acct_cnt * sizeof(fd_acct_addr_t) );
@@ -2621,11 +2622,12 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
 
   sched_return_t status = {0}, status1 = {0};
   _Bool bam_only = !!( schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY );
+  if( FD_UNLIKELY( bam_only ) ) schedule_flags &= FD_PACK_SCHEDULE_BUNDLE;
 
   if( FD_LIKELY( schedule_flags & FD_PACK_SCHEDULE_VOTE ) ) {
     /* Schedule vote transactions */
     status1= fd_pack_schedule_impl( pack, pack->pending_votes, vote_cus, vote_reserved_txns, byte_limit, alloc_limit, bank_tile,
-        pack->pending_votes_smallest, 0, use_by_bank_txn, out+scheduled );
+        pack->pending_votes_smallest, use_by_bank_txn, out+scheduled );
 
     scheduled                   += status1.txns_scheduled;
     pack->cumulative_vote_cost  += status1.cus_scheduled;
@@ -2657,7 +2659,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
   /* Fill any remaining space with non-vote transactions */
   if( FD_LIKELY( schedule_flags & FD_PACK_SCHEDULE_TXN ) ) {
     status = fd_pack_schedule_impl( pack, pack->pending,       cu_limit, txn_limit,          byte_limit, alloc_limit, bank_tile,
-        pack->pending_smallest,       bam_only, use_by_bank_txn, out+scheduled );
+        pack->pending_smallest,       use_by_bank_txn, out+scheduled );
 
     scheduled                   += status.txns_scheduled;
     pack->cumulative_block_cost += status.cus_scheduled;
