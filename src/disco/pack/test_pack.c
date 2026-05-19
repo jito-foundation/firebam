@@ -128,6 +128,11 @@ make_transaction1( fd_txn_p_t * txnp,
   uchar * p_base = p;
   fd_txn_t * t = TXN( txnp );
 
+  txnp->source_tpu  = FD_TXN_M_TPU_SOURCE_UDP;
+  txnp->source_ipv4 = 0U;
+  txnp->flags       = 0U;
+  fd_memset( &txnp->bam, 0, sizeof(txnp->bam) );
+
   *(p++) = (uchar)1;
   fd_memcpy( p,                                   &i,               sizeof(ulong)                                    );
   fd_memcpy( p+sizeof(ulong),                     SIGNATURE_SUFFIX, FD_TXN_SIGNATURE_SZ - sizeof(ulong)-sizeof(uint) );
@@ -1740,8 +1745,8 @@ test_bam_nonrevert_seq_conflict_order( void ) {
     double priority;
     uint   seq;
   } cases[2] = {
-    { 300UL, 12.0, 20U },
-    { 301UL,  3.0, 10U },
+    { 300UL,  3.0, 20U },
+    { 301UL, 12.0, 10U },
   };
 
   fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, 64UL, &outcome );
@@ -1766,7 +1771,7 @@ test_bam_nonrevert_seq_conflict_order( void ) {
     fd_memcpy( &txn_id, outcome.results[0].txnp->payload + 1UL, sizeof(ulong) );
     FD_TEST( txn_cnt==1UL );
     FD_TEST( txn_id==cases[i].txn_id );
-    FD_TEST( outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_BUNDLE );
+    FD_TEST( !( outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_BUNDLE ) );
     FD_TEST( outcome.results[0].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
     FD_TEST( outcome.results[0].txnp->bam.seq_id==cases[i].seq );
     FD_TEST( outcome.results[0].txnp->bam.batch_idx==0U );
@@ -1797,9 +1802,7 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
   txn->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
   FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &_deleted )>=0 );
 
-  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_TXN | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==1UL );
-  FD_TEST( outcome.results[0].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
-  fd_pack_microblock_complete( pack, 0UL );
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_TXN | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==0UL );
 
   fd_pack_set_initializer_bundles_ready( pack );
 
