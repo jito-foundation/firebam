@@ -631,7 +631,9 @@ void fd_pack_set_initializer_bundles_ready( fd_pack_t * pack );
 
 /* FD_PACK_SCHEDULE_{VOTE,BUNDLE,TXN} form a set of bitflags used in
    fd_pack_schedule_next_microblock below.  They control what types of
-   scheduling are allowed.  The names should be self-explanatory. */
+   scheduling are allowed.  The BAM_ONLY bit suppresses normal
+   transactions and filters bundles to BAM work, but does not suppress
+   votes. */
 #define FD_PACK_SCHEDULE_VOTE   1
 #define FD_PACK_SCHEDULE_BUNDLE 2
 #define FD_PACK_SCHEDULE_TXN    4

@@ -1804,7 +1804,33 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
 
   FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_TXN | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==0UL );
 
+  fd_pack_clear_all( pack );
+
+  txn = fd_pack_insert_txn_init( pack );
+  make_vote_transaction1( txn->txnp, 520UL );
+  txn->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_UDP;
+  FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &_deleted )>=0 );
+
+  txn = fd_pack_insert_txn_init( pack );
+  make_transaction1( txn->txnp, 521UL, 2000U, 32U, 20.0, "a", "", NULL, NULL );
+  txn->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_UDP;
+  FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &_deleted )>=0 );
+
+  ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 1.0f, 0UL, FD_PACK_SCHEDULE_VOTE | FD_PACK_SCHEDULE_TXN | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results );
+  FD_TEST( txn_cnt==1UL );
+  FD_TEST( outcome.results[0].txnp->flags==FD_TXN_P_FLAGS_IS_SIMPLE_VOTE );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
+  fd_pack_microblock_complete( pack, 0UL );
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 1.0f, 0UL, FD_PACK_SCHEDULE_TXN | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==0UL );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
+
+  fd_pack_clear_all( pack );
   fd_pack_set_initializer_bundles_ready( pack );
+
+  txn = fd_pack_insert_txn_init( pack );
+  make_vote_transaction1( txn->txnp, 530UL );
+  txn->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_UDP;
+  FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &_deleted )>=0 );
 
   fd_txn_e_t * _bundle[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
@@ -1816,6 +1842,11 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
   make_transaction1( bundle[0]->txnp, 511UL, 2000U, 32U, 1.0, "c", "", NULL, NULL );
   bundle[0]->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted )>=0 );
+
+  txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 1.0f, 0UL, FD_PACK_SCHEDULE_VOTE | FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results );
+  FD_TEST( txn_cnt==1UL );
+  FD_TEST( outcome.results[0].txnp->flags==FD_TXN_P_FLAGS_IS_SIMPLE_VOTE );
+  fd_pack_microblock_complete( pack, 0UL );
 
   FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==1UL );
   FD_TEST( outcome.results[0].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
