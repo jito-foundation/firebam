@@ -2622,7 +2622,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
 
   sched_return_t status = {0}, status1 = {0};
   _Bool bam_only = !!( schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY );
-  if( FD_UNLIKELY( bam_only ) ) schedule_flags &= FD_PACK_SCHEDULE_BUNDLE;
+  if( FD_UNLIKELY( bam_only ) ) schedule_flags &= FD_PACK_SCHEDULE_VOTE | FD_PACK_SCHEDULE_BUNDLE;
 
   if( FD_LIKELY( schedule_flags & FD_PACK_SCHEDULE_VOTE ) ) {
     /* Schedule vote transactions */
