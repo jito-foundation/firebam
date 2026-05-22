@@ -1874,6 +1874,13 @@ telemetry = true
         # frame buffer, and a Protobuf encode buffer.
         buffer_size_kib = 2048
 
+        # SSL library heap size in MiB.
+        #
+        # When connecting to a BAM scheduler endpoint, the SSL library
+        # uses dynamic allocations in a fixed size heap region.  This
+        # option controls the size of that region.
+        ssl_heap_size_mib = 64
+
         # Log TLS encryption keys for BAM gRPC connections.  An empty
         # string (the default) disables key logging.
         #

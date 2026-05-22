@@ -1846,7 +1846,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     fd_cstr_ncpy( tile->bam.identity_key_path, config->paths.identity_key, sizeof(tile->bam.identity_key_path) );
     fd_cstr_ncpy( tile->bam.key_log_path, config->development.bam.ssl_key_log_file, sizeof(tile->bam.key_log_path) );
     tile->bam.buf_sz = config->development.bam.buffer_size_kib<<10;
-    tile->bam.ssl_heap_sz = 0UL; /* Currently unused by the BAM tile. */
+    tile->bam.ssl_heap_sz = config->development.bam.ssl_heap_size_mib<<20;
     tile->bam.keepalive_interval_nanos = config->tiles.bam.keepalive_interval_millis * (ulong)1e6;
     tile->bam.tls_cert_verify = !!config->tiles.bam.tls_cert_verify;
     tile->bam.enabled = !!config->tiles.bam.enabled;

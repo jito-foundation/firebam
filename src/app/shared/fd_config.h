@@ -361,6 +361,7 @@ struct fd_config {
     struct {
       char ssl_key_log_file[ PATH_MAX ];
       uint buffer_size_kib;
+      uint ssl_heap_size_mib;
       int  dump_bam_txns;
       int  dump_bam_slot_first_txn;
     } bam;

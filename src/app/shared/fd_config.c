@@ -597,6 +597,7 @@ fd_config_validate( fd_config_t const * config ) {
   CFG_HAS_NON_EMPTY( development.bench.affinity );
 
   CFG_HAS_NON_ZERO( development.bundle.ssl_heap_size_mib );
+  CFG_HAS_NON_ZERO( development.bam.ssl_heap_size_mib );
 }
 
 #undef CFG_HAS_NON_EMPTY
