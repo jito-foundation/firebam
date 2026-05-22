@@ -52,6 +52,17 @@ typedef struct {
   fd_bam_decoded_multi_batch_t multi;
 } fd_bam_decoded_v0_t;
 
+static void
+fd_bam_decode_copy_err( pb_istream_t * dst,
+                        pb_istream_t const * src ) {
+#ifndef PB_NO_ERRMSG
+  dst->errmsg = src->errmsg;
+#else
+  (void)dst;
+  (void)src;
+#endif
+}
+
 static ulong
 fd_bam_dump_appendf( char *       buf,
                      ulong        buf_sz,
@@ -769,67 +780,28 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
                                      fd_bam_decoded_v0_t * decoded_v0 ) {
   fd_memset( decoded_v0, 0, sizeof(fd_bam_decoded_v0_t) );
 
-  uint32_t      tag;
+  uint32_t       tag;
   pb_wire_type_t wire_type;
-  bool          eof = false;
+  bool           eof = false;
+  uint32_t       selected_tag = 0U;
+  uchar const *  selected_data = NULL;
+  size_t         selected_data_sz = 0UL;
+
   while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
     switch( tag ) {
-    case bam_api_SchedulerResponseV0_heart_beat_tag: {
-      if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
-        if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
-        break;
-      }
-      pb_istream_t hb_stream;
-      if( FD_UNLIKELY( !pb_make_string_substream( stream, &hb_stream ) ) ) return 0;
-      bam_types_BuilderHeartBeat hb = bam_types_BuilderHeartBeat_init_default;
-      int ok = pb_decode( &hb_stream, &bam_types_BuilderHeartBeat_msg, &hb );
-      pb_close_string_substream( stream, &hb_stream );
-      if( FD_UNLIKELY( !ok ) ) {
-        FD_LOG_WARNING(( "BuilderHeartBeat decode failed: %s", PB_GET_ERROR( &hb_stream ) ));
-        return 0;
-      }
-      decoded_v0->kind = FD_BAM_V0_STAGED_HEARTBEAT;
-      decoded_v0->heartbeat_time_sent_microseconds = hb.time_sent_microseconds;
-      break;
-    }
-    case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag: {
+    case bam_api_SchedulerResponseV0_heart_beat_tag:
+    case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag:
+    case bam_api_SchedulerResponseV0_ping_tag: {
       if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
         if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
         break;
       }
       pb_istream_t substream;
       if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return 0;
-      fd_bam_decoded_multi_batch_t decoded_multi;
-      int ok = fd_bam_decode_multiple_atomic_txn_batch( ctx,
-                                                        &substream,
-                                                        rx_ts_ns,
-                                                        rx_tspub,
-                                                        leader_slot_at_rx,
-                                                        leader_slot_end_ns_at_rx,
-                                                        &decoded_multi );
-      pb_close_string_substream( stream, &substream );
-      if( FD_UNLIKELY( !ok ) ) return 0;
-      ctx->metrics.ingress_multi_message_received_cnt++;
-      decoded_v0->kind  = FD_BAM_V0_STAGED_MULTI;
-      decoded_v0->multi = decoded_multi;
-      break;
-    }
-    case bam_api_SchedulerResponseV0_ping_tag: {
-      if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
-        if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
-        break;
-      }
-      pb_istream_t ping_stream;
-      if( FD_UNLIKELY( !pb_make_string_substream( stream, &ping_stream ) ) ) return 0;
-      bam_types_Ping ping = bam_types_Ping_init_default;
-      int ok = pb_decode( &ping_stream, &bam_types_Ping_msg, &ping );
-      pb_close_string_substream( stream, &ping_stream );
-      if( FD_UNLIKELY( !ok ) ) {
-        FD_LOG_WARNING(( "Ping decode failed: %s", PB_GET_ERROR( &ping_stream ) ));
-        return 0;
-      }
-      decoded_v0->kind    = FD_BAM_V0_STAGED_PING;
-      decoded_v0->ping_id = ping.id;
+      selected_tag     = tag;
+      selected_data    = (uchar const *)substream.state;
+      selected_data_sz = substream.bytes_left;
+      if( FD_UNLIKELY( !pb_close_string_substream( stream, &substream ) ) ) return 0;
       break;
     }
     default:
@@ -838,6 +810,56 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
     }
   }
   if( FD_UNLIKELY( !eof ) ) return 0;
+
+  switch( selected_tag ) {
+  case bam_api_SchedulerResponseV0_heart_beat_tag: {
+    pb_istream_t hb_stream = pb_istream_from_buffer( selected_data, selected_data_sz );
+    bam_types_BuilderHeartBeat hb = bam_types_BuilderHeartBeat_init_default;
+    int ok = pb_decode( &hb_stream, &bam_types_BuilderHeartBeat_msg, &hb );
+    if( FD_UNLIKELY( !ok ) ) {
+      FD_LOG_WARNING(( "BuilderHeartBeat decode failed: %s", PB_GET_ERROR( &hb_stream ) ));
+      fd_bam_decode_copy_err( stream, &hb_stream );
+      return 0;
+    }
+    decoded_v0->kind = FD_BAM_V0_STAGED_HEARTBEAT;
+    decoded_v0->heartbeat_time_sent_microseconds = hb.time_sent_microseconds;
+    break;
+  }
+  case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag: {
+    pb_istream_t substream = pb_istream_from_buffer( selected_data, selected_data_sz );
+    fd_bam_decoded_multi_batch_t decoded_multi;
+    int ok = fd_bam_decode_multiple_atomic_txn_batch( ctx,
+                                                      &substream,
+                                                      rx_ts_ns,
+                                                      rx_tspub,
+                                                      leader_slot_at_rx,
+                                                      leader_slot_end_ns_at_rx,
+                                                      &decoded_multi );
+    if( FD_UNLIKELY( !ok ) ) {
+      fd_bam_decode_copy_err( stream, &substream );
+      return 0;
+    }
+    ctx->metrics.ingress_multi_message_received_cnt++;
+    decoded_v0->kind  = FD_BAM_V0_STAGED_MULTI;
+    decoded_v0->multi = decoded_multi;
+    break;
+  }
+  case bam_api_SchedulerResponseV0_ping_tag: {
+    pb_istream_t ping_stream = pb_istream_from_buffer( selected_data, selected_data_sz );
+    bam_types_Ping ping = bam_types_Ping_init_default;
+    int ok = pb_decode( &ping_stream, &bam_types_Ping_msg, &ping );
+    if( FD_UNLIKELY( !ok ) ) {
+      FD_LOG_WARNING(( "Ping decode failed: %s", PB_GET_ERROR( &ping_stream ) ));
+      fd_bam_decode_copy_err( stream, &ping_stream );
+      return 0;
+    }
+    decoded_v0->kind    = FD_BAM_V0_STAGED_PING;
+    decoded_v0->ping_id = ping.id;
+    break;
+  }
+  default:
+    break;
+  }
   return 1;
 }
 
@@ -855,16 +877,17 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   ulong leader_slot_at_rx = ctx->bam_leader_state.slot;
   long  leader_slot_end_ns_at_rx = ctx->bam_leader_state.slot_end_ns;
 
-  uint32_t      tag;
+  uint32_t       tag;
   pb_wire_type_t wire_type;
-  bool          eof         = false;
-  uint32_t      version_tag = 0U;
-  int           seen_v0     = 0;
+  bool           eof                     = false;
+  uint32_t       unsupported_version_tag = 0U;
+  uchar const *  selected_v0_data        = NULL;
+  size_t         selected_v0_data_sz     = 0UL;
   fd_bam_decoded_v0_t decoded_v0 = {0};
 
   while( pb_decode_tag( &istream, &wire_type, &tag, &eof ) ) {
-    version_tag = tag;
     if( FD_UNLIKELY( tag != bam_api_SchedulerResponse_v0_tag ) ) {
+      unsupported_version_tag = tag;
       if( FD_UNLIKELY( !pb_skip_field( &istream, wire_type ) ) ) goto fail;
       continue;
     }
@@ -876,24 +899,15 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
 
     pb_istream_t substream;
     if( FD_UNLIKELY( !pb_make_string_substream( &istream, &substream ) ) ) goto fail;
-    fd_bam_decoded_v0_t staged_v0;
-    int ok = fd_bam_decode_scheduler_response_v0( ctx,
-                                                  &substream,
-                                                  rx_ts_ns,
-                                                  rx_tspub,
-                                                  leader_slot_at_rx,
-                                                  leader_slot_end_ns_at_rx,
-                                                  &staged_v0 );
-    pb_close_string_substream( &istream, &substream );
-    if( FD_UNLIKELY( !ok ) ) goto fail;
-    decoded_v0 = staged_v0;
-    seen_v0 = 1;
+    selected_v0_data    = (uchar const *)substream.state;
+    selected_v0_data_sz = substream.bytes_left;
+    if( FD_UNLIKELY( !pb_close_string_substream( &istream, &substream ) ) ) goto fail;
   }
 
   if( FD_UNLIKELY( !eof ) ) goto fail;
-  if( FD_UNLIKELY( !seen_v0 ) ) {
-    if( version_tag && version_tag != bam_api_SchedulerResponse_v0_tag ) {
-      FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", version_tag ));
+  if( FD_UNLIKELY( !selected_v0_data ) ) {
+    if( unsupported_version_tag ) {
+      FD_LOG_WARNING(( "Unsupported SchedulerResponse version (tag=%u); scheduling reset", unsupported_version_tag ));
       ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_UNSUPPORTED_VERSION_IDX ]++;
       ctx->defer_reset = 1;
     } else {
@@ -901,6 +915,19 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       FD_LOG_WARNING(( "Protobuf decode of (bam_api.SchedulerResponse) missing version" ));
     }
     return;
+  }
+
+  pb_istream_t v0_stream = pb_istream_from_buffer( selected_v0_data, selected_v0_data_sz );
+  int ok = fd_bam_decode_scheduler_response_v0( ctx,
+                                                &v0_stream,
+                                                rx_ts_ns,
+                                                rx_tspub,
+                                                leader_slot_at_rx,
+                                                leader_slot_end_ns_at_rx,
+                                                &decoded_v0 );
+  if( FD_UNLIKELY( !ok ) ) {
+    fd_bam_decode_copy_err( &istream, &v0_stream );
+    goto fail;
   }
 
   switch( decoded_v0.kind ) {

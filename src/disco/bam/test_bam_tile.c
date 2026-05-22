@@ -256,6 +256,45 @@ test_bam_encode_multiple_atomic_batch_raw( uchar const * const * batches,
 }
 
 static size_t
+test_bam_encode_one_packet_multi_payload_raw( uint32_t seq_id,
+                                              uchar    byte,
+                                              uchar *  out,
+                                              size_t   out_sz ) {
+  bam_types_Packet packet = bam_types_Packet_init_default;
+  packet.data.size      = 1U;
+  packet.data.bytes[0]  = byte;
+
+  uchar batch[256];
+  size_t batch_sz = test_bam_encode_atomic_batch_raw( &packet, 1UL, seq_id, batch, sizeof( batch ) );
+  uchar const * batches[] = { batch };
+  size_t const batch_sizes[] = { batch_sz };
+  return test_bam_encode_multiple_atomic_batch_raw( batches, batch_sizes, 1UL, out, out_sz );
+}
+
+static size_t
+test_bam_encode_heartbeat_payload_raw( ulong  time_sent_microseconds,
+                                       uchar * out,
+                                       size_t out_sz ) {
+  bam_types_BuilderHeartBeat hb = bam_types_BuilderHeartBeat_init_default;
+  hb.time_sent_microseconds = time_sent_microseconds;
+
+  pb_ostream_t ostream = pb_ostream_from_buffer( out, out_sz );
+  if( FD_UNLIKELY( !pb_encode( &ostream, bam_types_BuilderHeartBeat_fields, &hb ) ) ) {
+    FD_LOG_ERR(( "BuilderHeartBeat raw encode failed (out_sz=%lu): %s", out_sz, PB_GET_ERROR( &ostream ) ));
+  }
+  return ostream.bytes_written;
+}
+
+static void
+test_bam_encode_string_field_raw( pb_ostream_t * stream,
+                                  uint32_t       tag,
+                                  uchar const *  payload,
+                                  size_t         payload_sz ) {
+  FD_TEST( pb_encode_tag( stream, PB_WT_STRING, tag ) );
+  FD_TEST( pb_encode_string( stream, payload, payload_sz ) );
+}
+
+static size_t
 test_bam_encode_scheduler_response_v0_raw( uchar const * v0_payload,
                                            size_t        v0_payload_sz,
                                            uchar *       out,
@@ -848,45 +887,34 @@ test_bam_scheduler_trailing_corruption_does_not_publish( fd_wksp_t * wksp ) {
 
 static void
 test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
-  /* Duplicate v0 oneof fields should apply only the final field. */
+  /* Duplicate oneof fields should apply only the final recognized field. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
   zero_meta_ts( env->out_mcache, 2UL );
   g_clock = (long)20e6;
 
-  bam_types_Packet packet = bam_types_Packet_init_default;
-  packet.data.size      = 1U;
-  packet.data.bytes[ 0 ] = (uchar)'m';
-
-  uchar batch[256];
-  size_t batch_sz = test_bam_encode_atomic_batch_raw( &packet,
-                                                       1UL,
-                                                       93U,
-                                                       batch,
-                                                       sizeof( batch ) );
-
-  uchar const * batches[] = { batch };
-  size_t const batch_sizes[] = { batch_sz };
   uchar multi_payload[384];
-  size_t multi_payload_sz = test_bam_encode_multiple_atomic_batch_raw( batches,
-                                                                       batch_sizes,
-                                                                       1UL,
-                                                                       multi_payload,
-                                                                       sizeof( multi_payload ) );
+  size_t multi_payload_sz = test_bam_encode_one_packet_multi_payload_raw( 93U,
+                                                                          (uchar)'m',
+                                                                          multi_payload,
+                                                                          sizeof( multi_payload ) );
 
-  bam_types_BuilderHeartBeat hb = bam_types_BuilderHeartBeat_init_default;
-  hb.time_sent_microseconds = 12345UL;
   uchar hb_payload[64];
-  pb_ostream_t hb_stream = pb_ostream_from_buffer( hb_payload, sizeof( hb_payload ) );
-  FD_TEST( pb_encode( &hb_stream, bam_types_BuilderHeartBeat_fields, &hb ) );
+  size_t hb_payload_sz = test_bam_encode_heartbeat_payload_raw( 12345UL,
+                                                                hb_payload,
+                                                                sizeof( hb_payload ) );
 
   uchar v0_payload[640];
   pb_ostream_t v0_stream = pb_ostream_from_buffer( v0_payload, sizeof( v0_payload ) );
-  FD_TEST( pb_encode_tag( &v0_stream, PB_WT_STRING, bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag ) );
-  FD_TEST( pb_encode_string( &v0_stream, multi_payload, multi_payload_sz ) );
-  FD_TEST( pb_encode_tag( &v0_stream, PB_WT_STRING, bam_api_SchedulerResponseV0_heart_beat_tag ) );
-  FD_TEST( pb_encode_string( &v0_stream, hb_payload, hb_stream.bytes_written ) );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag,
+                                    multi_payload,
+                                    multi_payload_sz );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_heart_beat_tag,
+                                    hb_payload,
+                                    hb_payload_sz );
 
   uchar protobuf[768];
   size_t protobuf_sz = test_bam_encode_scheduler_response_v0_raw( v0_payload,
@@ -900,6 +928,7 @@ test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
   FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
+  FD_TEST( state->metrics.ingress_multi_message_received_cnt == 0UL );
   FD_TEST( state->metrics.builder_heartbeats_decoded_cnt == 1UL );
   FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 1UL );
   ulong expected_latency = (ulong)g_clock - (12345UL * 1000UL);
@@ -908,6 +937,157 @@ test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
   FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->feedback_queue_depth == 0UL );
   FD_TEST( env->stem_seqs[0] == 0UL );
+
+  test_bam_env_destroy( env );
+
+  test_bam_env_create( env, wksp );
+  state = env->state;
+  zero_meta_ts( env->out_mcache, 2UL );
+  g_clock = (long)30e6;
+
+  multi_payload_sz = test_bam_encode_one_packet_multi_payload_raw( 94U,
+                                                                   (uchar)'n',
+                                                                   multi_payload,
+                                                                   sizeof( multi_payload ) );
+
+  uchar hb_first[64];
+  uchar hb_second[64];
+  size_t hb_first_sz  = test_bam_encode_heartbeat_payload_raw( 11111UL, hb_first,  sizeof( hb_first  ) );
+  size_t hb_second_sz = test_bam_encode_heartbeat_payload_raw( 22222UL, hb_second, sizeof( hb_second ) );
+
+  v0_stream = pb_ostream_from_buffer( v0_payload, sizeof( v0_payload ) );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_heart_beat_tag,
+                                    hb_first,
+                                    hb_first_sz );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_heart_beat_tag,
+                                    hb_second,
+                                    hb_second_sz );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag,
+                                    multi_payload,
+                                    multi_payload_sz );
+
+  protobuf_sz = test_bam_encode_scheduler_response_v0_raw( v0_payload,
+                                                           v0_stream.bytes_written,
+                                                           protobuf,
+                                                           sizeof( protobuf ) );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
+  FD_TEST( state->metrics.ingress_multi_message_received_cnt == 1UL );
+  FD_TEST( state->metrics.builder_heartbeats_decoded_cnt == 0UL );
+  FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 0UL );
+  FD_TEST( state->metrics.transaction_published_cnt == 1UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+  FD_TEST( state->bam_last_builder_activity_ns == g_clock );
+
+  test_bam_env_destroy( env );
+
+  test_bam_env_create( env, wksp );
+  state = env->state;
+  g_clock = (long)31e6;
+
+  uchar empty_multi_payload[16];
+  size_t empty_multi_payload_sz = test_bam_encode_multiple_atomic_batch_raw( NULL,
+                                                                             NULL,
+                                                                             0UL,
+                                                                             empty_multi_payload,
+                                                                             sizeof( empty_multi_payload ) );
+  hb_payload_sz = test_bam_encode_heartbeat_payload_raw( 1234UL,
+                                                         hb_payload,
+                                                         sizeof( hb_payload ) );
+
+  v0_stream = pb_ostream_from_buffer( v0_payload, sizeof( v0_payload ) );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag,
+                                    empty_multi_payload,
+                                    empty_multi_payload_sz );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_heart_beat_tag,
+                                    hb_payload,
+                                    hb_payload_sz );
+
+  protobuf_sz = test_bam_encode_scheduler_response_v0_raw( v0_payload,
+                                                           v0_stream.bytes_written,
+                                                           protobuf,
+                                                           sizeof( protobuf ) );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
+  FD_TEST( state->metrics.ingress_multi_message_received_cnt == 0UL );
+  FD_TEST( state->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_EMPTY_MESSAGE_IDX ] == 0UL );
+  FD_TEST( state->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ] == 0UL );
+  FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 0UL );
+  FD_TEST( state->metrics.builder_heartbeats_decoded_cnt == 1UL );
+  FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 1UL );
+  FD_TEST( state->metrics.transaction_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+  FD_TEST( state->bam_last_builder_activity_ns == g_clock );
+
+  test_bam_env_destroy( env );
+
+  test_bam_env_create( env, wksp );
+  state = env->state;
+  g_clock = (long)32e6;
+
+  empty_multi_payload_sz = test_bam_encode_multiple_atomic_batch_raw( NULL,
+                                                                      NULL,
+                                                                      0UL,
+                                                                      empty_multi_payload,
+                                                                      sizeof( empty_multi_payload ) );
+  uchar first_v0_payload[128];
+  pb_ostream_t first_v0_stream = pb_ostream_from_buffer( first_v0_payload, sizeof( first_v0_payload ) );
+  test_bam_encode_string_field_raw( &first_v0_stream,
+                                    bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag,
+                                    empty_multi_payload,
+                                    empty_multi_payload_sz );
+
+  hb_payload_sz = test_bam_encode_heartbeat_payload_raw( 2345UL,
+                                                         hb_payload,
+                                                         sizeof( hb_payload ) );
+  uchar second_v0_payload[128];
+  pb_ostream_t second_v0_stream = pb_ostream_from_buffer( second_v0_payload, sizeof( second_v0_payload ) );
+  test_bam_encode_string_field_raw( &second_v0_stream,
+                                    bam_api_SchedulerResponseV0_heart_beat_tag,
+                                    hb_payload,
+                                    hb_payload_sz );
+
+  pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, sizeof( protobuf ) );
+  test_bam_encode_string_field_raw( &ostream,
+                                    bam_api_SchedulerResponse_v0_tag,
+                                    first_v0_payload,
+                                    first_v0_stream.bytes_written );
+  test_bam_encode_string_field_raw( &ostream,
+                                    bam_api_SchedulerResponse_v0_tag,
+                                    second_v0_payload,
+                                    second_v0_stream.bytes_written );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
+  FD_TEST( state->metrics.ingress_multi_message_received_cnt == 0UL );
+  FD_TEST( state->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_EMPTY_MESSAGE_IDX ] == 0UL );
+  FD_TEST( state->metrics.builder_heartbeats_decoded_cnt == 1UL );
+  FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 1UL );
+  FD_TEST( state->metrics.transaction_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+  FD_TEST( state->bam_last_builder_activity_ns == g_clock );
 
   test_bam_env_destroy( env );
 }
