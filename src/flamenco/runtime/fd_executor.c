@@ -1491,6 +1491,7 @@ fd_executor_setup_txn_account( fd_runtime_t *      runtime,
 static void
 fd_executor_setup_executable_account( fd_runtime_t *            runtime,
                                       fd_bank_t *               bank,
+                                      fd_txn_in_t const *       txn_in,
                                       fd_account_meta_t const * program_meta,
                                       ushort *                  executable_idx ) {
   fd_bpf_upgradeable_loader_state_t program_loader_state[1];
@@ -1503,14 +1504,29 @@ fd_executor_setup_executable_account( fd_runtime_t *            runtime,
     return;
   }
 
-  /* Attempt to load the program data account from funk. This prevents any unknown program
-      data accounts from getting loaded into the executable accounts list. If such a program is
-      invoked, the call will fail at the instruction execution level since the programdata
-      account will not exist within the executable accounts list. */
-  fd_pubkey_t *     programdata_acc = &program_loader_state->inner.program.programdata_address;
-  fd_funk_txn_xid_t xid             = { .ul = { fd_bank_slot_get( bank ), bank->data->idx } };
+  fd_pubkey_t const * programdata_acc = &program_loader_state->inner.program.programdata_address;
+  fd_accdb_ro_t *     ro              = &runtime->accounts.executable[ *executable_idx ];
 
-  fd_accdb_ro_t * ro = &runtime->accounts.executable[ *executable_idx ];
+  /* A prior writable bundle output is the current ProgramData state until
+     the bundle commits, so do not fall through to stale accdb state. */
+  ulong prev_txn_cnt = txn_in->bundle.is_bundle ? txn_in->bundle.prev_txn_cnt : 0UL;
+  for( ulong i=prev_txn_cnt; i>0UL; i-- ) {
+    fd_txn_out_t const * prev_txn_out = txn_in->bundle.prev_txn_outs[ i-1 ];
+    for( ushort j=0UL; j<prev_txn_out->accounts.cnt; j++ ) {
+      if( !prev_txn_out->accounts.is_writable[j] ) continue;
+      if( !fd_pubkey_eq( &prev_txn_out->accounts.keys[j], programdata_acc ) ) continue;
+
+      fd_account_meta_t const * meta = prev_txn_out->accounts.account[j].meta;
+      /* Closed in-bundle ProgramData must suppress accdb fallback. */
+      if( FD_UNLIKELY( !fd_account_meta_exists( meta ) ) ) return;
+
+      fd_accdb_ro_init_nodb( ro, programdata_acc, meta );
+      (*executable_idx)++;
+      return;
+    }
+  }
+
+  fd_funk_txn_xid_t xid = { .ul = { fd_bank_slot_get( bank ), bank->data->idx } };
   ro = fd_accdb_open_ro( runtime->accdb, ro, &xid, programdata_acc );
   if( FD_LIKELY( ro ) ) (*executable_idx)++;
 }
@@ -1553,8 +1569,8 @@ fd_executor_setup_accounts_for_txn( fd_runtime_t *      runtime,
     fd_executor_setup_txn_account( runtime, bank, txn_in, txn_out, i, writable_accs_mem, &writable_accs_idx );
     fd_account_meta_t * meta = txn_out->accounts.account[ i ].meta;
 
-    if( FD_UNLIKELY( meta && memcmp( meta->owner, fd_solana_bpf_loader_upgradeable_program_id.key, sizeof(fd_pubkey_t) ) == 0 ) ) {
-      fd_executor_setup_executable_account( runtime, bank, meta, &executable_idx );
+    if( FD_UNLIKELY( meta && !memcmp( meta->owner, fd_solana_bpf_loader_upgradeable_program_id.key, sizeof(fd_pubkey_t) ) ) ) {
+      fd_executor_setup_executable_account( runtime, bank, txn_in, meta, &executable_idx );
     }
   }
 

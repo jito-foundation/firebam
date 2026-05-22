@@ -3,6 +3,7 @@
 #include "fd_runtime_stack.h"
 #include "fd_bank.h"
 #include "fd_system_ids.h"
+#include "program/fd_bpf_loader_program.h"
 #include "sysvar/fd_sysvar_rent.h"
 #include "sysvar/fd_sysvar_epoch_schedule.h"
 #include "sysvar/fd_sysvar_stake_history.h"
@@ -65,6 +66,15 @@ create_test_account( fd_accdb_user_t *         user,
   rw->meta->executable = 0;
   memcpy( rw->meta->owner, owner->uc, 32UL );
   fd_accdb_close_rw( user, rw );
+}
+
+static void
+encode_loader_state( uchar *                                    data,
+                     ulong                                      data_sz,
+                     fd_bpf_upgradeable_loader_state_t const * state ) {
+  memset( data, 0, data_sz );
+  fd_bincode_encode_ctx_t ctx = { .data = data, .dataend = data+data_sz };
+  FD_TEST( fd_bpf_upgradeable_loader_state_encode( state, &ctx )==FD_BINCODE_SUCCESS );
 }
 
 static void
@@ -701,6 +711,108 @@ test_execute_bundles( fd_wksp_t * wksp ) {
 
   env->txn_out[2].err.is_committable = 0;
   fd_runtime_cancel_txn( env->runtime, &env->txn_out[2] );
+
+  FD_TEST( fd_acc_pool_free( env->runtime->acc_pool ) == TEST_ACC_POOL_ACCOUNT_CNT );
+  FD_TEST( starting_ro_active == env->accdb->base.ro_active );
+  FD_TEST( starting_rw_active == env->accdb->base.rw_active );
+
+  /* Test 6: Bundle-local loader-v3 ProgramData state wins over stale
+     committed ProgramData state. */
+
+  fd_pubkey_t program     = { .ul[0] = 0xBEEFUL };
+  fd_pubkey_t programdata = { .ul[0] = 0xDADAUL };
+
+  uchar program_state[ SIZE_OF_PROGRAM ];
+  uchar committed_programdata_state[ PROGRAMDATA_METADATA_SIZE ];
+
+  fd_bpf_upgradeable_loader_state_t program_loader_state[1];
+  fd_bpf_upgradeable_loader_state_new_disc( program_loader_state, fd_bpf_upgradeable_loader_state_enum_program );
+  program_loader_state->inner.program.programdata_address = programdata;
+  encode_loader_state( program_state, sizeof(program_state), program_loader_state );
+
+  fd_bpf_upgradeable_loader_state_t programdata_loader_state[1];
+  fd_bpf_upgradeable_loader_state_new_disc( programdata_loader_state, fd_bpf_upgradeable_loader_state_enum_program_data );
+  programdata_loader_state->inner.program_data.slot = 1UL;
+  encode_loader_state( committed_programdata_state, sizeof(committed_programdata_state), programdata_loader_state );
+
+  create_test_account( env->accdb,
+                       &env->xid,
+                       &program,
+                       1000000UL,
+                       SIZE_OF_PROGRAM,
+                       program_state,
+                       10UL,
+                       &fd_solana_bpf_loader_upgradeable_program_id );
+  create_test_account( env->accdb,
+                       &env->xid,
+                       &programdata,
+                       1000000UL,
+                       PROGRAMDATA_METADATA_SIZE,
+                       committed_programdata_state,
+                       10UL,
+                       &fd_solana_bpf_loader_upgradeable_program_id );
+
+  fd_pubkey_t programdata_keys[2] = { pubkey1, programdata };
+  fd_pubkey_t program_keys[2]     = { pubkey1, program };
+
+  sz = txn_serialize( txn_p.payload, 1, &signature, 1UL, 0UL, 0UL, 2UL, programdata_keys, &dummy_hash );
+  FD_TEST( fd_txn_parse( txn_p.payload, sz, TXN( &txn_p ), NULL ) );
+
+  env->txn_in.txn                 = &txn_p;
+  env->txn_in.bundle.is_bundle    = 1;
+  env->txn_in.bundle.prev_txn_cnt = 0;
+  fd_runtime_prepare_and_execute_txn( env->runtime, env->bank, &env->txn_in, &env->txn_out[0] );
+  FD_TEST( env->txn_out[0].err.is_committable );
+  FD_TEST( env->txn_out[0].err.txn_err==FD_RUNTIME_EXECUTE_SUCCESS );
+
+  /* First prove closed ProgramData suppresses committed-state fallback. */
+  fd_account_meta_t * programdata_meta = env->txn_out[0].accounts.account[1].meta;
+  fd_account_meta_init( programdata_meta );
+  programdata_meta->slot = fd_bank_slot_get( env->bank );
+
+  sz = txn_serialize( txn_p.payload, 1, &signature, 1UL, 0UL, 1UL, 2UL, program_keys, &dummy_hash );
+  FD_TEST( fd_txn_parse( txn_p.payload, sz, TXN( &txn_p ), NULL ) );
+
+  env->txn_in.txn                     = &txn_p;
+  env->txn_in.bundle.is_bundle        = 1;
+  env->txn_in.bundle.prev_txn_cnt     = 1;
+  env->txn_in.bundle.prev_txn_outs[0] = &env->txn_out[0];
+  fd_runtime_prepare_and_execute_txn( env->runtime, env->bank, &env->txn_in, &env->txn_out[1] );
+  FD_TEST( env->txn_out[1].err.is_committable );
+  FD_TEST( env->txn_out[1].err.txn_err==FD_RUNTIME_EXECUTE_SUCCESS );
+  FD_TEST( env->runtime->accounts.executable_cnt==0UL );
+
+  env->txn_out[1].err.is_committable = 0;
+  fd_runtime_cancel_txn( env->runtime, &env->txn_out[1] );
+
+  /* Then prove an updated ProgramData sidecar is loaded from the bundle. */
+
+  ulong bundle_programdata_slot = fd_bank_slot_get( env->bank );
+  programdata_meta->lamports = 1000000UL;
+  programdata_meta->dlen     = PROGRAMDATA_METADATA_SIZE;
+  memcpy( programdata_meta->owner, fd_solana_bpf_loader_upgradeable_program_id.uc, sizeof(fd_pubkey_t) );
+  programdata_loader_state->inner.program_data.slot = bundle_programdata_slot;
+  encode_loader_state( fd_account_meta_get_data( programdata_meta ), programdata_meta->dlen, programdata_loader_state );
+  programdata_meta->slot = bundle_programdata_slot;
+
+  fd_runtime_prepare_and_execute_txn( env->runtime, env->bank, &env->txn_in, &env->txn_out[1] );
+  FD_TEST( env->txn_out[1].err.is_committable );
+  FD_TEST( env->txn_out[1].err.txn_err==FD_RUNTIME_EXECUTE_SUCCESS );
+  FD_TEST( env->runtime->accounts.executable_cnt==1UL );
+
+  fd_account_meta_t const * executable_meta = NULL;
+  FD_TEST( fd_runtime_get_executable_account( env->runtime, &env->txn_in, &env->txn_out[1], &programdata, &executable_meta )==FD_ACC_MGR_SUCCESS );
+  FD_TEST( executable_meta==programdata_meta );
+
+  fd_bpf_upgradeable_loader_state_t observed_state[1];
+  FD_TEST( fd_bpf_loader_program_get_state( executable_meta, observed_state )==FD_EXECUTOR_INSTR_SUCCESS );
+  FD_TEST( fd_bpf_upgradeable_loader_state_is_program_data( observed_state ) );
+  FD_TEST( observed_state->inner.program_data.slot==bundle_programdata_slot );
+
+  env->txn_out[1].err.is_committable = 0;
+  fd_runtime_cancel_txn( env->runtime, &env->txn_out[1] );
+  env->txn_out[0].err.is_committable = 0;
+  fd_runtime_cancel_txn( env->runtime, &env->txn_out[0] );
 
   FD_TEST( fd_acc_pool_free( env->runtime->acc_pool ) == TEST_ACC_POOL_ACCOUNT_CNT );
   FD_TEST( starting_ro_active == env->accdb->base.ro_active );
