@@ -2,6 +2,8 @@
 
 #include "../../disco/tiles.h"
 #include "generated/fd_execle_tile_seccomp.h"
+#include "../../disco/fd_txn_m.h"
+#include "../../disco/bam/fd_bam_types.h"
 #include "../../disco/pack/fd_pack.h"
 #include "../../disco/pack/fd_pack_cost.h"
 #include "../../ballet/blake3/fd_blake3.h"
@@ -47,6 +49,7 @@ struct fd_execle_tile {
 
   fd_execle_out_t out_poh[1];
   fd_execle_out_t out_pack[1];
+  fd_execle_out_t out_bam[1];
 
   ulong rebates_for_slot;
   int enable_rebates;
@@ -174,6 +177,42 @@ hash_transactions( void *       mem,
 }
 
 static inline void
+bam_fill_txn_result( fd_bam_bundle_result_t * res,
+                     ulong                    idx,
+                     fd_txn_out_t const *     txn_out ) {
+  uint actual_execution_cus = 0U;
+  if( FD_LIKELY( txn_out->details.compute_budget.compute_unit_limit>=txn_out->details.compute_budget.compute_meter ) )
+    actual_execution_cus = (uint)(txn_out->details.compute_budget.compute_unit_limit - txn_out->details.compute_budget.compute_meter);
+  uint actual_acct_data_cus = (uint)txn_out->details.txn_cost.transaction.loaded_accounts_data_size_cost;
+  ulong feepayer_balance_lamports = 0UL;
+  if( FD_UNLIKELY( txn_out->err.is_fees_only && txn_out->accounts.rollback_fee_payer ) )
+    feepayer_balance_lamports = txn_out->accounts.rollback_fee_payer->lamports;
+  else if( FD_LIKELY( txn_out->accounts.cnt && txn_out->accounts.account[ 0 ].meta ) )
+    feepayer_balance_lamports = txn_out->accounts.account[ 0 ].meta->lamports;
+  else if( FD_UNLIKELY( txn_out->accounts.rollback_fee_payer ) )
+    feepayer_balance_lamports = txn_out->accounts.rollback_fee_payer->lamports;
+
+  fd_bam_result_mark_sanitize_success( res, idx );
+  res->consumed_cus[ idx ]              = actual_execution_cus + actual_acct_data_cus;
+  res->feepayer_balance_lamports[ idx ] = feepayer_balance_lamports;
+  res->loaded_accounts_data_size[ idx ] = (uint)fd_ulong_min( txn_out->details.loaded_accounts_data_size, (ulong)UINT_MAX );
+}
+
+static inline void
+publish_bam_result( fd_execle_tile_t *      ctx,
+                    fd_stem_context_t *     stem,
+                    fd_bam_bundle_result_t const * res ) {
+  if( FD_LIKELY( ctx->out_bam->idx==ULONG_MAX ) ) return;
+
+  fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->out_bam->mem, ctx->out_bam->chunk );
+  *out = *res;
+
+  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
+  fd_stem_publish( stem, ctx->out_bam->idx, 0UL, ctx->out_bam->chunk, sizeof(fd_bam_bundle_result_t), 0UL, 0UL, tspub );
+  ctx->out_bam->chunk = fd_dcache_compact_next( ctx->out_bam->chunk, sizeof(fd_bam_bundle_result_t), ctx->out_bam->chunk0, ctx->out_bam->wmark );
+}
+
+static inline void
 handle_microblock( fd_execle_tile_t *  ctx,
                    ulong               seq,
                    ulong               sig,
@@ -210,42 +249,49 @@ handle_microblock( fd_execle_tile_t *  ctx,
 
     fd_runtime_prepare_and_execute_txn( ctx->runtime, bank, txn_in, txn_out );
 
+    _Bool bam_independent = txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txn->bam.revert_on_error;
+    fd_bam_bundle_result_t bam_res[1];
+    if( FD_UNLIKELY( bam_independent ) ) {
+      *bam_res = fd_bam_result_base( txn->bam.seq_id, slot, 1U );
+    }
+
     /* Stash the result in the flags value so that pack can inspect it. */
     txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-txn_out->err.txn_err)<<24);
 
-    if( FD_UNLIKELY( !txn_out->err.is_committable ) ) {
-      FD_TEST( !txn_out->err.is_fees_only );
-      fd_runtime_cancel_txn( ctx->runtime, txn_out );
-      /* Use pre-resolved ALT accounts for rebates even for unlanded transactions */
-      fd_acct_addr_t const * writable_alt = ctx->_alt_accts[i];
-      if( FD_LIKELY( ctx->enable_rebates ) ) fd_pack_rebate_sum_add_txn( ctx->rebater, txn, &writable_alt, 1UL );
-      ctx->metrics.txn_landed[ FD_METRICS_ENUM_TRANSACTION_LANDED_V_UNLANDED_IDX ]++;
-      ctx->metrics.txn_result[ fd_execle_err_from_runtime_err( txn_out->err.txn_err ) ]++;
-      continue;
-    }
+    int drop_txn = !txn_out->err.is_committable;
+    if( FD_UNLIKELY( drop_txn ) ) FD_TEST( !txn_out->err.is_fees_only );
 
     /* Check for FeesOnly transactions where actual CUs exceed
        requested.  This can happen for durable nonce transactions
        with oversized nonce accounts.  Skip the commit to prevent
        underflow in the rebate computation.  The transaction keeps its
        default full rebate set at the top of the loop. */
-    if( FD_UNLIKELY( txn_out->err.is_fees_only ) ) {
+    if( FD_UNLIKELY( !drop_txn && txn_out->err.is_fees_only ) ) {
       uint fee_only_actual_exec_cus = (uint)(txn_out->details.compute_budget.compute_unit_limit - txn_out->details.compute_budget.compute_meter);
       uint fee_only_actual_data_cus = (uint)(txn_out->details.txn_cost.transaction.loaded_accounts_data_size_cost);
       if( FD_UNLIKELY( fee_only_actual_exec_cus + fee_only_actual_data_cus > requested_exec_plus_acct_data_cus ) ) {
         FD_LOG_WARNING(( "FeesOnly txn actual CUs (%u+%u) exceed requested (%u), dropping",
                          fee_only_actual_exec_cus, fee_only_actual_data_cus, requested_exec_plus_acct_data_cus ));
         txn_out->err.is_committable = 0;
-        fd_runtime_cancel_txn( ctx->runtime, txn_out );
-        /* txn->execle_cu already initialized to full rebate at top of loop */
-        fd_acct_addr_t const * writable_alt = ctx->_alt_accts[i];
-        if( FD_LIKELY( ctx->enable_rebates ) ) fd_pack_rebate_sum_add_txn( ctx->rebater, txn, &writable_alt, 1UL );
-        ctx->metrics.txn_landed[ FD_METRICS_ENUM_TRANSACTION_LANDED_V_UNLANDED_IDX ]++;
-        ctx->metrics.txn_result[ fd_execle_err_from_runtime_err( txn_out->err.txn_err ) ]++;
-        /* FD_TXN_P_FLAGS_EXECUTE_SUCCESS = 0 ensures txn won't be
-           mixed-in by POH */
-        continue;
+        drop_txn = 1;
       }
+    }
+
+    if( FD_UNLIKELY( drop_txn ) ) {
+      if( FD_UNLIKELY( bam_independent ) ) {
+        bam_res->execution_success     = 0U;
+        bam_res->transaction_err_count = 1U;
+        fd_bam_result_set_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
+        bam_fill_txn_result( bam_res, 0UL, txn_out );
+        publish_bam_result( ctx, stem, bam_res );
+      }
+      fd_runtime_cancel_txn( ctx->runtime, txn_out );
+      fd_acct_addr_t const * writable_alt = ctx->_alt_accts[i];
+      if( FD_LIKELY( ctx->enable_rebates ) ) fd_pack_rebate_sum_add_txn( ctx->rebater, txn, &writable_alt, 1UL );
+      ctx->metrics.txn_landed[ FD_METRICS_ENUM_TRANSACTION_LANDED_V_UNLANDED_IDX ]++;
+      ctx->metrics.txn_result[ fd_execle_err_from_runtime_err( txn_out->err.txn_err ) ]++;
+      /* FD_TXN_P_FLAGS_EXECUTE_SUCCESS = 0 ensures txn won't be mixed into PoH. */
+      continue;
     }
 
     if( FD_UNLIKELY( txn_out->err.is_fees_only ) ) ctx->metrics.txn_landed[ FD_METRICS_ENUM_TRANSACTION_LANDED_V_LANDED_FEES_ONLY_IDX ]++;
@@ -257,6 +303,15 @@ handle_microblock( fd_execle_tile_t *  ctx,
        transactions. */
     txn->flags |= FD_TXN_P_FLAGS_EXECUTE_SUCCESS | FD_TXN_P_FLAGS_SANITIZE_SUCCESS;
     ctx->metrics.txn_result[ fd_execle_err_from_runtime_err( txn_out->err.txn_err ) ]++;
+
+    if( FD_UNLIKELY( bam_independent ) ) {
+      bam_res->execution_success = 1U;
+      if( FD_UNLIKELY( txn_out->err.txn_err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
+        bam_res->transaction_err_count = 1U;
+        fd_bam_result_set_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
+      }
+      bam_fill_txn_result( bam_res, 0UL, txn_out );
+    }
 
     /* Commit must succeed so no failure path.  Once commit is called,
        the transactions MUST be mixed into the PoH otherwise we will
@@ -300,7 +355,7 @@ handle_microblock( fd_execle_tile_t *  ctx,
     if( FD_UNLIKELY( actual_execution_cus + actual_acct_data_cus > requested_exec_plus_acct_data_cus ) ) {
       uchar * _signature = (uchar *)txn->payload + TXN( txn )->signature_off;
       FD_BASE58_ENCODE_64_BYTES( _signature, _signature_b58 );
-      fd_cost_tracker_t const * _ct = fd_bank_cost_tracker_query( bank );
+      fd_cost_tracker_t const * _ct = fd_bank_cost_tracker_locking_query( bank );
       FD_LOG_HEXDUMP_WARNING(( "txn", txn->payload, txn->payload_sz ));
       FD_LOG_ERR(( "transaction %s actual CUs (%u+%u) exceeded requested (%u) despite pack guaranteeing it would fit "
                    "[is_simple_vote=%i, is_fees_only=%i, block_cost=%lu, vote_cost=%lu, block_cost_limit=%lu, "
@@ -327,6 +382,8 @@ handle_microblock( fd_execle_tile_t *  ctx,
        may be deactivated by the time we get here. */
     fd_acct_addr_t const * writable_alt = ctx->_alt_accts[i];
     if( FD_LIKELY( ctx->enable_rebates ) ) fd_pack_rebate_sum_add_txn( ctx->rebater, txn, &writable_alt, 1UL );
+
+    if( FD_UNLIKELY( bam_independent ) ) publish_bam_result( ctx, stem, bam_res );
   }
 
   /* Indicate to pack tile we are done processing the transactions so
@@ -406,6 +463,11 @@ handle_bundle( fd_execle_tile_t *  ctx,
 
   int   execution_success = 1;
   ulong failed_idx        = ULONG_MAX;
+  _Bool is_bam_revert     = !!( txn_cnt && txns->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txns[0].bam.revert_on_error );
+  fd_bam_bundle_result_t bam_res[1];
+  if( FD_UNLIKELY( is_bam_revert ) ) {
+    *bam_res = fd_bam_result_base( txns[0].bam.seq_id, slot, (uchar)txn_cnt );
+  }
 
   /* Every transaction in the bundle should be executed in order against
      different transaciton contexts. */
@@ -449,6 +511,8 @@ handle_bundle( fd_execle_tile_t *  ctx,
       fd_txn_out_t * txn_out   = &ctx->txn_out[ i ];
       uchar *        signature = (uchar *)txn_in->txn->payload + TXN( txn_in->txn )->signature_off;
 
+      if( FD_UNLIKELY( is_bam_revert ) ) bam_fill_txn_result( bam_res, i, txn_out );
+
       fd_runtime_commit_txn( ctx->runtime, bank, txn_out );
       if( FD_UNLIKELY( !txn_out->err.is_committable ) ) {
         txns[ i ].flags = (txns[ i ].flags & 0x00FFFFFFU) | ((uint)(-txn_out->err.txn_err)<<24);
@@ -481,7 +545,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
       } else {
         if( FD_UNLIKELY( actual_execution_cus + actual_acct_data_cus > requested_exec_plus_acct_data_cus ) ) {
           FD_BASE58_ENCODE_64_BYTES( signature, signature_b58 );
-          fd_cost_tracker_t const * _ct = fd_bank_cost_tracker_query( bank );
+          fd_cost_tracker_t const * _ct = fd_bank_cost_tracker_locking_query( bank );
           FD_LOG_HEXDUMP_WARNING(( "txn", txns[ i ].payload, txns[ i ].payload_sz ));
           FD_LOG_ERR(( "transaction %s actual CUs (%u+%u) exceeded requested (%u) despite pack guaranteeing it would "
                        "fit [block_cost=%lu, vote_cost=%lu, block_cost_limit=%lu, vote_cost_limit=%lu,"
@@ -500,8 +564,23 @@ handle_bundle( fd_execle_tile_t *  ctx,
       ctx->metrics.txn_landed[ FD_METRICS_ENUM_TRANSACTION_LANDED_V_LANDED_SUCCESS_IDX ]++;
       ctx->metrics.txn_result[ FD_METRICS_ENUM_TRANSACTION_RESULT_V_SUCCESS_IDX        ]++;
     }
+    if( FD_UNLIKELY( is_bam_revert ) ) {
+      bam_res->execution_success = 1U;
+      publish_bam_result( ctx, stem, bam_res );
+    }
   } else {
     FD_TEST( failed_idx != ULONG_MAX );
+    if( FD_UNLIKELY( is_bam_revert ) ) {
+      bam_res->execution_success = 0U;
+      bam_res->transaction_err_count = (uchar)txn_cnt;
+      for( ulong i=0UL; i<txn_cnt; i++ ) {
+        fd_bam_result_mark_sanitize_success( bam_res, i );
+        fd_bam_result_set_txn_error( bam_res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+      }
+      fd_bam_result_set_txn_error( bam_res, failed_idx, fd_bam_txn_err_from_runtime_err( ctx->txn_out[ failed_idx ].err.txn_err ) );
+      for( ulong i=0UL; i<=failed_idx; i++ ) bam_fill_txn_result( bam_res, i, &ctx->txn_out[ i ] );
+      publish_bam_result( ctx, stem, bam_res );
+    }
     for( ulong i=0UL; i<txn_cnt; i++ ) {
 
       ctx->txn_out[ i ].err.is_committable = 0;
@@ -703,6 +782,7 @@ unprivileged_init( fd_topo_t *      topo,
 
   *ctx->out_poh = out1( topo, tile, "execle_poh" ); FD_TEST( ctx->out_poh->idx!=ULONG_MAX );
   *ctx->out_pack = out1( topo, tile, "execle_pack" );
+  *ctx->out_bam = out1( topo, tile, "bank_bam" );
 
   ctx->enable_rebates = ctx->out_pack->idx!=ULONG_MAX;
 }
@@ -739,7 +819,7 @@ populate_allowed_fds( fd_topo_t const *      topo,
 /* For a bundle, one bundle might burst into at most 5 separate PoH mixins, since the
    microblocks cannot be conflicting. */
 
-#define STEM_BURST (5UL)
+#define STEM_BURST (MAX_TXN_PER_MICROBLOCK+2UL)
 
 /* See explanation in fd_pack */
 #define STEM_LAZY  (128L*3000L)

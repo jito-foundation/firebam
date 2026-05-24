@@ -13,7 +13,7 @@ struct test_bundle_env {
   ulong             stem_depths  [1];
   ulong             stem_cr_avail[1];
   ulong             stem_min_cr_avail[1];
-  int               out_reliable [1];
+  _Bool            out_reliable [1];
   fd_frag_meta_t *  out_mcache;
   uchar *           out_dcache;
   int               server_sock;
