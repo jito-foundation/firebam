@@ -595,15 +595,13 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   }
 
   ctx->gui_dirty = 1U;
-  _Bool has_effective_contact = !!ctx->bam_tpu.addr && !!ctx->bam_tpu.port &&
-                                !!ctx->bam_tpu_fwd.addr && !!ctx->bam_tpu_fwd.port;
   /* Only publish BAM active when the client is actually healthy and has
      complete effective contact data. Config responses can arrive while
      connecting or after an admin disable, and incomplete refreshes should
      not force a BAM TPU override unless a prior valid contact is cached. */
   fd_bam_publish_active_state( ctx,
                                ctx->stem,
-                               ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) && has_effective_contact );
+                               ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) && fd_bam_has_effective_contact( ctx ) );
 
   // update fee config
   _Bool bam_config_fee_updated = false;

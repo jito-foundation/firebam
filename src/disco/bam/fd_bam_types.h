@@ -81,8 +81,9 @@ fd_bam_leader_state_eq( fd_bam_leader_state_t const * a,
 #define FD_BAM_STATUS_FSEQ_CURRENT_SLOT_HAS_BAM_WORK (1UL<<1)
 
 typedef struct {
-  fd_ip4_port_t tpu;     /* TPU socket advertised by BAM (net order) */
-  fd_ip4_port_t tpu_fwd; /* TPU fwd socket advertised by BAM (net order). */
+  fd_ip4_port_t tpu;               /* TPU socket advertised by BAM (net order). */
+  fd_ip4_port_t tpu_fwd;           /* TPU fwd socket advertised by BAM (net order). */
+  ushort        version_client_id; /* ContactInfo version.client to advertise. */
 } fd_bam_contact_update_t;
 
 typedef struct {

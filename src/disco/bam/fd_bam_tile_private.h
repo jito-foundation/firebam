@@ -146,6 +146,14 @@ typedef enum {
   FD_BAM_TPU_UPDATE_STATE_PENDING_BAM     = 4, /* Needs an update attempt to apply BAM TPU; housekeeping retries. */
 } fd_bam_tpu_update_state_t;
 
+typedef enum {
+  FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN         = 0, /* No known applied state; next update should attempt to apply desired. */
+  FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT = 1, /* Last successful update applied the validator's default client id. */
+  FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM     = 2, /* Last successful update applied the BAM client id. */
+  FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT = 3, /* Needs an update attempt to apply the validator's default client id. */
+  FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_BAM     = 4, /* Needs an update attempt to apply the BAM client id. */
+} fd_bam_client_id_update_state_t;
+
 /* fd_bam_tile_t is the context object provided to callbacks from
    stem, and contains all state needed to progress the tile. */
 
@@ -235,6 +243,7 @@ struct fd_bam_tile {
   fd_ip4_port_t configured_default_tpu; /* Startup default TPU base port derived from local validator config. */
   char admin_rpc_path[ PATH_MAX ];     /* Frankendancer Agave admin socket path; empty uses full-Firedancer gossip updates only. */
   fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for TPU advert updates */
+  fd_bam_client_id_update_state_t client_id_update_state; /* Dedupe/retry state for ContactInfo client-id updates */
 
   /* Bundle state */
   fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by max_schedule_slot for debug captures. */
@@ -290,6 +299,12 @@ struct fd_bam_tile {
   long  last_gui_publish_nanos;
   uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
 };
+
+FD_FN_PURE static inline _Bool
+fd_bam_has_effective_contact( fd_bam_tile_t const * ctx ) {
+  return !!( ctx->bam_tpu.addr     && ctx->bam_tpu.port &&
+             ctx->bam_tpu_fwd.addr && ctx->bam_tpu_fwd.port );
+}
 
 typedef struct fd_bam_tile fd_bam_tile_t;
 

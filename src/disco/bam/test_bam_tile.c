@@ -4,6 +4,7 @@
 #include "test_bam_common.c"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../ballet/nanopb/pb_decode.h"
+#include "../../discof/gossip/fd_gossip_tile.h"
 #include "../bundle/fd_bundle_crank.h"
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -62,6 +63,10 @@ fd_pack_apply_bam_fee_cfg_impl( fd_bam_fee_cfg_t *      cfg,
 
 
 __attribute__((weak)) char const fdctl_version_string[] = "0.0.0";
+__attribute__((weak)) ulong const firedancer_major_version = 0UL;
+__attribute__((weak)) ulong const firedancer_minor_version = 0UL;
+__attribute__((weak)) ulong const firedancer_patch_version = 0UL;
+__attribute__((weak)) uint  const firedancer_commit_ref    = 0U;
 
 static long g_clock = 1L;
 
@@ -3525,6 +3530,7 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   test_bam_admin_rpc_mock_reset();
   test_bam_admin_rpc_expect_fseq_zero = fseq;
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":1}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
 
   ctrl.command = FD_BAM_CTRL_CMD_ENABLE;
   ctrl.enable  = 0U;
@@ -3536,7 +3542,9 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   FD_TEST( ctrl.enable == 0U );
   FD_TEST( ctx->enabled == 0 );
   FD_TEST( fd_fseq_query( fseq ) == 0UL );
-  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 1UL );
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 2UL );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setContactInfoClientId\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "[2]" ) );
   FD_TEST( !strcmp( ctrl.url, "http://testnet.bam.jito.wtf:80" ) );
 
   test_bam_admin_rpc_expect_fseq_zero = NULL;
@@ -3676,18 +3684,22 @@ test_bam_admin_rpc_apply_success_caches_default_and_marks_applied( fd_wksp_t * w
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":1}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":4}" );
 
   fd_bam_gossip_update( state, state->stem, 1 );
 
-  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 3UL );
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
   FD_TEST( !strcmp( test_bam_admin_rpc_mock.paths[0], "/tmp/test-bam-admin.rpc" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[0], "\"method\":\"contactInfo\"" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setPublicTpuAddress\"" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "9.9.9.9:7006" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "\"method\":\"setPublicTpuForwardsAddress\"" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "8.8.8.8:7007" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "\"method\":\"setContactInfoClientId\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "[12]" ) );
 
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM );
+  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM );
   FD_TEST( fd_ushort_bswap( state->default_tpu.port ) == 4242 );
   FD_TEST( fd_ushort_bswap( state->default_tpu_fwd.port ) == 4343 );
 
@@ -3722,6 +3734,7 @@ test_bam_admin_rpc_set_failure_stays_pending( fd_wksp_t * wksp ) {
   FD_TEST( test_bam_admin_rpc_mock.request_cnt == 2UL );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setPublicTpuAddress\"" ) );
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM );
+  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_BAM );
 
   test_bam_env_destroy( env );
 }
@@ -3746,15 +3759,19 @@ test_bam_admin_rpc_revert_uses_cached_defaults( fd_wksp_t * wksp ) {
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"8.8.8.8:7001\"},\"id\":1}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":4}" );
 
   fd_bam_gossip_update( state, state->stem, 0 );
 
-  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 3UL );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setPublicTpuAddress\"" ) );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "1.1.1.1:4248" ) );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "\"method\":\"setPublicTpuForwardsAddress\"" ) );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "2.2.2.2:4349" ) );
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setContactInfoClientId\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "[2]" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "\"method\":\"setPublicTpuAddress\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "1.1.1.1:4248" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "\"method\":\"setPublicTpuForwardsAddress\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "2.2.2.2:4349" ) );
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT );
 
   test_bam_env_destroy( env );
 }
@@ -3778,17 +3795,21 @@ test_bam_admin_rpc_restart_recovers_configured_defaults_for_revert( fd_wksp_t * 
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"8.8.8.8:7001\"},\"id\":1}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":4}" );
 
   fd_bam_gossip_update( state, state->stem, 0 );
 
-  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 3UL );
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 4UL );
   FD_TEST( state->default_tpu.l == state->configured_default_tpu.l );
   FD_TEST( state->default_tpu_fwd.l == state->configured_default_tpu.l );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "1.1.1.1:4248" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setContactInfoClientId\"" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "[2]" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "1.1.1.1:4248" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "1.1.1.1:4248" ) );
   FD_TEST( fd_ushort_bswap( state->default_tpu.port ) == 4242 );
   FD_TEST( fd_ushort_bswap( state->default_tpu_fwd.port ) == 4242 );
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT );
 
   test_bam_env_destroy( env );
 }
@@ -3811,6 +3832,7 @@ test_bam_admin_rpc_path_empty_skips_frankendancer_apply( fd_wksp_t * wksp ) {
 
   FD_TEST( test_bam_admin_rpc_mock.request_cnt == 0UL );
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM );
+  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM );
 
   fd_bam_gossip_update( state, state->stem, 0 );
 
@@ -3818,11 +3840,122 @@ test_bam_admin_rpc_path_empty_skips_frankendancer_apply( fd_wksp_t * wksp ) {
   FD_TEST( state->default_tpu.l == state->configured_default_tpu.l );
   FD_TEST( state->default_tpu_fwd.l == state->configured_default_tpu.l );
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT );
 
   test_bam_env_destroy( env );
 }
 
 /* --- Gossip advertisement ------------------------------------------------------------ */
+
+static void
+test_bam_gossip_send_stub( void *               ctx,
+                           fd_stem_context_t *  stem,
+                           uchar const *        data,
+                           ulong                sz,
+                           fd_ip4_port_t const *peer_address,
+                           ulong                now ) {
+  (void)ctx; (void)stem; (void)data; (void)sz; (void)peer_address; (void)now;
+}
+
+static void
+test_bam_gossip_sign_stub( void *        ctx,
+                           uchar const * data,
+                           ulong         sz,
+                           int           sign_type,
+                           uchar *       out_signature ) {
+  (void)ctx; (void)data; (void)sz; (void)sign_type;
+  for( uchar i=0U; i<64U; i++ ) out_signature[ i ] = i;
+}
+
+static void
+test_bam_gossip_ping_change_stub( void *        ctx,
+                                  uchar const * peer_pubkey,
+                                  fd_ip4_port_t peer_address,
+                                  long          now,
+                                  int           change_type ) {
+  (void)ctx; (void)peer_pubkey; (void)peer_address; (void)now; (void)change_type;
+}
+
+static void
+test_bam_gossip_activity_update_stub( void *                           ctx,
+                                      fd_pubkey_t const *              identity,
+                                      fd_gossip_contact_info_t const * ci,
+                                      int                              change_type ) {
+  (void)ctx; (void)identity; (void)ci; (void)change_type;
+}
+
+static void
+test_bam_gossip_tile_applies_contact_update( void ) {
+  fd_gossip_tile_ctx_t ctx;
+  fd_memset( &ctx, 0, sizeof(ctx) );
+  ctx.last_wallclock = fd_log_wallclock();
+
+  fd_gossip_contact_info_t base_ci = {0};
+  for( uchar i=0U; i<32U; i++ ) ctx.identity_key->uc[ i ] = i;
+  base_ci.shred_version  = 1U;
+  base_ci.outset         = (ulong)FD_NANOSEC_TO_MICRO( ctx.last_wallclock );
+  base_ci.version.client = FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER;
+
+  fd_ip4_port_t default_gossip = { .addr = 0, .port = fd_ushort_bswap( 8000 ) };
+  FD_TEST( fd_cstr_to_ip4_addr( "127.0.0.1", &default_gossip.addr ) );
+  base_ci.sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_GOSSIP ] =
+      (fd_gossip_socket_t){ .is_ipv6 = 0, .ip4 = default_gossip.addr, .port = default_gossip.port };
+  *ctx.my_contact_info = base_ci;
+
+  ulong max_values = 128UL;
+  fd_ip4_port_t entrypoints[1] = { default_gossip };
+  void * gossip_mem = aligned_alloc( fd_gossip_align(), fd_gossip_footprint( max_values, 1UL ) );
+  FD_TEST( gossip_mem );
+
+  fd_rng_t * rng = fd_rng_join( fd_rng_new( ctx.rng, ctx.rng_seed, ctx.rng_idx ) );
+  FD_TEST( rng );
+
+  void * shgossip = fd_gossip_new( gossip_mem,
+                                   rng,
+                                   max_values,
+                                   1UL,
+                                   entrypoints,
+                                   ctx.identity_key->uc,
+                                   ctx.my_contact_info,
+                                   ctx.last_wallclock,
+                                   test_bam_gossip_send_stub,
+                                   NULL,
+                                   test_bam_gossip_sign_stub,
+                                   NULL,
+                                   test_bam_gossip_ping_change_stub,
+                                   NULL,
+                                   test_bam_gossip_activity_update_stub,
+                                   NULL,
+                                   ctx.gossip_out,
+                                   ctx.net_out );
+  FD_TEST( shgossip );
+  ctx.gossip = fd_gossip_join( shgossip );
+  FD_TEST( ctx.gossip );
+
+  uint bam_tpu = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "9.8.7.6", &bam_tpu ) );
+  uint bam_tpu_fwd = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "4.3.2.1", &bam_tpu_fwd ) );
+
+  fd_bam_contact_update_t contact_update = {
+      .tpu               = (fd_ip4_port_t){ .addr = bam_tpu,     .port = fd_ushort_bswap( 5000 ) },
+      .tpu_fwd           = (fd_ip4_port_t){ .addr = bam_tpu_fwd, .port = fd_ushort_bswap( 6000 ) },
+      .version_client_id = FD_GOSSIP_CONTACT_INFO_CLIENT_BAM,
+  };
+  fd_gossip_tile_apply_bam_contact( &ctx, &contact_update, ctx.last_wallclock + 1L );
+
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].ip4                == bam_tpu );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].port               == fd_ushort_bswap( 5000 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ].ip4       == bam_tpu_fwd );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ].port      == fd_ushort_bswap( 6000 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].ip4           == bam_tpu );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].port          == fd_ushort_bswap( 5006 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].ip4  == bam_tpu_fwd );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].port == fd_ushort_bswap( 6006 ) );
+  FD_TEST( ctx.my_contact_info->version.client == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
+
+  free( gossip_mem );
+}
 
 static void
 test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
@@ -3872,6 +4005,7 @@ test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
   FD_TEST( fd_cstr_to_ip4_addr( "11.12.13.14", &expected_tpu_fwd_addr ) );
   FD_TEST( update.tpu_fwd.addr == expected_tpu_fwd_addr );
   FD_TEST( fd_ushort_bswap( update.tpu_fwd.port ) == 3344U );
+  FD_TEST( update.version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
 
   test_bam_env_destroy( env );
 }
@@ -3914,6 +4048,7 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   FD_TEST( fd_ushort_bswap( updates[0].tpu.port ) == bam_tpu_port );
   FD_TEST( updates[0].tpu_fwd.addr == bam_tpu_fwd_addr );
   FD_TEST( fd_ushort_bswap( updates[0].tpu_fwd.port ) == bam_tpu_fwd_port );
+  FD_TEST( updates[0].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
 
   /* use_bam == false should revert to defaults. */
   state->bam_tpu     = (fd_ip4_port_t){ .addr = bam_tpu_addr, .port = fd_ushort_bswap( bam_tpu_port ) }; // 12.34.56.78:2222
@@ -3929,6 +4064,7 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   FD_TEST( updates[1].tpu.port     == state->default_tpu.port );
   FD_TEST( updates[1].tpu_fwd.addr == state->default_tpu_fwd.addr );
   FD_TEST( updates[1].tpu_fwd.port == state->default_tpu_fwd.port );
+  FD_TEST( updates[1].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
 
   test_bam_env_destroy( env );
 }
@@ -3990,6 +4126,7 @@ test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( fd_wks
   FD_TEST( fd_cstr_to_ip4_addr( "4.3.2.1", &expected_tpu_fwd_addr ) );
   FD_TEST( updates[0].tpu_fwd.addr == expected_tpu_fwd_addr );
   FD_TEST( fd_ushort_bswap( updates[0].tpu_fwd.port ) == 6000U );
+  FD_TEST( updates[0].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
 
   publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, false );
@@ -3999,6 +4136,7 @@ test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( fd_wks
   FD_TEST( updates[1].tpu.port     == state->default_tpu.port );
   FD_TEST( updates[1].tpu_fwd.addr == state->default_tpu_fwd.addr );
   FD_TEST( updates[1].tpu_fwd.port == state->default_tpu_fwd.port );
+  FD_TEST( updates[1].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
 
   state->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING;
   state->bam_stream_live = 0U;
@@ -4026,6 +4164,7 @@ test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( fd_wks
   FD_TEST( updates[2].tpu.port     == state->default_tpu.port );
   FD_TEST( updates[2].tpu_fwd.addr == state->default_tpu_fwd.addr );
   FD_TEST( updates[2].tpu_fwd.port == state->default_tpu_fwd.port );
+  FD_TEST( updates[2].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
 
   /* Explicit use_bam=false still advertises defaults and does not depend on
      the stored BAM contact being zeroed. */
@@ -4037,6 +4176,7 @@ test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( fd_wks
   FD_TEST( updates[3].tpu.port     == state->default_tpu.port );
   FD_TEST( updates[3].tpu_fwd.addr == state->default_tpu_fwd.addr );
   FD_TEST( updates[3].tpu_fwd.port == state->default_tpu_fwd.port );
+  FD_TEST( updates[3].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
 
   test_bam_env_destroy( env );
 }
@@ -4092,6 +4232,7 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &expected_tpu_fwd_addr ) );
   FD_TEST( updates[0].tpu_fwd.addr == expected_tpu_fwd_addr );
   FD_TEST( fd_ushort_bswap( updates[0].tpu_fwd.port ) == 7001U );
+  FD_TEST( updates[0].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
 
   /* Disabling runtime should immediately revert gossip to the Firedancer defaults. */
   publish_chunk = state->gossip_out.chunk;
@@ -4099,6 +4240,7 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   fd_bam_gossip_update( state, state->stem, false );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 2UL );
+  FD_TEST( updates[1].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
 
   /* Re-enabling runtime while still connected should republish the BamConfig address. */
   publish_chunk = state->gossip_out.chunk;
@@ -4110,6 +4252,7 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   FD_TEST( fd_ushort_bswap( updates[2].tpu.port ) == 7000U );
   FD_TEST( updates[2].tpu_fwd.addr == expected_tpu_fwd_addr );
   FD_TEST( fd_ushort_bswap( updates[2].tpu_fwd.port ) == 7001U );
+  FD_TEST( updates[2].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
 
   test_bam_env_destroy( env );
 }
@@ -4287,6 +4430,7 @@ test_bam_config_reuses_cached_contact_for_incomplete_refresh( fd_wksp_t * wksp )
   FD_TEST( state->bam_tpu_fwd.l == expected_tpu_fwd.l );
   FD_TEST( update.tpu.l == expected_tpu.l );
   FD_TEST( update.tpu_fwd.l == expected_tpu_fwd.l );
+  FD_TEST( update.version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
 
   resp = (bam_api_ConfigResponse)bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
@@ -4307,6 +4451,7 @@ test_bam_config_reuses_cached_contact_for_incomplete_refresh( fd_wksp_t * wksp )
   FD_TEST( state->bam_tpu_fwd.l == expected_tpu_fwd.l );
   FD_TEST( update.tpu.l == expected_tpu.l );
   FD_TEST( update.tpu_fwd.l == expected_tpu_fwd.l );
+  FD_TEST( update.version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
 
   test_bam_env_destroy( env );
 }
@@ -4765,6 +4910,7 @@ main( int     argc,
   test_bam_admin_rpc_path_empty_skips_frankendancer_apply( wksp );
 
   /* Gossip advertisement */
+  test_bam_gossip_tile_applies_contact_update();
   test_bam_gossip_publishes_bam_config_contact( wksp );
   test_bam_gossip_resets_when_contact_missing( wksp );
   test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( wksp );

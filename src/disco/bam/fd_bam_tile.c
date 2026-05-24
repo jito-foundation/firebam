@@ -4,6 +4,7 @@
 #include "../topo/fd_topo.h"
 #include "../keyguard/fd_keyload.h"
 #include "../plugin/fd_plugin.h"
+#include "../../flamenco/gossip/fd_gossip_message.h"
 #include "../../waltz/http/fd_url.h"
 #include "../../waltz/openssl/fd_openssl.h"
 #include "../../tango/fseq/fd_fseq.h"
@@ -29,6 +30,46 @@
 
 /* Provided by fdctl/firedancer version.c */
 extern char const fdctl_version_string[];
+
+static _Bool
+fd_bam_try_apply_contact_info_client_id( fd_bam_tile_t *                    ctx,
+                                         ushort                             client_id,
+                                         uint                               request_id,
+                                         fd_bam_client_id_update_state_t    applied_state,
+                                         fd_bam_client_id_update_state_t    pending_state ) {
+  char request[ 256 ];
+  char response[ 4096 ];
+  if( FD_UNLIKELY( !fd_cstr_printf_check( request,
+                                          sizeof(request),
+                                          NULL,
+                                          "{\"jsonrpc\":\"2.0\",\"id\":%u,\"method\":\"setContactInfoClientId\",\"params\":[%hu]}\n",
+                                          request_id,
+                                          client_id ) ) ) {
+    FD_LOG_WARNING(( "BAM admin RPC failed to format setContactInfoClientId request client_id=%hu", client_id ));
+    goto pending;
+  }
+  if( FD_UNLIKELY( fd_bam_admin_rpc_request( ctx->admin_rpc_path, request, response, sizeof(response) ) ) ) {
+    FD_LOG_WARNING(( "BAM admin RPC setContactInfoClientId request failed client_id=%hu via `%s`",
+                     client_id,
+                     ctx->admin_rpc_path ));
+    goto pending;
+  }
+  if( FD_UNLIKELY( strstr( response, "\"error\"" ) ) ) {
+    FD_LOG_WARNING(( "BAM admin RPC setContactInfoClientId returned error client_id=%hu: %.*s",
+                     client_id,
+                     (int)fd_ulong_min( strnlen( response, sizeof(response) ), 256UL ),
+                     response ));
+    goto pending;
+  }
+
+  FD_LOG_INFO(( "Updated ContactInfo client id to %hu", client_id ));
+  ctx->client_id_update_state = applied_state;
+  return 1;
+
+pending:
+  ctx->client_id_update_state = pending_state;
+  return 0;
+}
 
 FD_FN_CONST static ulong
 scratch_align( void ) {
@@ -178,12 +219,23 @@ void
 fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                       fd_stem_context_t * stem,
                       _Bool use_bam) {
-  fd_bam_tpu_update_state_t desired_applied = use_bam
+  fd_bam_tpu_update_state_t desired_tpu_applied = use_bam
     ? FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM
     : FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT;
-  fd_bam_tpu_update_state_t desired_pending = use_bam
+  fd_bam_tpu_update_state_t desired_tpu_pending = use_bam
     ? FD_BAM_TPU_UPDATE_STATE_PENDING_BAM
     : FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT;
+  fd_bam_client_id_update_state_t desired_client_id_applied = use_bam
+    ? FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM
+    : FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT;
+  fd_bam_client_id_update_state_t desired_client_id_pending = use_bam
+    ? FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_BAM
+    : FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT;
+  ushort desired_client_id = use_bam
+    ? (ushort)FD_GOSSIP_CONTACT_INFO_CLIENT_BAM
+    : (ushort)( ctx->admin_rpc_path[0]
+      ? FD_GOSSIP_CONTACT_INFO_CLIENT_FRANKENDANCER
+      : FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
 
   _Bool have_default_tpu = !!( ctx->default_tpu.addr     &&
                                ctx->default_tpu.port     &&
@@ -204,11 +256,13 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                     fd_ushort_bswap( ctx->default_tpu_fwd.port ) ));
   }
 
-  if( FD_LIKELY( ctx->tpu_update_state == desired_applied ) ) goto publish;
+  if( FD_LIKELY( ctx->tpu_update_state       == desired_tpu_applied &&
+                 ctx->client_id_update_state == desired_client_id_applied ) ) goto publish;
   if( FD_UNLIKELY( !ctx->admin_rpc_path[0] ) ) {
     if( FD_UNLIKELY( !use_bam && !have_default_tpu ) )
       FD_LOG_WARNING(( "No default TPU configured for BAM gossip revert" ));
-    ctx->tpu_update_state = desired_applied;
+    ctx->tpu_update_state       = desired_tpu_applied;
+    ctx->client_id_update_state = desired_client_id_applied;
     goto publish;
   }
 
@@ -289,7 +343,9 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
   } while( 0 );
 
   if( FD_UNLIKELY( current_rc ) ) {
-    ctx->tpu_update_state = desired_pending;
+    ctx->tpu_update_state = desired_tpu_pending;
+    if( FD_UNLIKELY( ctx->client_id_update_state != desired_client_id_applied ) )
+      ctx->client_id_update_state = desired_client_id_pending;
     goto publish;
   }
 
@@ -313,12 +369,21 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
     }
   }
 
+  if( FD_UNLIKELY( !use_bam && ctx->client_id_update_state != desired_client_id_applied ) ) {
+    if( FD_LIKELY( fd_bam_try_apply_contact_info_client_id( ctx,
+                                                            desired_client_id,
+                                                            2U,
+                                                            desired_client_id_applied,
+                                                            desired_client_id_pending ) ) )
+      fd_log_wait_until( fd_log_wallclock() + (long)2e6 );
+  }
+
   fd_ip4_port_t tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
   fd_ip4_port_t tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
 
   if( FD_UNLIKELY( !use_bam && !have_default_tpu ) ) {
     FD_LOG_WARNING(( "Attempted to revert TPU before agave finished initializing" ));
-    ctx->tpu_update_state = desired_pending;
+    ctx->tpu_update_state = desired_tpu_pending;
     goto publish;
   }
   if( FD_UNLIKELY( !tpu.addr || !tpu.port || !tpu_fwd.addr || !tpu_fwd.port ) ) {
@@ -327,7 +392,9 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                      fd_ushort_bswap( tpu.port ),
                      FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
                      fd_ushort_bswap( tpu_fwd.port ) ));
-    ctx->tpu_update_state = desired_pending;
+    ctx->tpu_update_state = desired_tpu_pending;
+    if( FD_UNLIKELY( use_bam && ctx->client_id_update_state != desired_client_id_applied ) )
+      ctx->client_id_update_state = desired_client_id_pending;
     goto publish;
   }
   if( FD_UNLIKELY( current_tpu.l==tpu.l && current_tpu_fwd.l==tpu_fwd.l ) ) {
@@ -337,23 +404,22 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                     fd_ushort_bswap( tpu.port ),
                     FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
                     fd_ushort_bswap( tpu_fwd.port ) ));
-    ctx->tpu_update_state = desired_applied;
-    goto publish;
-  }
+    ctx->tpu_update_state = desired_tpu_applied;
+  } else {
+    FD_LOG_INFO(( "Prepare to set TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, use_bam: %d",
+                  FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                  fd_ushort_bswap( tpu.port ),
+                  FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                  fd_ushort_bswap( tpu_fwd.port ),
+                  use_bam ));
 
-  FD_LOG_INFO(( "Prepare to set TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu, use_bam: %d",
-                FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                fd_ushort_bswap( tpu.port ),
-                FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                fd_ushort_bswap( tpu_fwd.port ),
-                use_bam ));
-
-  int set_rc = 0;
-  do {
     char request[ 512 ];
     char response[ 4096 ];
     fd_ip4_port_t const sockets[ 2 ] = { tpu, tpu_fwd };
     char const * methods[ 2 ] = { "setPublicTpuAddress", "setPublicTpuForwardsAddress" };
+    uint request_id_base = use_bam ? 2U : 3U;
+    int set_rc = 0;
+
     for( ulong i=0UL; i<2UL; i++ ) {
       fd_ip4_port_t socket = sockets[ i ];
       char const * method = methods[ i ];
@@ -366,12 +432,13 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
         set_rc = -1;
         break;
       }
+
       ushort public_port = (ushort)( port + 6U );
       if( FD_UNLIKELY( !fd_cstr_printf_check( request,
                                               sizeof(request),
                                               NULL,
                                               "{\"jsonrpc\":\"2.0\",\"id\":%u,\"method\":\"%s\",\"params\":[\"" FD_IP4_ADDR_FMT ":%hu\"]}\n",
-                                              (uint)( 2UL+i ),
+                                              request_id_base + (uint)i,
                                               method,
                                               FD_IP4_ADDR_FMT_ARGS( socket.addr ),
                                               public_port ) ) ) {
@@ -408,21 +475,34 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
         fd_log_wait_until( fd_log_wallclock() + (long)2e6 );
       }
     }
-  } while( 0 );
-  if( FD_UNLIKELY( set_rc ) ) {
-    FD_LOG_WARNING(( "Failed to update TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                     FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                     fd_ushort_bswap( tpu.port ),
-                     FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                     fd_ushort_bswap( tpu_fwd.port ) ));
-    ctx->tpu_update_state = desired_pending;
-  } else {
-    FD_LOG_INFO(( "Updated TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
-                  FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
-                  fd_ushort_bswap( tpu.port ),
-                  FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
-                  fd_ushort_bswap( tpu_fwd.port ) ));
-    ctx->tpu_update_state = desired_applied;
+    if( FD_UNLIKELY( set_rc ) ) {
+      FD_LOG_WARNING(( "Failed to update TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                       FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                       fd_ushort_bswap( tpu.port ),
+                       FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                       fd_ushort_bswap( tpu_fwd.port ) ));
+      ctx->tpu_update_state = desired_tpu_pending;
+    } else {
+      FD_LOG_INFO(( "Updated TPU addresses: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                    FD_IP4_ADDR_FMT_ARGS( tpu.addr ),
+                    fd_ushort_bswap( tpu.port ),
+                    FD_IP4_ADDR_FMT_ARGS( tpu_fwd.addr ),
+                    fd_ushort_bswap( tpu_fwd.port ) ));
+      ctx->tpu_update_state = desired_tpu_applied;
+    }
+  }
+
+  if( FD_UNLIKELY( use_bam && ctx->client_id_update_state != desired_client_id_applied ) ) {
+    if( FD_LIKELY( ctx->tpu_update_state == desired_tpu_applied ) ) {
+      fd_log_wait_until( fd_log_wallclock() + (long)2e6 );
+      fd_bam_try_apply_contact_info_client_id( ctx,
+                                               desired_client_id,
+                                               4U,
+                                               desired_client_id_applied,
+                                               desired_client_id_pending );
+    } else {
+      ctx->client_id_update_state = desired_client_id_pending;
+    }
   }
 
 publish:
@@ -431,8 +511,9 @@ publish:
   fd_ip4_port_t gossip_tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
   /* Full firedancer uses Gossip tile, it consumes these messages and mutates its local contact-info state. */
   fd_bam_contact_update_t * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
-  msg->tpu     = gossip_tpu;
-  msg->tpu_fwd = gossip_tpu_fwd;
+  msg->tpu               = gossip_tpu;
+  msg->tpu_fwd           = gossip_tpu_fwd;
+  msg->version_client_id = desired_client_id;
 
   fd_stem_publish( stem,
                    ctx->gossip_out.idx,
@@ -495,13 +576,16 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
   }
 
   fd_bam_tpu_update_state_t tpu_update_state = ctx->tpu_update_state;
-  _Bool tpu_update_needed =
+  fd_bam_client_id_update_state_t client_id_update_state = ctx->client_id_update_state;
+  _Bool update_needed =
       ( prev_bam_active != bam_active ) ||
-      tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM ||
-      tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT ||
+      tpu_update_state >= FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT ||
       tpu_update_state == ( bam_active ? FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT : FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM ) ||
-      ( bam_active && tpu_update_state == FD_BAM_TPU_UPDATE_STATE_UNKNOWN );
-  if( FD_UNLIKELY( tpu_update_needed ) ) fd_bam_gossip_update( ctx, stem, bam_active );
+      ( bam_active && tpu_update_state == FD_BAM_TPU_UPDATE_STATE_UNKNOWN ) ||
+      client_id_update_state >= FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT ||
+      client_id_update_state == ( bam_active ? FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT : FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM ) ||
+      ( bam_active && client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN );
+  if( FD_UNLIKELY( update_needed ) ) fd_bam_gossip_update( ctx, stem, bam_active );
 
   fd_bam_shred_update( ctx, stem, bam_active );
 
@@ -583,7 +667,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     tracker->counted = 1U;
   }
 
-  _Bool bam_active = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+  _Bool bam_active = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY && fd_bam_has_effective_contact( ctx );
   fd_bam_publish_active_state( ctx, ctx->stem, bam_active );
   ctx->bam_status_recent = status;
 
@@ -1345,7 +1429,8 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->published_shred_sock_cnt = 0U;
   ctx->default_tpu     = (fd_ip4_port_t){0};
   ctx->default_tpu_fwd = (fd_ip4_port_t){0};
-  ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
+  ctx->tpu_update_state       = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
+  ctx->client_id_update_state = FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN;
 
   ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
   if( FD_UNLIKELY( bam_status_obj_id == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_status object" ));

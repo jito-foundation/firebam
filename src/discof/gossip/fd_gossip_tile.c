@@ -370,6 +370,7 @@ fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
     .ip4     = update->tpu_fwd.addr,
     .port    = fd_ushort_bswap( (ushort)( tpu_fwd_port + 6U ) )
   };
+  ctx->my_contact_info->version.client = update->version_client_id;
   fd_gossip_set_my_contact_info( ctx->gossip, ctx->my_contact_info, now );
 }
 

@@ -7,6 +7,7 @@
 #include "fd_bam_tile_private.h"
 #include "fd_bam_ctrl.h"
 #include "../fd_txn_m.h" // FD_TPU_PARSED_MTU
+#include "../../flamenco/gossip/fd_gossip_message.h"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../waltz/grpc/fd_grpc_client_private.h"
 
@@ -615,6 +616,7 @@ bam_fuzz_publish_and_check(_Bool use_bam) {
 
   FD_TEST( msg->tpu.l     == expected_tpu.l );
   FD_TEST( msg->tpu_fwd.l == expected_tpu_fwd.l );
+  FD_TEST( msg->version_client_id == (ushort)( use_bam ? FD_GOSSIP_CONTACT_INFO_CLIENT_BAM : FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER ) );
 }
 
 /* Standard libFuzzer entry: disable backtraces, boot Firedancer core, and
