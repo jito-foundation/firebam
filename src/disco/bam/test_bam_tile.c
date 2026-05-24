@@ -299,6 +299,14 @@ test_bam_encode_string_field_raw( pb_ostream_t * stream,
   FD_TEST( pb_encode_string( stream, payload, payload_sz ) );
 }
 
+static void
+test_bam_encode_varint_field_raw( pb_ostream_t * stream,
+                                  uint32_t       tag,
+                                  uint64_t       val ) {
+  FD_TEST( pb_encode_tag( stream, PB_WT_VARINT, tag ) );
+  FD_TEST( pb_encode_varint( stream, val ) );
+}
+
 static size_t
 test_bam_encode_scheduler_response_v0_raw( uchar const * v0_payload,
                                            size_t        v0_payload_sz,
@@ -886,6 +894,134 @@ test_bam_scheduler_trailing_corruption_does_not_publish( fd_wksp_t * wksp ) {
   FD_TEST( state->metrics.transaction_published_cnt == 0UL );
   FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->feedback_queue_depth == 0UL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_expect_scheduler_decode_failure( test_bam_env_t * env,
+                                          uchar const *    protobuf,
+                                          size_t           protobuf_sz,
+                                          ulong            expected_failure_cnt ) {
+  fd_bam_tile_t * state = env->state;
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == expected_failure_cnt );
+  FD_TEST( state->metrics.ingress_multi_message_received_cnt == 0UL );
+  FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 0UL );
+  FD_TEST( state->metrics.transaction_published_cnt == 0UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+  FD_TEST( env->stem_seqs[0] == 0UL );
+}
+
+static void
+test_bam_scheduler_rejects_invalid_custom_decode_fields( fd_wksp_t * wksp ) {
+  uchar valid_multi_payload[384];
+  size_t valid_multi_payload_sz = test_bam_encode_one_packet_multi_payload_raw( 78U,
+                                                                                (uchar)'v',
+                                                                                valid_multi_payload,
+                                                                                sizeof( valid_multi_payload ) );
+
+  uchar valid_v0_payload[512];
+  pb_ostream_t valid_v0_stream = pb_ostream_from_buffer( valid_v0_payload, sizeof( valid_v0_payload ) );
+  test_bam_encode_string_field_raw( &valid_v0_stream,
+                                    bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag,
+                                    valid_multi_payload,
+                                    valid_multi_payload_sz );
+
+  bam_types_Packet packet = bam_types_Packet_init_default;
+  packet.data.size      = 1U;
+  packet.data.bytes[0]  = (uchar)'n';
+
+  uchar batch[256];
+  size_t batch_sz = test_bam_encode_atomic_batch_raw( &packet, 1UL, 82U, batch, sizeof( batch ) );
+
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  zero_meta_ts( env->out_mcache, 2UL );
+
+  uchar protobuf[768];
+  ulong expected_failure_cnt = 0UL;
+
+  pb_ostream_t outer_stream = pb_ostream_from_buffer( protobuf, sizeof( protobuf ) );
+  test_bam_encode_varint_field_raw( &outer_stream, bam_api_SchedulerResponse_v0_tag, 1UL );
+  test_bam_encode_string_field_raw( &outer_stream,
+                                    bam_api_SchedulerResponse_v0_tag,
+                                    valid_v0_payload,
+                                    valid_v0_stream.bytes_written );
+  test_bam_expect_scheduler_decode_failure( env, protobuf, outer_stream.bytes_written, ++expected_failure_cnt );
+
+  outer_stream = pb_ostream_from_buffer( protobuf, sizeof( protobuf ) );
+  test_bam_encode_varint_field_raw( &outer_stream, 31U, 1UL );
+  test_bam_encode_string_field_raw( &outer_stream,
+                                    bam_api_SchedulerResponse_v0_tag,
+                                    valid_v0_payload,
+                                    valid_v0_stream.bytes_written );
+  test_bam_expect_scheduler_decode_failure( env, protobuf, outer_stream.bytes_written, ++expected_failure_cnt );
+
+  uchar v0_payload[640];
+  pb_ostream_t v0_stream = pb_ostream_from_buffer( v0_payload, sizeof( v0_payload ) );
+  test_bam_encode_varint_field_raw( &v0_stream, 31U, 1UL );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag,
+                                    valid_multi_payload,
+                                    valid_multi_payload_sz );
+  size_t protobuf_sz = test_bam_encode_scheduler_response_v0_raw( v0_payload,
+                                                                  v0_stream.bytes_written,
+                                                                  protobuf,
+                                                                  sizeof( protobuf ) );
+  test_bam_expect_scheduler_decode_failure( env, protobuf, protobuf_sz, ++expected_failure_cnt );
+
+  v0_stream = pb_ostream_from_buffer( v0_payload, sizeof( v0_payload ) );
+  test_bam_encode_varint_field_raw( &v0_stream, bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag, 1UL );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag,
+                                    valid_multi_payload,
+                                    valid_multi_payload_sz );
+  protobuf_sz = test_bam_encode_scheduler_response_v0_raw( v0_payload,
+                                                           v0_stream.bytes_written,
+                                                           protobuf,
+                                                           sizeof( protobuf ) );
+  test_bam_expect_scheduler_decode_failure( env, protobuf, protobuf_sz, ++expected_failure_cnt );
+
+  uchar multi_payload[384];
+  pb_ostream_t multi_stream = pb_ostream_from_buffer( multi_payload, sizeof( multi_payload ) );
+  test_bam_encode_varint_field_raw( &multi_stream, 31U, 1UL );
+  test_bam_encode_string_field_raw( &multi_stream,
+                                    bam_types_MultipleAtomicTxnBatch_batches_tag,
+                                    batch,
+                                    batch_sz );
+  v0_stream = pb_ostream_from_buffer( v0_payload, sizeof( v0_payload ) );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag,
+                                    multi_payload,
+                                    multi_stream.bytes_written );
+  protobuf_sz = test_bam_encode_scheduler_response_v0_raw( v0_payload,
+                                                           v0_stream.bytes_written,
+                                                           protobuf,
+                                                           sizeof( protobuf ) );
+  test_bam_expect_scheduler_decode_failure( env, protobuf, protobuf_sz, ++expected_failure_cnt );
+
+  multi_stream = pb_ostream_from_buffer( multi_payload, sizeof( multi_payload ) );
+  test_bam_encode_varint_field_raw( &multi_stream, bam_types_MultipleAtomicTxnBatch_batches_tag, 1UL );
+  test_bam_encode_string_field_raw( &multi_stream,
+                                    bam_types_MultipleAtomicTxnBatch_batches_tag,
+                                    batch,
+                                    batch_sz );
+  v0_stream = pb_ostream_from_buffer( v0_payload, sizeof( v0_payload ) );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag,
+                                    multi_payload,
+                                    multi_stream.bytes_written );
+  protobuf_sz = test_bam_encode_scheduler_response_v0_raw( v0_payload,
+                                                           v0_stream.bytes_written,
+                                                           protobuf,
+                                                           sizeof( protobuf ) );
+  test_bam_expect_scheduler_decode_failure( env, protobuf, protobuf_sz, ++expected_failure_cnt );
 
   test_bam_env_destroy( env );
 }
@@ -4847,6 +4983,7 @@ main( int     argc,
   test_bam_multiple_batches_accept_limit_counts( wksp );
   test_bam_scheduler_truncated_message_dropped( wksp );
   test_bam_scheduler_trailing_corruption_does_not_publish( wksp );
+  test_bam_scheduler_rejects_invalid_custom_decode_fields( wksp );
   test_bam_scheduler_v0_oneof_uses_last_field( wksp );
   test_bam_multiple_batches_do_not_partially_publish_on_corruption( wksp );
   test_bam_multiple_batches_reject_excess_batch_count( wksp );

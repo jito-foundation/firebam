@@ -643,13 +643,17 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
   uint           seen_batch_count = 0U;
 
   while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
+    if( FD_UNLIKELY( !tag ) ) {
+      PB_SET_ERROR( stream, "zero tag" );
+      return 0;
+    }
     if( FD_UNLIKELY( tag != bam_types_MultipleAtomicTxnBatch_batches_tag ) ) {
-      if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
-      continue;
+      PB_SET_ERROR( stream, "unexpected tag" );
+      return 0;
     }
     if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
-      if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
-      continue;
+      PB_SET_ERROR( stream, "wrong wire type" );
+      return 0;
     }
 
     pb_istream_t substream;
@@ -755,23 +759,27 @@ fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
     switch( tag ) {
     case bam_api_SchedulerResponseV0_heart_beat_tag:
     case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag:
-    case bam_api_SchedulerResponseV0_ping_tag: {
-      if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
-        if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
-        break;
-      }
-      pb_istream_t substream;
-      if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return 0;
-      selected_tag     = tag;
-      selected_data    = (uchar const *)substream.state;
-      selected_data_sz = substream.bytes_left;
-      if( FD_UNLIKELY( !pb_close_string_substream( stream, &substream ) ) ) return 0;
+    case bam_api_SchedulerResponseV0_ping_tag:
       break;
-    }
+    case 0:
+      PB_SET_ERROR( stream, "zero tag" );
+      return 0;
     default:
-      if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) return 0;
-      break;
+      PB_SET_ERROR( stream, "unexpected tag" );
+      return 0;
     }
+
+    if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
+      PB_SET_ERROR( stream, "wrong wire type" );
+      return 0;
+    }
+
+    pb_istream_t substream;
+    if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return 0;
+    selected_tag = tag;
+    selected_data = (uchar const *)substream.state;
+    selected_data_sz = substream.bytes_left;
+    if( FD_UNLIKELY( !pb_close_string_substream( stream, &substream ) ) ) return 0;
   }
   if( FD_UNLIKELY( !eof ) ) return 0;
 
@@ -841,13 +849,16 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   size_t         selected_v0_data_sz     = 0UL;
 
   while( pb_decode_tag( &istream, &wire_type, &tag, &eof ) ) {
+    if( FD_UNLIKELY( !tag ) ) {
+      PB_SET_ERROR( (&istream), "zero tag" );
+      goto fail;
+    }
+    if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
+      PB_SET_ERROR( (&istream), "wrong wire type" );
+      goto fail;
+    }
     if( FD_UNLIKELY( tag != bam_api_SchedulerResponse_v0_tag ) ) {
       unsupported_version_tag = tag;
-      if( FD_UNLIKELY( !pb_skip_field( &istream, wire_type ) ) ) goto fail;
-      continue;
-    }
-
-    if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
       if( FD_UNLIKELY( !pb_skip_field( &istream, wire_type ) ) ) goto fail;
       continue;
     }
