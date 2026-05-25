@@ -1,5 +1,6 @@
 #include "fd_resolv_tile.h"
 #include "../../disco/fd_txn_m.h"
+#include "../../disco/bam/fd_bam_types.h"
 #include "../../disco/topo/fd_topo.h"
 #include "../replay/fd_replay_tile.h"
 #include "generated/fd_resolv_tile_seccomp.h"
@@ -45,7 +46,9 @@ static const blockhash_t null_blockhash = { 0 };
    history.  Beyond this, the validator is likely to be restarted, and
    lose the history anyway. */
 
+#ifndef BLOCKHASH_LG_RING_CNT
 #define BLOCKHASH_LG_RING_CNT 22UL
+#endif
 #define BLOCKHASH_RING_LEN   (1UL<<BLOCKHASH_LG_RING_CNT)
 
 #define MAP_NAME              map
@@ -119,6 +122,7 @@ typedef struct {
 } fd_resolv_in_ctx_t;
 
 typedef struct {
+  ulong       idx;
   fd_wksp_t * mem;
   ulong       chunk0;
   ulong       wmark;
@@ -173,6 +177,7 @@ typedef struct {
 
   fd_resolv_out_ctx_t out_pack[ 1UL ];
   fd_resolv_out_ctx_t out_replay[ 1UL ];
+  fd_resolv_out_ctx_t out_bam[ 1UL ];
 } fd_resolv_ctx_t;
 
 FD_FN_CONST static inline ulong
@@ -339,10 +344,22 @@ publish_txn( fd_resolv_ctx_t *          ctx,
 
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
-  fd_stem_publish( stem, 0UL, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, 0UL, tspub );
+  fd_stem_publish( stem, ctx->out_pack->idx, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, 0UL, tspub );
   ctx->out_pack->chunk = fd_dcache_compact_next( ctx->out_pack->chunk, realized_sz, ctx->out_pack->chunk0, ctx->out_pack->wmark );
 
   return 1;
+}
+
+static inline void
+publish_bam_result( fd_resolv_ctx_t *               ctx,
+                    fd_stem_context_t *             stem,
+                    fd_bam_bundle_result_t const *  res ) {
+  if( FD_UNLIKELY( ctx->out_bam->idx==ULONG_MAX ) ) return;
+
+  fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->out_bam->mem, ctx->out_bam->chunk );
+  *out = *res;
+  fd_stem_publish( stem, ctx->out_bam->idx, 0UL, ctx->out_bam->chunk, sizeof(fd_bam_bundle_result_t), 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
+  ctx->out_bam->chunk = fd_dcache_compact_next( ctx->out_bam->chunk, sizeof(fd_bam_bundle_result_t), ctx->out_bam->chunk0, ctx->out_bam->wmark );
 }
 
 static inline void
@@ -447,7 +464,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
           fd_resolv_slot_exchanged_t * slot_exchanged =
             fd_type_pun( fd_chunk_to_laddr( ctx->out_replay->mem, ctx->out_replay->chunk ) );
           slot_exchanged->bank_idx = prev_bank->idx;
-          fd_stem_publish( stem, 1UL, 0UL, ctx->out_replay->chunk, sizeof(fd_resolv_slot_exchanged_t), 0UL, tsorig, tspub );
+          fd_stem_publish( stem, ctx->out_replay->idx, 0UL, ctx->out_replay->chunk, sizeof(fd_resolv_slot_exchanged_t), 0UL, tsorig, tspub );
           ctx->out_replay->chunk = fd_dcache_compact_next( ctx->out_replay->chunk, sizeof(fd_resolv_slot_exchanged_t), ctx->out_replay->chunk0, ctx->out_replay->wmark );
         }
 
@@ -486,6 +503,9 @@ after_frag( fd_resolv_ctx_t *   ctx,
     buffer.  If we later see the blockhash come to exist, we forward any
     buffered transactions to back. */
 
+  int is_bam          = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  int emit_bam_result = is_bam && ( !txnm->bam.revert_on_error || txnm->bam.batch_idx==0U );
+
   if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
     ctx->bundle_id     = txnm->block_engine.bundle_id;
@@ -501,6 +521,12 @@ after_frag( fd_resolv_ctx_t *   ctx,
   if( FD_LIKELY( blockhash ) ) {
     txnm->reference_slot = blockhash->slot;
     if( FD_UNLIKELY( txnm->reference_slot+151UL<ctx->completed_slot ) ) {
+      if( FD_UNLIKELY( emit_bam_result ) ) {
+        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
+        fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+        fd_bam_result_mark_sanitize_success_all( &res );
+        publish_bam_result( ctx, stem, &res );
+      }
       if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
       ctx->metrics.blockhash_expired++;
       return;
@@ -508,7 +534,6 @@ after_frag( fd_resolv_ctx_t *   ctx,
   }
 
   int is_bundle_member = !!txnm->block_engine.bundle_id;
-  int is_bam           = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
   int is_durable_nonce = fd_resolv_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
 
   /* BAM scheduler traffic must preserve stream order into pack. */
@@ -543,14 +568,22 @@ after_frag( fd_resolv_ctx_t *   ctx,
   }
 
   if( FD_UNLIKELY( txnt->addr_table_adtl_cnt ) ) {
+    int failed = 0;
     if( FD_UNLIKELY( !ctx->bank->data ) ) {
       FD_MCNT_INC( RESOLV, NO_BANK_DROP, 1 );
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-      return;
+      failed = 1;
+    } else {
+      failed = !!peek_aluts( ctx, txnm );
     }
 
-    int result = peek_aluts( ctx, txnm );
-    if( FD_UNLIKELY( result ) ) {
+    if( FD_UNLIKELY( failed ) ) {
+      if( FD_UNLIKELY( emit_bam_result ) ) {
+        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
+        res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
+        res.deser_index  = txnm->bam.batch_idx;
+        res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+        publish_bam_result( ctx, stem, &res );
+      }
       if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
       return;
     }
@@ -558,7 +591,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
 
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
-  fd_stem_publish( stem, 0UL, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, tsorig, tspub );
+  fd_stem_publish( stem, ctx->out_pack->idx, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, tsorig, tspub );
   ctx->out_pack->chunk = fd_dcache_compact_next( ctx->out_pack->chunk, realized_sz, ctx->out_pack->chunk0, ctx->out_pack->wmark );
 }
 
@@ -610,15 +643,31 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->in[i].mtu    = link->mtu;
   }
 
-  ctx->out_pack->mem    = topo->workspaces[ topo->objs[ topo->links[ tile->out_link_id[ 0 ] ].dcache_obj_id ].wksp_id ].wksp;
-  ctx->out_pack->chunk0 = fd_dcache_compact_chunk0( ctx->out_pack->mem, topo->links[ tile->out_link_id[ 0 ] ].dcache );
-  ctx->out_pack->wmark  = fd_dcache_compact_wmark ( ctx->out_pack->mem, topo->links[ tile->out_link_id[ 0 ] ].dcache, topo->links[ tile->out_link_id[ 0 ] ].mtu );
+  fd_topo_link_t const * pack_out = &topo->links[ tile->out_link_id[ 0UL ] ];
+  ctx->out_pack->idx    = 0UL;
+  ctx->out_pack->mem    = topo->workspaces[ topo->objs[ pack_out->dcache_obj_id ].wksp_id ].wksp;
+  ctx->out_pack->chunk0 = fd_dcache_compact_chunk0( ctx->out_pack->mem, pack_out->dcache );
+  ctx->out_pack->wmark  = fd_dcache_compact_wmark ( ctx->out_pack->mem, pack_out->dcache, pack_out->mtu );
   ctx->out_pack->chunk  = ctx->out_pack->chunk0;
 
-  ctx->out_replay->mem    = topo->workspaces[ topo->objs[ topo->links[ tile->out_link_id[ 1 ] ].dcache_obj_id ].wksp_id ].wksp;
-  ctx->out_replay->chunk0 = fd_dcache_compact_chunk0( ctx->out_replay->mem, topo->links[ tile->out_link_id[ 1 ] ].dcache );
-  ctx->out_replay->wmark  = fd_dcache_compact_wmark ( ctx->out_replay->mem, topo->links[ tile->out_link_id[ 1 ] ].dcache, topo->links[ tile->out_link_id[ 1 ] ].mtu );
+  fd_topo_link_t const * replay_out = &topo->links[ tile->out_link_id[ 1UL ] ];
+  ctx->out_replay->idx    = 1UL;
+  ctx->out_replay->mem    = topo->workspaces[ topo->objs[ replay_out->dcache_obj_id ].wksp_id ].wksp;
+  ctx->out_replay->chunk0 = fd_dcache_compact_chunk0( ctx->out_replay->mem, replay_out->dcache );
+  ctx->out_replay->wmark  = fd_dcache_compact_wmark ( ctx->out_replay->mem, replay_out->dcache, replay_out->mtu );
   ctx->out_replay->chunk  = ctx->out_replay->chunk0;
+
+  *ctx->out_bam = (fd_resolv_out_ctx_t) { .idx = ULONG_MAX };
+  for( ulong i=0UL; i<tile->out_cnt; i++ ) {
+    fd_topo_link_t const * link = &topo->links[ tile->out_link_id[ i ] ];
+    if( FD_LIKELY( strcmp( link->name, "bank_bam" ) ) ) continue;
+    ctx->out_bam->idx    = i;
+    ctx->out_bam->mem    = topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ].wksp;
+    ctx->out_bam->chunk0 = fd_dcache_compact_chunk0( ctx->out_bam->mem, link->dcache );
+    ctx->out_bam->wmark  = fd_dcache_compact_wmark ( ctx->out_bam->mem, link->dcache, link->mtu );
+    ctx->out_bam->chunk  = ctx->out_bam->chunk0;
+    break;
+  }
 
   fd_accdb_init_from_topo( ctx->accdb, topo, tile, tile->resolv.accdb_max_depth );
 
