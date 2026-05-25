@@ -1293,16 +1293,17 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
   if( FD_LIKELY( have_sig0 ) ) {
     fd_memcpy( sig0, ctx->current_bundle->_txn[ 0 ]->txnp->payload + 1UL, sizeof(fd_ed25519_sig_t) );
   }
-  int first_missing_idx = ctx->current_bundle->txn_received<ctx->current_bundle->txn_cnt
-                        ? (int)ctx->current_bundle->txn_received
-                        : -1;
+  FD_TEST( ctx->current_bundle->txn_received<ctx->current_bundle->txn_cnt );
+
+  uint  first_missing_idx = (uint)ctx->current_bundle->txn_received;
+  _Bool is_new_seq_abandon = reason==PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE;
   ulong bam_slot = pack_tile_bam_funnel_slot( ctx, ctx->current_bundle_bam->max_schedule_slot );
   uint seq_id = (uint)( ctx->current_bundle->id - 1UL );
   pack_tile_log_bam_drop( ctx,
                              "bundle_assembly",
-                             reason==PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE ? "bundle_assembly_abandon_new_seq_before_complete" :
-                             reason==PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_LEADER_SLOT_END          ? "bundle_assembly_abandon_leader_slot_end" :
-                                                                                                      "bundle_assembly_abandon_poh_timeout",
+                             is_new_seq_abandon                                             ? "bundle_assembly_abandon_new_seq_before_complete" :
+                             reason==PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_LEADER_SLOT_END ? "bundle_assembly_abandon_leader_slot_end" :
+                                                                                              "bundle_assembly_abandon_poh_timeout",
                              0U,
                              0U,
                              0U,
@@ -1320,22 +1321,20 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
                              0U,
                              ctx->current_bundle->txn_received,
                              ctx->current_bundle->txn_cnt,
-                             (uint)( first_missing_idx>=0 ),
-                             (uint)fd_int_if( first_missing_idx>=0, first_missing_idx, 0 ),
+                             1U,
+                             first_missing_idx,
                              have_sig0 ? sig0 : NULL );
-
-  FD_TEST( ctx->current_bundle->txn_received!=ctx->current_bundle->txn_cnt );
 
   fd_bam_bundle_result_t res = fd_bam_result_base( seq_id,
                                                    ctx->current_bundle_bam->max_schedule_slot,
                                                    (uchar)ctx->current_bundle->txn_cnt );
-  fd_bam_result_mark_sanitize_success_all( &res );
-  res.transaction_err_count = (uchar)( res.bundle_txn_cnt - ctx->current_bundle->txn_received );
-  for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
-    fd_bam_result_set_txn_error( &res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
-    if( FD_UNLIKELY( i>=ctx->current_bundle->txn_received ) )
-      fd_bam_result_set_txn_error( &res, i, bam_types_TransactionErrorReason_SIGNATURE_FAILURE );
-  }
+  /* Atomic BAM verify failures after batch_idx 0 are intentionally
+     suppressed by verify once a prefix can be owned by pack.  Any abandon
+     of that incomplete prefix reports the first missing member as the
+     terminal deserialization failure. */
+  res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
+  res.deser_index  = (uchar)first_missing_idx;
+  res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
   pack_tile_enqueue_bam_result( ctx, &res );
 
   fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );

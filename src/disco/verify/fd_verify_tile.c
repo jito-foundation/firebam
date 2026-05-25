@@ -152,7 +152,12 @@ after_frag( fd_verify_ctx_t *   ctx,
 
   if( FD_UNLIKELY( failure_idx!=ULONG_MAX ) ) {
     if( FD_UNLIKELY( is_bundle ) ) ctx->bundle_failed = 1;
-    if( FD_UNLIKELY( is_bam & (ctx->bam_result_out_idx!=ULONG_MAX) ) ) {
+    /* For atomic BAM, verify reports failures before any prefix reaches pack
+       (batch_idx 0) and suppresses later-member failures.  If a later
+       sequence proves the prefix incomplete, pack reports the first missing
+       member as the terminal deserialization result. */
+    if( FD_UNLIKELY( is_bam && (ctx->bam_result_out_idx!=ULONG_MAX) &&
+                     (!txnm->bam.revert_on_error || txnm->bam.batch_idx==0U) ) ) {
       fd_bam_bundle_result_t * bam_res = fd_chunk_to_laddr( ctx->bam_result_out_mem, ctx->bam_result_out_chunk );
       *bam_res = (fd_bam_bundle_result_t) {
         .seq_id           = txnm->bam.seq_id,

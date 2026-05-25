@@ -3188,8 +3188,7 @@ test_bam_scheduler_result_publishes_message( fd_wksp_t * wksp ) {
   fd_bam_bundle_result_t res = test_make_bundle_result( 900, 1900, 2 );
   test_enqueue_bundle_result( state, &res );
 
-  int flushed = fd_bam_test_flush_results( state );
-  FD_TEST( flushed == 1 );
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -3226,8 +3225,7 @@ test_bam_scheduler_result_committed_with_execution_error_publishes_message( fd_w
   res.transaction_err_count = 1U;
   test_enqueue_bundle_result( state, &res );
 
-  int flushed = fd_bam_test_flush_results( state );
-  FD_TEST( flushed == 1 );
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -3260,8 +3258,7 @@ test_bam_scheduler_result_not_committed_publishes_message( fd_wksp_t * wksp ) {
   res.scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
   test_enqueue_bundle_result( state, &res );
 
-  int flushed = fd_bam_test_flush_results( state );
-  FD_TEST( flushed == 1 );
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -3278,7 +3275,7 @@ test_bam_scheduler_result_not_committed_publishes_message( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_scheduler_result_not_committed_sanitize_error_reason( fd_wksp_t * wksp ) {
+test_bam_scheduler_result_not_committed_deser_reason( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -3294,8 +3291,7 @@ test_bam_scheduler_result_not_committed_sanitize_error_reason( fd_wksp_t * wksp 
   res.sanitize_success[1] = 0;
   test_enqueue_bundle_result( state, &res );
 
-  int flushed = fd_bam_test_flush_results( state );
-  FD_TEST( flushed == 1 );
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -3306,6 +3302,26 @@ test_bam_scheduler_result_not_committed_sanitize_error_reason( fd_wksp_t * wksp 
   FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
   FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
   FD_TEST( result->result.not_committed.reason.deserialization_error.index == 1U );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
+
+  res = test_make_bundle_result( 913, 1913, 3 );
+  res.execution_success      = 0;
+  res.bundle_err             = FD_BAM_BUNDLE_ERR_DESER;
+  res.deser_index            = 2U;
+  res.deser_reason           = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+  res.transaction_err_count  = 0U;
+  test_enqueue_bundle_result( state, &res );
+
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt == 1UL );
+  result = &decoded.multi.results[0];
+  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
+  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 2U );
   FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
 
   test_bam_env_destroy( env );
@@ -3329,8 +3345,7 @@ test_bam_scheduler_result_not_committed_transaction_error_reason( fd_wksp_t * wk
   res.transaction_err_count = 1U;
   test_enqueue_bundle_result( state, &res );
 
-  int flushed = fd_bam_test_flush_results( state );
-  FD_TEST( flushed == 1 );
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -3368,8 +3383,7 @@ test_bam_scheduler_result_not_committed_transaction_error_prefers_non_cancelled(
   res.transaction_err_count = (uchar)res.bundle_txn_cnt;
   test_enqueue_bundle_result( state, &res );
 
-  int flushed = fd_bam_test_flush_results( state );
-  FD_TEST( flushed == 1 );
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -3408,8 +3422,7 @@ test_bam_scheduler_result_not_committed_all_cancelled_falls_back_to_poh_timeout(
   res.transaction_err_count = (uchar)res.bundle_txn_cnt;
   test_enqueue_bundle_result( state, &res );
 
-  int flushed = fd_bam_test_flush_results( state );
-  FD_TEST( flushed == 1 );
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -5037,7 +5050,7 @@ main( int     argc,
   test_bam_scheduler_result_publishes_message( wksp );
   test_bam_scheduler_result_committed_with_execution_error_publishes_message( wksp );
   test_bam_scheduler_result_not_committed_publishes_message( wksp );
-  test_bam_scheduler_result_not_committed_sanitize_error_reason( wksp );
+  test_bam_scheduler_result_not_committed_deser_reason( wksp );
   test_bam_scheduler_result_not_committed_transaction_error_reason( wksp );
   test_bam_scheduler_result_not_committed_transaction_error_prefers_non_cancelled( wksp );
   test_bam_scheduler_result_not_committed_all_cancelled_falls_back_to_poh_timeout( wksp );

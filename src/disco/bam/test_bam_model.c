@@ -516,16 +516,15 @@ bam_model_emit_partial_missing( bam_model_harness_t * h,
     return;
   }
 
-  fd_bam_bundle_result_t res = {0};
-  res.seq_id            = p->seq_id;
-  res.slot              = p->max_schedule_slot;
-  res.bundle_txn_cnt    = p->txn_cnt;
+  fd_bam_bundle_result_t res = fd_bam_result_base( p->seq_id,
+                                                   p->max_schedule_slot,
+                                                   p->txn_cnt );
   for( uchar i=0U; i<p->txn_cnt; i++ ) {
-    res.sanitize_success[ i ] = 1U;
-    res.transaction_err[ i ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
     if( FD_UNLIKELY( !p->seen[ i ] ) ) {
-      res.transaction_err[ i ] = bam_types_TransactionErrorReason_SIGNATURE_FAILURE;
-      res.transaction_err_count++;
+      res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
+      res.deser_index  = i;
+      res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+      break;
     }
   }
 
@@ -1541,9 +1540,10 @@ bam_model_run_scenario_partial_then_seq_switch( bam_model_harness_t * h ) {
   FD_TEST( h->model_result_cnt==2UL );
   FD_TEST( !!seq14 );
   FD_TEST( !!seq15 );
-  FD_TEST( seq14->transaction_err_count>0U );
-  FD_TEST( seq14->transaction_err[0]==bam_types_TransactionErrorReason_COMMIT_CANCELLED );
-  FD_TEST( seq14->transaction_err[2]==bam_types_TransactionErrorReason_SIGNATURE_FAILURE );
+  FD_TEST( seq14->bundle_err==FD_BAM_BUNDLE_ERR_DESER );
+  FD_TEST( seq14->deser_index==2U );
+  FD_TEST( seq14->deser_reason==bam_types_DeserializationErrorReason_SANITIZE_ERROR );
+  FD_TEST( seq14->transaction_err_count==0U );
 }
 
 static void
