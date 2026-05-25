@@ -2064,6 +2064,7 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   state->bam_stream = stream;
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->bam_stream_live == 1U );
+  state->bam_leader_pending = 1U;
 
   fd_grpc_resp_hdrs_t hdrs_fail = {
       .h2_status   = 200,
@@ -2071,8 +2072,13 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   };
   fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &hdrs_fail );
   FD_TEST( state->bam_stream_live == 0U );
+  FD_TEST( state->bam_stream_connecting == 0U );
   FD_TEST( state->bam_stream == NULL );
+  FD_TEST( state->bam_leader_pending == 0U );
   FD_TEST( state->defer_reset == 0U );
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ] == 1UL );
+  FD_TEST( state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_REQUEST_FAILED_IDX ] == 1UL );
+  FD_TEST( state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_ENDED_IDX ] == 0UL );
 
   stream = fd_grpc_client_stream_acquire( client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( stream );
@@ -2081,6 +2087,7 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   state->bam_stream = stream;
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->bam_stream_live == 1U );
+  state->bam_leader_pending = 1U;
 
   fd_grpc_resp_hdrs_t hdrs_ok = {
       .h2_status   = 200,
@@ -2088,8 +2095,13 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   };
   fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &hdrs_ok );
   FD_TEST( state->bam_stream_live == 0U );
+  FD_TEST( state->bam_stream_connecting == 0U );
   FD_TEST( state->bam_stream == NULL );
+  FD_TEST( state->bam_leader_pending == 0U );
   FD_TEST( state->defer_reset == 0U );
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ] == 1UL );
+  FD_TEST( state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_REQUEST_FAILED_IDX ] == 1UL );
+  FD_TEST( state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_ENDED_IDX ] == 1UL );
 
   test_bam_env_destroy( env );
 }

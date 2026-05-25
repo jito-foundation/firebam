@@ -1321,23 +1321,6 @@ fd_bam_client_grpc_rx_end(
     resp->grpc_msg_len = 13;
   }
 
-  switch( request_ctx ) {
-  case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
-    ctx->bam_auth_inflight = 0;
-    break;
-  case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
-    ctx->bam_config_inflight = 0;
-    break;
-  case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
-    ctx->bam_stream            = NULL;
-    fd_bam_set_stream_live( ctx, 0U );
-    ctx->bam_stream_connecting = 0;
-    fd_bam_drop_pending_leader_state( ctx, FD_BAM_LEADER_PENDING_DROP_STREAM_ENDED );
-    break;
-  default:
-    break;
-  }
-
   if( FD_UNLIKELY( resp->grpc_status != FD_GRPC_STATUS_OK ) ) {
     FD_LOG_WARNING(( "gRPC request %s failed (gRPC status %u-%s): %.*s",
                      fd_bam_request_ctx_cstr( request_ctx ),
@@ -1364,6 +1347,23 @@ fd_bam_client_grpc_rx_end(
       ctx->challenge_to_sign[ 0 ] = '\0';
     }
     return;
+  }
+
+  switch( request_ctx ) {
+  case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
+    ctx->bam_auth_inflight = 0;
+    break;
+  case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig:
+    ctx->bam_config_inflight = 0;
+    break;
+  case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
+    ctx->bam_stream            = NULL;
+    fd_bam_set_stream_live( ctx, 0U );
+    ctx->bam_stream_connecting = 0;
+    fd_bam_drop_pending_leader_state( ctx, FD_BAM_LEADER_PENDING_DROP_STREAM_ENDED );
+    break;
+  default:
+    break;
   }
 }
 
