@@ -429,7 +429,10 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
 
   FD_TEST( ctx->bam_auth_ready==1U );
   FD_TEST( ctx->bam_auth_inflight==0U );
-  FD_TEST( strnlen( ctx->challenge_to_sign, sizeof( ctx->challenge_to_sign ) )==info.expected_len );
+  ulong challenge_len = strnlen( ctx->challenge_to_sign, sizeof( ctx->challenge_to_sign ) );
+  FD_TEST( challenge_len==info.expected_len );
+  FD_TEST( challenge_len<sizeof( ctx->challenge_to_sign ) );
+  FD_TEST( ctx->challenge_to_sign[ challenge_len ]=='\0' );
   /* Generator fills challenge_to_sign with a single repeated byte; ensure decode preserved it. */
   for( ulong i=0UL; i<info.expected_len; i++ ) {
     FD_TEST( ((uchar)ctx->challenge_to_sign[ i ])==info.start_byte );
@@ -468,7 +471,20 @@ static void
 bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
   fd_memset( ctx, 0, sizeof( fd_bam_tile_t ) );
-  ctx->bam_leader_state.slot = ULONG_MAX;
+
+  /* Keep branch-specific state defaults explicit when later logic depends on
+     meaning beyond "zeroed memory". */
+  ctx->feedback_queue_depth = 0U;
+  ctx->bam_results_head     = 0U;
+  ctx->bam_results_tail     = 0U;
+  ctx->challenge_to_sign[ 0 ] = '\0';
+  ctx->bam_auth_ready         = 0U;
+  ctx->bam_auth_inflight      = 0U;
+  ctx->bam_config_inflight    = 0U;
+  ctx->bam_config_received    = 0U;
+  ctx->bam_stream_live        = 0U;
+  ctx->bam_stream_connecting = 0U;
+  ctx->bam_leader_state.slot  = ULONG_MAX;
 
   /* Wiring for publish paths */
   ctx->stem       = &bam_fuzz_ctx.stem;
@@ -552,10 +568,9 @@ bam_fuzz_reset_tile( void ) {
   ctx->keylog_fd             = -1;
   ctx->grpc_buf_max          = 4096UL;
   ctx->tcp_sock              = -1;
-  ctx->bam_status_logged  = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
-  ctx->bam_status_recent  = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
+  ctx->bam_status_logged    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
+  ctx->bam_status_recent    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->enabled               = 1U;
-  ctx->feedback_queue_depth   = 0U;
 
   /* Assume a valid builder config was fetched so bundle publish paths don't abort */
   long bam_now = fd_bam_now();
