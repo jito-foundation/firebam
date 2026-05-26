@@ -4142,24 +4142,35 @@ test_bam_admin_rpc_path_empty_skips_frankendancer_apply( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_tpu.addr ) );
-  FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
-  state->bam_tpu.port     = fd_ushort_bswap( 7000 );
-  state->bam_tpu_fwd.port = fd_ushort_bswap( 7001 );
-  FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->configured_default_tpu.addr ) );
-  state->configured_default_tpu.port = fd_ushort_bswap( 4242 );
+  fd_wksp_t * gossip_mem = test_bam_setup_gossip_out( env );
+  ulong chunk_before = state->gossip_out.chunk;
+  ulong seq_before   = env->stem_seqs[ state->gossip_out.idx ];
+  state->bam_gossip_handoff_pending = 1U;
 
   test_bam_admin_rpc_mock_reset();
-  fd_bam_gossip_update( state, state->stem, 1 );
+  FD_TEST( !fd_bam_gossip_update( state, state->stem, 0 ) );
 
   FD_TEST( test_bam_admin_rpc_mock.request_cnt == 0UL );
-  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM );
-  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM );
+  FD_TEST( state->gossip_out.chunk == chunk_before );
+  FD_TEST( env->stem_seqs[ state->gossip_out.idx ] == seq_before );
+  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
+  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT );
+  FD_TEST( !state->bam_gossip_handoff_pending );
 
-  fd_bam_gossip_update( state, state->stem, 0 );
+  FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->configured_default_tpu.addr ) );
+  state->configured_default_tpu.port = fd_ushort_bswap( 4242U );
+  state->bam_tpu     = state->configured_default_tpu;
+  state->bam_tpu_fwd = state->configured_default_tpu;
+
+  ulong publish_chunk = state->gossip_out.chunk;
+  FD_TEST( fd_bam_gossip_update( state, state->stem, 0 ) );
+  fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
 
   FD_TEST( test_bam_admin_rpc_mock.request_cnt == 0UL );
-  FD_TEST( state->default_tpu.l == state->configured_default_tpu.l );
+  FD_TEST( update.tpu.l     == state->configured_default_tpu.l );
+  FD_TEST( update.tpu_fwd.l == state->configured_default_tpu.l );
+  FD_TEST( update.version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
+  FD_TEST( state->default_tpu.l     == state->configured_default_tpu.l );
   FD_TEST( state->default_tpu_fwd.l == state->configured_default_tpu.l );
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
   FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT );
@@ -4406,6 +4417,8 @@ test_bam_activation_ignores_stale_gossip_fseq_after_reenable( fd_wksp_t * wksp )
   fd_bam_tile_t * state = env->state;
   test_bam_setup_gossip_out( env );
   test_bam_set_bam_tpu( state, "10.2.1.1", 5000U, "10.2.1.2", 6000U );
+  FD_TEST( fd_cstr_to_ip4_addr( "10.2.1.3", &state->configured_default_tpu.addr ) );
+  state->configured_default_tpu.port = fd_ushort_bswap( 7000U );
 
   test_bam_handoff_fseqs_t fseqs[1];
   test_bam_setup_handoff_fseqs( env, fseqs );
@@ -4657,6 +4670,8 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
 
   fd_wksp_t * gossip_mem = test_bam_setup_gossip_out( env );
   state->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+  FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->configured_default_tpu.addr ) );
+  state->configured_default_tpu.port = fd_ushort_bswap( 4242U );
 
   fd_bam_contact_update_t updates[3];
   ulong                   update_cnt = 0UL;
@@ -4700,6 +4715,8 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   fd_bam_gossip_update( state, state->stem, false );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update_cnt == 2UL );
+  FD_TEST( updates[1].tpu.l     == state->configured_default_tpu.l );
+  FD_TEST( updates[1].tpu_fwd.l == state->configured_default_tpu.l );
   FD_TEST( updates[1].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
 
   /* Re-enabling runtime while still connected should republish the BamConfig address. */

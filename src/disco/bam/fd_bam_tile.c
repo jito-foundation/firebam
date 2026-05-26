@@ -243,9 +243,7 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                                ctx->default_tpu_fwd.port );
   if( FD_UNLIKELY( !have_default_tpu &&
                    ctx->configured_default_tpu.addr &&
-                   ctx->configured_default_tpu.port &&
-                   ( ctx->configured_default_tpu.l!=ctx->bam_tpu.l ||
-                     ctx->configured_default_tpu.l!=ctx->bam_tpu_fwd.l ) ) ) {
+                   ctx->configured_default_tpu.port ) ) {
     ctx->default_tpu     = ctx->configured_default_tpu;
     ctx->default_tpu_fwd = ctx->configured_default_tpu;
     have_default_tpu     = true;
@@ -259,8 +257,12 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
   if( FD_LIKELY( ctx->tpu_update_state       == desired_tpu_applied &&
                  ctx->client_id_update_state == desired_client_id_applied ) ) goto publish;
   if( FD_UNLIKELY( !ctx->admin_rpc_path[0] ) ) {
-    if( FD_UNLIKELY( !use_bam && !have_default_tpu ) )
-      FD_LOG_WARNING(( "No default TPU configured for BAM gossip revert" ));
+    if( FD_UNLIKELY( !use_bam && !have_default_tpu ) ) {
+      ctx->tpu_update_state       = desired_tpu_pending;
+      ctx->client_id_update_state = desired_client_id_pending;
+      ctx->bam_gossip_handoff_pending = 0U;
+      return 0;
+    }
     ctx->tpu_update_state       = desired_tpu_applied;
     ctx->client_id_update_state = desired_client_id_applied;
     goto publish;
@@ -514,10 +516,10 @@ publish:
   fd_ip4_port_t gossip_tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
   ushort gossip_tpu_port     = fd_ushort_bswap( gossip_tpu.port );
   ushort gossip_tpu_fwd_port = fd_ushort_bswap( gossip_tpu_fwd.port );
-  if( FD_UNLIKELY( use_bam &&
-                   ( !gossip_tpu.addr || !gossip_tpu.port || gossip_tpu_port>(ushort)(USHRT_MAX-6U) ||
-                     !gossip_tpu_fwd.addr || !gossip_tpu_fwd.port || gossip_tpu_fwd_port>(ushort)(USHRT_MAX-6U) ) ) ) {
-    FD_LOG_WARNING(( "Refusing to publish BAM contact with invalid QUIC base ports: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+  if( FD_UNLIKELY( !gossip_tpu.addr || !gossip_tpu.port || gossip_tpu_port>(ushort)(USHRT_MAX-6U) ||
+                   !gossip_tpu_fwd.addr || !gossip_tpu_fwd.port || gossip_tpu_fwd_port>(ushort)(USHRT_MAX-6U) ) ) {
+    FD_LOG_WARNING(( "Refusing to publish %s contact with invalid QUIC base ports: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                     use_bam ? "BAM" : "default",
                      FD_IP4_ADDR_FMT_ARGS( gossip_tpu.addr ),
                      gossip_tpu_port,
                      FD_IP4_ADDR_FMT_ARGS( gossip_tpu_fwd.addr ),
