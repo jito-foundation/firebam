@@ -355,12 +355,22 @@ fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
     .ip4     = update->tpu.addr,
     .port    = update->tpu.port
   };
+  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ] = (fd_gossip_socket_t){
+    .is_ipv6 = 0,
+    .ip4     = update->tpu.addr,
+    .port    = update->tpu.port
+  };
   ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ] = (fd_gossip_socket_t){
     .is_ipv6 = 0,
     .ip4     = update->tpu_fwd.addr,
     .port    = update->tpu_fwd.port
   };
   ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ] = (fd_gossip_socket_t){
+    .is_ipv6 = 0,
+    .ip4     = update->tpu.addr,
+    .port    = fd_ushort_bswap( (ushort)( tpu_port + 6U ) )
+  };
+  ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ] = (fd_gossip_socket_t){
     .is_ipv6 = 0,
     .ip4     = update->tpu.addr,
     .port    = fd_ushort_bswap( (ushort)( tpu_port + 6U ) )

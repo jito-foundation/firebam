@@ -16,9 +16,9 @@ FD_IMPORT_BINARY( bam_dump_txn_fixture, "src/ballet/txn/fixtures/transaction2.bi
 #define TEST_BAM_MAX_TXN_PER_ATOMIC_BATCH       5UL
 #define TEST_BAM_MAX_ATOMIC_BATCHES_PER_PACKET  8UL
 
-/* Test-only shim implemented in fd_bam_tile.c so this unit test can
-   drive channel validation without exposing bam_during_frag or
-   bam_after_frag through production headers. */
+/* Test-only shims implemented in fd_bam_tile.c so this unit test can
+   drive internal BAM tile paths without exposing them through production
+   headers. */
 extern void
 fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
                                   ulong           in_idx,
@@ -3612,6 +3612,25 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
   ctrl->state = FD_BAM_CTRL_STATE_IDLE;
 }
 
+static void
+setup_ctrl_dormant( fd_bam_tile_t * ctx,
+                    fd_bam_ctrl_t * ctrl ) {
+  ctx->ctrl = ctrl;
+  fd_memset( ctrl, 0, sizeof(fd_bam_ctrl_t) );
+
+  ctx->enabled = 0;
+  ctx->server_fqdn[0]   = '\0';
+  ctx->server_fqdn_len  = 0U;
+  ctx->server_sni[0]    = '\0';
+  ctx->server_sni_len   = 0U;
+  ctx->server_tcp_port  = 0U;
+  ctx->is_ssl           = 0U;
+  ctrl->enable          = 0U;
+  ctrl->url[0]          = '\0';
+  ctrl->sni[0]          = '\0';
+  ctrl->state           = FD_BAM_CTRL_STATE_IDLE;
+}
+
 FD_FN_UNUSED static void
 test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
   /* Ensure runtime URL/SNI updates reconfigure the client and publish success to the control block. */
@@ -3708,6 +3727,20 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "[2]" ) );
   FD_TEST( !strcmp( ctrl.url, "http://testnet.bam.jito.wtf:80" ) );
 
+  ctrl.command = FD_BAM_CTRL_CMD_ENABLE;
+  ctrl.enable  = 1U;
+  ctrl.state   = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( ctrl.enable == 1U );
+  FD_TEST( ctx->enabled == 1U );
+  FD_TEST( fd_fseq_query( fseq ) == 0UL );
+  FD_TEST( !strcmp( ctrl.url, "http://testnet.bam.jito.wtf:80" ) );
+  FD_TEST( !strcmp( ctx->server_fqdn, "testnet.bam.jito.wtf" ) );
+  FD_TEST( ctx->server_tcp_port == 80U );
+
   test_bam_admin_rpc_expect_fseq_zero = NULL;
   FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
   FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
@@ -3750,6 +3783,69 @@ test_bam_ctrl_enable_from_disabled_start( fd_wksp_t * wksp ) {
 
   ctx->keyswitch = NULL;
 
+  test_bam_env_destroy( env );
+}
+
+FD_FN_UNUSED static void
+test_bam_ctrl_enable_from_dormant_then_set_url( fd_wksp_t * wksp ) {
+  /* Dormant BAM has allocated control state but no effective endpoint, so
+     --enable alone should set the desired runtime mode without dialing until a
+     URL arrives. */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * ctx = env->state;
+
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_dormant( ctx, &ctrl );
+
+  static fd_keyswitch_t keyswitch = {0};
+  keyswitch.magic = FD_KEYSWITCH_MAGIC;
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  keyswitch.param = 0UL;
+  ctx->keyswitch = &keyswitch;
+
+  ctrl.command = FD_BAM_CTRL_CMD_ENABLE;
+  ctrl.enable  = 1U;
+  ctrl.state   = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( ctrl.enable == 1U );
+  FD_TEST( !strcmp( ctrl.url, "" ) );
+  FD_TEST( !strcmp( ctrl.sni, "" ) );
+  FD_TEST( ctx->enabled == 1U );
+  FD_TEST( !strcmp( ctx->server_fqdn, "" ) );
+  FD_TEST( ctx->server_tcp_port == 0U );
+  FD_TEST( !strcmp( ctrl.error, "" ) );
+
+  int charge_busy = 0;
+  fd_bam_client_step( ctx, &charge_busy );
+  FD_TEST( !charge_busy );
+  FD_TEST( ctx->tcp_sock < 0 );
+
+  ctrl.command = FD_BAM_CTRL_CMD_URL;
+  strlcpy( ctrl.url, "http://bam.example.com:8899", FD_URL_MAX );
+  ctrl.state   = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( ctrl.enable == 1U );
+  FD_TEST( !strcmp( ctrl.url, "http://bam.example.com:8899" ) );
+  FD_TEST( !strcmp( ctrl.sni, "bam.example.com" ) );
+  FD_TEST( ctx->enabled == 1U );
+  FD_TEST( !strcmp( ctx->server_fqdn, "bam.example.com" ) );
+  FD_TEST( ctx->server_fqdn_len == strlen( "bam.example.com" ) );
+  FD_TEST( ctx->server_tcp_port == 8899U );
+  FD_TEST( !strcmp( ctx->server_sni, "bam.example.com" ) );
+  FD_TEST( ctx->server_sni_len == strlen( "bam.example.com" ) );
+  FD_TEST( ctx->is_ssl == 0U );
+  FD_TEST( !strcmp( ctx->grpc_client->host, "bam.example.com" ) );
+  FD_TEST( ctx->grpc_client->port == 8899U );
+  FD_TEST( !strcmp( ctrl.error, "" ) );
+
+  ctx->keyswitch = NULL;
   test_bam_env_destroy( env );
 }
 
@@ -4107,13 +4203,39 @@ test_bam_gossip_tile_applies_contact_update( void ) {
 
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].ip4                == bam_tpu );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].port               == fd_ushort_bswap( 5000 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].ip4           == bam_tpu );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].port          == fd_ushort_bswap( 5000 ) );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ].ip4       == bam_tpu_fwd );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ].port      == fd_ushort_bswap( 6000 ) );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].ip4           == bam_tpu );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].port          == fd_ushort_bswap( 5006 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].ip4      == bam_tpu );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].port     == fd_ushort_bswap( 5006 ) );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].ip4  == bam_tpu_fwd );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].port == fd_ushort_bswap( 6006 ) );
   FD_TEST( ctx.my_contact_info->version.client == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
+
+  uint default_tpu = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "1.2.3.4", &default_tpu ) );
+  uint default_tpu_fwd = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( "5.6.7.8", &default_tpu_fwd ) );
+
+  contact_update = (fd_bam_contact_update_t) {
+      .tpu               = (fd_ip4_port_t){ .addr = default_tpu,     .port = fd_ushort_bswap( 7000 ) },
+      .tpu_fwd           = (fd_ip4_port_t){ .addr = default_tpu_fwd, .port = fd_ushort_bswap( 8000 ) },
+      .version_client_id = FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER,
+  };
+  fd_gossip_tile_apply_bam_contact( &ctx, &contact_update, ctx.last_wallclock + 2L );
+
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].ip4            == default_tpu );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].port           == fd_ushort_bswap( 7000 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].ip4       == default_tpu );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].port      == fd_ushort_bswap( 7000 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].ip4       == default_tpu );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].port      == fd_ushort_bswap( 7006 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].ip4  == default_tpu );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].port == fd_ushort_bswap( 7006 ) );
+  FD_TEST( ctx.my_contact_info->version.client == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
 
   free( gossip_mem );
 }
@@ -5063,6 +5185,7 @@ main( int     argc,
   test_bam_ctrl_updates_url_and_sni( wksp );
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_enable_from_disabled_start( wksp );
+  test_bam_ctrl_enable_from_dormant_then_set_url( wksp );
   test_bam_ctrl_invalid_url_sets_error_and_preserves_config( wksp );
   test_bam_ctrl_blank_url_clears_and_disables( wksp );
   test_bam_admin_rpc_apply_success_caches_default_and_marks_applied( wksp );

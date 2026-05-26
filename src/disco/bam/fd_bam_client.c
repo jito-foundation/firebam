@@ -1004,6 +1004,15 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     return;
   }
 
+  if( FD_UNLIKELY( ( !ctx->server_fqdn_len || !ctx->server_tcp_port ) &&
+                   !ctx->tcp_sock_connected &&
+                   ctx->tcp_sock<0 ) ) {
+    /* set-bam --enable may arrive before any URL is configured.  With no
+       endpoint and no existing socket to service, stay idle; a later non-empty
+       URL update will populate server_fqdn/server_tcp_port and allow dialing. */
+    return;
+  }
+
   if( FD_UNLIKELY( ctx->defer_reset ) ) {
     FD_LOG_WARNING(( "BAM client reset requested; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
       ctx->server_fqdn,

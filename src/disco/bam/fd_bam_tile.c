@@ -890,6 +890,17 @@ fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
   return 0;
 }
 
+static void
+fd_bam_tile_clear_endpoint( fd_bam_tile_t * ctx ) {
+  ctx->server_fqdn[0]  = '\0';
+  ctx->server_fqdn_len = 0U;
+  ctx->server_sni[0]   = '\0';
+  ctx->server_sni_len  = 0U;
+  ctx->server_tcp_port = 0U;
+  ctx->is_ssl          = 0U;
+  ctx->enabled         = 0U;
+}
+
 static char
 fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
                                 char *          err,
@@ -913,13 +924,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     if( FD_UNLIKELY( !*p ) ) {
       /* Runtime blank URL means "clear BAM URL" and disable the client. */
       need_reset = !!ctx->server_fqdn_len || !!ctx->server_sni_len || !!ctx->server_tcp_port || !!ctx->is_ssl || !!ctx->enabled;
-      ctx->server_fqdn[0]   = '\0';
-      ctx->server_fqdn_len  = 0U;
-      ctx->server_sni[0]    = '\0';
-      ctx->server_sni_len   = 0U;
-      ctx->server_tcp_port  = 0U;
-      ctx->is_ssl           = 0U;
-      ctx->enabled          = 0U;
+      fd_bam_tile_clear_endpoint( ctx );
       fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
       goto finalize;
     }
@@ -1000,8 +1005,9 @@ finalize:
     ctx->backoff_iter  = 0;
   }
 
-  if ( FD_UNLIKELY( fd_bam_tile_ctrl_update_current( ctx ) < 0 ) ) {
-    FD_LOG_WARNING(( "Failed to update BAM config" ));
+  int update_res = fd_bam_tile_ctrl_update_current( ctx );
+  if( FD_UNLIKELY( update_res<0 ) ) {
+    FD_LOG_WARNING(( "Failed to update BAM config (%d)", update_res ));
     return -1;
   }
 
@@ -1042,6 +1048,16 @@ fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
 static void
 fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
                                fd_topo_tile_t const * tile ) {
+  if( FD_UNLIKELY( !tile->bam.url_len ) ) {
+    fd_bam_tile_clear_endpoint( ctx );
+
+    int update_res = fd_bam_tile_ctrl_update_current( ctx );
+    if( FD_UNLIKELY( update_res<0 ) ) {
+      FD_LOG_WARNING(( "Failed to update BAM config (%d)", update_res ));
+    }
+    return;
+  }
+
   fd_url_t url[1];
   _Bool is_ssl = 0;
   int res = fd_url_parse_endpoint(
@@ -1072,8 +1088,9 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
   }
 #endif
 
-  if ( FD_UNLIKELY( fd_bam_tile_ctrl_update_current( ctx ) < 0 ) ) {
-    FD_LOG_WARNING(( "Failed to update BAM config" ));
+  int update_res = fd_bam_tile_ctrl_update_current( ctx );
+  if( FD_UNLIKELY( update_res<0 ) ) {
+    FD_LOG_WARNING(( "Failed to update BAM config (%d)", update_res ));
   }
 }
 
@@ -1414,15 +1431,6 @@ unprivileged_init( fd_topo_t *      topo,
   /* Set idle ping timer */
   ctx->keepalive_interval = (long)tile->bam.keepalive_interval_nanos;
 
-  ctx->bam_status_recent = ctx->enabled
-      ? FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED
-      : FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
-  ctx->bam_status_plugin = ctx->bam_status_recent;
-  ctx->bam_status_counted = ctx->bam_status_recent;
-  ctx->bam_status_logged = ctx->bam_status_recent;
-  ctx->last_bam_status_log_nanos = fd_log_wallclock();
-  ctx->gui_dirty = 1U;
-
   ctx->bam_tpu         = (fd_ip4_port_t){0};
   ctx->bam_tpu_fwd     = (fd_ip4_port_t){0};
   ctx->bam_shred_sock_cnt = 0U;
@@ -1441,6 +1449,15 @@ unprivileged_init( fd_topo_t *      topo,
   fd_fseq_update( ctx->bam_status_fseq, 0UL );
 
   fd_bam_tile_parse_endpoint( ctx, tile );
+
+  ctx->bam_status_recent = ctx->enabled
+      ? FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED
+      : FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
+  ctx->bam_status_plugin = ctx->bam_status_recent;
+  ctx->bam_status_counted = ctx->bam_status_recent;
+  ctx->bam_status_logged = ctx->bam_status_recent;
+  ctx->last_bam_status_log_nanos = fd_log_wallclock();
+  ctx->gui_dirty = 1U;
 
   ctx->grpc_client = fd_grpc_client_new( ctx->grpc_client_mem, &fd_bam_client_grpc_callbacks, ctx->grpc_metrics, ctx, ctx->grpc_buf_max, ctx->map_seed );
   if( FD_UNLIKELY( !ctx->grpc_client ) ) {
