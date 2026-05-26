@@ -123,9 +123,10 @@ typedef struct fd_gossip_ping_update fd_gossip_ping_update_t;
 
 extern fd_topo_run_tile_t fd_tile_gossip;
 
-void
+_Bool
 fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
                                   fd_bam_contact_update_t const * update,
-                                  long                            now );
+                                  long                            now,
+                                  fd_stem_context_t *             stem );
 
 #endif /* HEADER_fd_src_discof_gossip_fd_gossip_tile_h */

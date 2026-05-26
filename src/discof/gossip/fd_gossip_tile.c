@@ -335,10 +335,11 @@ handle_local_duplicate_shred( fd_gossip_tile_ctx_t *            ctx,
   }
 }
 
-void
+_Bool
 fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
                                   fd_bam_contact_update_t const * update,
-                                  long                            now ) {
+                                  long                            now,
+                                  fd_stem_context_t *             stem ) {
   ushort tpu_port     = fd_ushort_bswap( update->tpu.port );
   ushort tpu_fwd_port = fd_ushort_bswap( update->tpu_fwd.port );
   if( FD_UNLIKELY( tpu_port>(ushort)(USHRT_MAX-6U) || tpu_fwd_port>(ushort)(USHRT_MAX-6U) ) ) {
@@ -347,7 +348,7 @@ fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
                      tpu_port,
                      FD_IP4_ADDR_FMT_ARGS( update->tpu_fwd.addr ),
                      tpu_fwd_port ));
-    return;
+    return 0;
   }
   /* BAM supplies base TPU ports. Gossip advertises the paired QUIC sockets at base+6. */
   ctx->my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ] = (fd_gossip_socket_t){
@@ -382,6 +383,8 @@ fd_gossip_tile_apply_bam_contact( fd_gossip_tile_ctx_t *          ctx,
   };
   ctx->my_contact_info->version.client = update->version_client_id;
   fd_gossip_set_my_contact_info( ctx->gossip, ctx->my_contact_info, now );
+  if( FD_LIKELY( stem ) ) fd_gossip_advance( ctx->gossip, now, stem, NULL );
+  return 1;
 }
 
 static inline int
@@ -458,7 +461,7 @@ returnable_frag( fd_gossip_tile_ctx_t * ctx,
       }
       fd_bam_contact_update_t const * update = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
       long now = ctx->last_wallclock + (long)((double)(fd_tickcount()-ctx->last_tickcount)/ctx->ticks_per_ns);
-      fd_gossip_tile_apply_bam_contact( ctx, update, now );
+      fd_gossip_tile_apply_bam_contact( ctx, update, now, stem );
       break;
     }
     default: FD_LOG_ERR(( "unreachable" ));

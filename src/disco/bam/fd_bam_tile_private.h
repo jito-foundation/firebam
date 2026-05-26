@@ -286,6 +286,9 @@ struct fd_bam_tile {
   fd_bam_out_ctx_t    gossip_out;       /* Stem output buffer used for BAM gossip updates (Full firedancer, not Frankendncer) */
   fd_bam_out_ctx_t    shred_out;        /* Stem output buffer used for BAM shred receiver updates */
   ulong *             bam_status_fseq; /* Shared latch written with BAM status bits (bit 0 = override active, bit 1 = current slot has BAM work) */
+  ulong *             bam_gossip_fseq; /* Gossip tile's bam_gossip consumer fseq, read-only for activation handoff. */
+  ulong               bam_gossip_handoff_target; /* Consumer fseq value required before first activating bam_status. */
+  uint                bam_gossip_handoff_pending : 1; /* Waiting for gossip to consume the published BAM contact. */
 
   /* App metrics */
   fd_bam_metrics_t metrics;                         /* Tile-local counters flushed to metrics */
@@ -643,7 +646,7 @@ void
 fd_bam_tile_backoff( fd_bam_tile_t * ctx,
                         long               now );
 
-void
+_Bool
 fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                               fd_stem_context_t * stem,
                               _Bool use_bam);

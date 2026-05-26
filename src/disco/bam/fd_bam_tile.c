@@ -14,7 +14,7 @@
 #include <errno.h>
 #include <ctype.h> /* isspace */
 #include <dirent.h> /* opendir */
-#include <limits.h> /* LONG_MIN */
+#include <limits.h> /* LONG_MIN, USHRT_MAX */
 #include <stdio.h> /* snprintf */
 #include <fcntl.h> /* F_SETFL */
 #include <unistd.h> /* close */
@@ -214,11 +214,11 @@ metrics_write( fd_bam_tile_t * ctx ) {
 
 }
 
-// Updates ContactInfo to BAM or default TPU based on use_bam
-void
+// Updates ContactInfo to BAM or default TPU based on use_bam. Returns true when a gossip update was published.
+_Bool
 fd_bam_gossip_update( fd_bam_tile_t *    ctx,
                       fd_stem_context_t * stem,
-                      _Bool use_bam) {
+                      _Bool               use_bam ) {
   fd_bam_tpu_update_state_t desired_tpu_applied = use_bam
     ? FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM
     : FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT;
@@ -506,15 +506,40 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
   }
 
 publish:
-  if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) return;
+  if( FD_UNLIKELY( !ctx->gossip_out.mem ) ) {
+    ctx->bam_gossip_handoff_pending = 0U;
+    return 0;
+  }
   fd_ip4_port_t gossip_tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
   fd_ip4_port_t gossip_tpu_fwd = use_bam ? ctx->bam_tpu_fwd : ctx->default_tpu_fwd;
+  ushort gossip_tpu_port     = fd_ushort_bswap( gossip_tpu.port );
+  ushort gossip_tpu_fwd_port = fd_ushort_bswap( gossip_tpu_fwd.port );
+  if( FD_UNLIKELY( use_bam &&
+                   ( !gossip_tpu.addr || !gossip_tpu.port || gossip_tpu_port>(ushort)(USHRT_MAX-6U) ||
+                     !gossip_tpu_fwd.addr || !gossip_tpu_fwd.port || gossip_tpu_fwd_port>(ushort)(USHRT_MAX-6U) ) ) ) {
+    FD_LOG_WARNING(( "Refusing to publish BAM contact with invalid QUIC base ports: tpu=" FD_IP4_ADDR_FMT ":%hu fwd=" FD_IP4_ADDR_FMT ":%hu",
+                     FD_IP4_ADDR_FMT_ARGS( gossip_tpu.addr ),
+                     gossip_tpu_port,
+                     FD_IP4_ADDR_FMT_ARGS( gossip_tpu_fwd.addr ),
+                     gossip_tpu_fwd_port ));
+    ctx->tpu_update_state       = desired_tpu_pending;
+    ctx->client_id_update_state = desired_client_id_pending;
+    ctx->bam_gossip_handoff_pending = 0U;
+    return 0;
+  }
+
   /* Full firedancer uses Gossip tile, it consumes these messages and mutates its local contact-info state. */
   fd_bam_contact_update_t * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, ctx->gossip_out.chunk );
   msg->tpu               = gossip_tpu;
   msg->tpu_fwd           = gossip_tpu_fwd;
   msg->version_client_id = desired_client_id;
 
+  if( FD_UNLIKELY( use_bam && ctx->bam_gossip_fseq ) ) {
+    ctx->bam_gossip_handoff_target  = fd_seq_inc( stem->seqs[ ctx->gossip_out.idx ], 1UL );
+    ctx->bam_gossip_handoff_pending = 1U;
+  } else {
+    ctx->bam_gossip_handoff_pending = 0U;
+  }
   fd_stem_publish( stem,
                    ctx->gossip_out.idx,
                    FD_BAM_STEM_SIG_GOSSIP_UPDATE,
@@ -527,6 +552,7 @@ publish:
                                                   sizeof(fd_bam_contact_update_t),
                                                   ctx->gossip_out.chunk0,
                                                   ctx->gossip_out.wmark );
+  return 1;
 }
 
 void
@@ -571,25 +597,39 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
   ulong prev_status = FD_LIKELY( ctx->bam_status_fseq ) ? fd_fseq_query( ctx->bam_status_fseq ) : 0UL;
   _Bool prev_bam_active = !!( prev_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
 
-  if( FD_UNLIKELY( !bam_active && ctx->bam_status_fseq && prev_status ) ) {
-    fd_fseq_update( ctx->bam_status_fseq, 0UL );
+  if( FD_UNLIKELY( !bam_active ) ) {
+    ctx->bam_gossip_handoff_pending = 0U;
+    if( FD_LIKELY( ctx->bam_status_fseq ) ) fd_fseq_update( ctx->bam_status_fseq, 0UL );
   }
 
   fd_bam_tpu_update_state_t tpu_update_state = ctx->tpu_update_state;
   fd_bam_client_id_update_state_t client_id_update_state = ctx->client_id_update_state;
+  _Bool suppress_activation_edge_update =
+      bam_active && !prev_bam_active && ctx->bam_gossip_handoff_pending;
   _Bool update_needed =
-      ( prev_bam_active != bam_active ) ||
+      ( !suppress_activation_edge_update && prev_bam_active != bam_active ) ||
       tpu_update_state >= FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT ||
       tpu_update_state == ( bam_active ? FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT : FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM ) ||
       ( bam_active && tpu_update_state == FD_BAM_TPU_UPDATE_STATE_UNKNOWN ) ||
       client_id_update_state >= FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT ||
       client_id_update_state == ( bam_active ? FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT : FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM ) ||
       ( bam_active && client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN );
-  if( FD_UNLIKELY( update_needed ) ) fd_bam_gossip_update( ctx, stem, bam_active );
+  if( FD_UNLIKELY( update_needed ) ) (void)fd_bam_gossip_update( ctx, stem, bam_active );
 
   fd_bam_shred_update( ctx, stem, bam_active );
 
   if( FD_LIKELY( bam_active && ctx->bam_status_fseq ) ) {
+    _Bool contact_applied = !!( ctx->tpu_update_state       == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM &&
+                                ctx->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM );
+    _Bool waiting_for_gossip = !!( ctx->bam_gossip_handoff_pending &&
+                                   ctx->bam_gossip_fseq &&
+                                   !fd_seq_ge( fd_fseq_query( ctx->bam_gossip_fseq ), ctx->bam_gossip_handoff_target ) );
+    if( FD_UNLIKELY( !contact_applied || waiting_for_gossip ) ) {
+      if( FD_UNLIKELY( !( prev_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) ) ) fd_fseq_update( ctx->bam_status_fseq, 0UL );
+      return;
+    }
+    ctx->bam_gossip_handoff_pending = 0U;
+
     _Bool current_slot_has_bam_work =
         fd_bam_current_slot_has_bam_work( ctx, fd_log_wallclock() );
     ulong bam_status =
@@ -1411,8 +1451,16 @@ unprivileged_init( fd_topo_t *      topo,
   ulong gossip_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_gossip", tile->kind_id );
   if( gossip_out_idx != ULONG_MAX ) {
     ctx->gossip_out = bam_out_link( topo, &topo->links[ tile->out_link_id[ gossip_out_idx ] ], gossip_out_idx );
+    ulong gossip_tile_id = fd_topo_find_tile( topo, "gossip", 0UL );
+    if( FD_UNLIKELY( gossip_tile_id == ULONG_MAX ) ) FD_LOG_ERR(( "Missing gossip tile for bam_gossip handoff" ));
+    fd_topo_tile_t const * gossip_tile = &topo->tiles[ gossip_tile_id ];
+    ulong bam_gossip_in_idx = fd_topo_find_tile_in_link( topo, gossip_tile, "bam_gossip", 0UL );
+    if( FD_UNLIKELY( bam_gossip_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing gossip bam_gossip input link" ));
+    ctx->bam_gossip_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, gossip_tile->in_link_fseq_obj_id[ bam_gossip_in_idx ] ) );
+    if( FD_UNLIKELY( !ctx->bam_gossip_fseq ) ) FD_LOG_ERR(( "bam tile missing bam_gossip consumer fseq" ));
   } else {
     ctx->gossip_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
+    ctx->bam_gossip_fseq = NULL;
   }
 
   ulong shred_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_shred", tile->kind_id );

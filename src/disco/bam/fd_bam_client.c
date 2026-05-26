@@ -20,6 +20,7 @@
 
 #include <fcntl.h>
 #include <errno.h>
+#include <limits.h>
 #include <unistd.h> /* close */
 #include <poll.h> /* poll */
 #include <netinet/in.h>
@@ -541,7 +542,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   if( cfg->has_tpu_sock ) {
     uint ip4;
     if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_sock.ip, &ip4 ) ) &&
-        FD_LIKELY( cfg->tpu_sock.port > 0 && cfg->tpu_sock.port <= USHORT_MAX ) ) {
+        FD_LIKELY( cfg->tpu_sock.port > 0 && cfg->tpu_sock.port <= (uint)(USHRT_MAX-6U) ) ) {
       new_tpu = (fd_ip4_port_t){ .addr = ip4, .port = fd_ushort_bswap( (ushort)cfg->tpu_sock.port ) };
     } else {
       FD_LOG_WARNING(( "Invalid BAM TPU socket in ConfigResponse: " FD_IP4_ADDR_FMT ":%hu",
@@ -554,7 +555,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   if( cfg->has_tpu_fwd_sock ) {
     uint ip4;
     if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_fwd_sock.ip, &ip4 ) ) &&
-        FD_LIKELY( cfg->tpu_fwd_sock.port > 0 && cfg->tpu_fwd_sock.port <= USHORT_MAX ) ) {
+        FD_LIKELY( cfg->tpu_fwd_sock.port > 0 && cfg->tpu_fwd_sock.port <= (uint)(USHRT_MAX-6U) ) ) {
       new_tpu_fwd = (fd_ip4_port_t){ .addr = ip4, .port = fd_ushort_bswap( (ushort)cfg->tpu_fwd_sock.port ) };
     } else {
       FD_LOG_WARNING(( "Invalid BAM TPU forward socket in ConfigResponse: " FD_IP4_ADDR_FMT ":%hu",

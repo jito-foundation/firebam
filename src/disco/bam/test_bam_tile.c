@@ -7,6 +7,7 @@
 #include "../../discof/gossip/fd_gossip_tile.h"
 #include "../bundle/fd_bundle_crank.h"
 #include <fcntl.h>
+#include <limits.h>
 #include <netinet/in.h>
 
 static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
@@ -159,6 +160,70 @@ test_bam_read_shred_update( fd_wksp_t * mem,
   fd_bam_shred_update_t msg;
   fd_memcpy( &msg, fd_chunk_to_laddr( mem, chunk ), sizeof(fd_bam_shred_update_t) );
   return msg;
+}
+
+static fd_wksp_t *
+test_bam_setup_gossip_out( test_bam_env_t * env ) {
+  fd_bam_tile_t * state = env->state;
+  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
+  state->gossip_out = (fd_bam_out_ctx_t){
+      .idx    = 0UL,
+      .mem    = gossip_mem,
+      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
+      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
+  };
+  return gossip_mem;
+}
+
+typedef struct {
+  uchar  status_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  uchar  gossip_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  void * status_shmem;
+  void * gossip_shmem;
+  ulong * status;
+  ulong * gossip;
+} test_bam_handoff_fseqs_t;
+
+static void
+test_bam_setup_handoff_fseqs( test_bam_env_t *           env,
+                              test_bam_handoff_fseqs_t * fseqs ) {
+  fd_memset( fseqs, 0, sizeof(test_bam_handoff_fseqs_t) );
+  fseqs->status_shmem = fd_fseq_new( fseqs->status_mem, 0UL );
+  fseqs->gossip_shmem = fd_fseq_new( fseqs->gossip_mem, 0UL );
+  FD_TEST( fseqs->status_shmem );
+  FD_TEST( fseqs->gossip_shmem );
+  fseqs->status = fd_fseq_join( fseqs->status_shmem );
+  fseqs->gossip = fd_fseq_join( fseqs->gossip_shmem );
+  FD_TEST( fseqs->status );
+  FD_TEST( fseqs->gossip );
+  env->state->bam_status_fseq = fseqs->status;
+  env->state->bam_gossip_fseq = fseqs->gossip;
+}
+
+static void
+test_bam_teardown_handoff_fseqs( test_bam_env_t *           env,
+                                 test_bam_handoff_fseqs_t * fseqs ) {
+  env->state->bam_status_fseq = NULL;
+  env->state->bam_gossip_fseq = NULL;
+  FD_TEST( fd_fseq_leave( fseqs->status ) == fseqs->status_shmem );
+  FD_TEST( fd_fseq_leave( fseqs->gossip ) == fseqs->gossip_shmem );
+  FD_TEST( fd_fseq_delete( fseqs->status_shmem ) == fseqs->status_shmem );
+  FD_TEST( fd_fseq_delete( fseqs->gossip_shmem ) == fseqs->gossip_shmem );
+}
+
+static void
+test_bam_set_bam_tpu( fd_bam_tile_t * state,
+                      char const *    tpu_ip,
+                      ushort          tpu_port,
+                      char const *    fwd_ip,
+                      ushort          fwd_port ) {
+  uint tpu_addr = 0U;
+  uint fwd_addr = 0U;
+  FD_TEST( fd_cstr_to_ip4_addr( tpu_ip, &tpu_addr ) );
+  FD_TEST( fd_cstr_to_ip4_addr( fwd_ip, &fwd_addr ) );
+  state->bam_tpu     = (fd_ip4_port_t){ .addr = tpu_addr, .port = fd_ushort_bswap( tpu_port ) };
+  state->bam_tpu_fwd = (fd_ip4_port_t){ .addr = fwd_addr, .port = fd_ushort_bswap( fwd_port ) };
 }
 
 static void
@@ -4111,7 +4176,8 @@ test_bam_gossip_send_stub( void *               ctx,
                            ulong                sz,
                            fd_ip4_port_t const *peer_address,
                            ulong                now ) {
-  (void)ctx; (void)stem; (void)data; (void)sz; (void)peer_address; (void)now;
+  (void)stem; (void)data; (void)sz; (void)peer_address; (void)now;
+  if( FD_LIKELY( ctx ) ) (*(ulong *)ctx)++;
 }
 
 static void
@@ -4142,10 +4208,22 @@ test_bam_gossip_activity_update_stub( void *                           ctx,
 }
 
 static void
-test_bam_gossip_tile_applies_contact_update( void ) {
+test_bam_gossip_tile_applies_contact_update( fd_wksp_t * wksp ) {
   fd_gossip_tile_ctx_t ctx;
   fd_memset( &ctx, 0, sizeof(ctx) );
   ctx.last_wallclock = fd_log_wallclock();
+
+  FD_TEST( FD_TPU_PARSED_MTU >= FD_NET_MTU );
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_wksp_t * out_mem = fd_wksp_containing( env->out_dcache );
+  ctx.gossip_out[0] = (fd_gossip_out_ctx_t){
+      .idx    = 0UL,
+      .mem    = out_mem,
+      .chunk0 = fd_dcache_compact_chunk0( out_mem, env->out_dcache ),
+      .chunk  = fd_dcache_compact_chunk0( out_mem, env->out_dcache ),
+      .wmark  = fd_dcache_compact_wmark( out_mem, env->out_dcache, FD_NET_MTU )
+  };
 
   fd_gossip_contact_info_t base_ci = {0};
   for( uchar i=0U; i<32U; i++ ) ctx.identity_key->uc[ i ] = i;
@@ -4163,6 +4241,7 @@ test_bam_gossip_tile_applies_contact_update( void ) {
   fd_ip4_port_t entrypoints[1] = { default_gossip };
   void * gossip_mem = aligned_alloc( fd_gossip_align(), fd_gossip_footprint( max_values, 1UL ) );
   FD_TEST( gossip_mem );
+  ulong send_cnt = 0UL;
 
   fd_rng_t * rng = fd_rng_join( fd_rng_new( ctx.rng, ctx.rng_seed, ctx.rng_idx ) );
   FD_TEST( rng );
@@ -4176,7 +4255,7 @@ test_bam_gossip_tile_applies_contact_update( void ) {
                                    ctx.my_contact_info,
                                    ctx.last_wallclock,
                                    test_bam_gossip_send_stub,
-                                   NULL,
+                                   &send_cnt,
                                    test_bam_gossip_sign_stub,
                                    NULL,
                                    test_bam_gossip_ping_change_stub,
@@ -4199,7 +4278,9 @@ test_bam_gossip_tile_applies_contact_update( void ) {
       .tpu_fwd           = (fd_ip4_port_t){ .addr = bam_tpu_fwd, .port = fd_ushort_bswap( 6000 ) },
       .version_client_id = FD_GOSSIP_CONTACT_INFO_CLIENT_BAM,
   };
-  fd_gossip_tile_apply_bam_contact( &ctx, &contact_update, ctx.last_wallclock + 1L );
+  send_cnt = 0UL;
+  FD_TEST( fd_gossip_tile_apply_bam_contact( &ctx, &contact_update, ctx.last_wallclock + 1L, env->stem ) );
+  FD_TEST( send_cnt > 0UL );
 
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].ip4                == bam_tpu );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].port               == fd_ushort_bswap( 5000 ) );
@@ -4225,7 +4306,7 @@ test_bam_gossip_tile_applies_contact_update( void ) {
       .tpu_fwd           = (fd_ip4_port_t){ .addr = default_tpu_fwd, .port = fd_ushort_bswap( 8000 ) },
       .version_client_id = FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER,
   };
-  fd_gossip_tile_apply_bam_contact( &ctx, &contact_update, ctx.last_wallclock + 2L );
+  FD_TEST( fd_gossip_tile_apply_bam_contact( &ctx, &contact_update, ctx.last_wallclock + 2L, NULL ) );
 
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].ip4            == default_tpu );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].port           == fd_ushort_bswap( 7000 ) );
@@ -4238,6 +4319,7 @@ test_bam_gossip_tile_applies_contact_update( void ) {
   FD_TEST( ctx.my_contact_info->version.client == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
 
   free( gossip_mem );
+  test_bam_env_destroy( env );
 }
 
 static void
@@ -4248,14 +4330,7 @@ test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
-  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
-  state->gossip_out = (fd_bam_out_ctx_t){
-      .idx    = 0UL,
-      .mem    = gossip_mem,
-      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
-      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
-      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
-  };
+  fd_wksp_t * gossip_mem = test_bam_setup_gossip_out( env );
   state->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
 
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
@@ -4294,6 +4369,137 @@ test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_activation_waits_for_gossip_fseq( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+  test_bam_setup_gossip_out( env );
+  test_bam_set_bam_tpu( state, "10.1.1.1", 5000U, "10.1.1.2", 6000U );
+
+  test_bam_handoff_fseqs_t fseqs[1];
+  test_bam_setup_handoff_fseqs( env, fseqs );
+
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( env->stem_seqs[0] == 1UL );
+  FD_TEST( state->bam_gossip_handoff_pending );
+  FD_TEST( state->bam_gossip_handoff_target == 1UL );
+  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
+
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( env->stem_seqs[0] == 1UL );
+  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
+
+  fd_fseq_update( fseqs->gossip, 1UL );
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( env->stem_seqs[0] == 1UL );
+  FD_TEST( !state->bam_gossip_handoff_pending );
+  FD_TEST( fd_fseq_query( fseqs->status ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+
+  test_bam_teardown_handoff_fseqs( env, fseqs );
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_activation_ignores_stale_gossip_fseq_after_reenable( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+  test_bam_setup_gossip_out( env );
+  test_bam_set_bam_tpu( state, "10.2.1.1", 5000U, "10.2.1.2", 6000U );
+
+  test_bam_handoff_fseqs_t fseqs[1];
+  test_bam_setup_handoff_fseqs( env, fseqs );
+
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( state->bam_gossip_handoff_target == 1UL );
+  FD_TEST( env->stem_seqs[0] == 1UL );
+  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
+
+  fd_bam_publish_active_state( state, state->stem, 0 );
+  FD_TEST( !state->bam_gossip_handoff_pending );
+  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
+  FD_TEST( env->stem_seqs[0] == 2UL );
+
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( state->bam_gossip_handoff_pending );
+  FD_TEST( state->bam_gossip_handoff_target == 3UL );
+  FD_TEST( env->stem_seqs[0] == 3UL );
+
+  fd_fseq_update( fseqs->gossip, 1UL );
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
+  FD_TEST( env->stem_seqs[0] == 3UL );
+
+  fd_fseq_update( fseqs->gossip, 2UL );
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
+  FD_TEST( env->stem_seqs[0] == 3UL );
+
+  fd_fseq_update( fseqs->gossip, 3UL );
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( fd_fseq_query( fseqs->status ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+
+  test_bam_teardown_handoff_fseqs( env, fseqs );
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_disable_clears_status_with_pending_gossip_handoff( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+  test_bam_setup_gossip_out( env );
+  test_bam_set_bam_tpu( state, "10.3.1.1", 5000U, "10.3.1.2", 6000U );
+
+  test_bam_handoff_fseqs_t fseqs[1];
+  test_bam_setup_handoff_fseqs( env, fseqs );
+
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( state->bam_gossip_handoff_pending );
+  fd_fseq_update( fseqs->status, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE | FD_BAM_STATUS_FSEQ_CURRENT_SLOT_HAS_BAM_WORK );
+
+  fd_bam_publish_active_state( state, state->stem, 0 );
+  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
+  FD_TEST( !state->bam_gossip_handoff_pending );
+
+  fd_fseq_update( fseqs->gossip, 1UL );
+  fd_bam_publish_active_state( state, state->stem, 0 );
+  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
+
+  test_bam_teardown_handoff_fseqs( env, fseqs );
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_invalid_quic_base_port_does_not_activate( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+  test_bam_setup_gossip_out( env );
+  test_bam_set_bam_tpu( state, "10.4.1.1", USHRT_MAX, "10.4.1.2", 6000U );
+
+  test_bam_handoff_fseqs_t fseqs[1];
+  test_bam_setup_handoff_fseqs( env, fseqs );
+
+  ulong chunk_before = state->gossip_out.chunk;
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( env->stem_seqs[0] == 0UL );
+  FD_TEST( state->gossip_out.chunk == chunk_before );
+  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
+  FD_TEST( !state->bam_gossip_handoff_pending );
+  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM );
+  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_BAM );
+
+  fd_fseq_update( fseqs->gossip, 1UL );
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( env->stem_seqs[0] == 0UL );
+  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
+
+  test_bam_teardown_handoff_fseqs( env, fseqs );
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   /* If either BamConfig address is absent, the tile should force gossip back to defaults. */
   test_bam_env_t env[1];
@@ -4301,25 +4507,11 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
-  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
-  state->gossip_out = (fd_bam_out_ctx_t){
-      .idx    = 0UL,
-      .mem    = gossip_mem,
-      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
-      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
-      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
-  };
+  fd_wksp_t * gossip_mem = test_bam_setup_gossip_out( env );
   state->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   state->enabled = 1;
 
-  uint   bam_tpu_addr     = 0U;
-  uint   bam_tpu_fwd_addr = 0U;
-  ushort bam_tpu_port     = 2222;
-  ushort bam_tpu_fwd_port = 3333;
-  FD_TEST( fd_cstr_to_ip4_addr( "12.34.56.78", &bam_tpu_addr ) );
-  FD_TEST( fd_cstr_to_ip4_addr( "98.76.54.32", &bam_tpu_fwd_addr ) );
-  state->bam_tpu     = (fd_ip4_port_t){ .addr = bam_tpu_addr,     .port = fd_ushort_bswap( bam_tpu_port ) }; // 12.34.56.78:2222
-  state->bam_tpu_fwd = (fd_ip4_port_t){ .addr = bam_tpu_fwd_addr, .port = fd_ushort_bswap( bam_tpu_fwd_port ) };
+  test_bam_set_bam_tpu( state, "12.34.56.78", 2222U, "98.76.54.32", 3333U );
 
   fd_bam_contact_update_t updates[2] = {0};
   ulong update_cnt = 0UL;
@@ -4327,14 +4519,13 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   ulong publish_chunk = state->gossip_out.chunk;
   fd_bam_gossip_update( state, state->stem, true );
   updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  FD_TEST( updates[0].tpu.addr     == bam_tpu_addr );
-  FD_TEST( fd_ushort_bswap( updates[0].tpu.port ) == bam_tpu_port );
-  FD_TEST( updates[0].tpu_fwd.addr == bam_tpu_fwd_addr );
-  FD_TEST( fd_ushort_bswap( updates[0].tpu_fwd.port ) == bam_tpu_fwd_port );
+  FD_TEST( updates[0].tpu.addr     == state->bam_tpu.addr );
+  FD_TEST( updates[0].tpu.port     == state->bam_tpu.port );
+  FD_TEST( updates[0].tpu_fwd.addr == state->bam_tpu_fwd.addr );
+  FD_TEST( updates[0].tpu_fwd.port == state->bam_tpu_fwd.port );
   FD_TEST( updates[0].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
 
   /* use_bam == false should revert to defaults. */
-  state->bam_tpu     = (fd_ip4_port_t){ .addr = bam_tpu_addr, .port = fd_ushort_bswap( bam_tpu_port ) }; // 12.34.56.78:2222
   state->bam_tpu_fwd = (fd_ip4_port_t){0};
   FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->default_tpu.addr ) );
   FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &state->default_tpu_fwd.addr ) );
@@ -4361,14 +4552,7 @@ test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( fd_wks
   fd_bam_tile_t * state = env->state;
 
   test_bam_env_mock_conn( env );
-  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
-  state->gossip_out = (fd_bam_out_ctx_t){
-      .idx    = 0UL,
-      .mem    = gossip_mem,
-      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
-      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
-      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
-  };
+  fd_wksp_t * gossip_mem = test_bam_setup_gossip_out( env );
   state->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->default_tpu.addr ) );
   FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &state->default_tpu_fwd.addr ) );
@@ -4471,14 +4655,7 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
-  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
-  state->gossip_out = (fd_bam_out_ctx_t){
-      .idx    = 0UL,
-      .mem    = gossip_mem,
-      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
-      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
-      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
-  };
+  fd_wksp_t * gossip_mem = test_bam_setup_gossip_out( env );
   state->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
 
   fd_bam_contact_update_t updates[3];
@@ -4669,14 +4846,7 @@ test_bam_config_reuses_cached_contact_for_incomplete_refresh( fd_wksp_t * wksp )
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
-  fd_wksp_t * gossip_mem = fd_wksp_containing( env->out_dcache );
-  state->gossip_out = (fd_bam_out_ctx_t){
-      .idx    = 0UL,
-      .mem    = gossip_mem,
-      .chunk0 = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
-      .chunk  = fd_dcache_compact_chunk0( gossip_mem, env->out_dcache ),
-      .wmark  = fd_dcache_compact_wmark( gossip_mem, env->out_dcache, FD_TPU_PARSED_MTU )
-  };
+  fd_wksp_t * gossip_mem = test_bam_setup_gossip_out( env );
   state->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
 
   FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->default_tpu.addr ) );
@@ -5195,8 +5365,12 @@ main( int     argc,
   test_bam_admin_rpc_path_empty_skips_frankendancer_apply( wksp );
 
   /* Gossip advertisement */
-  test_bam_gossip_tile_applies_contact_update();
+  test_bam_gossip_tile_applies_contact_update( wksp );
   test_bam_gossip_publishes_bam_config_contact( wksp );
+  test_bam_activation_waits_for_gossip_fseq( wksp );
+  test_bam_activation_ignores_stale_gossip_fseq_after_reenable( wksp );
+  test_bam_disable_clears_status_with_pending_gossip_handoff( wksp );
+  test_bam_invalid_quic_base_port_does_not_activate( wksp );
   test_bam_gossip_resets_when_contact_missing( wksp );
   test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( wksp );
   test_bam_runtime_toggle_updates_gossip( wksp );

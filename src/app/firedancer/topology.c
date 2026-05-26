@@ -1283,6 +1283,14 @@ fd_topo_initialize( config_t * config ) {
     }
     FD_TEST( fd_pod_insertf_ulong( topo->props, bam_status_obj->id, "bam_status" ) );
 
+    ulong gossip_tile_id = fd_topo_find_tile( topo, "gossip", 0UL );
+    if( FD_UNLIKELY( gossip_tile_id == ULONG_MAX ) ) FD_LOG_ERR(( "Missing gossip tile for bam_gossip handoff" ));
+    fd_topo_tile_t * gossip_tile = &topo->tiles[ gossip_tile_id ];
+    ulong bam_gossip_in_idx = fd_topo_find_tile_in_link( topo, gossip_tile, "bam_gossip", 0UL );
+    if( FD_UNLIKELY( bam_gossip_in_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing gossip bam_gossip input link" ));
+    fd_topo_obj_t * bam_gossip_fseq_obj = &topo->objs[ gossip_tile->in_link_fseq_obj_id[ bam_gossip_in_idx ] ];
+    fd_topob_tile_uses( topo, bam_tile, bam_gossip_fseq_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
+
     fd_topo_obj_t * bam_ctrl_obj = fd_topob_obj( topo, "bam_ctrl", "bam_ctrl" );
     fd_topob_tile_uses( topo, bam_tile, bam_ctrl_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
     FD_TEST( fd_pod_insertf_ulong( topo->props, bam_ctrl_obj->id, "bam_ctrl" ) );
