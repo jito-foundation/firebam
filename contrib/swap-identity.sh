@@ -279,7 +279,7 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
         if [[ "$STAKED_DELINQUENT" == "true" ]]; then
           echo "info: staked identity $STAKED_PUBKEY is delinquent with slot lag $SLOT_LAG; trying hotswap"
         else
-          echo "info: staked identity $STAKED_PUBKEY is visible on $SCOPE_DESC and is not delinquent with slot lag $SLOT_LAG; waiting"
+          echo "info: staked identity $STAKED_PUBKEY is visible on $SCOPE_DESC and is not delinquent at slot distance $DELINQUENT_SLOT_DISTANCE; slot lag $SLOT_LAG; waiting"
           sleep "$CLUSTER_POLL_INTERVAL_SECS"
           continue
         fi
