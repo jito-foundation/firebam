@@ -1006,11 +1006,7 @@ pack_tile_track_bam_work( fd_pack_ctx_t *          ctx,
                           ulong                    max_schedule_slot,
                           ulong                    blockhash_slot,
                           uchar                    txn_cnt ) {
-  ulong work_idx = pack_tile_bam_work_find_by_sig0( ctx, sigs );
-  if( FD_UNLIKELY( work_idx<ctx->bam_work_cnt ) ) {
-    pack_bam_work_t old = pack_tile_bam_work_swap_remove( ctx, work_idx );
-    if( FD_UNLIKELY( old.state==PACK_BAM_WORK_STATE_PENDING ) ) pack_tile_bam_recent_slot_sub_pending( ctx, old.slot, 1UL, old.txn_cnt );
-  }
+  if( FD_UNLIKELY( pack_tile_bam_work_find_by_sig0( ctx, sigs )<ctx->bam_work_cnt ) ) return 0;
   if( FD_UNLIKELY( ctx->bam_work_cnt >= ctx->max_pending_transactions ) ) return 0;
   if( FD_UNLIKELY( ctx->bam_pending_result_cnt + ctx->bam_pending_work_cnt + 1UL >= 2UL*ctx->max_pending_transactions ) ) return 0;
 
@@ -2347,26 +2343,45 @@ after_frag( fd_pack_ctx_t *     ctx,
                    sizeof(fd_ed25519_sig_t) );
       }
 
-      ulong deleted;
-      long insert_duration = -fd_tickcount();
-      int result = fd_pack_insert_bundle_fini( ctx->pack,
-                                               ctx->current_bundle->bundle,
-                                               ctx->current_bundle->txn_cnt,
-                                               min_blockhash_slot,
-                                               0,
-                                               ctx->bundle_meta,
-                                               &deleted );
-      insert_duration      += fd_tickcount();
+      int pre_insert_duplicate_reject = 0;
+      ulong duplicate_work_idx = pack_tile_bam_work_find_by_sig0( ctx, bam_sig[ 0 ] );
+      if( FD_UNLIKELY( duplicate_work_idx<ctx->bam_work_cnt ) ) {
+        pack_bam_work_t * duplicate = &ctx->bam_work[ duplicate_work_idx ];
+        if( FD_LIKELY( duplicate->state==PACK_BAM_WORK_STATE_PENDING ) ) {
+          pack_bam_work_t replaced = pack_tile_bam_work_swap_remove( ctx, duplicate_work_idx );
+          pack_tile_bam_recent_slot_sub_pending( ctx, replaced.slot, 1UL, replaced.txn_cnt );
+          ulong duplicate_deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)(void const *)bam_sig[ 0 ] );
+          FD_MCNT_INC( PACK, TRANSACTION_DELETED, duplicate_deleted );
+        } else {
+          pre_insert_duplicate_reject = 1;
+        }
+      }
 
-      FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
-      ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
-      fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
+      int result = FD_PACK_INSERT_REJECT_DUPLICATE;
+      if( FD_UNLIKELY( pre_insert_duplicate_reject ) ) {
+        fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
+      } else {
+        ulong deleted;
+        long insert_duration = -fd_tickcount();
+        result = fd_pack_insert_bundle_fini( ctx->pack,
+                                             ctx->current_bundle->bundle,
+                                             ctx->current_bundle->txn_cnt,
+                                             min_blockhash_slot,
+                                             0,
+                                             ctx->bundle_meta,
+                                             &deleted );
+        insert_duration += fd_tickcount();
+
+        FD_MCNT_INC( PACK, TRANSACTION_DELETED, deleted );
+        ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
+        fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
+      }
 
       ctx->current_bundle->bundle = NULL;
       ctx->current_bundle_bam->is_bam = 0;
       if( FD_UNLIKELY( result<0 ) ) {
         pack_tile_log_bam_drop( ctx,
-                                   "insert",
+                                   pre_insert_duplicate_reject ? "pre_insert_duplicate" : "insert",
                                    pack_tile_bam_pack_insert_reason_cstr( result ),
                                    0U,
                                    0U,
