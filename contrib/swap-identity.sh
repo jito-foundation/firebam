@@ -261,16 +261,25 @@ if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
       if [[ "$DUMMY_AT_STAKED_GOSSIP" == "yes" ]]; then
         echo "info: dummy identity $DUMMY_PUBKEY is visible at staked gossip address $STAKED_GOSSIP_ADDRS; trying hotswap"
       else
-        STAKED_DELINQUENT="$("${RPC_CURL[@]}" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getVoteAccounts\",\"params\":[{\"keepUnstakedDelinquents\":true,\"delinquentSlotDistance\":$DELINQUENT_SLOT_DISTANCE}]}" "$CLUSTER_RPC_URL" | jq --raw-output --arg pubkey "$STAKED_PUBKEY" '
-          if .result then any(.result.delinquent[]?; .nodePubkey == $pubkey) else error(.error.message // "missing result") end
+        CURRENT_SLOT="$("${RPC_CURL[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' "$CLUSTER_RPC_URL" | jq --raw-output --exit-status '.result // error(.error.message // "missing result")')" || {
+          echo "error: getSlot RPC failed or response could not be parsed while checking staked promote eligibility: $CLUSTER_RPC_URL"
+          exit 1
+        }
+        STAKED_STATE="$("${RPC_CURL[@]}" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getVoteAccounts\",\"params\":[{\"keepUnstakedDelinquents\":true,\"delinquentSlotDistance\":$DELINQUENT_SLOT_DISTANCE}]}" "$CLUSTER_RPC_URL" | jq --raw-output --exit-status --arg pubkey "$STAKED_PUBKEY" --argjson slot "$CURRENT_SLOT" '
+          (.result // error(.error.message // "missing result")) as $r
+          | [
+              any($r.delinquent[]?; .nodePubkey == $pubkey),
+              ($slot - ($r.current + $r.delinquent | map(select(.nodePubkey == $pubkey).lastVote)[0] // 0))
+            ] | @tsv
         ')" || {
           echo "error: getVoteAccounts RPC failed or response could not be parsed while checking staked promote eligibility: $CLUSTER_RPC_URL"
           exit 1
         }
+        IFS=$'\t' read -r STAKED_DELINQUENT SLOT_LAG <<< "$STAKED_STATE"
         if [[ "$STAKED_DELINQUENT" == "true" ]]; then
-          echo "info: staked identity $STAKED_PUBKEY is delinquent with slot distance $DELINQUENT_SLOT_DISTANCE; trying hotswap"
+          echo "info: staked identity $STAKED_PUBKEY is delinquent with slot lag $SLOT_LAG; trying hotswap"
         else
-          echo "info: staked identity $STAKED_PUBKEY is visible on $SCOPE_DESC and is not delinquent with slot distance $DELINQUENT_SLOT_DISTANCE; waiting"
+          echo "info: staked identity $STAKED_PUBKEY is visible on $SCOPE_DESC and is not delinquent with slot lag $SLOT_LAG; waiting"
           sleep "$CLUSTER_POLL_INTERVAL_SECS"
           continue
         fi
