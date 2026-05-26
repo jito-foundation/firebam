@@ -870,7 +870,7 @@ fd_shred_send_bam_shred( fd_shred_ctx_t *    ctx,
     /* Stop forwarding older retransmits once local leader shredding starts. */
     if( FD_UNLIKELY( ctx->slot!=ULONG_MAX && shred->slot<ctx->slot ) ) return;
 
-    for( ulong off=1UL; off<3UL; off++ ) {
+    for( ulong off=1UL; off<5UL; off++ ) {
       ulong slot = shred->slot + off;
       fd_epoch_leaders_t const * lsched = fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot );
       if( FD_UNLIKELY( !lsched || (slot-lsched->slot0)%FD_EPOCH_SLOTS_PER_ROTATION ) ) continue;
