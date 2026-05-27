@@ -60,7 +60,7 @@ bam_model_encode_auth_challenge( char const * challenge,
                                uchar *      out,
                                size_t       out_sz ) {
   bam_api_AuthChallengeResponse resp = bam_api_AuthChallengeResponse_init_default;
-  strlcpy( resp.challenge_to_sign, challenge, sizeof( resp.challenge_to_sign ) );
+  fd_cstr_ncpy( resp.challenge_to_sign, challenge, sizeof( resp.challenge_to_sign ) );
   pb_ostream_t ostream = pb_ostream_from_buffer( out, out_sz );
   FD_TEST( pb_encode( &ostream, bam_api_AuthChallengeResponse_fields, &resp ) );
   return ostream.bytes_written;
@@ -81,10 +81,10 @@ bam_model_encode_config( uint commission_bps,
 
   /* Keep TPU contact valid so gossip/control path behaves like real connected mode. */
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "127.0.0.1", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "127.0.0.1", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 9007U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "127.0.0.1", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "127.0.0.1", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 9008U;
 
   resp.has_block_engine_config = true;

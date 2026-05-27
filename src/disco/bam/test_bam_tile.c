@@ -107,8 +107,7 @@ test_bam_admin_rpc_mock_push_reply( int          rc,
   FD_TEST( test_bam_admin_rpc_mock.reply_cnt < TEST_BAM_ADMIN_RPC_MAX_CALLS );
   test_bam_admin_rpc_reply_t * reply = &test_bam_admin_rpc_mock.replies[ test_bam_admin_rpc_mock.reply_cnt++ ];
   reply->rc = rc;
-  if( FD_LIKELY( response ) ) strlcpy( reply->response, response, sizeof(reply->response) );
-  else                        reply->response[ 0 ] = '\0';
+  fd_cstr_ncpy( reply->response, response, sizeof( reply->response ) );
 }
 
 int
@@ -123,8 +122,8 @@ fd_bam_admin_rpc_request( char const * admin_rpc_path,
   }
 
   ulong req_idx = test_bam_admin_rpc_mock.request_cnt++;
-  strlcpy( test_bam_admin_rpc_mock.paths[ req_idx ], admin_rpc_path ? admin_rpc_path : "", PATH_MAX );
-  strlcpy( test_bam_admin_rpc_mock.requests[ req_idx ], request ? request : "", TEST_BAM_ADMIN_RPC_REQ_BUF_SZ );
+  fd_cstr_ncpy( test_bam_admin_rpc_mock.paths[ req_idx ], admin_rpc_path, PATH_MAX );
+  fd_cstr_ncpy( test_bam_admin_rpc_mock.requests[ req_idx ], request, TEST_BAM_ADMIN_RPC_REQ_BUF_SZ );
 
   test_bam_admin_rpc_reply_t const * reply = &test_bam_admin_rpc_mock.replies[ test_bam_admin_rpc_mock.reply_idx++ ];
   if( FD_UNLIKELY( reply->rc ) ) {
@@ -134,8 +133,9 @@ fd_bam_admin_rpc_request( char const * admin_rpc_path,
 
   FD_TEST( response );
   FD_TEST( response_max );
-  FD_TEST( strnlen( reply->response, sizeof(reply->response) ) < response_max );
-  strlcpy( response, reply->response, response_max );
+  ulong response_len = strnlen( reply->response, sizeof( reply->response ) );
+  FD_TEST( response_len < response_max );
+  fd_cstr_ncpy( response, reply->response, response_max );
   return 0;
 }
 
@@ -2182,7 +2182,7 @@ test_bam_grpc_timeout( fd_wksp_t * wksp ) {
 
   state->bam_auth_inflight      = 1U;
   state->bam_auth_ready         = 1U;
-  strlcpy( state->challenge_to_sign, "stale-challenge", sizeof( state->challenge_to_sign ) );
+  fd_cstr_ncpy( state->challenge_to_sign, "stale-challenge", sizeof( state->challenge_to_sign ) );
   fd_bam_client_grpc_rx_timeout( state, FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge, FD_GRPC_DEADLINE_HEADER );
   FD_TEST( state->bam_auth_inflight == 0U );
   FD_TEST( state->bam_auth_ready == 0U );
@@ -2599,7 +2599,7 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
   char const challenge[] = "unit-test-challenge";
   const size_t challenge_len = strlen(challenge);
   FD_TEST( challenge_len < sizeof( resp.challenge_to_sign ) );
-  strlcpy( resp.challenge_to_sign, challenge, sizeof( challenge ) );
+  fd_cstr_ncpy( resp.challenge_to_sign, challenge, sizeof( resp.challenge_to_sign ) );
 
   uchar pb_buf[ 128 ];
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
@@ -2607,7 +2607,7 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
 
   state->bam_auth_inflight = 1U;
   char const validator_key[] = "validator-pubkey-test";
-  strlcpy( state->bam_identity_pubkey_b58, validator_key, sizeof( validator_key ) );
+  fd_cstr_ncpy( state->bam_identity_pubkey_b58, validator_key, sizeof( state->bam_identity_pubkey_b58 ) );
 
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
@@ -2662,13 +2662,13 @@ test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
   state->bam_last_config_poll_ns = g_clock;
 
   char const challenge[] = "challenge-123";
-  strlcpy( state->challenge_to_sign, challenge, sizeof( state->challenge_to_sign ) );
+  fd_cstr_ncpy( state->challenge_to_sign, challenge, sizeof( state->challenge_to_sign ) );
 
   char const signature[] = "sig-abcdef";
-  strlcpy( state->bam_auth_signature, signature, sizeof(signature) );
+  fd_cstr_ncpy( state->bam_auth_signature, signature, sizeof( state->bam_auth_signature ) );
 
   char const validator_key[] = "validator-key-test";
-  strlcpy( state->bam_identity_pubkey_b58, validator_key, sizeof(validator_key) );
+  fd_cstr_ncpy( state->bam_identity_pubkey_b58, validator_key, sizeof( state->bam_identity_pubkey_b58 ) );
 
   fd_bam_test_client_step_reconnect( state, g_clock );
 
@@ -2710,9 +2710,9 @@ test_bam_scheduler_stream_starts_without_builder_info( fd_wksp_t * wksp ) {
   test_bam_keepalive_sync( state, g_clock );
   state->bam_last_config_poll_ns = g_clock;
 
-  strlcpy( state->challenge_to_sign, "challenge-123", sizeof( state->challenge_to_sign ) );
-  strlcpy( state->bam_auth_signature, "sig-abcdef", sizeof( state->bam_auth_signature ) );
-  strlcpy( state->bam_identity_pubkey_b58, "validator-key-test", sizeof( state->bam_identity_pubkey_b58 ) );
+  fd_cstr_ncpy( state->challenge_to_sign, "challenge-123", sizeof( state->challenge_to_sign ) );
+  fd_cstr_ncpy( state->bam_auth_signature, "sig-abcdef", sizeof( state->bam_auth_signature ) );
+  fd_cstr_ncpy( state->bam_identity_pubkey_b58, "validator-key-test", sizeof( state->bam_identity_pubkey_b58 ) );
 
   FD_TEST( state->builder_info_valid_until == 0L );
   fd_bam_test_client_step_reconnect( state, g_clock );
@@ -3672,8 +3672,8 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
   ctx->server_tcp_port = 80;
   ctx->is_ssl          = 0;
   ctrl->enable         = 1U;
-  strlcpy( ctrl->url, "http://testnet.bam.jito.wtf:80", FD_URL_MAX );
-  strlcpy( ctrl->sni, host, FD_SNI_BUF_MAX );
+  fd_cstr_ncpy( ctrl->url, "http://testnet.bam.jito.wtf:80", sizeof( ctrl->url ) );
+  fd_cstr_ncpy( ctrl->sni, host, sizeof( ctrl->sni ) );
   ctrl->state = FD_BAM_CTRL_STATE_IDLE;
 }
 
@@ -3714,8 +3714,8 @@ test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
 
   ctrl.command = FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI;
   ctrl.enable  = 1U;
-  strlcpy( ctrl.url, "http://new.example.com:8899", FD_URL_MAX );
-  strlcpy( ctrl.sni, "custom.sni.invalid", FD_SNI_BUF_MAX );
+  fd_cstr_ncpy( ctrl.url, "http://new.example.com:8899", sizeof( ctrl.url ) );
+  fd_cstr_ncpy( ctrl.sni, "custom.sni.invalid", sizeof( ctrl.sni ) );
   ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
 
   fd_bam_tile_housekeeping( ctx );
@@ -3765,7 +3765,7 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   fd_bam_publish_active_state( ctx, ctx->stem, 1 );
   FD_TEST( fd_fseq_query( fseq ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
 
-  strlcpy( ctx->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof(ctx->admin_rpc_path) );
+  fd_cstr_ncpy( ctx->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof( ctx->admin_rpc_path ) );
   FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &ctx->default_tpu.addr ) );
   FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &ctx->default_tpu_fwd.addr ) );
   ctx->default_tpu.port     = fd_ushort_bswap( 4242U );
@@ -3932,7 +3932,7 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
 
   ctrl.command = FD_BAM_CTRL_CMD_URL;
   ctrl.enable  = 1U;
-  strlcpy( ctrl.url, "not a url", FD_URL_MAX );
+  fd_cstr_ncpy( ctrl.url, "not a url", sizeof( ctrl.url ) );
   ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
 
   fd_bam_tile_housekeeping( ctx );
@@ -3966,7 +3966,7 @@ test_bam_ctrl_blank_url_clears_and_disables( fd_wksp_t * wksp ) {
 
   ctrl.command = FD_BAM_CTRL_CMD_URL;
   ctrl.enable  = 1U;
-  strlcpy( ctrl.url, "   \t\n", FD_URL_MAX );
+  fd_cstr_ncpy( ctrl.url, "   \t\n", sizeof( ctrl.url ) );
   ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
 
   fd_bam_tile_housekeeping( ctx );
@@ -3996,7 +3996,7 @@ test_bam_admin_rpc_apply_success_caches_default_and_marks_applied( fd_wksp_t * w
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  strlcpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof(state->admin_rpc_path) );
+  fd_cstr_ncpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof( state->admin_rpc_path ) );
   FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_tpu.addr ) );
   FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
   state->bam_tpu.port     = fd_ushort_bswap( 7000 );
@@ -4041,7 +4041,7 @@ test_bam_admin_rpc_set_failure_stays_pending( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  strlcpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof(state->admin_rpc_path) );
+  fd_cstr_ncpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof( state->admin_rpc_path ) );
   FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_tpu.addr ) );
   FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
   state->bam_tpu.port     = fd_ushort_bswap( 7000 );
@@ -4067,7 +4067,7 @@ test_bam_admin_rpc_revert_uses_cached_defaults( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  strlcpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof(state->admin_rpc_path) );
+  fd_cstr_ncpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof( state->admin_rpc_path ) );
   FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_tpu.addr ) );
   FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
   state->bam_tpu.port     = fd_ushort_bswap( 7000 );
@@ -4104,7 +4104,7 @@ test_bam_admin_rpc_restart_recovers_configured_defaults_for_revert( fd_wksp_t * 
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  strlcpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof(state->admin_rpc_path) );
+  fd_cstr_ncpy( state->admin_rpc_path, "/tmp/test-bam-admin.rpc", sizeof( state->admin_rpc_path ) );
   FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_tpu.addr ) );
   FD_TEST( fd_cstr_to_ip4_addr( "8.8.8.8", &state->bam_tpu_fwd.addr ) );
   state->bam_tpu.port     = fd_ushort_bswap( 7000 );
@@ -4347,10 +4347,10 @@ test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "10.20.30.40", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "10.20.30.40", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 1122U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 3344U;
 
   uchar pb_buf[ 256 ];
@@ -4578,10 +4578,10 @@ test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( fd_wks
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "9.8.7.6", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "9.8.7.6", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 5000U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "4.3.2.1", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "4.3.2.1", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 6000U;
 
   uchar pb_buf[ 256 ];
@@ -4680,10 +4680,10 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "9.9.9.9", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "9.9.9.9", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 7000U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "8.8.8.8", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "8.8.8.8", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 7001U;
 
   uchar pb_buf[ 256 ];
@@ -4753,19 +4753,19 @@ test_bam_shred_update_publishes_receiver_list( fd_wksp_t * wksp ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "10.20.30.40", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "10.20.30.40", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 1122U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 3344U;
   resp.bam_config.shred_sock_count = 4U;
-  strlcpy( resp.bam_config.shred_sock[ 0 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_sock[ 0 ].ip ) );
+  fd_cstr_ncpy( resp.bam_config.shred_sock[ 0 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_sock[ 0 ].ip ) );
   resp.bam_config.shred_sock[ 0 ].port = 5001U;
-  strlcpy( resp.bam_config.shred_sock[ 1 ].ip, "2.2.2.2", sizeof( resp.bam_config.shred_sock[ 1 ].ip ) );
+  fd_cstr_ncpy( resp.bam_config.shred_sock[ 1 ].ip, "2.2.2.2", sizeof( resp.bam_config.shred_sock[ 1 ].ip ) );
   resp.bam_config.shred_sock[ 1 ].port = 5002U;
-  strlcpy( resp.bam_config.shred_sock[ 2 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_sock[ 2 ].ip ) );
+  fd_cstr_ncpy( resp.bam_config.shred_sock[ 2 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_sock[ 2 ].ip ) );
   resp.bam_config.shred_sock[ 2 ].port = 5001U;
-  strlcpy( resp.bam_config.shred_sock[ 3 ].ip, "bad-ip", sizeof( resp.bam_config.shred_sock[ 3 ].ip ) );
+  fd_cstr_ncpy( resp.bam_config.shred_sock[ 3 ].ip, "bad-ip", sizeof( resp.bam_config.shred_sock[ 3 ].ip ) );
   resp.bam_config.shred_sock[ 3 ].port = 0U;
 
   uchar pb_buf[ 1024 ];
@@ -4815,15 +4815,15 @@ test_bam_shred_update_disconnect_uses_empty_without_clearing_receivers( fd_wksp_
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "10.20.30.40", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "10.20.30.40", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 1122U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 3344U;
   resp.bam_config.shred_sock_count = 2U;
-  strlcpy( resp.bam_config.shred_sock[ 0 ].ip, "3.3.3.3", sizeof( resp.bam_config.shred_sock[ 0 ].ip ) );
+  fd_cstr_ncpy( resp.bam_config.shred_sock[ 0 ].ip, "3.3.3.3", sizeof( resp.bam_config.shred_sock[ 0 ].ip ) );
   resp.bam_config.shred_sock[ 0 ].port = 7001U;
-  strlcpy( resp.bam_config.shred_sock[ 1 ].ip, "4.4.4.4", sizeof( resp.bam_config.shred_sock[ 1 ].ip ) );
+  fd_cstr_ncpy( resp.bam_config.shred_sock[ 1 ].ip, "4.4.4.4", sizeof( resp.bam_config.shred_sock[ 1 ].ip ) );
   resp.bam_config.shred_sock[ 1 ].port = 7002U;
 
   uchar pb_buf[ 1024 ];
@@ -4874,10 +4874,10 @@ test_bam_config_reuses_cached_contact_for_incomplete_refresh( fd_wksp_t * wksp )
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "5.5.5.5", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "5.5.5.5", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 5000U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "6.6.6.6", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "6.6.6.6", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 6000U;
 
   fd_ip4_port_t expected_tpu = { .port = fd_ushort_bswap( 5000U ) };
@@ -4905,7 +4905,7 @@ test_bam_config_reuses_cached_contact_for_incomplete_refresh( fd_wksp_t * wksp )
   resp = (bam_api_ConfigResponse)bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "7.7.7.7", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "7.7.7.7", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 7000U;
   resp.bam_config.has_tpu_fwd_sock = false;
   ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
@@ -4943,15 +4943,15 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "1.2.3.4", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "1.2.3.4", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 9000U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "5.6.7.8", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "5.6.7.8", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 10001U;
   uchar prio_fee_raw[ 32 ];
   char const * prio_fee_b58 = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
   FD_TEST( fd_base58_decode_32( prio_fee_b58, prio_fee_raw ) );
-  strlcpy( resp.bam_config.prio_fee_recipient_pubkey, prio_fee_b58, sizeof( resp.bam_config.prio_fee_recipient_pubkey ) );
+  fd_cstr_ncpy( resp.bam_config.prio_fee_recipient_pubkey, prio_fee_b58, sizeof( resp.bam_config.prio_fee_recipient_pubkey ) );
   resp.bam_config.commission_bps = 2750U;
 
   uchar pb_buf[ 256 ];
@@ -5036,15 +5036,15 @@ test_bam_impl_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "1.1.1.1", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "1.1.1.1", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 8000U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "2.2.2.2", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "2.2.2.2", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 9000U;
   uchar prio_fee_raw[ 32 ];
   char const * prio_fee_b58 = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
   FD_TEST( fd_base58_decode_32( prio_fee_b58, prio_fee_raw ) );
-  strlcpy( resp.bam_config.prio_fee_recipient_pubkey, prio_fee_b58, sizeof( resp.bam_config.prio_fee_recipient_pubkey ) );
+  fd_cstr_ncpy( resp.bam_config.prio_fee_recipient_pubkey, prio_fee_b58, sizeof( resp.bam_config.prio_fee_recipient_pubkey ) );
   resp.bam_config.commission_bps = 3500U;
 
   uchar pb_buf[ 256 ];
@@ -5109,7 +5109,7 @@ test_bam_impl_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
   uchar prio_fee_raw2[ 32 ];
   char const * prio_fee_b58_2 = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
   FD_TEST( fd_base58_decode_32( prio_fee_b58_2, prio_fee_raw2 ) );
-  strlcpy( resp_update.bam_config.prio_fee_recipient_pubkey, prio_fee_b58_2, sizeof( resp_update.bam_config.prio_fee_recipient_pubkey ) );
+  fd_cstr_ncpy( resp_update.bam_config.prio_fee_recipient_pubkey, prio_fee_b58_2, sizeof( resp_update.bam_config.prio_fee_recipient_pubkey ) );
   ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp_update ) );
   fd_bam_client_grpc_rx_msg( bam_state,

@@ -329,7 +329,7 @@ bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
       ctx->challenge_to_sign[ len ] = '\0';
 
       // todo: use dynamic signature
-      strlcpy( ctx->bam_auth_signature, "1111111111111111111111111111111111", sizeof( ctx->bam_auth_signature ) );
+      fd_cstr_ncpy( ctx->bam_auth_signature, "1111111111111111111111111111111111", sizeof( ctx->bam_auth_signature ) );
       ctx->bam_auth_ready            = 1U;
       ctx->bam_auth_inflight         = 0U;
     }
@@ -521,11 +521,9 @@ bam_fuzz_reset_tile( void ) {
 
   /* Default endpoint so runtime control can toggle cleanly */
   static char const default_host[] = "bam.example.com";
-  fd_memset( ctx->server_fqdn, 0, sizeof( ctx->server_fqdn ) );
-  fd_memcpy( ctx->server_fqdn, default_host, fd_ulong_min( strlen( default_host ), sizeof( ctx->server_fqdn )-1UL ) );
-  ctx->server_fqdn_len = (ushort)strlen( ctx->server_fqdn );
-  fd_memset( ctx->server_sni, 0, sizeof( ctx->server_sni ) );
-  fd_memcpy( ctx->server_sni, default_host, fd_ulong_min( strlen( default_host ), sizeof( ctx->server_sni )-1UL ) );
+  fd_cstr_ncpy( ctx->server_fqdn, default_host, sizeof( ctx->server_fqdn ) );
+  ctx->server_fqdn_len = (ushort)fd_cstr_nlen( ctx->server_fqdn, sizeof( ctx->server_fqdn ) );
+  fd_cstr_ncpy( ctx->server_sni, default_host, sizeof( ctx->server_sni ) );
   ctx->server_sni_len = ctx->server_fqdn_len;
   ctx->server_tcp_port = 443U;
   ctx->is_ssl = 1;

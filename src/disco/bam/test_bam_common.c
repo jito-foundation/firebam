@@ -376,10 +376,10 @@ test_bam_env_inject_config_response( fd_bam_tile_t * state ) {
 
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
-  strlcpy( resp.bam_config.tpu_sock.ip, "127.0.0.1", sizeof( resp.bam_config.tpu_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "127.0.0.1", sizeof( resp.bam_config.tpu_sock.ip ) );
   resp.bam_config.tpu_sock.port = 9007U;
   resp.bam_config.has_tpu_fwd_sock = true;
-  strlcpy( resp.bam_config.tpu_fwd_sock.ip, "127.0.0.2", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
+  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "127.0.0.2", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 9008U;
 
   uchar pb_buf[ 256 ];
