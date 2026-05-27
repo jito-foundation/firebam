@@ -28,14 +28,13 @@ Behavior:
           (Agave mode only)
   --dry-run still generates the dummy identity if missing
 
+Firedancer:
+  Firedancer mode reads the running binary and --config path from /proc.
+
 Environment overrides (defaults shown):
   AGAVE_DIR=${HOME}/jito-solana/docker-output
   AGAVE_BIN_PATH=${AGAVE_DIR}/agave-validator
   SOLANA_KEYGEN_PATH=${AGAVE_DIR}/solana-keygen
-  FD_BIN_PATH=${SCRIPT_DIR}/../build/native/gcc/bin
-  FDCTL_BIN_PATH=<running Firedancer binary, else ${FD_BIN_PATH}/fdctl or fddev>
-  FD_CONFIG_PATH=<running Firedancer --config path, else ${SCRIPT_DIR}/../mainnet.toml>
-  Unset FD_BIN_PATH/FDCTL_BIN_PATH/FD_CONFIG_PATH to auto-detect from /proc
   AGAVE_LEDGER_PATH=/solana/ledger
   IDENTITY_LINK_PATH=/etc/solana/identity.json
   STAKED_IDENTITY_KEYPAIR_PATH=/etc/solana/staked-identity.json
@@ -75,14 +74,9 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$MODE" ]] || { usage; exit 2; }
 
-FD_PATH_OVERRIDES="${FD_BIN_PATH+x}${FDCTL_BIN_PATH+x}${FD_CONFIG_PATH+x}"
 AGAVE_DIR="${AGAVE_DIR:-${HOME}/jito-solana/docker-output}"
 AGAVE_BIN_PATH="${AGAVE_BIN_PATH:-${AGAVE_DIR}/agave-validator}"
 SOLANA_KEYGEN_PATH="${SOLANA_KEYGEN_PATH:-${AGAVE_DIR}/solana-keygen}"
-SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
-FD_BIN_PATH="${FD_BIN_PATH:-${SCRIPT_DIR}/../build/native/gcc/bin}"
-FDCTL_BIN_PATH="${FDCTL_BIN_PATH:-}"
-FD_CONFIG_PATH="${FD_CONFIG_PATH:-}"
 AGAVE_LEDGER_PATH="${AGAVE_LEDGER_PATH:-/solana/ledger}"
 IDENTITY_LINK_PATH="${IDENTITY_LINK_PATH:-/etc/solana/identity.json}"
 STAKED_IDENTITY_KEYPAIR_PATH="${STAKED_IDENTITY_KEYPAIR_PATH:-/etc/solana/staked-identity.json}"
@@ -94,8 +88,10 @@ CLUSTER_RPC_URL="${CLUSTER_RPC_URL:-https://api.mainnet.solana.com}"
 SKIP_CLUSTER_CHECK="${SKIP_CLUSTER_CHECK:-0}"
 DELINQUENT_SLOT_DISTANCE="${DELINQUENT_SLOT_DISTANCE:-4}"
 CLUSTER_POLL_INTERVAL_SECS="${CLUSTER_POLL_INTERVAL_SECS:-1}"
+FDCTL_BIN_PATH=""
+FD_CONFIG_PATH=""
 
-if [[ "$MODE" == "firedancer" && -z "$FD_PATH_OVERRIDES" ]]; then
+if [[ "$MODE" == "firedancer" ]]; then
   fd_pid= fd_key=
   for proc_dir in /proc/[0-9]*; do
     [[ -r "$proc_dir/cmdline" && -L "$proc_dir/exe" ]] || continue
@@ -123,18 +119,18 @@ if [[ "$MODE" == "firedancer" && -z "$FD_PATH_OVERRIDES" ]]; then
     if [[ -z "$fd_key" ]]; then
       fd_key="$new_key"; FDCTL_BIN_PATH="$exe_path"; FD_CONFIG_PATH="$resolved_config"; fd_pid="$pid"
     elif [[ "$fd_key" != "$new_key" ]]; then
-      echo "error: multiple Firedancer instances with different configs detected; set FDCTL_BIN_PATH and FD_CONFIG_PATH explicitly" >&2
+      echo "error: multiple Firedancer instances with different configs detected" >&2
       echo "  candidate 1: pid $fd_pid -> $FDCTL_BIN_PATH --config $FD_CONFIG_PATH" >&2
       echo "  candidate 2: pid $pid -> $exe_path --config $resolved_config" >&2
       exit 1
     fi
   done
-  [[ "$FDCTL_BIN_PATH" && "$FD_CONFIG_PATH" ]] && echo "info: detected Firedancer instance pid $fd_pid -> $FDCTL_BIN_PATH --config $FD_CONFIG_PATH"
+  if [[ -z "$FDCTL_BIN_PATH" || -z "$FD_CONFIG_PATH" ]]; then
+    echo "error: could not detect a running Firedancer process with --config in /proc" >&2
+    exit 1
+  fi
+  echo "info: detected Firedancer instance pid $fd_pid -> $FDCTL_BIN_PATH --config $FD_CONFIG_PATH"
 fi
-
-FDCTL_BIN_PATH="${FDCTL_BIN_PATH:-$FD_BIN_PATH/fddev}"
-[[ -x "$FD_BIN_PATH/fdctl" && "$FDCTL_BIN_PATH" == "$FD_BIN_PATH/fddev" ]] && FDCTL_BIN_PATH="$FD_BIN_PATH/fdctl"
-FD_CONFIG_PATH="${FD_CONFIG_PATH:-${SCRIPT_DIR}/../mainnet.toml}"
 
 DEFAULT_OWNER="$(id -un)"
 [[ "$DEFAULT_OWNER" == "root" && -n "${SUDO_USER:-}" ]] && DEFAULT_OWNER="$SUDO_USER"
