@@ -2347,7 +2347,10 @@ after_frag( fd_pack_ctx_t *     ctx,
       ulong duplicate_work_idx = pack_tile_bam_work_find_by_sig0( ctx, bam_sig[ 0 ] );
       if( FD_UNLIKELY( duplicate_work_idx<ctx->bam_work_cnt ) ) {
         pack_bam_work_t * duplicate = &ctx->bam_work[ duplicate_work_idx ];
-        if( FD_LIKELY( duplicate->state==PACK_BAM_WORK_STATE_PENDING ) ) {
+        /* Same-sequence resends may replace pending work. Cross-sequence
+           duplicates must leave the old sequence tracked to preserve its
+           eventual durable result. */
+        if( FD_LIKELY( duplicate->state==PACK_BAM_WORK_STATE_PENDING && duplicate->seq_id==seq_id ) ) {
           pack_bam_work_t replaced = pack_tile_bam_work_swap_remove( ctx, duplicate_work_idx );
           pack_tile_bam_recent_slot_sub_pending( ctx, replaced.slot, 1UL, replaced.txn_cnt );
           ulong duplicate_deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)(void const *)bam_sig[ 0 ] );
