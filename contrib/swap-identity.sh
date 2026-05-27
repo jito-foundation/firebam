@@ -33,8 +33,8 @@ Environment overrides (defaults shown):
   AGAVE_BIN_PATH=${AGAVE_DIR}/agave-validator
   SOLANA_KEYGEN_PATH=${AGAVE_DIR}/solana-keygen
   FD_BIN_PATH=${SCRIPT_DIR}/../build/native/gcc/bin
-  FDCTL_BIN_PATH=<running Firedancer binary, else ${FD_BIN_PATH}/fdctl or fddev>
-  FD_CONFIG_PATH=<running Firedancer --config path, else ${SCRIPT_DIR}/../mainnet.toml>
+  FDCTL_BIN_PATH=<running Firedancer binary, else ${FD_BIN_PATH}/firedancer, fdctl, or fddev>
+  FD_CONFIG_PATH=<running Firedancer --config path, else mainnet-firedancer.toml for the firedancer binary or mainnet.toml>
   Unset FD_BIN_PATH/FDCTL_BIN_PATH/FD_CONFIG_PATH to auto-detect from /proc
   AGAVE_LEDGER_PATH=/solana/ledger
   IDENTITY_LINK_PATH=/etc/solana/identity.json
@@ -96,7 +96,7 @@ DELINQUENT_SLOT_DISTANCE="${DELINQUENT_SLOT_DISTANCE:-4}"
 CLUSTER_POLL_INTERVAL_SECS="${CLUSTER_POLL_INTERVAL_SECS:-1}"
 
 if [[ "$MODE" == "firedancer" && -z "$FD_PATH_OVERRIDES" ]]; then
-  fd_pid= fd_key=
+  fd_pid= fd_key= fd_child_pid= fd_child_key= fd_child_exe_path=
   for proc_dir in /proc/[0-9]*; do
     [[ -r "$proc_dir/cmdline" && -L "$proc_dir/exe" ]] || continue
     mapfile -d '' -t argv < "$proc_dir/cmdline" || continue
@@ -112,29 +112,62 @@ if [[ "$MODE" == "firedancer" && -z "$FD_PATH_OVERRIDES" ]]; then
         --config=*) raw_config="${argv[i]#--config=}"; break ;;
       esac
     done
-    [[ "$raw_config" ]] || continue
     exe_path="$(readlink -f -- "$proc_dir/exe" 2>/dev/null)" || continue
-    cwd_path="$(readlink -f -- "$proc_dir/cwd" 2>/dev/null)" || continue
-    resolved_path="$raw_config"
-    [[ "$resolved_path" != /* ]] && resolved_path="$cwd_path/$resolved_path"
-    resolved_config="$(readlink -f -- "$resolved_path" 2>/dev/null || printf '%s\n' "$resolved_path")"
-    new_key="$exe_path|$resolved_config"
     pid="${proc_dir#/proc/}"
-    if [[ -z "$fd_key" ]]; then
-      fd_key="$new_key"; FDCTL_BIN_PATH="$exe_path"; FD_CONFIG_PATH="$resolved_config"; fd_pid="$pid"
-    elif [[ "$fd_key" != "$new_key" ]]; then
-      echo "error: multiple Firedancer instances with different configs detected; set FDCTL_BIN_PATH and FD_CONFIG_PATH explicitly" >&2
-      echo "  candidate 1: pid $fd_pid -> $FDCTL_BIN_PATH --config $FD_CONFIG_PATH" >&2
-      echo "  candidate 2: pid $pid -> $exe_path --config $resolved_config" >&2
-      exit 1
+
+    if [[ "$raw_config" ]]; then
+      cwd_path="$(readlink -f -- "$proc_dir/cwd" 2>/dev/null)" || continue
+      resolved_path="$raw_config"
+      [[ "$resolved_path" != /* ]] && resolved_path="$cwd_path/$resolved_path"
+      resolved_config="$(readlink -f -- "$resolved_path" 2>/dev/null || printf '%s\n' "$resolved_path")"
+      new_key="$exe_path|$resolved_config"
+      if [[ -z "$fd_key" ]]; then
+        fd_key="$new_key"; FDCTL_BIN_PATH="$exe_path"; FD_CONFIG_PATH="$resolved_config"; fd_pid="$pid"
+      elif [[ "$fd_key" != "$new_key" ]]; then
+        echo "error: multiple Firedancer instances with different configs detected; set FDCTL_BIN_PATH and FD_CONFIG_PATH explicitly" >&2
+        echo "  candidate 1: pid $fd_pid -> $FDCTL_BIN_PATH --config $FD_CONFIG_PATH" >&2
+        echo "  candidate 2: pid $pid -> $exe_path --config $resolved_config" >&2
+        exit 1
+      fi
+    elif [[ "${argv[1]-}" == "run1" ]]; then
+      # run1 children receive the resolved configuration through --config-fd,
+      # so /proc cannot recover the original TOML path. Still remember the
+      # executable so fallback does not accidentally select fddev.
+      new_key="$exe_path"
+      if [[ -z "$fd_child_key" ]]; then
+        fd_child_key="$new_key"; fd_child_exe_path="$exe_path"; fd_child_pid="$pid"
+      elif [[ "$fd_child_key" != "$new_key" ]]; then
+        echo "error: multiple Firedancer child process binaries detected; set FDCTL_BIN_PATH and FD_CONFIG_PATH explicitly" >&2
+        echo "  candidate 1: pid $fd_child_pid -> $fd_child_exe_path" >&2
+        echo "  candidate 2: pid $pid -> $exe_path" >&2
+        exit 1
+      fi
     fi
   done
-  [[ "$FDCTL_BIN_PATH" && "$FD_CONFIG_PATH" ]] && echo "info: detected Firedancer instance pid $fd_pid -> $FDCTL_BIN_PATH --config $FD_CONFIG_PATH"
+  if [[ "$FDCTL_BIN_PATH" && "$FD_CONFIG_PATH" ]]; then
+    echo "info: detected Firedancer instance pid $fd_pid -> $FDCTL_BIN_PATH --config $FD_CONFIG_PATH"
+  elif [[ "$fd_child_exe_path" ]]; then
+    FDCTL_BIN_PATH="$fd_child_exe_path"
+    echo "info: detected Firedancer child pid $fd_child_pid -> $FDCTL_BIN_PATH; config path unavailable from --config-fd"
+  fi
 fi
 
-FDCTL_BIN_PATH="${FDCTL_BIN_PATH:-$FD_BIN_PATH/fddev}"
-[[ -x "$FD_BIN_PATH/fdctl" && "$FDCTL_BIN_PATH" == "$FD_BIN_PATH/fddev" ]] && FDCTL_BIN_PATH="$FD_BIN_PATH/fdctl"
-FD_CONFIG_PATH="${FD_CONFIG_PATH:-${SCRIPT_DIR}/../mainnet.toml}"
+if [[ -z "$FDCTL_BIN_PATH" ]]; then
+  if [[ -x "$FD_BIN_PATH/firedancer" ]]; then
+    FDCTL_BIN_PATH="$FD_BIN_PATH/firedancer"
+  elif [[ -x "$FD_BIN_PATH/fdctl" ]]; then
+    FDCTL_BIN_PATH="$FD_BIN_PATH/fdctl"
+  else
+    FDCTL_BIN_PATH="$FD_BIN_PATH/fddev"
+  fi
+fi
+if [[ -z "$FD_CONFIG_PATH" ]]; then
+  if [[ "${FDCTL_BIN_PATH##*/}" == "firedancer" && -f "${SCRIPT_DIR}/../mainnet-firedancer.toml" ]]; then
+    FD_CONFIG_PATH="${SCRIPT_DIR}/../mainnet-firedancer.toml"
+  else
+    FD_CONFIG_PATH="${SCRIPT_DIR}/../mainnet.toml"
+  fi
+fi
 
 DEFAULT_OWNER="$(id -un)"
 [[ "$DEFAULT_OWNER" == "root" && -n "${SUDO_USER:-}" ]] && DEFAULT_OWNER="$SUDO_USER"
