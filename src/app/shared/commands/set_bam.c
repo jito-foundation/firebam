@@ -98,9 +98,9 @@ set_bam_apply_request( args_t *   args,
   ctrl->command = command;
   if( args->set_bam.enable>=0 ) ctrl->enable = (uchar)args->set_bam.enable;
 
-  if( args->set_bam.url ) strlcpy( ctrl->url, args->set_bam.url, sizeof(ctrl->url) );
+  if( args->set_bam.url ) fd_cstr_ncpy( ctrl->url, args->set_bam.url, sizeof( ctrl->url ) );
 
-  if( args->set_bam.sni ) strlcpy( ctrl->sni, args->set_bam.sni, sizeof(ctrl->sni) );
+  if( args->set_bam.sni ) fd_cstr_ncpy( ctrl->sni, args->set_bam.sni, sizeof( ctrl->sni ) );
 
   ctrl->error[0] = '\0';
 

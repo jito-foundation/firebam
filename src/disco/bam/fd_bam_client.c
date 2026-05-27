@@ -653,8 +653,8 @@ fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
 
   bam_types_AuthProof proof = bam_types_AuthProof_init_default;
   fd_memcpy( proof.challenge_to_sign, ctx->challenge_to_sign, sizeof(proof.challenge_to_sign) );
-  strlcpy( proof.validator_pubkey, ctx->bam_identity_pubkey_b58, sizeof(proof.validator_pubkey) );
-  strlcpy( proof.signature, ctx->bam_auth_signature, sizeof(proof.signature ) );
+  fd_cstr_ncpy( proof.validator_pubkey, ctx->bam_identity_pubkey_b58, sizeof( proof.validator_pubkey ) );
+  fd_cstr_ncpy( proof.signature, ctx->bam_auth_signature, sizeof( proof.signature ) );
 
   bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
   msg.which_versioned_msg               = bam_api_SchedulerMessage_v0_tag;
@@ -754,9 +754,9 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
                   res->generic_invalid_reason );
         break;
       }
-      strlcpy( out->reason.generic_invalid.message,
-               FD_BAM_ERR_GENERIC_INVALID_STRINGS[ res->generic_invalid_reason ],
-               sizeof(out->reason.generic_invalid.message) );
+      fd_cstr_ncpy( out->reason.generic_invalid.message,
+                    FD_BAM_ERR_GENERIC_INVALID_STRINGS[ res->generic_invalid_reason ],
+                    sizeof( out->reason.generic_invalid.message ) );
       break;
     default:
       FD_LOG_WARNING(( "Invalid error type %u, value out of range.", res->bundle_err ));
@@ -821,10 +821,9 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
 
     if( FD_UNLIKELY( !out->which_reason ) ) {
       out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
-      strlcpy( out->reason.generic_invalid.message,
-               FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED,
-               sizeof(out->reason.generic_invalid.message) );
-      out->reason.generic_invalid.message[ sizeof(out->reason.generic_invalid.message)-1UL ] = '\0';
+      fd_cstr_ncpy( out->reason.generic_invalid.message,
+                    FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED,
+                    sizeof( out->reason.generic_invalid.message ) );
     }
   }
 

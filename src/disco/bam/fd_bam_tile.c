@@ -836,7 +836,7 @@ after_credit( fd_bam_tile_t *  ctx,
   ulong const * ingress_message_rejected_cnt = metrics->ingress_message_rejected_cnt;
   memset( update, 0, sizeof(fd_plugin_msg_bam_update_t) );
 
-  strlcpy( update->name, "bam", sizeof( update->name ));
+  fd_cstr_ncpy( update->name, "bam", sizeof( update->name ) );
 
   if( FD_LIKELY( ctx->server_fqdn_len && ctx->server_tcp_port ) ) {
     snprintf( update->url, sizeof( update->url ), "%s://%.*s:%u",
@@ -846,7 +846,7 @@ after_credit( fd_bam_tile_t *  ctx,
               ctx->server_tcp_port );
   }
 
-  strlcpy( update->sni, ctx->server_sni, sizeof( update->sni ) );
+  fd_cstr_ncpy( update->sni, ctx->server_sni, sizeof( update->sni ) );
   snprintf( update->ip_cstr, sizeof( update->ip_cstr ),
             FD_IP4_ADDR_FMT,
             FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ) );
@@ -927,8 +927,8 @@ fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
     ctx->ctrl->url[0] = '\0';
     return -1;
   }
-  strlcpy(ctx->ctrl->url, buf, (size_t)n+1);
-  strlcpy( ctx->ctrl->sni, ctx->server_sni, FD_SNI_BUF_MAX );
+  fd_cstr_ncpy( ctx->ctrl->url, buf, sizeof( ctx->ctrl->url ) );
+  fd_cstr_ncpy( ctx->ctrl->sni, ctx->server_sni, sizeof( ctx->ctrl->sni ) );
   return 0;
 }
 
@@ -956,7 +956,6 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   ushort new_port = ctx->server_tcp_port;
   uchar  new_ssl  = ctx->is_ssl;
   char   new_host[ FD_FQDN_BUF_MAX ];
-  ushort new_host_len;
   _Bool  need_reset = 0;
 
   if( command & FD_BAM_CTRL_CMD_URL ) {
@@ -990,7 +989,6 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
 
     fd_memcpy( new_host, runtime_url.host, runtime_url.host_len );
     new_host[ runtime_url.host_len ] = '\0';
-    new_host_len = (ushort)runtime_url.host_len;
     new_port = parse_port;
     new_ssl  = parse_ssl;
 #if !FD_HAS_OPENSSL
@@ -1004,32 +1002,31 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     }
 #endif
   } else {
-    new_host_len = (ushort)strlcpy( new_host, ctx->server_fqdn, sizeof(new_host) );
+    fd_cstr_ncpy( new_host, ctx->server_fqdn, sizeof( new_host ) );
   }
 
   char new_sni[ FD_SNI_BUF_MAX ];
   if( command & FD_BAM_CTRL_CMD_SNI ) {
-    strlcpy( new_sni, ctx->ctrl->sni, sizeof(new_sni) );
-    if( FD_UNLIKELY( !new_sni[0] ) )
-      strlcpy( new_sni, new_host, sizeof(new_sni) );
+    fd_cstr_ncpy( new_sni, ctx->ctrl->sni, sizeof( new_sni ) );
+    if( FD_UNLIKELY( !new_sni[0] ) ) fd_cstr_ncpy( new_sni, new_host, sizeof( new_sni ) );
   } else if( command & FD_BAM_CTRL_CMD_URL ) {
-    strlcpy( new_sni, new_host, sizeof(new_sni) );
+    fd_cstr_ncpy( new_sni, new_host, sizeof( new_sni ) );
   } else {
-    strlcpy( new_sni, ctx->server_sni, sizeof(new_sni) );
+    fd_cstr_ncpy( new_sni, ctx->server_sni, sizeof( new_sni ) );
   }
 
   uchar new_enable = (uchar)( ( command & FD_BAM_CTRL_CMD_ENABLE ) ? !!ctx->ctrl->enable : ctx->enabled );
   if( command & FD_BAM_CTRL_CMD_URL ) {
-    strlcpy( ctx->server_fqdn, new_host, sizeof(ctx->server_fqdn) );
-    ctx->server_fqdn_len = (ushort)fd_ulong_min( new_host_len, (ulong)USHORT_MAX );
+    fd_cstr_ncpy( ctx->server_fqdn, new_host, sizeof( ctx->server_fqdn ) );
+    ctx->server_fqdn_len = (ushort)fd_cstr_nlen( ctx->server_fqdn, sizeof( ctx->server_fqdn ) );
     ctx->server_tcp_port = new_port;
     ctx->is_ssl          = !!new_ssl;
     need_reset = 1;
   }
 
   if( command & (FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI) ) {
-    ulong sni_len = strlcpy( ctx->server_sni, new_sni, sizeof(ctx->server_sni) );
-    ctx->server_sni_len = (ushort)fd_ulong_min( sni_len, (ulong)USHORT_MAX );
+    fd_cstr_ncpy( ctx->server_sni, new_sni, sizeof( ctx->server_sni ) );
+    ctx->server_sni_len = (ushort)fd_cstr_nlen( ctx->server_sni, sizeof( ctx->server_sni ) );
     fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
     need_reset = 1;
   }
@@ -1074,7 +1071,7 @@ fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
   err[0] = '\0';
   char rc = fd_bam_tile_apply_ctrl_request( ctx, err, sizeof(err) );
   if( FD_UNLIKELY( rc ) ) {
-    strlcpy( ctx->ctrl->error, err, FD_BAM_CTRL_ERR_MAX );
+    fd_cstr_ncpy( ctx->ctrl->error, err, sizeof( ctx->ctrl->error ) );
     /* Revert the request fields to the actual state so set-bam sees the correct values next time */
     fd_bam_tile_ctrl_update_current( ctx );
     FD_COMPILER_MFENCE();
@@ -1082,7 +1079,7 @@ fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
     return;
   }
 
-  strlcpy( ctx->ctrl->error, "", FD_BAM_CTRL_ERR_MAX );
+  ctx->ctrl->error[0] = '\0';
   FD_COMPILER_MFENCE();
   FD_VOLATILE( ctx->ctrl->state ) = FD_BAM_CTRL_STATE_SUCCESS;
 }
@@ -1113,14 +1110,14 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
     FD_LOG_CRIT(( "Failed to parse BAM endpoint" )); // TODO: dont crash
   }
   fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_fqdn ), url->host, url->host_len ) );
-  ctx->server_fqdn_len = (ushort)fd_ulong_min( url->host_len, (ulong)USHORT_MAX );
+  ctx->server_fqdn_len = (ushort)url->host_len;
 
   if( FD_UNLIKELY( tile->bam.sni_len ) ) {
     fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_sni ), tile->bam.sni, tile->bam.sni_len ) );
-    ctx->server_sni_len = (ushort)fd_ulong_min( tile->bam.sni_len, (ulong)USHORT_MAX );
+    ctx->server_sni_len = (ushort)tile->bam.sni_len;
   } else {
     fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_sni ), url->host, url->host_len ) );
-    ctx->server_sni_len = (ushort)fd_ulong_min( url->host_len, (ulong)USHORT_MAX );
+    ctx->server_sni_len = (ushort)url->host_len;
   }
 
   ctx->is_ssl = !!is_ssl;
@@ -1331,7 +1328,7 @@ privileged_init( fd_topo_t *      topo,
 
   ctx->enabled = !!tile->bam.enabled;
   ctx->dump_bam_mode = tile->bam.dump_bam_mode;
-  strlcpy( ctx->admin_rpc_path, tile->bam.admin_rpc_path, sizeof(ctx->admin_rpc_path) );
+  fd_cstr_ncpy( ctx->admin_rpc_path, tile->bam.admin_rpc_path, sizeof( ctx->admin_rpc_path ) );
   ctx->configured_default_tpu = tile->bam.configured_default_tpu;
   ctx->fee_cfg_version = 0U;
   ctx->commission_bps = 0U;
@@ -1349,8 +1346,8 @@ privileged_init( fd_topo_t *      topo,
   fd_memset( ctx->ctrl, 0, sizeof(fd_bam_ctrl_t) );
   ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
   ctx->ctrl->enable = ctx->enabled;
-  strlcpy( ctx->ctrl->url, tile->bam.url, FD_URL_MAX );
-  strlcpy( ctx->ctrl->sni, tile->bam.sni, FD_SNI_BUF_MAX );
+  fd_cstr_ncpy( ctx->ctrl->url, tile->bam.url, sizeof( ctx->ctrl->url ) );
+  fd_cstr_ncpy( ctx->ctrl->sni, tile->bam.sni, sizeof( ctx->ctrl->sni ) );
 }
 
 static fd_bam_out_ctx_t
