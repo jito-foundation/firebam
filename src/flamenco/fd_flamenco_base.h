@@ -23,7 +23,7 @@ typedef union fd_w_u128 fd_w_u128_t;
 #define FD_HASH_FOOTPRINT   (32UL)
 #define FD_PUBKEY_FOOTPRINT FD_HASH_FOOTPRINT
 union __attribute__((packed)) fd_hash {
-  uchar hash[ FD_HASH_FOOTPRINT ];
+  uchar hash[ FD_HASH_FOOTPRINT ] __attribute__ ((nonstring));
   uchar key [ FD_HASH_FOOTPRINT ]; // Making fd_hash and fd_pubkey interchangeable
 
   // Generic type specific accessors

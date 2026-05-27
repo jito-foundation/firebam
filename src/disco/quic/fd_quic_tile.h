@@ -66,6 +66,9 @@ typedef struct {
     ulong quic_txn_too_large;
   } metrics;
 
+  ulong * bam_status_fseq; /* Shared latch from bam tile (bit 0 = BAM override active, bit 1 = current slot has BAM work) */
+  _Bool   bam_override_active; /* true if BAM overrides are currently active */
+
   uchar __attribute__((aligned(FD_CLOCK_ALIGN))) clock_mem[ FD_CLOCK_FOOTPRINT ];
 } fd_quic_ctx_t;
 

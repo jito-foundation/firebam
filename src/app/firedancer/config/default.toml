@@ -1289,6 +1289,33 @@ telemetry = true
         # this option to 'false'.
         tls_cert_verify = true
 
+    [tiles.bam]
+        # True if a BAM tile should be enabled. The BAM tile connects
+        # and streams bundle scheduling results for verifiable block
+        # building
+        enabled = false
+
+        # The URL of the BAM node to connect to.
+        url = ""
+
+        # Optional override for the TLS domain name presented by the
+        # BAM node. If empty, the host portion of the URL will be used.
+        tls_domain_name = ""
+
+        # The validator keeps the gRPC connection to the BAM node
+        # alive indefinitely, even outside of leader slots.  This is
+        # done using HTTP/2 PING frames.  This option roughly configures
+        # the time between keepalives.  The actual timing is randomized
+        # to reduce burst loads on the network.  Must be within range
+        # [3e3,3600e3]
+        keepalive_interval_millis = 5000
+
+        # By default, the TLS certificate of the bundle server is
+        # verified against the CA certs in /etc/ssl/certs, if the URL
+        # specifies https.  To disable certificate verification, set
+        # this option to 'false'.
+        tls_cert_verify = false
+
     # The pack tile takes incoming transactions that have been verified
     # by the verify tile and then deduplicated, and attempts to order
     # them in an optimal way to generate the most fees per compute
@@ -1809,6 +1836,52 @@ telemetry = true
         # volume of events and should only be used for debugging and
         # development purposes.
         report_transactions = false
+
+    [development.bam]
+        # Specify the maximum Protobuf message size in KiB.
+        #
+        # This affects the size of various BAM gRPC-related buffers,
+        # including socket buffer sizes, the TLS buffer, the HTTP/2
+        # frame buffer, and a Protobuf encode buffer.
+        buffer_size_kib = 2048
+
+        # SSL library heap size in MiB.
+        #
+        # When connecting to a BAM scheduler endpoint, the SSL library
+        # uses dynamic allocations in a fixed size heap region.  This
+        # option controls the size of that region.
+        ssl_heap_size_mib = 64
+
+        # Log TLS encryption keys for BAM gRPC connections.  An empty
+        # string (the default) disables key logging.
+        #
+        # Keys are appended in NSS SSLKEYLOGFILE format to the given
+        # file path.  A file is created if none exists.  The resulting
+        # file can be used to decrypt packet captures of gRPC conns
+        # made by the BAM tile.
+        ssl_key_log_file = ""
+
+        # Log every inbound BAM batch as one multiline NOTICE record.
+        # Each record contains a bundle header plus decoded transaction
+        # summaries, LUTs, instructions, and short data previews, so
+        # unrelated log lines do not interleave mid-dump.
+        # Example:
+        #   BAM rx bundle: seq_id=42 max_schedule_slot=123456 txns=2 mode=atomic
+        #     txn[1/2]: batch_idx=0 payload_sz=312 version=v0 sig=... fee_payer=... recent_blockhash=... instructions=3 accounts=12 (static=10 loaded=2 signers=1 writable=4 readonly=8 luts=1)
+        #     signatures: [0]=...
+        #     lut[0]: table=... writable=[1, 4] readonly=[0, 7, 9]
+        #     ix[0]: program_id_index=3 program=... [compute_budget] acct_cnt=0 signer_cnt=0 writable_cnt=0 lookup_cnt=0 data_sz=5 data=...
+        #     accts: [0=3/swi/..., 1=9/-rl/...]
+        #     firedancer_slot_timing: max_schedule_slot=123456 first_rx_ns=... first_rx_minus_slot_end_ns=... first_rx_after_slot_end=0 txns_before_slot_end=2 txns_after_slot_end=0 txns_unknown_slot_end=0 current_leader_slot=123456
+        # This is very verbose and should remain disabled in production.
+        dump_bam_txns = false
+
+        # Emit the same BAM debug diagnostics as dump_bam_txns, but only
+        # for the first inbound BAM batch observed for each max_schedule_slot.
+        # Example: if seq_id=42, 43, and 44 all arrive for slot 123456,
+        # only the first one prints the "BAM rx bundle: ..." record and
+        # any downstream BAM drop diagnostics for that same batch.
+        dump_bam_slot_first_txn = false
 
     # The following options relate to the 'firedance-dev pktgen' tool
     # only.  pktgen tests net tile transmit throughput by generating a

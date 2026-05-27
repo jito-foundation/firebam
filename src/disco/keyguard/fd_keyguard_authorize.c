@@ -17,6 +17,13 @@ struct fd_keyguard_sign_req {
 
 typedef struct fd_keyguard_sign_req fd_keyguard_sign_req_t;
 
+enum {
+  /* ContactInfo version.client ids are assigned in
+     https://github.com/solana-foundation/solana-validator-client-ids/blob/main/client-ids.csv */
+  FD_KEYGUARD_CONTACT_INFO_CLIENT_FIREDANCER = 5U,
+  FD_KEYGUARD_CONTACT_INFO_CLIENT_BAM        = 12U,
+};
+
 static int
 fd_keyguard_authorize_vote_txn( fd_keyguard_authority_t const * authority,
                                 uchar const *                   data,
@@ -156,7 +163,8 @@ fd_keyguard_authorize_gossip( fd_keyguard_authority_t const * authority,
       uchar client_id   = data[ off ];
       (void)commit; /* Checking commit introduces a circular dependency between disco and app :'( */
       if( feature_set!=FD_FEATURE_SET_ID ) return 0;
-      if( client_id  !=5                 ) return 0; /* FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER */
+      if( client_id!=FD_KEYGUARD_CONTACT_INFO_CLIENT_FIREDANCER &&
+          client_id!=FD_KEYGUARD_CONTACT_INFO_CLIENT_BAM        ) return 0;
 
       break;
     case FD_GOSSIP_VALUE_DUPLICATE_SHRED:
@@ -399,6 +407,13 @@ fd_keyguard_payload_authorize( fd_keyguard_authority_t const * authority,
       return 0;
     }
     return fd_keyguard_authorize_bundle_crank_txn( authority, data, sz, sign_type );
+
+  case FD_KEYGUARD_ROLE_BAM:
+    if( FD_UNLIKELY( payload_mask != FD_KEYGUARD_PAYLOAD_BAM_AUTH ) ) {
+      FD_LOG_WARNING(( "unauthorized payload type for BAM auth (mask=%#lx)", payload_mask ));
+      return 0;
+    }
+    return 1;
 
   default:
     FD_LOG_WARNING(( "unsupported role=%#x", (uint)role ));
