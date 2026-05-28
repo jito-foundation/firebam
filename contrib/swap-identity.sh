@@ -28,14 +28,11 @@ Behavior:
           (Agave mode only)
   --dry-run still generates the dummy identity if missing
 
-Environment overrides (defaults shown):
+Environment defaults and detection:
   AGAVE_DIR=${HOME}/jito-solana/docker-output
   AGAVE_BIN_PATH=${AGAVE_DIR}/agave-validator
   SOLANA_KEYGEN_PATH=${AGAVE_DIR}/solana-keygen
-  FD_BIN_PATH=${SCRIPT_DIR}/../build/native/gcc/bin
-  FDCTL_BIN_PATH=<running Firedancer binary, else ${FD_BIN_PATH}/firedancer, fdctl, or fddev>
-  FD_CONFIG_PATH=<running Firedancer --config path, else mainnet-firedancer.toml for the firedancer binary or mainnet.toml>
-  Unset FD_BIN_PATH/FDCTL_BIN_PATH/FD_CONFIG_PATH to auto-detect from /proc
+  Firedancer binary and config are detected from /proc
   AGAVE_LEDGER_PATH=/solana/ledger
   IDENTITY_LINK_PATH=/etc/solana/identity.json
   STAKED_IDENTITY_KEYPAIR_PATH=/etc/solana/staked-identity.json
@@ -59,6 +56,55 @@ run() {
   fi
 }
 
+detect_firedancer_from_proc() {
+  local found_pid= found_key= found_exe= found_config=
+
+  for proc_dir in /proc/[0-9]*; do
+    [[ -r "$proc_dir/cmdline" && -L "$proc_dir/exe" ]] || continue
+
+    local argv=()
+    mapfile -d '' -t argv < "$proc_dir/cmdline" || continue
+    [[ "${argv[0]-}" ]] || continue
+    case "${argv[0]##*/}" in
+      fdctl|fddev|firedancer|firedancer-dev) ;;
+      *) continue ;;
+    esac
+
+    local raw_config=
+    local i
+    for ((i=1; i<${#argv[@]}; i++)); do
+      case "${argv[i]}" in
+        --config) raw_config="${argv[i+1]-}"; break ;;
+        --config=*) raw_config="${argv[i]#--config=}"; break ;;
+      esac
+    done
+    [[ "$raw_config" ]] || continue
+
+    local exe_path pid cwd_path resolved_path resolved_config key
+    exe_path="$(readlink -f -- "$proc_dir/exe" 2>/dev/null)" || continue
+    cwd_path="$(readlink -f -- "$proc_dir/cwd" 2>/dev/null)" || continue
+    resolved_path="$raw_config"
+    [[ "$resolved_path" != /* ]] && resolved_path="$cwd_path/$resolved_path"
+    resolved_config="$(readlink -f -- "$resolved_path" 2>/dev/null || printf '%s\n' "$resolved_path")"
+    pid="${proc_dir#/proc/}"
+    key="$exe_path|$resolved_config"
+
+    if [[ -z "$found_key" ]]; then
+      found_key="$key"; found_exe="$exe_path"; found_config="$resolved_config"; found_pid="$pid"
+    elif [[ "$found_key" != "$key" ]]; then
+      echo "error: multiple Firedancer instances with different configs detected" >&2
+      echo "  candidate 1: pid $found_pid -> $found_exe --config $found_config" >&2
+      echo "  candidate 2: pid $pid -> $exe_path --config $resolved_config" >&2
+      exit 1
+    fi
+  done
+
+  [[ "$found_key" ]] || { echo "error: could not detect Firedancer binary and config from /proc" >&2; exit 1; }
+  FDCTL_BIN_PATH="$found_exe"
+  FD_CONFIG_PATH="$found_config"
+  echo "info: detected Firedancer instance pid $found_pid -> $FDCTL_BIN_PATH --config $FD_CONFIG_PATH"
+}
+
 # ---- main ----
 MODE=""
 DRY_RUN=0
@@ -75,14 +121,11 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$MODE" ]] || { usage; exit 2; }
 
-FD_PATH_OVERRIDES="${FD_BIN_PATH+x}${FDCTL_BIN_PATH+x}${FD_CONFIG_PATH+x}"
 AGAVE_DIR="${AGAVE_DIR:-${HOME}/jito-solana/docker-output}"
 AGAVE_BIN_PATH="${AGAVE_BIN_PATH:-${AGAVE_DIR}/agave-validator}"
 SOLANA_KEYGEN_PATH="${SOLANA_KEYGEN_PATH:-${AGAVE_DIR}/solana-keygen}"
-SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
-FD_BIN_PATH="${FD_BIN_PATH:-${SCRIPT_DIR}/../build/native/gcc/bin}"
-FDCTL_BIN_PATH="${FDCTL_BIN_PATH:-}"
-FD_CONFIG_PATH="${FD_CONFIG_PATH:-}"
+FDCTL_BIN_PATH=
+FD_CONFIG_PATH=
 AGAVE_LEDGER_PATH="${AGAVE_LEDGER_PATH:-/solana/ledger}"
 IDENTITY_LINK_PATH="${IDENTITY_LINK_PATH:-/etc/solana/identity.json}"
 STAKED_IDENTITY_KEYPAIR_PATH="${STAKED_IDENTITY_KEYPAIR_PATH:-/etc/solana/staked-identity.json}"
@@ -95,78 +138,8 @@ SKIP_CLUSTER_CHECK="${SKIP_CLUSTER_CHECK:-0}"
 DELINQUENT_SLOT_DISTANCE="${DELINQUENT_SLOT_DISTANCE:-4}"
 CLUSTER_POLL_INTERVAL_SECS="${CLUSTER_POLL_INTERVAL_SECS:-1}"
 
-if [[ "$MODE" == "firedancer" && -z "$FD_PATH_OVERRIDES" ]]; then
-  fd_pid= fd_key= fd_child_pid= fd_child_key= fd_child_exe_path=
-  for proc_dir in /proc/[0-9]*; do
-    [[ -r "$proc_dir/cmdline" && -L "$proc_dir/exe" ]] || continue
-    mapfile -d '' -t argv < "$proc_dir/cmdline" || continue
-    [[ "${argv[0]-}" ]] || continue
-    case "${argv[0]##*/}" in
-      fdctl|fddev|firedancer|firedancer-dev) ;;
-      *) continue ;;
-    esac
-    raw_config=
-    for ((i=1; i<${#argv[@]}; i++)); do
-      case "${argv[i]}" in
-        --config) raw_config="${argv[i+1]-}"; break ;;
-        --config=*) raw_config="${argv[i]#--config=}"; break ;;
-      esac
-    done
-    exe_path="$(readlink -f -- "$proc_dir/exe" 2>/dev/null)" || continue
-    pid="${proc_dir#/proc/}"
-
-    if [[ "$raw_config" ]]; then
-      cwd_path="$(readlink -f -- "$proc_dir/cwd" 2>/dev/null)" || continue
-      resolved_path="$raw_config"
-      [[ "$resolved_path" != /* ]] && resolved_path="$cwd_path/$resolved_path"
-      resolved_config="$(readlink -f -- "$resolved_path" 2>/dev/null || printf '%s\n' "$resolved_path")"
-      new_key="$exe_path|$resolved_config"
-      if [[ -z "$fd_key" ]]; then
-        fd_key="$new_key"; FDCTL_BIN_PATH="$exe_path"; FD_CONFIG_PATH="$resolved_config"; fd_pid="$pid"
-      elif [[ "$fd_key" != "$new_key" ]]; then
-        echo "error: multiple Firedancer instances with different configs detected; set FDCTL_BIN_PATH and FD_CONFIG_PATH explicitly" >&2
-        echo "  candidate 1: pid $fd_pid -> $FDCTL_BIN_PATH --config $FD_CONFIG_PATH" >&2
-        echo "  candidate 2: pid $pid -> $exe_path --config $resolved_config" >&2
-        exit 1
-      fi
-    elif [[ "${argv[1]-}" == "run1" ]]; then
-      # run1 children receive the resolved configuration through --config-fd,
-      # so /proc cannot recover the original TOML path. Still remember the
-      # executable so fallback does not accidentally select fddev.
-      new_key="$exe_path"
-      if [[ -z "$fd_child_key" ]]; then
-        fd_child_key="$new_key"; fd_child_exe_path="$exe_path"; fd_child_pid="$pid"
-      elif [[ "$fd_child_key" != "$new_key" ]]; then
-        echo "error: multiple Firedancer child process binaries detected; set FDCTL_BIN_PATH and FD_CONFIG_PATH explicitly" >&2
-        echo "  candidate 1: pid $fd_child_pid -> $fd_child_exe_path" >&2
-        echo "  candidate 2: pid $pid -> $exe_path" >&2
-        exit 1
-      fi
-    fi
-  done
-  if [[ "$FDCTL_BIN_PATH" && "$FD_CONFIG_PATH" ]]; then
-    echo "info: detected Firedancer instance pid $fd_pid -> $FDCTL_BIN_PATH --config $FD_CONFIG_PATH"
-  elif [[ "$fd_child_exe_path" ]]; then
-    FDCTL_BIN_PATH="$fd_child_exe_path"
-    echo "info: detected Firedancer child pid $fd_child_pid -> $FDCTL_BIN_PATH; config path unavailable from --config-fd"
-  fi
-fi
-
-if [[ -z "$FDCTL_BIN_PATH" ]]; then
-  if [[ -x "$FD_BIN_PATH/firedancer" ]]; then
-    FDCTL_BIN_PATH="$FD_BIN_PATH/firedancer"
-  elif [[ -x "$FD_BIN_PATH/fdctl" ]]; then
-    FDCTL_BIN_PATH="$FD_BIN_PATH/fdctl"
-  else
-    FDCTL_BIN_PATH="$FD_BIN_PATH/fddev"
-  fi
-fi
-if [[ -z "$FD_CONFIG_PATH" ]]; then
-  if [[ "${FDCTL_BIN_PATH##*/}" == "firedancer" && -f "${SCRIPT_DIR}/../mainnet-firedancer.toml" ]]; then
-    FD_CONFIG_PATH="${SCRIPT_DIR}/../mainnet-firedancer.toml"
-  else
-    FD_CONFIG_PATH="${SCRIPT_DIR}/../mainnet.toml"
-  fi
+if [[ "$MODE" == "firedancer" ]]; then
+  detect_firedancer_from_proc
 fi
 
 DEFAULT_OWNER="$(id -un)"
