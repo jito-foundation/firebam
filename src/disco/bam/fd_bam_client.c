@@ -1150,14 +1150,14 @@ fd_bam_client_step( fd_bam_tile_t * ctx,
   /* Edge-trigger logging with rate limiting */
   fd_bam_client_step1( ctx, charge_busy );
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
-  int const healthy_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-  int const healthy_before = ( ctx->bam_status_counted == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  _Bool const healthy_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  _Bool const healthy_before = ( ctx->bam_status_counted == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   if( FD_UNLIKELY( status != ctx->bam_status_counted ) ) {
     long ts_ns = fd_bam_now();
     for( ulong i=0UL; i<FD_BAM_LEADER_SLOT_END_TRACKER_CNT; i++ ) {
       fd_bam_leader_slot_end_tracker_t * tracker = &ctx->leader_slot_end[ i ];
       if( FD_UNLIKELY( !tracker->valid || tracker->counted || ts_ns>tracker->slot_end_ns ) ) continue;
-      tracker->healthy_at_end = (uchar)healthy_now;
+      tracker->healthy_at_end = healthy_now;
     }
   }
   if( FD_UNLIKELY( healthy_now != healthy_before ) ) {

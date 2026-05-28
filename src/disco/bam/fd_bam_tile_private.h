@@ -104,10 +104,10 @@ FD_STATIC_ASSERT( sizeof(fd_bam_slot_ingress_timing_t)==40UL, fd_bam_slot_ingres
 typedef struct {
   ulong                         slot;
   long                          slot_end_ns;
-  uchar                         healthy_at_end;
-  uchar                         fresh_seen_before_end;
-  uchar                         counted;
-  uchar                         valid;
+  uchar                         healthy_at_end       : 1;
+  uchar                         fresh_seen_before_end : 1;
+  uchar                         counted              : 1;
+  uchar                         valid                : 1;
 } fd_bam_leader_slot_end_tracker_t;
 
 typedef struct {
@@ -474,14 +474,13 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
         *tracker = (fd_bam_leader_slot_end_tracker_t){
           .slot          = state->slot,
           .slot_end_ns   = state->slot_end_ns,
-          .healthy_at_end = (uchar)( ctx->bam_status_counted==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ),
+          .healthy_at_end = ctx->bam_status_counted==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY,
           .valid         = 1U
         };
       }
       tracker->slot_end_ns = state->slot_end_ns;
-      if( FD_LIKELY( !tracker->counted ) ) {
-        tracker->fresh_seen_before_end = (uchar)(tracker->fresh_seen_before_end || state->
-          current_slot_has_bam_work);
+      if( FD_LIKELY( !tracker->counted ) && FD_UNLIKELY( state->current_slot_has_bam_work ) ) {
+        tracker->fresh_seen_before_end = 1U;
       }
     }
   }
