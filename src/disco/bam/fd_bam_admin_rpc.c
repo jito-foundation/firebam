@@ -18,49 +18,70 @@
 #define FD_BAM_ADMIN_RPC_MAX_POLLS     (4)
 
 __attribute__((weak)) int
-fd_bam_admin_rpc_request( char const * admin_rpc_path,
+fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
                           char const * request,
                           char *       response,
                           ulong        response_max ) {
-  if( FD_UNLIKELY( !admin_rpc_path || !admin_rpc_path[0] || !request || !response || response_max<2UL ) ) return -1;
+  if( FD_UNLIKELY( !ctx || !request || !response || response_max<2UL ) ) return -1;
+  char const * admin_rpc_path = ctx->admin_rpc_path;
+  if( FD_UNLIKELY( !admin_rpc_path[0] ) ) return -1;
 
-  union {
-    struct sockaddr    sa;
-    struct sockaddr_un un;
-  } addr = { .un = { .sun_family = AF_UNIX } };
-  ulong path_len = strnlen( admin_rpc_path, sizeof(addr.un.sun_path) );
-  if( FD_UNLIKELY( !path_len || path_len>=sizeof(addr.un.sun_path) ) ) {
-    FD_LOG_WARNING(( "BAM admin RPC request rejected: invalid Unix socket path `%s`", admin_rpc_path ));
-    return -1;
-  }
-  fd_memcpy( addr.un.sun_path, admin_rpc_path, path_len );
-  addr.un.sun_path[ path_len ] = '\0';
-
-  int fd = socket( AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0 );
-  if( FD_UNLIKELY( fd<0 ) ) {
-    int err = errno;
-    FD_LOG_WARNING(( "BAM admin RPC socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC) failed for `%s` (%i-%s)",
-                     admin_rpc_path, err, fd_io_strerror( err ) ));
-    return -1;
-  }
-
+  int fd = ctx->admin_rpc_fd;
+  if( FD_UNLIKELY( fd<-1 ) ) return -1;
+  int close_fd = 0;
   int rc = -1;
   char const * fail_phase = NULL;
   int          fail_errno = 0;
-  if( FD_UNLIKELY( connect( fd, &addr.sa, (socklen_t)( offsetof( struct sockaddr_un, sun_path ) + path_len + 1UL ) ) ) ) {
-    fail_phase = "connect";
-    fail_errno = errno;
-    goto out;
+  if( FD_UNLIKELY( fd<0 ) ) {
+    union {
+      struct sockaddr    sa;
+      struct sockaddr_un un;
+    } addr = { .un = { .sun_family = AF_UNIX } };
+    ulong path_len = strnlen( admin_rpc_path, sizeof(addr.un.sun_path) );
+    if( FD_UNLIKELY( !path_len || path_len>=sizeof(addr.un.sun_path) ) ) {
+      FD_LOG_WARNING(( "BAM admin RPC request rejected: invalid Unix socket path `%s`", admin_rpc_path ));
+      return -1;
+    }
+    fd_memcpy( addr.un.sun_path, admin_rpc_path, path_len );
+    addr.un.sun_path[ path_len ] = '\0';
+
+    fd = socket( AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0 );
+    if( FD_UNLIKELY( fd<0 ) ) {
+      int err = errno;
+      FD_LOG_WARNING(( "BAM admin RPC socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC) failed for `%s` (%i-%s)",
+                       admin_rpc_path, err, fd_io_strerror( err ) ));
+      return -1;
+    }
+    close_fd = 1;
+
+    if( FD_UNLIKELY( connect( fd, &addr.sa, (socklen_t)( offsetof( struct sockaddr_un, sun_path ) + path_len + 1UL ) ) ) ) {
+      fail_phase = "connect";
+      fail_errno = errno;
+      goto out;
+    }
   }
 
   ulong request_len = strlen( request );
   ulong request_off = 0UL;
   while( request_off<request_len ) {
-    ssize_t wr = write( fd, request+request_off, request_len-request_off );
+    ssize_t wr = send( fd, request+request_off, request_len-request_off, MSG_NOSIGNAL );
     if( FD_UNLIKELY( wr<0 ) ) {
       if( errno==EINTR ) continue;
-      fail_phase = "write";
+      if( errno==EAGAIN || errno==EWOULDBLOCK ) {
+        struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+        int poll_rc = ppoll( &pfd, 1UL, &(struct timespec){ .tv_sec = 0L, .tv_nsec = FD_BAM_ADMIN_RPC_POLL_MS * (long)1000000L }, NULL );
+        if( FD_LIKELY( poll_rc>0 ) ) continue;
+        if( FD_UNLIKELY( poll_rc<0 && errno==EINTR ) ) continue;
+        fail_phase = poll_rc<0 ? "ppoll(POLLOUT)" : "waiting for writable stream";
+        fail_errno = poll_rc<0 ? errno : 0;
+        goto out;
+      }
+      fail_phase = "send";
       fail_errno = errno;
+      goto out;
+    }
+    if( FD_UNLIKELY( !wr ) ) {
+      fail_phase = "send";
       goto out;
     }
     request_off += (ulong)wr;
@@ -69,7 +90,7 @@ fd_bam_admin_rpc_request( char const * admin_rpc_path,
   /* jsonrpc-ipc-server expects a live bidirectional stream while it
      processes the request.  Half-closing the write side causes the
      server to terminate the session without sending a response. */
-  if( FD_UNLIKELY( fcntl( fd, F_SETFL, O_NONBLOCK ) ) ) {
+  if( FD_UNLIKELY( close_fd && fcntl( fd, F_SETFL, O_NONBLOCK ) ) ) {
     fail_phase = "fcntl(F_SETFL,O_NONBLOCK)";
     fail_errno = errno;
     goto out;
@@ -147,6 +168,11 @@ out:
     else                          FD_LOG_WARNING(( "BAM admin RPC request failed while %s on `%s`",
                                                    fail_phase, admin_rpc_path ));
   }
-  close( fd );
+  if( FD_UNLIKELY( rc && !close_fd && fd>=0 ) ) {
+    close( fd );
+    ctx->admin_rpc_fd = -2;
+  } else if( FD_LIKELY( close_fd ) ) {
+    close( fd );
+  }
   return rc;
 }

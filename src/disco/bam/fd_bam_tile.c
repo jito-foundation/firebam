@@ -15,10 +15,13 @@
 #include <ctype.h> /* isspace */
 #include <dirent.h> /* opendir */
 #include <limits.h> /* LONG_MIN, USHRT_MAX */
+#include <stddef.h> /* offsetof */
 #include <stdio.h> /* snprintf */
 #include <fcntl.h> /* F_SETFL */
 #include <unistd.h> /* close */
 #include <sys/mman.h> /* PROT_READ (seccomp) */
+#include <sys/socket.h> /* socket */
+#include <sys/un.h> /* sockaddr_un */
 #include <sys/uio.h> /* writev */
 #include <netinet/in.h> /* AF_INET */
 #include <netinet/tcp.h> /* TCP_FASTOPEN_CONNECT (seccomp) */
@@ -27,6 +30,8 @@
 #include "../bundle/generated/fd_bundle_tile_seccomp.h"
 
 #define FD_BAM_HEAP_USAGE_REFRESH_NS ((long)1e9)
+#define FD_BAM_ADMIN_RPC_RETRY_NS    ((long)100e6)
+#define FD_BAM_ADMIN_RPC_LOG_NS      ((long)5e9)
 
 /* Provided by fdctl/firedancer version.c */
 extern char const fdctl_version_string[];
@@ -48,7 +53,7 @@ fd_bam_try_apply_contact_info_client_id( fd_bam_tile_t *                    ctx,
     FD_LOG_WARNING(( "BAM admin RPC failed to format setContactInfoClientId request client_id=%hu", client_id ));
     goto pending;
   }
-  if( FD_UNLIKELY( fd_bam_admin_rpc_request( ctx->admin_rpc_path, request, response, sizeof(response) ) ) ) {
+  if( FD_UNLIKELY( fd_bam_admin_rpc_request( ctx, request, response, sizeof(response) ) ) ) {
     FD_LOG_WARNING(( "BAM admin RPC setContactInfoClientId request failed client_id=%hu via `%s`",
                      client_id,
                      ctx->admin_rpc_path ));
@@ -273,7 +278,7 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
   int current_rc = 0;
   do {
     char response[ 4096 ];
-    current_rc = fd_bam_admin_rpc_request( ctx->admin_rpc_path,
+    current_rc = fd_bam_admin_rpc_request( ctx,
                                            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"contactInfo\",\"params\":[]}\n",
                                            response,
                                            sizeof(response) );
@@ -451,7 +456,7 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
         set_rc = -1;
         break;
       }
-      if( FD_UNLIKELY( fd_bam_admin_rpc_request( ctx->admin_rpc_path, request, response, sizeof(response) ) ) ) {
+      if( FD_UNLIKELY( fd_bam_admin_rpc_request( ctx, request, response, sizeof(response) ) ) ) {
         FD_LOG_WARNING(( "BAM admin RPC %s request failed for public QUIC target=" FD_IP4_ADDR_FMT ":%hu via `%s`",
                          method,
                          FD_IP4_ADDR_FMT_ARGS( socket.addr ),
@@ -1280,6 +1285,7 @@ privileged_init( fd_topo_t *      topo,
   ctx->grpc_client_mem = grpc_mem;
   ctx->grpc_buf_max    = tile->bam.buf_sz;
   ctx->tcp_sock        = -1;
+  ctx->admin_rpc_fd    = -1;
   ctx->bam_leader_state.slot = ULONG_MAX;
   ctx->pack_bam_leader_in_idx = ULONG_MAX;
   ctx->pack_bam_result_in_idx = ULONG_MAX;
@@ -1329,6 +1335,48 @@ privileged_init( fd_topo_t *      topo,
   ctx->enabled = !!tile->bam.enabled;
   ctx->dump_bam_mode = tile->bam.dump_bam_mode;
   fd_cstr_ncpy( ctx->admin_rpc_path, tile->bam.admin_rpc_path, sizeof( ctx->admin_rpc_path ) );
+  if( FD_UNLIKELY( ctx->admin_rpc_path[0] && fd_pod_query_int( topo->props, "sandbox", 1 ) ) ) {
+    union {
+      struct sockaddr    sa;
+      struct sockaddr_un un;
+    } addr = { .un = { .sun_family = AF_UNIX } };
+    ulong path_len = strnlen( ctx->admin_rpc_path, sizeof(addr.un.sun_path) );
+    if( FD_UNLIKELY( !path_len || path_len>=sizeof(addr.un.sun_path) ) )
+      FD_LOG_ERR(( "BAM admin RPC rejected invalid Unix socket path `%s`", ctx->admin_rpc_path ));
+    fd_memcpy( addr.un.sun_path, ctx->admin_rpc_path, path_len );
+    addr.un.sun_path[ path_len ] = '\0';
+
+    long next_log = 0L;
+    for(;;) {
+      char const * fail_phase;
+      int          fail_errno;
+      int fd = socket( AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0 );
+      if( FD_UNLIKELY( fd<0 ) ) {
+        fail_phase = "socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC)";
+        fail_errno = errno;
+      } else if( FD_UNLIKELY( connect( fd, &addr.sa, (socklen_t)( offsetof( struct sockaddr_un, sun_path ) + path_len + 1UL ) ) ) ) {
+        fail_phase = "connect";
+        fail_errno = errno;
+        close( fd );
+      } else if( FD_UNLIKELY( fcntl( fd, F_SETFL, O_NONBLOCK ) ) ) {
+        fail_phase = "fcntl(F_SETFL,O_NONBLOCK)";
+        fail_errno = errno;
+        close( fd );
+      } else {
+        ctx->admin_rpc_fd = fd;
+        FD_LOG_NOTICE(( "BAM admin RPC connected to `%s` before sandbox entry", ctx->admin_rpc_path ));
+        break;
+      }
+
+      long now = fd_log_wallclock();
+      if( FD_UNLIKELY( now>=next_log ) ) {
+        FD_LOG_NOTICE(( "Waiting for BAM admin RPC socket while %s on `%s` (%i-%s)",
+                        fail_phase, ctx->admin_rpc_path, fail_errno, fd_io_strerror( fail_errno ) ));
+        next_log = now + FD_BAM_ADMIN_RPC_LOG_NS;
+      }
+      fd_log_wait_until( now + FD_BAM_ADMIN_RPC_RETRY_NS );
+    }
+  }
   ctx->configured_default_tpu = tile->bam.configured_default_tpu;
   ctx->fee_cfg_version = 0U;
   ctx->commission_bps = 0U;
@@ -1549,7 +1597,7 @@ populate_allowed_fds( fd_topo_t const *      topo,
                       int *                  out_fds ) {
   fd_bam_tile_t * ctx = fd_topo_obj_laddr( topo, tile->tile_obj_id );
 
-  if( FD_UNLIKELY( out_fds_cnt < 5UL ) ) FD_LOG_ERR(( "out_fds_cnt %lu", out_fds_cnt ));
+  if( FD_UNLIKELY( out_fds_cnt < 6UL ) ) FD_LOG_ERR(( "out_fds_cnt %lu", out_fds_cnt ));
 
   ulong out_cnt = 0UL;
   out_fds[ out_cnt++ ] = 2; /* stderr */
@@ -1560,6 +1608,8 @@ populate_allowed_fds( fd_topo_t const *      topo,
   out_fds[ out_cnt++ ] = ctx->netdb_fds->etc_resolv_conf;
   if( FD_UNLIKELY( ctx->keylog_fd >= 0 ) )
     out_fds[ out_cnt++ ] = ctx->keylog_fd;
+  if( FD_UNLIKELY( ctx->admin_rpc_fd >= 0 ) )
+    out_fds[ out_cnt++ ] = ctx->admin_rpc_fd;
   return out_cnt;
 }
 

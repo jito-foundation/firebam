@@ -111,7 +111,7 @@ test_bam_admin_rpc_mock_push_reply( int          rc,
 }
 
 int
-fd_bam_admin_rpc_request( char const * admin_rpc_path,
+fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
                           char const * request,
                           char *       response,
                           ulong        response_max ) {
@@ -122,7 +122,7 @@ fd_bam_admin_rpc_request( char const * admin_rpc_path,
   }
 
   ulong req_idx = test_bam_admin_rpc_mock.request_cnt++;
-  fd_cstr_ncpy( test_bam_admin_rpc_mock.paths[ req_idx ], admin_rpc_path, PATH_MAX );
+  fd_cstr_ncpy( test_bam_admin_rpc_mock.paths[ req_idx ], ctx->admin_rpc_path, PATH_MAX );
   fd_cstr_ncpy( test_bam_admin_rpc_mock.requests[ req_idx ], request, TEST_BAM_ADMIN_RPC_REQ_BUF_SZ );
 
   test_bam_admin_rpc_reply_t const * reply = &test_bam_admin_rpc_mock.replies[ test_bam_admin_rpc_mock.reply_idx++ ];

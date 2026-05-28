@@ -465,6 +465,7 @@ test_bam_env_create( test_bam_env_t * env,
   state->pack_bam_result_in_idx = ULONG_MAX;
   state->heap_wksp       = wksp;
   state->tcp_sock        = -1;
+  state->admin_rpc_fd    = -1;
   state->keylog_fd       = -1;
   state->so_rcvbuf       = 4096;
   state->grpc_buf_max    = 4096UL;
