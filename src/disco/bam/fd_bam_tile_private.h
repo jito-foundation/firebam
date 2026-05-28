@@ -479,7 +479,10 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
         };
       }
       tracker->slot_end_ns = state->slot_end_ns;
-      if( FD_LIKELY( !tracker->counted ) ) tracker->fresh_seen_before_end |= (uchar)!!state->current_slot_has_bam_work;
+      if( FD_LIKELY( !tracker->counted ) ) {
+        tracker->fresh_seen_before_end = (uchar)(tracker->fresh_seen_before_end || state->
+          current_slot_has_bam_work);
+      }
     }
   }
 
