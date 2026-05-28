@@ -809,13 +809,13 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
       } else if( FD_LIKELY( res->transaction_err[ err_idx ] < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
         out->which_reason                    = bam_types_NotCommitted_transaction_error_tag;
         out->reason.transaction_error.index  = err_idx;
-        out->reason.transaction_error.reason = res->transaction_err[ err_idx ];
+        out->reason.transaction_error.reason = (bam_types_TransactionErrorReason)res->transaction_err[ err_idx ];
       } else {
         out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
         snprintf( out->reason.generic_invalid.message,
                   sizeof(out->reason.generic_invalid.message),
                   FD_BAM_ERR_FMT_TRANSACTION_ERROR,
-                  res->transaction_err[ err_idx ] );
+                  (uint)res->transaction_err[ err_idx ] );
       }
     }
 
