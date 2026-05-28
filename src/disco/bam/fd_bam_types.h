@@ -38,13 +38,15 @@ static char const * const FD_BAM_ERR_GENERIC_INVALID_STRINGS[] = {
 
 #define FD_BAM_SHRED_SOCK_MAX          8UL
 
+FD_STATIC_ASSERT( _bam_types_TransactionErrorReason_MAX <= UCHAR_MAX, bam_transaction_error_reason_fits_uchar );
+
 typedef struct {
   uint  seq_id;            /* Uniquely assigned for a single leader rotation. 0 is valid seq_id. UINT_MAX is never produced. */
   ulong slot;              /* Slot associated with the batch. Executed bundles use the bank/Poh slot. 0 means the scheduler supplied no slot hint. */
   uchar bundle_txn_cnt;    /* Declared transaction count from the scheduler, capped to FD_PACK_MAX_TXN_PER_BUNDLE. Also the number of per-transaction result entries populated below; consumers must only examine indices [0,bundle_txn_cnt). */
   _Bool execution_success; /* Batch committed flag. Set to true only when the whole batch is committed. Note: individual committed transactions can still have execution_success=false (fees-only / instruction error), encoded via TransactionCommittedResult.execution_success. */
   ushort scheduling_error; /* bam_types_SchedulingError reason code when the batch never scheduled; FD_BAM_SCHED_ERR_NONE when scheduling succeeded or the bundle executed. */
-  bam_types_TransactionErrorReason transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Per-transaction bam_types_TransactionErrorReason for indices <bundle_txn_cnt. */
+  uchar transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Per-transaction bam_types_TransactionErrorReason for indices <bundle_txn_cnt. */
   uchar transaction_err_count; /* Number of transaction errors. 0 denotes success. */
   uint  consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Actual compute units consumed per transaction (exec+account data), even when the bundle later reverts. 0 when the txn never executed. */
   ulong feepayer_balance_lamports[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Fee payer post-balance per transaction. Only meaningful for committed results. */
@@ -134,7 +136,7 @@ static inline void
 fd_bam_result_set_txn_error( fd_bam_bundle_result_t *      res,
                              ulong                         idx,
                              bam_types_TransactionErrorReason reason ) {
-  if( FD_LIKELY( idx<FD_PACK_MAX_TXN_PER_BUNDLE ) ) res->transaction_err[ idx ] = reason;
+  if( FD_LIKELY( idx<FD_PACK_MAX_TXN_PER_BUNDLE ) ) res->transaction_err[ idx ] = (uchar)reason;
 }
 
 static inline void

@@ -715,11 +715,11 @@ bam_model_execute_batch( bam_model_harness_t * h,
 
     if( FD_UNLIKELY( first_exec_fail_idx!=ULONG_MAX || first_lock_fail_idx!=ULONG_MAX ) ) {
       ulong fail_idx = first_lock_fail_idx!=ULONG_MAX ? first_lock_fail_idx : first_exec_fail_idx;
-      bam_types_TransactionErrorReason fail_reason = res.transaction_err[ fail_idx ];
       res.execution_success = 0U;
       res.transaction_err_count = b->txn_cnt;
-      for( uchar i=0U; i<b->txn_cnt; i++ ) res.transaction_err[i] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
-      res.transaction_err[ fail_idx ] = fail_reason;
+      for( uchar i=0U; i<b->txn_cnt; i++ ) {
+        if( FD_LIKELY( i!=fail_idx ) ) res.transaction_err[i] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+      }
       return res;
     }
 
@@ -1165,7 +1165,7 @@ bam_model_expected_wire_result( fd_bam_bundle_result_t const * res,
 
     if( FD_LIKELY( res->transaction_err[ err_idx ] < _bam_types_TransactionErrorReason_ARRAYSIZE ) ) {
       out->which_reason = bam_types_NotCommitted_transaction_error_tag;
-      out->txn_reason   = res->transaction_err[ err_idx ];
+      out->txn_reason   = (bam_types_TransactionErrorReason)res->transaction_err[ err_idx ];
       out->idx          = err_idx;
     } else {
       out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
