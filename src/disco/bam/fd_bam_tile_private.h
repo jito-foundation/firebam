@@ -242,7 +242,7 @@ struct fd_bam_tile {
   fd_ip4_port_t default_tpu;           /* Non-BAM TPU socket to restore on disable/disconnect */
   fd_ip4_port_t default_tpu_fwd;       /* Non-BAM TPU Forward socket to restore on disable/disconnect */
   fd_ip4_port_t configured_default_tpu; /* Startup default TPU base port derived from local validator config. */
-  int admin_rpc_fd;                    /* Pre-sandbox Frankendancer Agave admin socket stream (-1 when unused, -2 when failed). */
+  int admin_rpc_fd;                    /* Pre-sandbox Frankendancer Agave admin socket stream (-1 when unused/not connected). */
   char admin_rpc_path[ PATH_MAX ];     /* Frankendancer Agave admin socket path; empty uses full-Firedancer gossip updates only. */
   fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for TPU advert updates */
   fd_bam_client_id_update_state_t client_id_update_state; /* Dedupe/retry state for ContactInfo client-id updates */

@@ -27,7 +27,6 @@ fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !admin_rpc_path[0] ) ) return -1;
 
   int fd = ctx->admin_rpc_fd;
-  if( FD_UNLIKELY( fd<-1 ) ) return -1;
   int close_fd = 0;
   int rc = -1;
   char const * fail_phase = NULL;
@@ -170,7 +169,7 @@ out:
   }
   if( FD_UNLIKELY( rc && !close_fd && fd>=0 ) ) {
     close( fd );
-    ctx->admin_rpc_fd = -2;
+    ctx->admin_rpc_fd = -1;
   } else if( FD_LIKELY( close_fd ) ) {
     close( fd );
   }
