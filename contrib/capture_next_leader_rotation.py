@@ -986,37 +986,68 @@ def capture_next_leader_rotation(
             sleep_for = max(0.1, min(2.0, secs_remaining / 2.0))
         time.sleep(sleep_for)
 
-    run_dir = Path(args.output_root) / f"slot_{next_leader_slot}_{dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    firedancer_log_path: Optional[Path] = None
+    firedancer_log_priority = 2
+    firedancer_log_mtime_ns = -1
+    active_process_seen = False
     try:
         proc = subprocess.run(
-            ["ps", "-eo", "cmd"],
+            ["ps", "-eo", "pid=,args="],
             check=True,
             capture_output=True,
             text=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(f"failed to inspect running Firedancer process for --log-path: {exc}") from exc
+        raise RuntimeError(f"failed to inspect running Firedancer/Frankendancer processes: {exc}") from exc
 
-    firedancer_log_path: Optional[Path] = None
     for line in proc.stdout.splitlines():
-        if "--log-path" not in line:
+        pid_text, _, cmd = line.strip().partition(" ")
+        if not pid_text or not cmd:
             continue
-        if (
-            "fddev dev" not in line
-            and "fdctl run" not in line
-            and not re.search(r"build/.*/bin/(?:firedancer|fdctl)\b", line)
+        if not (
+            "fddev dev" in cmd
+            or "firedancer-dev dev" in cmd
+            or "frankendancer-dev dev" in cmd
+            or "fdctl run" in cmd
+            or re.search(r"build/.*/bin/(?:firedancer|frankendancer|fdctl)\b", cmd)
         ):
             continue
-        match = re.search(r"(?:^|\s)--log-path(?:=|\s+)(?P<path>\S+)", line)
-        if match is None:
+        try:
+            pid = int(pid_text)
+        except ValueError:
             continue
-        candidate = Path(match.group("path")).expanduser()
-        if candidate.exists() and candidate.is_file():
-            firedancer_log_path = candidate
-            break
+        active_process_seen = True
+
+        match = re.search(r"(?:^|\s)--log-path(?:=|\s+)(?P<path>\S+)", cmd)
+        paths: list[tuple[int, Path]] = []
+        if match is not None:
+            paths.append((0, Path(match.group("path")).expanduser()))
+        paths.extend((1, path) for path in Path("/tmp").glob(f"fd-*_{pid}_*"))
+
+        for priority, path in paths:
+            try:
+                mtime_ns = path.stat().st_mtime_ns
+            except OSError:
+                continue
+            if str(path) != "-" and path.is_file() and (
+                priority < firedancer_log_priority
+                or (priority == firedancer_log_priority and mtime_ns > firedancer_log_mtime_ns)
+            ):
+                firedancer_log_path = path
+                firedancer_log_priority = priority
+                firedancer_log_mtime_ns = mtime_ns
+
     if firedancer_log_path is None:
-        raise RuntimeError("could not find an active Firedancer --log-path")
+        if active_process_seen:
+            raise RuntimeError(
+                "could not find an active Firedancer/Frankendancer log path; "
+                "checked --log-path and /tmp/fd-*_<pid>_*"
+            )
+        raise RuntimeError("could not find an active Firedancer/Frankendancer process")
+    print(f"using Firedancer/Frankendancer log: {firedancer_log_path}")
+
+    run_dir = Path(args.output_root) / f"slot_{next_leader_slot}_{dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     if args.bam_only:
         bam_log_endpoint_patterns = (
