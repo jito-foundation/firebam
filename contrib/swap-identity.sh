@@ -110,12 +110,15 @@ if [[ "$MODE" == "firedancer" ]]; then
     done
     [[ "$raw_config" ]] || continue
     exe_path="$(readlink -f -- "$proc_dir/exe" 2>/dev/null)" || continue
+    pid="${proc_dir#/proc/}"
+    parent_pid="$(awk '/^PPid:/ {print $2}' "$proc_dir/status" 2>/dev/null || true)"
+    parent_exe="$(readlink -f -- "/proc/$parent_pid/exe" 2>/dev/null || true)"
+    [[ "$parent_exe" != "$exe_path" ]] || continue
     cwd_path="$(readlink -f -- "$proc_dir/cwd" 2>/dev/null)" || continue
     resolved_path="$raw_config"
     [[ "$resolved_path" != /* ]] && resolved_path="$cwd_path/$resolved_path"
     resolved_config="$(readlink -f -- "$resolved_path" 2>/dev/null || printf '%s\n' "$resolved_path")"
     new_key="$exe_path|$resolved_config"
-    pid="${proc_dir#/proc/}"
     if [[ -z "$fd_key" ]]; then
       fd_key="$new_key"; FDCTL_BIN_PATH="$exe_path"; FD_CONFIG_PATH="$resolved_config"; fd_pid="$pid"
     elif [[ "$fd_key" != "$new_key" ]]; then
