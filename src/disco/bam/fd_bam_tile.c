@@ -15,13 +15,10 @@
 #include <ctype.h> /* isspace */
 #include <dirent.h> /* opendir */
 #include <limits.h> /* LONG_MIN, USHRT_MAX */
-#include <stddef.h> /* offsetof */
 #include <stdio.h> /* snprintf */
-#include <fcntl.h> /* F_SETFL */
+#include <fcntl.h> /* open, F_SETFL, O_NONBLOCK for generated seccomp */
 #include <unistd.h> /* close */
 #include <sys/mman.h> /* PROT_READ (seccomp) */
-#include <sys/socket.h> /* socket */
-#include <sys/un.h> /* sockaddr_un */
 #include <sys/uio.h> /* writev */
 #include <netinet/in.h> /* AF_INET */
 #include <netinet/tcp.h> /* TCP_FASTOPEN_CONNECT (seccomp) */
@@ -32,6 +29,7 @@
 #define FD_BAM_HEAP_USAGE_REFRESH_NS ((long)1e9)
 #define FD_BAM_ADMIN_RPC_RETRY_NS    ((long)100e6)
 #define FD_BAM_ADMIN_RPC_LOG_NS      ((long)5e9)
+#define FD_BAM_ADMIN_RPC_CONNECT_TIMEOUT_NS ((long)60e9)
 
 /* Provided by fdctl/firedancer version.c */
 extern char const fdctl_version_string[];
@@ -1285,7 +1283,7 @@ privileged_init( fd_topo_t *      topo,
   ctx->grpc_client_mem = grpc_mem;
   ctx->grpc_buf_max    = tile->bam.buf_sz;
   ctx->tcp_sock        = -1;
-  ctx->admin_rpc_fd    = -1;
+  ctx->admin_rpc_fd    = FD_BAM_ADMIN_RPC_FD_NONE;
   ctx->bam_leader_state.slot = ULONG_MAX;
   ctx->pack_bam_leader_in_idx = ULONG_MAX;
   ctx->pack_bam_result_in_idx = ULONG_MAX;
@@ -1336,45 +1334,28 @@ privileged_init( fd_topo_t *      topo,
   ctx->dump_bam_mode = tile->bam.dump_bam_mode;
   fd_cstr_ncpy( ctx->admin_rpc_path, tile->bam.admin_rpc_path, sizeof( ctx->admin_rpc_path ) );
   if( FD_UNLIKELY( ctx->admin_rpc_path[0] && fd_pod_query_int( topo->props, "sandbox", 1 ) ) ) {
-    union {
-      struct sockaddr    sa;
-      struct sockaddr_un un;
-    } addr = { .un = { .sun_family = AF_UNIX } };
-    ulong path_len = strnlen( ctx->admin_rpc_path, sizeof(addr.un.sun_path) );
-    if( FD_UNLIKELY( !path_len || path_len>=sizeof(addr.un.sun_path) ) )
-      FD_LOG_ERR(( "BAM admin RPC rejected invalid Unix socket path `%s`", ctx->admin_rpc_path ));
-    fd_memcpy( addr.un.sun_path, ctx->admin_rpc_path, path_len );
-    addr.un.sun_path[ path_len ] = '\0';
-
+    long deadline = fd_log_wallclock() + FD_BAM_ADMIN_RPC_CONNECT_TIMEOUT_NS;
     long next_log = 0L;
     for(;;) {
-      char const * fail_phase;
-      int          fail_errno;
-      int fd = socket( AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0 );
-      if( FD_UNLIKELY( fd<0 ) ) {
-        fail_phase = "socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC)";
-        fail_errno = errno;
-      } else if( FD_UNLIKELY( connect( fd, &addr.sa, (socklen_t)( offsetof( struct sockaddr_un, sun_path ) + path_len + 1UL ) ) ) ) {
-        fail_phase = "connect";
-        fail_errno = errno;
-        close( fd );
-      } else if( FD_UNLIKELY( fcntl( fd, F_SETFL, O_NONBLOCK ) ) ) {
-        fail_phase = "fcntl(F_SETFL,O_NONBLOCK)";
-        fail_errno = errno;
-        close( fd );
-      } else {
+      int fd = fd_bam_admin_rpc_connect( ctx->admin_rpc_path );
+      if( FD_LIKELY( fd>=0 ) ) {
         ctx->admin_rpc_fd = fd;
         FD_LOG_NOTICE(( "BAM admin RPC connected to `%s` before sandbox entry", ctx->admin_rpc_path ));
         break;
       }
 
+      int err = errno;
       long now = fd_log_wallclock();
+      if( FD_UNLIKELY( now>=deadline ) ) {
+        FD_LOG_ERR(( "Timed out connecting to BAM admin RPC before sandbox entry on `%s` (%i-%s)",
+                     ctx->admin_rpc_path, err, fd_io_strerror( err ) ));
+      }
       if( FD_UNLIKELY( now>=next_log ) ) {
-        FD_LOG_NOTICE(( "Waiting for BAM admin RPC socket while %s on `%s` (%i-%s)",
-                        fail_phase, ctx->admin_rpc_path, fail_errno, fd_io_strerror( fail_errno ) ));
+        FD_LOG_NOTICE(( "Waiting for BAM admin RPC socket on `%s` (%i-%s)",
+                        ctx->admin_rpc_path, err, fd_io_strerror( err ) ));
         next_log = now + FD_BAM_ADMIN_RPC_LOG_NS;
       }
-      fd_log_wait_until( now + FD_BAM_ADMIN_RPC_RETRY_NS );
+      fd_log_wait_until( fd_long_min( now + FD_BAM_ADMIN_RPC_RETRY_NS, deadline ) );
     }
   }
   ctx->configured_default_tpu = tile->bam.configured_default_tpu;

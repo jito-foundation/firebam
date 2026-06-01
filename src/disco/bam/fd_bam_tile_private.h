@@ -241,8 +241,8 @@ struct fd_bam_tile {
   fd_ip4_port_t default_tpu;           /* Non-BAM TPU socket to restore on disable/disconnect */
   fd_ip4_port_t default_tpu_fwd;       /* Non-BAM TPU Forward socket to restore on disable/disconnect */
   fd_ip4_port_t configured_default_tpu; /* Startup default TPU base port derived from local validator config. */
-  int admin_rpc_fd;                    /* Pre-sandbox Frankendancer Agave admin socket stream (-1 when unused/not connected). */
-  char admin_rpc_path[ PATH_MAX ];     /* Frankendancer Agave admin socket path; empty uses full-Firedancer gossip updates only. */
+  int admin_rpc_fd;                    /* Admin RPC stream fd; see FD_BAM_ADMIN_RPC_FD_* below. */
+  char admin_rpc_path[ PATH_MAX ];     /* Empty disables admin RPC updates; full Firedancer currently uses gossip updates only. */
   fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for TPU advert updates */
   fd_bam_client_id_update_state_t client_id_update_state; /* Dedupe/retry state for ContactInfo client-id updates */
 
@@ -585,6 +585,9 @@ fd_bam_current_slot_has_bam_work( fd_bam_tile_t const * ctx,
 
 FD_PROTOTYPES_BEGIN
 
+#define FD_BAM_ADMIN_RPC_FD_DEAD (-2) /* Preopened stream died; do not try pathname reconnect after sandbox. */
+#define FD_BAM_ADMIN_RPC_FD_NONE (-1) /* No preopened stream; pathname connect is allowed when unsandboxed. */
+
 /* fd_bam_now is an externally linked function wrapping
    fd_log_wallclock.  This is backed by a weak symbol, allowing tests to
    override the clock source. */
@@ -601,6 +604,9 @@ fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
                           char const * request,
                           char *       response,
                           ulong        response_max );
+
+int
+fd_bam_admin_rpc_connect( char const * admin_rpc_path );
 
 /* fd_bam_client_grpc_callbacks provides callbacks for grpc_client. */
 
