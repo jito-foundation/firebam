@@ -85,6 +85,7 @@ detect_firedancer_from_proc() {
     pid="${proc_dir#/proc/}"
     parent_pid="$(awk '/^PPid:/ {print $2}' "$proc_dir/status" 2>/dev/null || true)"
     parent_exe="$(readlink -f -- "/proc/$parent_pid/exe" 2>/dev/null || true)"
+    # fddev/fdctl can fork a same-binary child with the same config; count the parent once.
     [[ "$parent_exe" != "$exe_path" ]] || continue
     cwd_path="$(readlink -f -- "$proc_dir/cwd" 2>/dev/null)" || continue
     resolved_path="$raw_config"

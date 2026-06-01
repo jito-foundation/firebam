@@ -987,8 +987,7 @@ def capture_next_leader_rotation(
         time.sleep(sleep_for)
 
     firedancer_log_path: Optional[Path] = None
-    firedancer_log_priority = 2
-    firedancer_log_mtime_ns = -1
+    firedancer_log_key: Optional[tuple[int, int]] = None
     active_process_seen = False
     try:
         proc = subprocess.run(
@@ -1029,13 +1028,12 @@ def capture_next_leader_rotation(
                 mtime_ns = path.stat().st_mtime_ns
             except OSError:
                 continue
+            log_key = (priority, -mtime_ns)
             if str(path) != "-" and path.is_file() and (
-                priority < firedancer_log_priority
-                or (priority == firedancer_log_priority and mtime_ns > firedancer_log_mtime_ns)
+                firedancer_log_key is None or log_key < firedancer_log_key
             ):
                 firedancer_log_path = path
-                firedancer_log_priority = priority
-                firedancer_log_mtime_ns = mtime_ns
+                firedancer_log_key = log_key
 
     if firedancer_log_path is None:
         if active_process_seen:
