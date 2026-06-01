@@ -3,6 +3,7 @@
 #include "../../disco/tiles.h"
 #include "../../disco/fd_txn_m.h"
 #include "../../disco/bam/fd_bam_types.h"
+#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/metrics/fd_metrics.h"
 #include "../../flamenco/runtime/fd_system_ids_pp.h"
 
@@ -277,12 +278,8 @@ static inline void
 publish_bam_result( fd_resolh_tile_t *             ctx,
                     fd_stem_context_t *            stem,
                     fd_bam_bundle_result_t const * res ) {
-  if( FD_UNLIKELY( ctx->out_bam->idx==ULONG_MAX ) ) return;
-
-  fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->out_bam->mem, ctx->out_bam->chunk );
-  *out = *res;
-  fd_stem_publish( stem, ctx->out_bam->idx, 0UL, ctx->out_bam->chunk, sizeof(fd_bam_bundle_result_t), 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
-  ctx->out_bam->chunk = fd_dcache_compact_next( ctx->out_bam->chunk, sizeof(fd_bam_bundle_result_t), ctx->out_bam->chunk0, ctx->out_bam->wmark );
+  fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
+                         ctx->out_bam->chunk0, ctx->out_bam->wmark, res );
 }
 
 static inline void

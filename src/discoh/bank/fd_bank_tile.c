@@ -3,6 +3,7 @@
 #include "../../disco/tiles.h"
 #include "../../disco/fd_txn_m.h"
 #include "../../disco/bam/fd_bam_types.h"
+#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/pack/fd_pack.h"
 #include "../../disco/pack/fd_pack_cost.h"
 #include "../../ballet/blake3/fd_blake3.h"
@@ -97,18 +98,13 @@ static inline void
 bank_tile_publish_bam_result( fd_bank_ctx_t *               ctx,
                               fd_stem_context_t *           stem,
                               fd_bam_bundle_result_t const * res ) {
-  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
-  fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->bam_out_mem, ctx->bam_out_chunk );
-  *out = *res;
-  fd_stem_publish( stem,
-                   ctx->bam_out_idx,
-                   0UL,
-                   ctx->bam_out_chunk,
-                   sizeof(fd_bam_bundle_result_t),
-                   0UL,
-                   0UL,
-                   fd_frag_meta_ts_comp( fd_tickcount() ) );
-  ctx->bam_out_chunk = fd_dcache_compact_next( ctx->bam_out_chunk, sizeof(fd_bam_bundle_result_t), ctx->bam_out_chunk0, ctx->bam_out_wmark );
+  fd_bam_publish_result( stem,
+                         ctx->bam_out_idx,
+                         ctx->bam_out_mem,
+                         &ctx->bam_out_chunk,
+                         ctx->bam_out_chunk0,
+                         ctx->bam_out_wmark,
+                         res );
 }
 
 static inline void

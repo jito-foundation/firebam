@@ -1,6 +1,7 @@
 #include "fd_verify_tile.h"
 #include "../fd_txn_m.h"
 #include "../bam/fd_bam_types.h"
+#include "../bam/fd_bam_publish.h"
 #include "../metrics/fd_metrics.h"
 #include "generated/fd_verify_tile_seccomp.h"
 #include "../../flamenco/gossip/fd_gossip_message.h"
@@ -156,10 +157,8 @@ after_frag( fd_verify_ctx_t *   ctx,
        (batch_idx 0) and suppresses later-member failures.  If a later
        sequence proves the prefix incomplete, pack reports the first missing
        member as the terminal deserialization result. */
-    if( FD_UNLIKELY( is_bam && (ctx->bam_result_out_idx!=ULONG_MAX) &&
-                     (!txnm->bam.revert_on_error || txnm->bam.batch_idx==0U) ) ) {
-      fd_bam_bundle_result_t * bam_res = fd_chunk_to_laddr( ctx->bam_result_out_mem, ctx->bam_result_out_chunk );
-      *bam_res = (fd_bam_bundle_result_t) {
+    if( FD_UNLIKELY( is_bam && (!txnm->bam.revert_on_error || txnm->bam.batch_idx==0U) ) ) {
+      fd_bam_bundle_result_t bam_res = {
         .seq_id           = txnm->bam.seq_id,
         .slot             = txnm->bam.max_schedule_slot,
         .bundle_txn_cnt   = txnm->bam.txn_cnt,
@@ -168,8 +167,13 @@ after_frag( fd_verify_ctx_t *   ctx,
         .deser_index      = txnm->bam.batch_idx,
         .deser_reason     = bam_types_DeserializationErrorReason_SANITIZE_ERROR
       };
-      fd_stem_publish( stem, ctx->bam_result_out_idx, 0UL, ctx->bam_result_out_chunk, sizeof(fd_bam_bundle_result_t), 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
-      ctx->bam_result_out_chunk = fd_dcache_compact_next( ctx->bam_result_out_chunk, sizeof(fd_bam_bundle_result_t), ctx->bam_result_out_chunk0, ctx->bam_result_out_wmark );
+      fd_bam_publish_result( stem,
+                             ctx->bam_result_out_idx,
+                             ctx->bam_result_out_mem,
+                             &ctx->bam_result_out_chunk,
+                             ctx->bam_result_out_chunk0,
+                             ctx->bam_result_out_wmark,
+                             &bam_res );
     }
     ctx->metrics.verify_tile_result[ failure_idx ]++;
     return;
