@@ -10,6 +10,7 @@
 #include "../keyguard/fd_keyguard.h"
 #include "../metrics/fd_metrics.h"
 #include "../bam/fd_bam_types.h"
+#include "../bam/fd_bam_publish.h"
 #include "../pack/fd_pack.h"
 #include "../pack/fd_pack_cost.h"
 #include "../pack/fd_pack_pacing.h"
@@ -745,22 +746,13 @@ static inline void
 pack_tile_publish_bam_result( fd_pack_ctx_t *             ctx,
                               fd_stem_context_t *         stem,
                               fd_bam_bundle_result_t const * res ) {
-  if( FD_UNLIKELY( ctx->bam_result_out.idx==ULONG_MAX ) ) return;
-  fd_bam_bundle_result_t * out = fd_chunk_to_laddr( ctx->bam_result_out.mem, ctx->bam_result_out.chunk );
-  *out = *res;
-  fd_stem_publish( stem,
-                   ctx->bam_result_out.idx,
-                   0UL,
-                   ctx->bam_result_out.chunk,
-                   sizeof(fd_bam_bundle_result_t),
-                   0UL,
-                   0UL,
-                   fd_frag_meta_ts_comp( fd_tickcount() ) );
-  ctx->bam_result_publish_cnt++;
-  ctx->bam_result_out.chunk = fd_dcache_compact_next( ctx->bam_result_out.chunk,
-                                                      sizeof(fd_bam_bundle_result_t),
-                                                      ctx->bam_result_out.chunk0,
-                                                      ctx->bam_result_out.wmark );
+  ctx->bam_result_publish_cnt += fd_bam_publish_result( stem,
+                                                        ctx->bam_result_out.idx,
+                                                        ctx->bam_result_out.mem,
+                                                        &ctx->bam_result_out.chunk,
+                                                        ctx->bam_result_out.chunk0,
+                                                        ctx->bam_result_out.wmark,
+                                                        res );
 }
 
 static inline int
