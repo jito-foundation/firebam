@@ -760,8 +760,7 @@ fd_bundle_client_handle_builder_fee_info(
     return;
   }
 
-  /* Apply builder info atomically to avoid mixed old/new state. */
-  ctx->builder_commission = (uchar)res.commission;
+  ctx->builder_commission = (uchar)res.commission; /* Apply update atomically */
   fd_memcpy( ctx->builder_pubkey, decoded_builder_pubkey, sizeof(ctx->builder_pubkey) );
 
   long validity_duration_ns = (long)( 60e9 * 5. ); /* 5 minutes */

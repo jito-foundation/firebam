@@ -144,7 +144,10 @@ metrics_write( fd_bundle_tile_t * ctx ) {
 
 void
 fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
-  long now_ns = fd_log_wallclock();
+  long log_interval_ns = (long)30e9;
+  int  status          = fd_bundle_client_status( ctx );
+  long now_ns          = fd_log_wallclock();
+
   ulong bam_status = ctx->bam_status_fseq ? fd_fseq_query( ctx->bam_status_fseq ) : 0UL;
   _Bool bam_active = !!( bam_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   if( FD_UNLIKELY( bam_active!=ctx->bam_override_active ) ) {
@@ -163,14 +166,10 @@ fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
     }
   }
 
-  if( FD_LIKELY( !ctx->bam_override_active ) ) {
-    long log_interval_ns = (long)30e9;
-    int status = fd_bundle_client_status( ctx );
-    long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
-    if( FD_UNLIKELY( !ctx->sleep_mode && status!=FD_BUNDLE_STATE_CONNECTED && now_ns>log_next_ns ) ) {
-      FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
-      ctx->last_bundle_status_log_nanos = now_ns;
-    }
+  long log_next_ns = ctx->last_bundle_status_log_nanos + log_interval_ns;
+  if( FD_UNLIKELY( !ctx->bam_override_active && !ctx->sleep_mode && status!=FD_BUNDLE_STATE_CONNECTED && now_ns>log_next_ns ) ) {
+    FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
+    ctx->last_bundle_status_log_nanos = now_ns;
   }
 
   if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
@@ -184,12 +183,12 @@ fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
 }
 
 static void
-fd_bundle_tile_publish_gui_block_engine_update(
+fd_bundle_tile_publish_block_engine_update(
     fd_bundle_tile_t *  ctx,
     fd_stem_context_t * stem
 ) {
   fd_bundle_block_engine_update_t * update =
-      fd_chunk_to_laddr( ctx->status_out.mem, ctx->status_out.chunk );
+      fd_chunk_to_laddr( ctx->plugin_out.mem, ctx->plugin_out.chunk );
   memset( update, 0, sizeof(fd_bundle_block_engine_update_t) );
 
   strncpy( update->name, "jito", sizeof(update->name) );
@@ -209,15 +208,15 @@ fd_bundle_tile_publish_gui_block_engine_update(
   ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_bundle_now() );
   fd_stem_publish(
       stem,
-      ctx->status_out.idx,
+      ctx->plugin_out.idx,
       (ulong)ctx->bundle_status_recent,
-      ctx->status_out.chunk,
+      ctx->plugin_out.chunk,
       sizeof(fd_bundle_block_engine_update_t),
       0UL, /* ctl */
       0UL, /* seq */
       tspub
   );
-  ctx->status_out.chunk = fd_dcache_compact_next( ctx->status_out.chunk, sizeof(fd_bundle_block_engine_update_t), ctx->status_out.chunk0, ctx->status_out.wmark );
+  ctx->plugin_out.chunk = fd_dcache_compact_next( ctx->plugin_out.chunk, sizeof(fd_bundle_block_engine_update_t), ctx->plugin_out.chunk0, ctx->plugin_out.wmark );
 }
 
 static void
@@ -226,7 +225,7 @@ fd_bundle_tile_publish_plugin_block_engine_update(
     fd_stem_context_t * stem
 ) {
   fd_plugin_msg_block_engine_update_t * update =
-      fd_chunk_to_laddr( ctx->plugin_out.mem, ctx->plugin_out.chunk );
+      fd_chunk_to_laddr( ctx->plugin_msg_out.mem, ctx->plugin_msg_out.chunk );
   memset( update, 0, sizeof(fd_plugin_msg_block_engine_update_t) );
 
   strncpy( update->name, "jito", sizeof(update->name) );
@@ -246,14 +245,14 @@ fd_bundle_tile_publish_plugin_block_engine_update(
   ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_bundle_now() );
   fd_stem_publish(
       stem,
-      ctx->plugin_out.idx,
+      ctx->plugin_msg_out.idx,
       FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE,
-      ctx->plugin_out.chunk,
+      ctx->plugin_msg_out.chunk,
       sizeof(fd_plugin_msg_block_engine_update_t),
       0UL,
       0UL,
       tspub );
-  ctx->plugin_out.chunk = fd_dcache_compact_next( ctx->plugin_out.chunk, sizeof(fd_plugin_msg_block_engine_update_t), ctx->plugin_out.chunk0, ctx->plugin_out.wmark );
+  ctx->plugin_msg_out.chunk = fd_dcache_compact_next( ctx->plugin_msg_out.chunk, sizeof(fd_plugin_msg_block_engine_update_t), ctx->plugin_msg_out.chunk0, ctx->plugin_msg_out.wmark );
 }
 
 static void
@@ -359,10 +358,10 @@ after_credit( fd_bundle_tile_t *  ctx,
     *opt_poll_in = 0;
   }
 
-  if( ctx->status_out.mem || ctx->plugin_out.mem ) {
+  if( ctx->plugin_out.mem || ctx->plugin_msg_out.mem ) {
     if( FD_UNLIKELY( ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
-      if( ctx->status_out.mem ) fd_bundle_tile_publish_gui_block_engine_update( ctx, stem );
-      if( ctx->plugin_out.mem ) fd_bundle_tile_publish_plugin_block_engine_update( ctx, stem );
+      if( ctx->plugin_out.mem     ) fd_bundle_tile_publish_block_engine_update( ctx, stem );
+      if( ctx->plugin_msg_out.mem ) fd_bundle_tile_publish_plugin_block_engine_update( ctx, stem );
       ctx->bundle_status_plugin = (uchar)ctx->bundle_status_recent;
       *charge_busy = 1;
     }
@@ -580,18 +579,18 @@ unprivileged_init( fd_topo_t *      topo,
   if( FD_UNLIKELY( verify_out_idx==ULONG_MAX ) ) FD_LOG_ERR(( "Missing bundle_verif link" ));
   ctx->verify_out = bundle_out_link( topo, &topo->links[ tile->out_link_id[ verify_out_idx ] ], verify_out_idx );
 
-  ulong status_out_idx = fd_topo_find_tile_out_link( topo, tile, "bundle_status", tile->kind_id );
-  if( status_out_idx!=ULONG_MAX ) {
-    ctx->status_out = bundle_out_link( topo, &topo->links[ tile->out_link_id[ status_out_idx ] ], status_out_idx );
-  } else {
-    ctx->status_out = (fd_bundle_out_ctx_t){ .idx=ULONG_MAX };
-  }
-
-  ulong plugin_out_idx = fd_topo_find_tile_out_link( topo, tile, "bundle_plugi", tile->kind_id );
+  ulong plugin_out_idx = fd_topo_find_tile_out_link( topo, tile, "bundle_status", tile->kind_id );
   if( plugin_out_idx!=ULONG_MAX ) {
     ctx->plugin_out = bundle_out_link( topo, &topo->links[ tile->out_link_id[ plugin_out_idx ] ], plugin_out_idx );
   } else {
     ctx->plugin_out = (fd_bundle_out_ctx_t){ .idx=ULONG_MAX };
+  }
+
+  ulong plugin_msg_out_idx = fd_topo_find_tile_out_link( topo, tile, "bundle_plugi", tile->kind_id );
+  if( plugin_msg_out_idx!=ULONG_MAX ) {
+    ctx->plugin_msg_out = bundle_out_link( topo, &topo->links[ tile->out_link_id[ plugin_msg_out_idx ] ], plugin_msg_out_idx );
+  } else {
+    ctx->plugin_msg_out = (fd_bundle_out_ctx_t){ .idx=ULONG_MAX };
   }
 
   /* Init BAM override fields. Bundle tile should disconnect when BAM is active */

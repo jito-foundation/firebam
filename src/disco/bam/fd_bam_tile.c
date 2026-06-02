@@ -7,6 +7,7 @@
 #include "../../flamenco/gossip/fd_gossip_message.h"
 #include "../../waltz/http/fd_url.h"
 #include "../../waltz/openssl/fd_openssl.h"
+#include "../../waltz/openssl/fd_openssl_tile.h"
 #include "../../tango/fseq/fd_fseq.h"
 #include "../../util/pod/fd_pod_format.h"
 #include "../../util/net/fd_ip4.h"
@@ -1216,14 +1217,7 @@ fd_bam_tile_init_openssl( fd_bam_tile_t * ctx,
   }
   /* TODO: plumb ssl_alloc through OpenSSL teardown/reset instead of keeping it as init-only state. */
   ctx->ssl_alloc = alloc;
-  fd_openssl_set_thread_alloc( alloc );
-
-  OPENSSL_init_ssl(
-      OPENSSL_INIT_LOAD_SSL_STRINGS |
-      OPENSSL_INIT_LOAD_CRYPTO_STRINGS |
-      OPENSSL_INIT_NO_LOAD_CONFIG,
-      NULL
-  );
+  fd_ossl_tile_init( alloc );
 
   SSL_CTX * ssl_ctx = SSL_CTX_new( TLS_client_method() );
   if( FD_UNLIKELY( !ssl_ctx ) ) {

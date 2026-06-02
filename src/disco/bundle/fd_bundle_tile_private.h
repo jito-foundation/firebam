@@ -165,8 +165,8 @@ struct fd_bundle_tile {
   /* Stem publish */
   fd_stem_context_t *       stem;
   fd_bundle_out_ctx_t       verify_out;
-  fd_bundle_out_ctx_t       status_out;
   fd_bundle_out_ctx_t       plugin_out;
+  fd_bundle_out_ctx_t       plugin_msg_out;
   fd_bundle_pending_txn_t * pending_txns;
 
   ulong * bam_status_fseq; /* Shared latch from bam tile (bit 0 = BAM override active, bit 1 = current slot has BAM work) */
