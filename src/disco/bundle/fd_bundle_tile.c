@@ -148,8 +148,7 @@ fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
   int  status          = fd_bundle_client_status( ctx );
   long now_ns          = fd_log_wallclock();
 
-  ulong bam_status = ctx->bam_status_fseq ? fd_fseq_query( ctx->bam_status_fseq ) : 0UL;
-  _Bool bam_active = !!( bam_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  _Bool bam_active = ctx->bam_status_fseq && !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   if( FD_UNLIKELY( bam_active!=ctx->bam_override_active ) ) {
     ctx->bam_override_active = bam_active;
     ctx->last_bundle_status_log_nanos = now_ns;

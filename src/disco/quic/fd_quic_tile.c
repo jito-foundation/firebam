@@ -117,8 +117,7 @@ before_credit( fd_quic_ctx_t *     ctx,
 
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
     _Bool bam_override_was_active = ctx->bam_override_active;
-    ulong bam_status = fd_fseq_query( ctx->bam_status_fseq );
-    _Bool bam_override = !!( bam_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+    _Bool bam_override = !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
     if( FD_UNLIKELY( bam_override && ctx->quic->metrics.conn_alloc_cnt ) ) {
       fd_quic_t *       quic      = ctx->quic;
       fd_quic_state_t * quic_state = fd_quic_get_state( quic );
