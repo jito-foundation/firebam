@@ -233,10 +233,9 @@ before_frag( fd_quic_ctx_t * ctx,
   (void)in_idx;
   (void)seq;
 
-  if( FD_UNLIKELY( ctx->bam_override_active ) ) return 1;
-
   ulong proto = fd_disco_netmux_sig_proto( sig );
   if( FD_UNLIKELY( proto!=DST_PROTO_TPU_UDP && proto!=DST_PROTO_TPU_QUIC ) ) return 1;
+  if( FD_UNLIKELY( ctx->bam_override_active && proto!=DST_PROTO_TPU_UDP ) ) return 1;
 
   ulong hash = fd_disco_netmux_sig_hash( sig );
   if( FD_UNLIKELY( (hash % ctx->round_robin_cnt) != ctx->round_robin_id ) ) return 1;

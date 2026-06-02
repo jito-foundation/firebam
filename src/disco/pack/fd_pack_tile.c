@@ -2036,6 +2036,7 @@ during_frag( fd_pack_ctx_t * ctx,
     if( FD_UNLIKELY( chunk<ctx->in[ in_idx ].chunk0 || chunk>ctx->in[ in_idx ].wmark || sz>FD_TPU_RESOLVED_MTU ) )
       FD_LOG_ERR(( "chunk %lu %lu corrupt, not in range [%lu,%lu]", chunk, sz, ctx->in[ in_idx ].chunk0, ctx->in[ in_idx ].wmark ));
 
+    ctx->cur_spot = NULL;
     fd_txn_m_t * txnm = (fd_txn_m_t *)dcache_entry;
     ulong payload_sz  = txnm->payload_sz;
     ulong txn_t_sz    = txnm->txn_t_sz;
@@ -2140,6 +2141,11 @@ during_frag( fd_pack_ctx_t * ctx,
       ctx->current_bundle->min_blockhash_slot = fd_ulong_min( ctx->current_bundle->min_blockhash_slot, sig );
     } else {
       ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
+      if( FD_UNLIKELY( ctx->bam_status_fseq &&
+                       ( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) &&
+                       !fd_txn_is_simple_vote_transaction( txn, fd_txn_m_payload( txnm ) ) ) ) {
+        return;
+      }
 #if FD_PACK_USE_EXTRA_STORAGE
       if( FD_LIKELY( ctx->leader_slot!=ULONG_MAX || fd_pack_avail_txn_cnt( ctx->pack )<ctx->max_pending_transactions ) ) {
         ctx->cur_spot = fd_pack_insert_txn_init( ctx->pack );
@@ -2529,6 +2535,7 @@ after_frag( fd_pack_ctx_t *     ctx,
     }
     case PACK_TILE_BUNDLE_KIND_NONE:
     default: {
+      if( FD_UNLIKELY( !ctx->cur_spot ) ) break;
 #if FD_PACK_USE_EXTRA_STORAGE
       if( FD_UNLIKELY( ctx->insert_to_extra ) ) break;
 #endif

@@ -4,14 +4,27 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+#if FD_USING_GCC && __GNUC__ >= 15
+#pragma GCC diagnostic ignored "-Wunterminated-string-initialization"
+#endif
+
+FD_IMPORT_BINARY( test_pack_tile_sample_vote, "src/disco/pack/sample_vote.bin" );
+FD_IMPORT_BINARY( test_pack_tile_non_vote,    "src/ballet/txn/fixtures/transaction2.bin" );
+
 /* Stub fd_pack entry points so BAM tile tests can exercise pack-tile
    bookkeeping without building a full fd_pack instance. */
 #define fd_pack_delete_transaction test_fd_pack_delete_transaction
+#define fd_pack_insert_txn_init test_fd_pack_insert_txn_init
+#define fd_pack_insert_txn_fini test_fd_pack_insert_txn_fini
+#define fd_pack_insert_txn_cancel test_fd_pack_insert_txn_cancel
 #define fd_pack_insert_bundle_fini test_fd_pack_insert_bundle_fini
 #define fd_pack_insert_bundle_cancel test_fd_pack_insert_bundle_cancel
 #include "fd_pack_tile.c"
 #undef fd_pack_insert_bundle_cancel
 #undef fd_pack_insert_bundle_fini
+#undef fd_pack_insert_txn_cancel
+#undef fd_pack_insert_txn_fini
+#undef fd_pack_insert_txn_init
 #undef fd_pack_delete_transaction
 
 static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
@@ -22,6 +35,9 @@ static ulong             test_bundle_cancel_call_cnt;
 static ulong             test_bundle_cancel_last_txn_cnt;
 static ulong             test_insert_fini_call_cnt;
 static int               test_delete_before_insert_fini;
+static ulong             test_insert_txn_init_call_cnt;
+static ulong             test_insert_txn_fini_call_cnt;
+static fd_txn_e_t        test_insert_txn_slot[1];
 
 #define TEST_PACK_TILE_DCACHE_CHUNKS 16UL
 #define TEST_PACK_TILE_MCACHE_DEPTH  16UL
@@ -35,6 +51,36 @@ test_fd_pack_delete_transaction( fd_pack_t *                 pack,
   if( FD_UNLIKELY( !sig0 ) ) return 1UL;
   fd_memcpy( test_delete_last_sig, sig0, sizeof(fd_ed25519_sig_t) );
   return 1UL;
+}
+
+fd_txn_e_t *
+test_fd_pack_insert_txn_init( fd_pack_t * pack ) {
+  (void)pack;
+  test_insert_txn_init_call_cnt++;
+  fd_memset( test_insert_txn_slot, 0, sizeof(test_insert_txn_slot) );
+  return test_insert_txn_slot;
+}
+
+int
+test_fd_pack_insert_txn_fini( fd_pack_t  * pack,
+                              fd_txn_e_t * txn,
+                              ulong        expires_at,
+                              ulong *      delete_cnt ) {
+  (void)pack;
+  (void)expires_at;
+  FD_TEST( txn==test_insert_txn_slot );
+  test_insert_txn_fini_call_cnt++;
+  *delete_cnt = 0UL;
+  return fd_txn_is_simple_vote_transaction( TXN( txn->txnp ), txn->txnp->payload )
+         ? FD_PACK_INSERT_ACCEPT_VOTE_ADD
+         : FD_PACK_INSERT_ACCEPT_NONVOTE_ADD;
+}
+
+void
+test_fd_pack_insert_txn_cancel( fd_pack_t *  pack,
+                                fd_txn_e_t * txn ) {
+  (void)pack;
+  (void)txn;
 }
 
 int
@@ -189,6 +235,9 @@ test_pack_tile_harness_new( test_pack_tile_harness_t * h ) {
   test_bundle_cancel_last_txn_cnt = 0UL;
   test_insert_fini_call_cnt       = 0UL;
   test_delete_before_insert_fini  = 0;
+  test_insert_txn_init_call_cnt   = 0UL;
+  test_insert_txn_fini_call_cnt   = 0UL;
+  fd_memset( test_insert_txn_slot, 0, sizeof(test_insert_txn_slot) );
   test_pack_tile_out_new( h->out );
 
   for( ulong i=0UL; i<FD_PACK_BAM_RECENT_SLOT_CNT; i++ ) h->ctx->bam_recent_slot[ i ].slot = ULONG_MAX;
@@ -240,6 +289,63 @@ test_pack_tile_mark_bam_work_scheduled( test_pack_tile_harness_t * h,
   h->ctx->bam_scheduled_work_cnt++;
 
   return item;
+}
+
+static void
+test_pack_tile_bam_override_allows_votes_only_from_normal_ingress( void ) {
+  test_pack_tile_harness_t h[1];
+  uchar                    resolved_buf[ FD_TPU_RESOLVED_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
+  ulong                    bam_status_fseq = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+
+  test_pack_tile_harness_new( h );
+
+  struct {
+    uchar const * payload;
+    ulong         payload_sz;
+    int           is_vote;
+  } cases[] = {
+    { test_pack_tile_non_vote,    test_pack_tile_non_vote_sz,    0 },
+    { test_pack_tile_sample_vote, test_pack_tile_sample_vote_sz, 1 },
+  };
+
+  for( ulong i=0UL; i<sizeof(cases)/sizeof(cases[0]); i++ ) {
+    fd_memset( resolved_buf, 0, FD_TPU_RESOLVED_MTU );
+
+    fd_txn_m_t * txnm = (fd_txn_m_t *)resolved_buf;
+    txnm->reference_slot = 100UL;
+    txnm->payload_sz     = (ushort)cases[ i ].payload_sz;
+    txnm->source_tpu     = FD_TXN_M_TPU_SOURCE_UDP;
+    fd_memcpy( fd_txn_m_payload( txnm ), cases[ i ].payload, cases[ i ].payload_sz );
+
+    fd_txn_t * txn      = fd_txn_m_txn_t( txnm );
+    ulong      txn_t_sz = fd_txn_parse( fd_txn_m_payload( txnm ), cases[ i ].payload_sz, txn, NULL );
+    FD_TEST( txn_t_sz );
+    txnm->txn_t_sz = (ushort)txn_t_sz;
+    FD_TEST( fd_txn_is_simple_vote_transaction( txn, fd_txn_m_payload( txnm ) )==cases[ i ].is_vote );
+
+    ulong sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
+    h->ctx->in_kind[ 0 ]               = IN_KIND_RESOLV;
+    h->ctx->in[ 0 ].mem                = (fd_wksp_t *)resolved_buf;
+    h->ctx->in[ 0 ].chunk0             = 0UL;
+    h->ctx->in[ 0 ].wmark              = (sz + FD_CHUNK_SZ - 1UL) >> FD_CHUNK_LG_SZ;
+    h->ctx->leader_slot                = 100UL;
+    h->ctx->bam_status_fseq            = &bam_status_fseq;
+    h->ctx->current_bundle->bundle     = NULL;
+    h->ctx->current_bundle_bam->is_bam = 0;
+
+    during_frag( h->ctx, 0UL, 0UL, 100UL, 0UL, sz, 0UL );
+    after_frag( h->ctx, 0UL, 0UL, 100UL, sz, 0UL, 0UL, &h->out->stem );
+
+    FD_TEST( test_insert_txn_init_call_cnt == (ulong)cases[ i ].is_vote );
+    FD_TEST( test_insert_txn_fini_call_cnt == (ulong)cases[ i ].is_vote );
+    FD_TEST( h->ctx->cur_spot == NULL );
+  }
+
+  FD_TEST( test_insert_txn_slot->txnp->source_tpu == FD_TXN_M_TPU_SOURCE_UDP );
+  FD_TEST( test_insert_txn_slot->txnp->payload_sz == test_pack_tile_sample_vote_sz );
+  FD_TEST( fd_txn_is_simple_vote_transaction( TXN( test_insert_txn_slot->txnp ), test_insert_txn_slot->txnp->payload ) );
+
+  test_pack_tile_harness_delete( h );
 }
 
 static void
@@ -776,6 +882,7 @@ main( int     argc,
   test_pack_tile_bam_result_mapping_insert_reject();
   test_pack_tile_bam_result_mapping_tracking_reject();
   test_pack_tile_bam_atomic_abandon_reports_missing_deser();
+  test_pack_tile_bam_override_allows_votes_only_from_normal_ingress();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
