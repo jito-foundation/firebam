@@ -696,20 +696,16 @@ handle_ping_update( fd_gossvf_tile_ctx_t *    ctx,
 #endif
 
     ping_t * ping = ping_map_ele_remove( ctx->ping_map, &ping_update->pubkey, NULL, ctx->pings );
-    if( FD_LIKELY( ping ) ) ping_pool_ele_release( ctx->pings, ping );
+    FD_TEST( ping );
+    ping_pool_ele_release( ctx->pings, ping );
   } else {
 #if DEBUG_PEERS
     ctx->ping_cnt++;
     FD_LOG_NOTICE(( "adding ping for %s (" FD_IP4_ADDR_FMT ":%hu) (%lu)", base58, FD_IP4_ADDR_FMT_ARGS( ping_update->gossip_addr.addr ), fd_ushort_bswap( ping_update->gossip_addr.port ), ctx->ping_cnt ));
 #endif
 
-    ping_t * existing = ping_map_ele_query( ctx->ping_map, &ping_update->pubkey, NULL, ctx->pings );
-    if( FD_UNLIKELY( existing ) ) {
-      existing->addr.l = ping_update->gossip_addr.l;
-      return;
-    }
-
-    if( FD_UNLIKELY( !ping_pool_free( ctx->pings ) ) ) return;
+    FD_TEST( ping_pool_free( ctx->pings ) );
+    FD_TEST( !ping_map_ele_query( ctx->ping_map, &ping_update->pubkey, NULL, ctx->pings ) );
     ping_t * ping = ping_pool_ele_acquire( ctx->pings );
     ping->addr.l = ping_update->gossip_addr.l;
     fd_memcpy( ping->pubkey.uc, ping_update->pubkey.uc, 32UL );
