@@ -13,7 +13,7 @@ struct fd_stem_context {
    ulong *           cr_avail;
    ulong *           min_cr_avail;
    ulong             cr_decrement_amount;
-   int *             out_reliable;
+   _Bool *           out_reliable;
 };
 
 typedef struct fd_stem_context fd_stem_context_t;

@@ -1078,6 +1078,7 @@ publish_became_leader( fd_pohh_tile_t * ctx,
   uchar * dst = (uchar *)fd_chunk_to_laddr( ctx->pack_out->mem, ctx->pack_out->chunk );
 
   fd_became_leader_t * leader = (fd_became_leader_t *)dst;
+  leader->slot                    = slot; // FIXME: check if breaking anything
   leader->slot_start_ns           = slot_start_ns;
   leader->slot_end_ns             = (long)((double)slot_start_ns + ctx->slot_duration_ns);
   leader->bank                    = ctx->current_leader_bank;

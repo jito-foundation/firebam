@@ -204,7 +204,11 @@ fd_gui_new( void *                shmem,
 
   gui->tower_cnt = 0UL;
 
+  memset( &gui->bam, 0, sizeof( gui->bam ) );
   gui->block_engine.has_block_engine = 0;
+  gui->bam.has_bam     = 0;
+  gui->bam.enabled     = 0;
+  gui->bam.status      = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
 
   gui->epoch.has_epoch[ 0 ] = 0;
   gui->epoch.has_epoch[ 1 ] = 0;
@@ -294,6 +298,10 @@ fd_gui_ws_open( fd_gui_t * gui,
 
   if( FD_LIKELY( gui->block_engine.has_block_engine ) ) {
     fd_gui_printf_block_engine( gui );
+    FD_TEST( !fd_http_server_ws_send( gui->http, ws_conn_id ) );
+  }
+  if( FD_LIKELY( gui->bam.has_bam ) ) {
+    fd_gui_printf_bam( gui );
     FD_TEST( !fd_http_server_ws_send( gui->http, ws_conn_id ) );
   }
 
@@ -540,6 +548,14 @@ fd_gui_txn_waterfall_snap( fd_gui_t *               gui,
     cur->out.bank_nonce_wrong_blockhash  += execle_metrics[ MIDX( COUNTER, EXECLE, TRANSACTION_RESULT_NONCE_WRONG_BLOCKHASH ) ];
   }
 
+  cur->in.bam = 0UL;
+  ulong bam_tile_idx = fd_topo_find_tile( topo, "bam", 0UL );
+  if( FD_LIKELY( bam_tile_idx!=ULONG_MAX ) ) {
+    fd_topo_tile_t const * bam = &topo->tiles[ bam_tile_idx ];
+    volatile ulong const * bam_metrics = fd_metrics_tile( bam->metrics );
+    cur->in.bam = bam_metrics[ MIDX( COUNTER, BAM, TRANSACTION_PUBLISHED ) ];
+  }
+
   ulong pack_tile_idx = fd_topo_find_tile( topo, "pack", 0UL );
   if( pack_tile_idx!=ULONG_MAX ) {
     fd_topo_tile_t const * pack = &topo->tiles[ pack_tile_idx ];
@@ -779,7 +795,8 @@ fd_gui_tile_stats_snap( fd_gui_t *                     gui,
                            waterfall->out.verify_failed;
   stats->verify_total_cnt = waterfall->in.gossip +
                             waterfall->in.quic +
-                            waterfall->in.udp -
+                            waterfall->in.udp +
+                            waterfall->in.bam -
                             waterfall->out.net_overrun -
                             waterfall->out.tpu_quic_invalid -
                             waterfall->out.tpu_udp_invalid -
@@ -2579,6 +2596,86 @@ fd_gui_handle_block_engine_update( fd_gui_t *                              gui,
   fd_http_server_ws_broadcast( gui->http );
 }
 
+static void
+fd_gui_handle_plugin_block_engine_update( fd_gui_t *    gui,
+                                          uchar const * msg ) {
+  fd_plugin_msg_block_engine_update_t const * update = (fd_plugin_msg_block_engine_update_t const *)msg;
+
+  gui->block_engine.has_block_engine = 1;
+
+  FD_TEST( fd_cstr_nlen( update->name,    sizeof(gui->block_engine.name   ) ) < sizeof(gui->block_engine.name   ) );
+  FD_TEST( fd_cstr_nlen( update->url,     sizeof(gui->block_engine.url    ) ) < sizeof(gui->block_engine.url    ) );
+  FD_TEST( fd_cstr_nlen( update->ip_cstr, sizeof(gui->block_engine.ip_cstr) ) < sizeof(gui->block_engine.ip_cstr) );
+  ulong name_len    = fd_cstr_nlen( update->name,    sizeof(gui->block_engine.name   ) );
+  ulong url_len     = fd_cstr_nlen( update->url,     sizeof(gui->block_engine.url    ) );
+  ulong ip_cstr_len = fd_cstr_nlen( update->ip_cstr, sizeof(gui->block_engine.ip_cstr) );
+  fd_memcpy( gui->block_engine.name,    update->name,    name_len+1UL );
+  fd_memcpy( gui->block_engine.url,     update->url,     url_len+1UL );
+  fd_memcpy( gui->block_engine.ip_cstr, update->ip_cstr, ip_cstr_len+1UL );
+
+  gui->block_engine.status = update->status;
+
+  fd_gui_printf_block_engine( gui );
+  fd_http_server_ws_broadcast( gui->http );
+}
+
+static void
+fd_gui_handle_bam_update( fd_gui_t *    gui,
+                          uchar const * msg ) {
+  fd_plugin_msg_bam_update_t const * update = (fd_plugin_msg_bam_update_t const *)msg;
+
+  gui->bam.has_bam = 1;
+  gui->bam.status  = update->status_code;
+  gui->bam.enabled = update->enabled;
+
+  memcpy( gui->bam.name, update->name, sizeof( gui->bam.name )-1 );
+  gui->bam.name[ sizeof( gui->bam.name )-1 ] = '\0';
+  memcpy( gui->bam.url, update->url, sizeof( gui->bam.url )-1 );
+  gui->bam.url[ sizeof( gui->bam.url )-1 ] = '\0';
+  memcpy( gui->bam.sni, update->sni, sizeof( gui->bam.sni )-1 );
+  gui->bam.sni[ sizeof( gui->bam.sni )-1 ] = '\0';
+  memcpy( gui->bam.ip_cstr, update->ip_cstr, sizeof( gui->bam.ip_cstr )-1 );
+  gui->bam.ip_cstr[ sizeof( gui->bam.ip_cstr )-1 ] = '\0';
+  memcpy( gui->bam.tpu_cstr, update->tpu_cstr, sizeof( gui->bam.tpu_cstr )-1 );
+  gui->bam.tpu_cstr[ sizeof( gui->bam.tpu_cstr )-1 ] = '\0';
+  memcpy( gui->bam.tpu_fwd_cstr, update->tpu_fwd_cstr, sizeof( gui->bam.tpu_fwd_cstr )-1 );
+  gui->bam.tpu_fwd_cstr[ sizeof( gui->bam.tpu_fwd_cstr )-1 ] = '\0';
+
+  gui->bam.keepalive_rtt_sample    = update->keepalive_rtt_sample;
+  gui->bam.keepalive_rtt_smoothed  = update->keepalive_rtt_smoothed;
+  gui->bam.keepalive_rtt_deviation = update->keepalive_rtt_deviation;
+  gui->bam.feedback_queue_depth = update->feedback_queue_depth;
+  gui->bam.outbound_heartbeat_enqueued = update->outbound_heartbeat_enqueued;
+  gui->bam.outbound_heartbeat_enqueue_fail = update->outbound_heartbeat_enqueue_fail;
+  gui->bam.builder_heartbeats_decoded = update->builder_heartbeats_decoded;
+  gui->bam.transaction_published  = update->transaction_published;
+  gui->bam.atomic_batch_published = update->atomic_batch_published;
+  gui->bam.ingress_packet_oversize = update->ingress_packet_oversize;
+  gui->bam.failure_auth_challenge_decode = update->failure_auth_challenge_decode;
+  gui->bam.failure_config_decode = update->failure_config_decode;
+  gui->bam.failure_scheduler_envelope_decode = update->failure_scheduler_envelope_decode;
+  gui->bam.failure_request_failed = update->failure_request_failed;
+  gui->bam.failure_resolve = update->failure_resolve;
+  gui->bam.failure_connect = update->failure_connect;
+  gui->bam.failure_io = update->failure_io;
+  gui->bam.failure_unsupported_version = update->failure_unsupported_version;
+  gui->bam.failure_request_timeout = update->failure_request_timeout;
+  gui->bam.failure_keepalive_timeout = update->failure_keepalive_timeout;
+  gui->bam.failure_builder_activity_timeout = update->failure_builder_activity_timeout;
+  gui->bam.ingress_multi_message_received = update->ingress_multi_message_received;
+  gui->bam.ingress_batch_commit_attempt = update->ingress_batch_commit_attempt;
+  gui->bam.ingress_batch_published = update->ingress_batch_published;
+  gui->bam.ingress_batch_rejected_invalid_batch = update->ingress_batch_rejected_invalid_batch;
+  gui->bam.ingress_batch_rejected_empty_batch = update->ingress_batch_rejected_empty_batch;
+  gui->bam.ingress_batch_rejected_vote_transaction = update->ingress_batch_rejected_vote_transaction;
+  gui->bam.ingress_batch_rejected_non_revert_multi_packet = update->ingress_batch_rejected_non_revert_multi_packet;
+  gui->bam.ingress_message_rejected_empty_message = update->ingress_message_rejected_empty_message;
+  gui->bam.ingress_message_rejected_overflow_message = update->ingress_message_rejected_overflow_message;
+
+  fd_gui_printf_bam( gui );
+  fd_http_server_ws_broadcast( gui->http );
+}
+
 void
 fd_gui_handle_snapshot_update( fd_gui_t *                 gui,
                                fd_snapct_update_t const * msg ) {
@@ -3143,6 +3240,14 @@ fd_gui_plugin_message( fd_gui_t *   gui,
     }
     case FD_PLUGIN_MSG_GENESIS_HASH_KNOWN: {
       fd_gui_handle_genesis_hash( gui, msg );
+      break;
+    }
+    case FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE: {
+      fd_gui_handle_plugin_block_engine_update( gui, msg );
+      break;
+    }
+    case FD_PLUGIN_MSG_BAM_UPDATE: {
+      fd_gui_handle_bam_update( gui, msg );
       break;
     }
     default:

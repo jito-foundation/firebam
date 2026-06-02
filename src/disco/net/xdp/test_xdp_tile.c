@@ -498,13 +498,17 @@ main( int     argc,
   /* Start testing */
 
   /* Stem publish context for RX */
-  ulong cr_avail    = ULONG_MAX;
+  ulong cr_avail     = ULONG_MAX;
+  ulong min_cr_avail = ULONG_MAX;
+  _Bool out_reliable = 1;
   fd_stem_context_t stem[1] = {{
     .mcaches             = &rx_link->mcache,
     .seqs                = &ctx->shred_out->seq,
     .depths              = &link_depth,
     .cr_avail            = &cr_avail,
-    .cr_decrement_amount = 0UL
+    .min_cr_avail        = &min_cr_avail,
+    .cr_decrement_amount = 0UL,
+    .out_reliable        = &out_reliable
   }};
 
   struct __attribute__((packed)) {

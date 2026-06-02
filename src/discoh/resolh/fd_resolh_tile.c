@@ -2,6 +2,8 @@
 
 #include "../../disco/tiles.h"
 #include "../../disco/fd_txn_m.h"
+#include "../../disco/bam/fd_bam_types.h"
+#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/metrics/fd_metrics.h"
 #include "../../flamenco/runtime/fd_system_ids_pp.h"
 
@@ -39,7 +41,9 @@ static const blockhash_t null_blockhash = { 0 };
    history.  Beyond this, the validator is likely to be restarted, and
    lose the history anyway. */
 
+#ifndef BLOCKHASH_LG_RING_CNT
 #define BLOCKHASH_LG_RING_CNT 22UL
+#endif
 #define BLOCKHASH_RING_LEN   (1UL<<BLOCKHASH_LG_RING_CNT)
 
 #define MAP_NAME              map
@@ -114,6 +118,16 @@ struct fd_resolh_in {
 
 typedef struct fd_resolh_in fd_resolh_in_t;
 
+struct fd_resolh_out {
+  ulong       idx;
+  fd_wksp_t * mem;
+  ulong       chunk0;
+  ulong       wmark;
+  ulong       chunk;
+};
+
+typedef struct fd_resolh_out fd_resolh_out_t;
+
 struct fd_resolh_tile {
   ulong round_robin_idx;
   ulong round_robin_cnt;
@@ -149,10 +163,8 @@ struct fd_resolh_tile {
 
   fd_resolh_in_t in[ 64UL ];
 
-  fd_wksp_t * out_mem;
-  ulong       out_chunk0;
-  ulong       out_wmark;
-  ulong       out_chunk;
+  fd_resolh_out_t out_pack[ 1UL ];
+  fd_resolh_out_t out_bam[ 1UL ];
 };
 
 typedef struct fd_resolh_tile fd_resolh_tile_t;
@@ -221,7 +233,7 @@ during_frag( fd_resolh_tile_t * ctx,
       break;
     case FD_RESOLH_IN_KIND_FRAGMENT: {
       uchar * src = (uchar *)fd_chunk_to_laddr( ctx->in[in_idx].mem, chunk );
-      uchar * dst = (uchar *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
+      uchar * dst = (uchar *)fd_chunk_to_laddr( ctx->out_pack->mem, ctx->out_pack->chunk );
       fd_memcpy( dst, src, sz );
       break;
     }
@@ -234,7 +246,7 @@ static inline int
 publish_txn( fd_resolh_tile_t *         ctx,
              fd_stem_context_t *        stem,
              fd_stashed_txn_m_t const * stashed ) {
-  fd_txn_m_t *     txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
+  fd_txn_m_t *     txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_pack->mem, ctx->out_pack->chunk );
   fd_memcpy( txnm, stashed->_, fd_txn_m_realized_footprint( (fd_txn_m_t *)stashed->_, 1, 0 ) );
 
   fd_txn_t const * txnt = fd_txn_m_txn_t( txnm );
@@ -256,10 +268,18 @@ publish_txn( fd_resolh_tile_t *         ctx,
 
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
-  fd_stem_publish( stem, 0UL, txnm->reference_slot, ctx->out_chunk, realized_sz, 0UL, 0UL, tspub );
-  ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, realized_sz, ctx->out_chunk0, ctx->out_wmark );
+  fd_stem_publish( stem, ctx->out_pack->idx, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, 0UL, tspub );
+  ctx->out_pack->chunk = fd_dcache_compact_next( ctx->out_pack->chunk, realized_sz, ctx->out_pack->chunk0, ctx->out_pack->wmark );
 
   return 1;
+}
+
+static inline void
+publish_bam_result( fd_resolh_tile_t *             ctx,
+                    fd_stem_context_t *            stem,
+                    fd_bam_bundle_result_t const * res ) {
+  fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
+                         ctx->out_bam->chunk0, ctx->out_bam->wmark, res );
 }
 
 static inline void
@@ -356,7 +376,7 @@ after_frag( fd_resolh_tile_t *  ctx,
     return;
   }
 
-  fd_txn_m_t *     txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
+  fd_txn_m_t *     txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_pack->mem, ctx->out_pack->chunk );
   FD_TEST( txnm->payload_sz<=FD_TPU_MTU );
   FD_TEST( txnm->txn_t_sz<=FD_TXN_MAX_SZ );
   fd_txn_t const * txnt = fd_txn_m_txn_t( txnm );
@@ -384,6 +404,9 @@ after_frag( fd_resolh_tile_t *  ctx,
     buffer.  If we later see the blockhash come to exist, we forward any
     buffered transactions to back. */
 
+  int is_bam          = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  int emit_bam_result = is_bam && ( !txnm->bam.revert_on_error || txnm->bam.batch_idx==0U );
+
   if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
     ctx->bundle_id     = txnm->block_engine.bundle_id;
@@ -404,6 +427,12 @@ after_frag( fd_resolh_tile_t *  ctx,
   if( FD_LIKELY( blockhash ) ) {
     txnm->reference_slot = blockhash->slot;
     if( FD_UNLIKELY( txnm->reference_slot+151UL<ctx->completed_slot ) ) {
+      if( FD_UNLIKELY( emit_bam_result ) ) {
+        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
+        fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+        fd_bam_result_mark_sanitize_success_all( &res );
+        publish_bam_result( ctx, stem, &res );
+      }
       if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
       ctx->metrics.blockhash_expired++;
       return;
@@ -413,7 +442,7 @@ after_frag( fd_resolh_tile_t *  ctx,
   int is_bundle_member = !!txnm->block_engine.bundle_id;
   int is_durable_nonce = fd_resolh_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
 
-  if( FD_UNLIKELY( !is_bundle_member && !is_durable_nonce && !blockhash ) ) {
+  if( FD_UNLIKELY( !is_bundle_member && !is_bam && !is_durable_nonce && !blockhash ) ) {
     ulong pool_idx;
     if( FD_UNLIKELY( !pool_free( ctx->pool ) ) ) {
       pool_idx = lru_list_idx_pop_tail( ctx->lru_list, ctx->pool );
@@ -444,17 +473,25 @@ after_frag( fd_resolh_tile_t *  ctx,
   }
 
   if( FD_UNLIKELY( txnt->addr_table_adtl_cnt ) ) {
+    int failed = 0;
     if( FD_UNLIKELY( !ctx->root_bank ) ) {
       FD_MCNT_INC( RESOLH, NO_BANK_DROP, 1 );
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-      return;
+      failed = 1;
+    } else {
+      int result = fd_bank_abi_resolve_address_lookup_tables( ctx->root_bank, 0, ctx->root_slot, txnt, fd_txn_m_payload( txnm ), fd_txn_m_alut( txnm ) );
+      /* result is in [-5, 0]. We want to map -5 to 0, -4 to 1, etc. */
+      ctx->metrics.lut[ (ulong)((long)FD_METRICS_COUNTER_RESOLH_LUT_RESOLVED_CNT+result-1L) ]++;
+      failed = result!=FD_BANK_ABI_TXN_INIT_SUCCESS;
     }
 
-    int result = fd_bank_abi_resolve_address_lookup_tables( ctx->root_bank, 0, ctx->root_slot, txnt, fd_txn_m_payload( txnm ), fd_txn_m_alut( txnm ) );
-    /* result is in [-5, 0]. We want to map -5 to 0, -4 to 1, etc. */
-    ctx->metrics.lut[ (ulong)((long)FD_METRICS_COUNTER_RESOLH_LUT_RESOLVED_CNT+result-1L) ]++;
-
-    if( FD_UNLIKELY( result!=FD_BANK_ABI_TXN_INIT_SUCCESS ) ) {
+    if( FD_UNLIKELY( failed ) ) {
+      if( FD_UNLIKELY( emit_bam_result ) ) {
+        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
+        res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
+        res.deser_index  = txnm->bam.batch_idx;
+        res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+        publish_bam_result( ctx, stem, &res );
+      }
       if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
       return;
     }
@@ -462,8 +499,8 @@ after_frag( fd_resolh_tile_t *  ctx,
 
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
-  fd_stem_publish( stem, 0UL, txnm->reference_slot, ctx->out_chunk, realized_sz, 0UL, tsorig, tspub );
-  ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, realized_sz, ctx->out_chunk0, ctx->out_wmark );
+  fd_stem_publish( stem, ctx->out_pack->idx, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, tsorig, tspub );
+  ctx->out_pack->chunk = fd_dcache_compact_next( ctx->out_pack->chunk, realized_sz, ctx->out_pack->chunk0, ctx->out_pack->wmark );
 }
 
 static void
@@ -517,10 +554,24 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->in[i].mtu    = link->mtu;
   }
 
-  ctx->out_mem    = topo->workspaces[ topo->objs[ topo->links[ tile->out_link_id[ 0 ] ].dcache_obj_id ].wksp_id ].wksp;
-  ctx->out_chunk0 = fd_dcache_compact_chunk0( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache );
-  ctx->out_wmark  = fd_dcache_compact_wmark ( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache, topo->links[ tile->out_link_id[ 0 ] ].mtu );
-  ctx->out_chunk  = ctx->out_chunk0;
+  fd_topo_link_t const * pack_out = &topo->links[ tile->out_link_id[ 0UL ] ];
+  ctx->out_pack->idx    = 0UL;
+  ctx->out_pack->mem    = topo->workspaces[ topo->objs[ pack_out->dcache_obj_id ].wksp_id ].wksp;
+  ctx->out_pack->chunk0 = fd_dcache_compact_chunk0( ctx->out_pack->mem, pack_out->dcache );
+  ctx->out_pack->wmark  = fd_dcache_compact_wmark ( ctx->out_pack->mem, pack_out->dcache, pack_out->mtu );
+  ctx->out_pack->chunk  = ctx->out_pack->chunk0;
+
+  *ctx->out_bam = (fd_resolh_out_t) { .idx = ULONG_MAX };
+  for( ulong i=0UL; i<tile->out_cnt; i++ ) {
+    fd_topo_link_t const * link = &topo->links[ tile->out_link_id[ i ] ];
+    if( FD_LIKELY( strcmp( link->name, "bank_bam" ) ) ) continue;
+    ctx->out_bam->idx    = i;
+    ctx->out_bam->mem    = topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ].wksp;
+    ctx->out_bam->chunk0 = fd_dcache_compact_chunk0( ctx->out_bam->mem, link->dcache );
+    ctx->out_bam->wmark  = fd_dcache_compact_wmark ( ctx->out_bam->mem, link->dcache, link->mtu );
+    ctx->out_bam->chunk  = ctx->out_bam->chunk0;
+    break;
+  }
 
   ulong scratch_top = FD_SCRATCH_ALLOC_FINI( l, scratch_align() );
   if( FD_UNLIKELY( scratch_top > (ulong)scratch + scratch_footprint( tile ) ) )
