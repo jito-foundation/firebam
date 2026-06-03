@@ -1025,6 +1025,8 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     return;
   }
 
+  if( FD_UNLIKELY( fd_bam_tile_waiting_for_leader_slot( ctx ) ) ) return;
+
   /* Wait for TCP socket to connect */
   if( FD_UNLIKELY( !ctx->tcp_sock_connected ) ) {
     if( FD_UNLIKELY( ctx->tcp_sock < 0 ) ) goto reconnect;

@@ -22,6 +22,7 @@
 #include <netinet/in.h> /* AF_INET */
 #include <netinet/tcp.h> /* TCP_FASTOPEN_CONNECT (seccomp) */
 #include "../../waltz/resolv/fd_netdb.h"
+#include "../../discof/replay/fd_replay_tile.h"
 
 #include "../bundle/generated/fd_bundle_tile_seccomp.h"
 
@@ -657,11 +658,14 @@ static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
      from either bank->bam or pack->bam links, so during_frag stages the
      matching dcache base for after_frag.
    - LEADER: staged chunk points to fd_bam_leader_state_t and is only valid
-     from pack->bam. Any other in_idx is malformed and dropped. */
+     from pack->bam. Any other in_idx is malformed and dropped.
+   - REPLAY_RESET: staged chunk points to fd_poh_reset_t from optional replay_out.
+     after_frag commits its next_leader_slot as a local leader schedule hint. */
 enum {
-  FD_BAM_FRAG_STAGED_NONE   = 0U, /* No staged payload (or staged payload was rejected). */
-  FD_BAM_FRAG_STAGED_RESULT = 1U, /* fd_bam_bundle_result_t staged for enqueue_result. */
-  FD_BAM_FRAG_STAGED_LEADER = 2U  /* fd_bam_leader_state_t staged for bam_leader_state update. */
+  FD_BAM_FRAG_STAGED_NONE         = 0U, /* No staged payload (or staged payload was rejected). */
+  FD_BAM_FRAG_STAGED_RESULT       = 1U, /* fd_bam_bundle_result_t staged for enqueue_result. */
+  FD_BAM_FRAG_STAGED_LEADER       = 2U, /* fd_bam_leader_state_t staged for bam_leader_state update. */
+  FD_BAM_FRAG_STAGED_REPLAY_RESET = 3U  /* fd_poh_reset_t staged for local leader schedule update. */
 };
 
 void
@@ -691,7 +695,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   long log_interval_ns = (long)30e9;
   long log_next_ns     = ctx->last_bam_status_log_nanos + log_interval_ns;
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
-  if( FD_UNLIKELY( (
+  if( FD_UNLIKELY( !fd_bam_tile_waiting_for_leader_slot( ctx ) && (
     status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED ||
     status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) && now_ns > log_next_ns ) ) {
     FD_LOG_WARNING(( "No BAM node connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
@@ -733,7 +737,6 @@ bam_during_frag( fd_bam_tile_t * ctx,
                  ulong           sz,
                  ulong           ctl ) {
   (void)seq;
-  (void)sig;
   (void)ctl;
 
   ctx->frag_staged_kind = FD_BAM_FRAG_STAGED_NONE;
@@ -744,7 +747,13 @@ bam_during_frag( fd_bam_tile_t * ctx,
   char const *            frag_what   = "bank->bam result fragment";
 
   ulong bank_in_idx = in_idx - ctx->bank_bam_in_idx;
-  if( FD_LIKELY( bank_in_idx < ctx->bank_bam_in_cnt ) ) {
+  if( FD_UNLIKELY( in_idx == ctx->replay_out_in_idx ) ) {
+    if( FD_LIKELY( sig!=REPLAY_SIG_RESET ) ) return;
+    frag_in     = &ctx->replay_in;
+    expected_sz = sizeof(fd_poh_reset_t);
+    staged_kind = FD_BAM_FRAG_STAGED_REPLAY_RESET;
+    frag_what   = "replay reset fragment";
+  } else if( FD_LIKELY( bank_in_idx < ctx->bank_bam_in_cnt ) ) {
     frag_in = &ctx->bank_in[ bank_in_idx ];
   } else if( FD_LIKELY( in_idx == ctx->pack_bam_leader_in_idx ) ) {
     frag_in     = &ctx->pack_leader_in;
@@ -798,6 +807,11 @@ bam_after_frag( fd_bam_tile_t *     ctx,
     }
     break;
   }
+  case FD_BAM_FRAG_STAGED_REPLAY_RESET: {
+    fd_poh_reset_t const * reset = (fd_poh_reset_t const *)fd_chunk_to_laddr_const( ctx->frag_staged_mem, ctx->frag_staged_chunk );
+    ctx->next_leader_slot = reset->next_leader_slot;
+    break;
+  }
   default:
     break;
   }
@@ -807,10 +821,11 @@ bam_after_frag( fd_bam_tile_t *     ctx,
 void
 fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
                                   ulong           in_idx,
+                                  ulong           sig,
                                   ulong           chunk,
                                   ulong           sz ) {
-  bam_during_frag( ctx, in_idx, 0UL, 0UL, chunk, sz, 0UL );
-  bam_after_frag( ctx, in_idx, 0UL, 0UL, sz, 0UL, 0UL, NULL );
+  bam_during_frag( ctx, in_idx, 0UL, sig, chunk, sz, 0UL );
+  bam_after_frag( ctx, in_idx, 0UL, sig, sz, 0UL, 0UL, NULL );
 }
 
 void
@@ -1225,6 +1240,8 @@ privileged_init( fd_topo_t *      topo,
   ctx->bam_leader_state.slot = ULONG_MAX;
   ctx->pack_bam_leader_in_idx = ULONG_MAX;
   ctx->pack_bam_result_in_idx = ULONG_MAX;
+  ctx->replay_out_in_idx = ULONG_MAX;
+  ctx->next_leader_slot = ULONG_MAX;
 
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
   fd_memcpy( ctx->bam_identity_pubkey, public_key, 32UL );
@@ -1401,6 +1418,19 @@ unprivileged_init( fd_topo_t *      topo,
   for( ulong i=0UL; i<result_in_idx; i++ ) ctx->pack_bam_result_in_idx += (ulong)!!tile->in_link_poll[ i ];
   fd_topo_link_t const * result_in = &topo->links[ tile->in_link_id[ result_in_idx ] ];
   ctx->pack_result_in = bam_in_link( topo, result_in );
+
+  ctx->next_leader_slot = ULONG_MAX;
+  ulong replay_in_idx = fd_topo_find_tile_in_link( topo, tile, "replay_out", 0UL );
+  if( FD_LIKELY( replay_in_idx != ULONG_MAX ) ) {
+    if( FD_UNLIKELY( !tile->in_link_poll[ replay_in_idx ] ) ) FD_LOG_ERR(( "replay_out must be polled" ));
+    ctx->replay_out_in_idx = 0UL;
+    for( ulong i=0UL; i<replay_in_idx; i++ ) ctx->replay_out_in_idx += (ulong)!!tile->in_link_poll[ i ];
+    fd_topo_link_t const * replay_in = &topo->links[ tile->in_link_id[ replay_in_idx ] ];
+    ctx->replay_in = bam_in_link( topo, replay_in );
+  } else {
+    ctx->replay_out_in_idx = ULONG_MAX;
+    ctx->replay_in = (fd_bam_in_ctx_t){0};
+  }
 
   ulong verify_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_verif", tile->kind_id );
   if( FD_UNLIKELY( verify_out_idx == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_verif link" ));

@@ -5,6 +5,7 @@
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../ballet/nanopb/pb_decode.h"
 #include "../../discof/gossip/fd_gossip_tile.h"
+#include "../../discof/replay/fd_replay_tile.h"
 #include "../bundle/fd_bundle_crank.h"
 #include <fcntl.h>
 #include <limits.h>
@@ -23,6 +24,7 @@ FD_IMPORT_BINARY( bam_dump_txn_fixture, "src/ballet/txn/fixtures/transaction2.bi
 extern void
 fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
                                   ulong           in_idx,
+                                  ulong           sig,
                                   ulong           chunk,
                                   ulong           sz );
 
@@ -3066,6 +3068,116 @@ test_bam_leader_state_supersede_counts_drop( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_replay_reset_channel_contract( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  union {
+    fd_poh_reset_t reset;
+    uchar          bytes[ sizeof(fd_poh_reset_t) ];
+  } ingress = {0};
+  ingress.reset.next_leader_slot = 600UL;
+
+  state->replay_out_in_idx = 2UL;
+  state->replay_in = (fd_bam_in_ctx_t){
+    .mem    = (fd_wksp_t *)ingress.bytes,
+    .chunk0 = 0UL,
+    .wmark  = 0UL
+  };
+
+  fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_poh_reset_t) );
+  FD_TEST( state->next_leader_slot == 600UL );
+
+  ingress.reset.next_leader_slot = 700UL;
+  fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET+1UL, 0UL, sizeof(fd_poh_reset_t) );
+  FD_TEST( state->next_leader_slot == 600UL );
+
+  fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_bam_bundle_result_t) );
+  FD_TEST( state->next_leader_slot == 600UL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_replay_wait_gate_policy( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  state->replay_out_in_idx = 2UL;
+  state->next_leader_slot  = ULONG_MAX;
+  state->tcp_sock          = -1;
+  state->tcp_sock_connected = 0U;
+
+  FD_TEST( fd_bam_tile_waiting_for_leader_slot( state ) );
+
+  state->feedback_queue_depth = 1U;
+  FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
+  state->feedback_queue_depth = 0U;
+
+  state->bam_leader_pending = 1U;
+  FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
+  state->bam_leader_pending = 0U;
+
+  state->next_leader_slot = 500UL;
+  FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
+
+  state->next_leader_slot = ULONG_MAX;
+  state->replay_out_in_idx = ULONG_MAX;
+  FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_replay_schedule_hint_does_not_disconnect( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+  state->replay_out_in_idx = 2UL;
+  state->replay_in.mem = wksp;
+  state->next_leader_slot = ULONG_MAX;
+  fd_cstr_ncpy( state->server_fqdn, "127.0.0.1", sizeof(state->server_fqdn) );
+  state->server_fqdn_len = sizeof("127.0.0.1")-1UL;
+  state->server_tcp_port = 1U;
+
+  int charge_busy = 0;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( charge_busy == 0 );
+  FD_TEST( state->tcp_sock < 0 );
+
+  test_bam_env_mock_conn( env );
+
+  fd_keyswitch_t keyswitch = {0};
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  state->keyswitch = &keyswitch;
+
+  fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
+
+  fd_bam_tile_housekeeping( state );
+  fd_bam_test_metrics_write( state );
+  charge_busy = 0;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( state->bam_status_recent == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  FD_TEST( FD_MGAUGE_GET( BAM, HEALTHY ) == 1UL );
+  FD_TEST( FD_MGAUGE_GET( BAM, STREAM_LIVE ) == 1UL );
+  FD_TEST( state->tcp_sock >= 0 );
+  FD_TEST( state->tcp_sock_connected == 1U );
+
+  state->next_leader_slot     = 100000UL;
+  fd_bam_tile_housekeeping( state );
+  fd_bam_test_metrics_write( state );
+  FD_TEST( state->bam_status_recent == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  FD_TEST( FD_MGAUGE_GET( BAM, HEALTHY ) == 1UL );
+  FD_TEST( state->tcp_sock >= 0 );
+  FD_TEST( state->tcp_sock_connected == 1U );
+
+  state->keyswitch = NULL;
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_pack_leader_channel_contract( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -3087,7 +3199,7 @@ test_bam_pack_leader_channel_contract( fd_wksp_t * wksp ) {
     .wmark  = 0UL
   };
 
-  fd_bam_test_receive_ingress_frag( state, state->pack_bam_leader_in_idx, 0UL, sizeof(fd_bam_leader_state_t) );
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_leader_in_idx, 0UL, 0UL, sizeof(fd_bam_leader_state_t) );
 
   FD_TEST( state->bam_leader_pending == 1U );
   FD_TEST( state->bam_leader_state.slot == ingress.leader.slot );
@@ -3095,7 +3207,7 @@ test_bam_pack_leader_channel_contract( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_leader_state.slot_cu_budget_remaining == ingress.leader.slot_cu_budget_remaining );
   FD_TEST( state->feedback_queue_depth == 0U );
 
-  fd_bam_test_receive_ingress_frag( state, state->pack_bam_leader_in_idx, 0UL, sizeof(fd_bam_bundle_result_t) );
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_leader_in_idx, 0UL, 0UL, sizeof(fd_bam_bundle_result_t) );
 
   FD_TEST( state->bam_leader_pending == 1U );
   FD_TEST( state->bam_leader_state.slot == ingress.leader.slot );
@@ -3134,7 +3246,7 @@ test_bam_pack_leader_slot_change_flushes_immediately( fd_wksp_t * wksp ) {
     .wmark  = 0UL
   };
 
-  fd_bam_test_receive_ingress_frag( state, state->pack_bam_leader_in_idx, 0UL, sizeof(fd_bam_leader_state_t) );
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_leader_in_idx, 0UL, 0UL, sizeof(fd_bam_leader_state_t) );
 
   FD_TEST( state->bam_leader_pending == 0U );
   FD_TEST( state->bam_leader_state.slot == ingress.leader.slot );
@@ -3173,7 +3285,7 @@ test_bam_pack_result_channel_contract( fd_wksp_t * wksp ) {
     .wmark  = 0UL
   };
 
-  fd_bam_test_receive_ingress_frag( state, state->pack_bam_result_in_idx, 0UL, sizeof(fd_bam_bundle_result_t) );
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_result_in_idx, 0UL, 0UL, sizeof(fd_bam_bundle_result_t) );
 
   FD_TEST( state->feedback_queue_depth == 1U );
   FD_TEST( state->bam_results_head == 0U );
@@ -3183,7 +3295,7 @@ test_bam_pack_result_channel_contract( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_results[ 0 ].bundle_txn_cnt == ingress.result.bundle_txn_cnt );
   FD_TEST( state->bam_leader_pending == 0U );
 
-  fd_bam_test_receive_ingress_frag( state, state->pack_bam_result_in_idx, 0UL, sizeof(fd_bam_leader_state_t) );
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_result_in_idx, 0UL, 0UL, sizeof(fd_bam_leader_state_t) );
 
   FD_TEST( state->feedback_queue_depth == 1U );
   FD_TEST( state->bam_results[ 0 ].seq_id == ingress.result.seq_id );
@@ -3218,8 +3330,8 @@ test_bam_bank_result_channel_contract( fd_wksp_t * wksp ) {
     .wmark  = 0UL
   };
 
-  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx,      0UL, sizeof(fd_bam_bundle_result_t) );
-  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx+1UL, 0UL, sizeof(fd_bam_bundle_result_t) );
+  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx,      0UL, 0UL, sizeof(fd_bam_bundle_result_t) );
+  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx+1UL, 0UL, 0UL, sizeof(fd_bam_bundle_result_t) );
 
   FD_TEST( state->feedback_queue_depth == 2U );
   FD_TEST( state->bam_results_head == 0U );
@@ -3229,8 +3341,8 @@ test_bam_bank_result_channel_contract( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_results[1].seq_id == ingress[1].result.seq_id );
   FD_TEST( state->bam_results[1].slot == ingress[1].result.slot );
 
-  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx+2UL, 0UL, sizeof(fd_bam_bundle_result_t) );
-  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx+1UL, 0UL, sizeof(fd_bam_leader_state_t) );
+  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx+2UL, 0UL, 0UL, sizeof(fd_bam_bundle_result_t) );
+  fd_bam_test_receive_ingress_frag( state, state->bank_bam_in_idx+1UL, 0UL, 0UL, sizeof(fd_bam_leader_state_t) );
 
   FD_TEST( state->feedback_queue_depth == 2U );
   FD_TEST( state->bam_results_tail == 2U );
@@ -5352,6 +5464,9 @@ main( int     argc,
   test_bam_scheduler_leader_state_publishes_message( wksp );
   test_bam_scheduler_stream_replays_only_retained_leader_state( wksp );
   test_bam_leader_state_supersede_counts_drop( wksp );
+  test_bam_replay_reset_channel_contract( wksp );
+  test_bam_replay_wait_gate_policy( wksp );
+  test_bam_replay_schedule_hint_does_not_disconnect( wksp );
   test_bam_pack_leader_channel_contract( wksp );
   test_bam_pack_leader_slot_change_flushes_immediately( wksp );
   test_bam_pack_result_channel_contract( wksp );

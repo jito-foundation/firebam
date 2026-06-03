@@ -463,6 +463,8 @@ test_bam_env_create( test_bam_env_t * env,
   state->bam_leader_state.slot = ULONG_MAX;
   state->pack_bam_leader_in_idx = ULONG_MAX;
   state->pack_bam_result_in_idx = ULONG_MAX;
+  state->replay_out_in_idx = ULONG_MAX;
+  state->next_leader_slot = ULONG_MAX;
   state->heap_wksp       = wksp;
   state->tcp_sock        = -1;
   state->admin_rpc_fd    = -1;

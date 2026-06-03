@@ -170,9 +170,11 @@ struct fd_bam_tile {
   ulong            bank_bam_in_cnt;               /* Count of contiguous bank_bam durable result inputs */
   ulong            pack_bam_leader_in_idx;        /* Polled input index for pack_bam_ldr snapshot/control updates */
   ulong            pack_bam_result_in_idx;        /* Polled input index for pack_bam_res durable bundle feedback */
+  ulong            replay_out_in_idx;             /* Optional replay_out input index for local leader schedule hints */
   fd_bam_in_ctx_t  bank_in[ FD_TILE_MAX ];        /* Result ingress dcache contexts */
   fd_bam_in_ctx_t  pack_leader_in;                /* Pack->BAM latest-value-wins leader-state ingress */
   fd_bam_in_ctx_t  pack_result_in;                /* Pack->BAM durable result ingress */
+  fd_bam_in_ctx_t  replay_in;                     /* Replay reset ingress used to track next leader slot */
   uchar            frag_staged_kind;              /* FD_BAM_FRAG_STAGED_* marker set by during_frag and consumed by after_frag; NONE means "drop/no-op". */
   ulong            frag_staged_chunk;             /* during_frag staged source dcache chunk for after_frag commit */
   fd_wksp_t *      frag_staged_mem;               /* during_frag staged source dcache workspace for after_frag commit */
@@ -263,6 +265,7 @@ struct fd_bam_tile {
   fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_res and bank_bam; preserved across reconnect/reset until flushed */
   fd_bam_leader_state_t  bam_leader_state;               /* Latest pack_bam_ldr snapshot awaiting publication; newer unsent snapshots supersede older ones */
   fd_bam_leader_slot_end_tracker_t leader_slot_end[ FD_BAM_LEADER_SLOT_END_TRACKER_CNT ]; /* Per-slot metric tracker used to record whether healthy BAM-owned slots saw fresh work before slot end. */
+  ulong                 next_leader_slot;                /* Upcoming local leader slot from replay_out reset messages, or ULONG_MAX if none is known */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
@@ -678,6 +681,17 @@ FD_FN_PURE static inline int
 fd_bam_tile_should_stall( fd_bam_tile_t const * ctx,
                              long                     now ) {
   return now < ctx->backoff_until;
+}
+
+FD_FN_PURE static inline int
+fd_bam_tile_waiting_for_leader_slot( fd_bam_tile_t const * ctx ) {
+  return !!( FD_VOLATILE_CONST( ctx->enabled ) &&
+             ctx->replay_out_in_idx!=ULONG_MAX &&
+             ctx->next_leader_slot==ULONG_MAX &&
+             !ctx->bam_leader_pending  &&
+             !ctx->feedback_queue_depth &&
+             ctx->tcp_sock<0           &&
+             !ctx->tcp_sock_connected );
 }
 
 /* fd_bam_tile_housekeeping runs periodically at a low frequency. */
