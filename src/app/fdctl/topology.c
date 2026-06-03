@@ -6,6 +6,7 @@
 #include "../../disco/topo/fd_topob.h"
 #include "../../disco/topo/fd_cpu_topo.h"
 #include "../../disco/bundle/fd_bundle_tile.h"
+#include "../../discof/poh/fd_poh_tile.h"
 #include "../../discoh/plugin/fd_plugin.h"
 #include "../../disco/bam/fd_bam_types.h"
 #include "../../disco/bam/fd_bam_ctrl.h"
@@ -349,6 +350,7 @@ fd_topo_initialize( config_t * config ) {
     fd_topob_wksp( topo, "pack_bam_res" );
     fd_topob_wksp( topo, "bank_bam"    );
     fd_topob_wksp( topo, "bam_shred"   );
+    fd_topob_wksp( topo, "replay_out"   );
     fd_topob_wksp( topo, "bam_status"  );
     fd_topob_wksp( topo, "bam_ctrl"    );
     fd_topob_wksp( topo, "bam_fee_cfg" );
@@ -366,6 +368,7 @@ fd_topo_initialize( config_t * config ) {
     FOR(verify_tile_cnt) fd_topob_link( topo, "bank_bam",   "bank_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
     FOR(resolh_tile_cnt) fd_topob_link( topo, "bank_bam",   "bank_bam",   FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
     /**/                 fd_topob_link( topo, "bam_shred",  "bam_shred",  128UL,                                    sizeof(fd_bam_shred_update_t), 1UL );
+    /**/                 fd_topob_link( topo, "replay_out", "replay_out", 128UL,                                    sizeof(fd_poh_reset_t),        1UL );
 
     /**/                 fd_topob_tile( topo, "bam",     "bam",     "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1,                 0 );
 
@@ -387,6 +390,8 @@ fd_topo_initialize( config_t * config ) {
     FOR(resolh_tile_cnt) fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     bank_tile_cnt+verify_tile_cnt+i, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_shred",    0UL                                                );
     FOR(shred_tile_cnt)  fd_topob_tile_in(  topo, "shred",  i,             "metric_in", "bam_shred",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+    /**/                 fd_topob_tile_out( topo, "pohh",   0UL,                        "replay_out",   0UL                                                );
+    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "replay_out",   0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
 
     /* sign_bam is read out of band, so keep it after BAM's polled feedback inputs. */
     /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "sign_bam",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
