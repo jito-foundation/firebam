@@ -1551,6 +1551,22 @@ during_housekeeping( fd_pack_ctx_t * ctx ) {
 }
 
 static inline void
+pack_tile_cancel_cur_spot( fd_pack_ctx_t * ctx ) {
+#if FD_PACK_USE_EXTRA_STORAGE
+  if( FD_LIKELY( !ctx->insert_to_extra ) ) fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
+  else                                     extra_txn_deq_remove_tail( ctx->extra_txn_deq );
+#else
+  fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
+#endif
+  ctx->cur_spot = NULL;
+}
+
+static inline int
+pack_tile_bam_override_active( fd_pack_ctx_t const * ctx ) {
+  return ctx->bam_status_fseq && ( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+}
+
+static inline void
 before_credit( fd_pack_ctx_t *     ctx,
                fd_stem_context_t * stem,
                int *               charge_busy ) {
@@ -1566,13 +1582,7 @@ before_credit( fd_pack_ctx_t *     ctx,
        we try to process the first transaction in the next bundle, we'll
        see we never got the full bundle and cancel the whole last
        bundle, returning all the storage to the pool. */
-#if FD_PACK_USE_EXTRA_STORAGE
-    if( FD_LIKELY( !ctx->insert_to_extra ) ) fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
-    else                                     extra_txn_deq_remove_tail( ctx->extra_txn_deq );
-#else
-    fd_pack_insert_txn_cancel( ctx->pack, ctx->cur_spot );
-#endif
-    ctx->cur_spot = NULL;
+    pack_tile_cancel_cur_spot( ctx );
   }
 }
 
@@ -1852,7 +1862,7 @@ after_credit( fd_pack_ctx_t *     ctx,
                                       | fd_int_if( i<pacing_execle_cnt, FD_PACK_SCHEDULE_TXN,    0 );
         break;
     }
-    if( FD_UNLIKELY( ctx->bam_status_fseq && ( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) ) ) {
+    if( FD_UNLIKELY( pack_tile_bam_override_active( ctx ) ) ) {
       flags |= FD_PACK_SCHEDULE_BAM_ONLY;
     }
 
@@ -2110,6 +2120,15 @@ during_frag( fd_pack_ctx_t * ctx,
       ctx->current_bundle->min_blockhash_slot = fd_ulong_min( ctx->current_bundle->min_blockhash_slot, sig );
     } else if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) {
       ulong bundle_id = txnm->block_engine.bundle_id;
+      if( FD_UNLIKELY( pack_tile_bam_override_active( ctx ) ) ) {
+        if( FD_UNLIKELY( ctx->current_bundle->bundle && !ctx->current_bundle_bam->is_bam ) ) {
+          FD_MCNT_INC( PACK, TRANSACTION_DROPPED_PARTIAL_BUNDLE, ctx->current_bundle->txn_received );
+          fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
+          ctx->current_bundle->bundle = NULL;
+        }
+        ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
+        return;
+      }
       ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE;
       if( FD_LIKELY( !ctx->current_bundle->bundle || bundle_id!=ctx->current_bundle->id || ctx->current_bundle_bam->is_bam ) ) {
         if( FD_UNLIKELY( ctx->current_bundle->bundle &&
@@ -2141,8 +2160,7 @@ during_frag( fd_pack_ctx_t * ctx,
       ctx->current_bundle->min_blockhash_slot = fd_ulong_min( ctx->current_bundle->min_blockhash_slot, sig );
     } else {
       ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
-      if( FD_UNLIKELY( ctx->bam_status_fseq &&
-                       ( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) &&
+      if( FD_UNLIKELY( pack_tile_bam_override_active( ctx ) &&
                        !fd_txn_is_simple_vote_transaction( txn, fd_txn_m_payload( txnm ) ) ) ) {
         return;
       }
@@ -2345,6 +2363,17 @@ after_frag( fd_pack_ctx_t *     ctx,
 
     switch( ctx->bundle_kind ) {
     case PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE: {
+      if( FD_UNLIKELY( pack_tile_bam_override_active( ctx ) ) ) {
+        if( FD_LIKELY( ctx->current_bundle->bundle ) ) {
+          FD_MCNT_INC( PACK, TRANSACTION_DROPPED_PARTIAL_BUNDLE,
+                       fd_ulong_min( ctx->current_bundle->txn_received+1UL, ctx->current_bundle->txn_cnt ) );
+          fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
+          ctx->current_bundle->bundle = NULL;
+        }
+        ctx->current_bundle->txn_received = 0UL;
+        ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
+        break;
+      }
       if( FD_UNLIKELY( ctx->current_bundle->txn_cnt==0UL ) ) return;
       if( FD_UNLIKELY( ++(ctx->current_bundle->txn_received)==ctx->current_bundle->txn_cnt ) ) {
         ulong deleted;
@@ -2536,6 +2565,11 @@ after_frag( fd_pack_ctx_t *     ctx,
     case PACK_TILE_BUNDLE_KIND_NONE:
     default: {
       if( FD_UNLIKELY( !ctx->cur_spot ) ) break;
+      if( FD_UNLIKELY( pack_tile_bam_override_active( ctx ) &&
+                       !fd_txn_is_simple_vote_transaction( TXN(ctx->cur_spot->txnp), ctx->cur_spot->txnp->payload ) ) ) {
+        pack_tile_cancel_cur_spot( ctx );
+        break;
+      }
 #if FD_PACK_USE_EXTRA_STORAGE
       if( FD_UNLIKELY( ctx->insert_to_extra ) ) break;
 #endif

@@ -145,7 +145,6 @@ metrics_write( fd_bundle_tile_t * ctx ) {
 void
 fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
   long log_interval_ns = (long)30e9;
-  int  status          = fd_bundle_client_status( ctx );
   long now_ns          = fd_log_wallclock();
 
   _Bool bam_active = ctx->bam_status_fseq && !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
@@ -154,6 +153,8 @@ fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
     ctx->last_bundle_status_log_nanos = now_ns;
     if( bam_active ) {
       fd_bundle_client_reset( ctx );
+      while( FD_UNLIKELY( ctx->pending_txns && !pending_txn_empty( ctx->pending_txns ) ) )
+        pending_txn_remove_head( ctx->pending_txns );
       ctx->bundle_status_plugin = 127;
       ctx->bundle_status_recent = FD_BUNDLE_STATE_DISCONNECTED;
       ctx->bundle_status_logged = ctx->bundle_status_recent;
@@ -164,6 +165,8 @@ fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
       FD_LOG_NOTICE(( "BAM inactive; resuming bundle gRPC connection" ));
     }
   }
+
+  int status = fd_bundle_client_status( ctx );
 
   long log_next_ns = ctx->last_bundle_status_log_nanos + log_interval_ns;
   if( FD_UNLIKELY( !ctx->bam_override_active && !ctx->sleep_mode && status!=FD_BUNDLE_STATE_CONNECTED && now_ns>log_next_ns ) ) {
@@ -319,7 +322,7 @@ after_credit( fd_bundle_tile_t *  ctx,
               fd_stem_context_t * stem,
               int *               opt_poll_in,
               int *               charge_busy ) {
-  if( !pending_txn_empty( ctx->pending_txns ) ) {
+  if( !ctx->bam_override_active && !pending_txn_empty( ctx->pending_txns ) ) {
     fd_bundle_pending_txn_t * head = pending_txn_peek_head( ctx->pending_txns );
     ulong drain_seq = head->bundle_seq;
     ulong drain_sig = head->sig;

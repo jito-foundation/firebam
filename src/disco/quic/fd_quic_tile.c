@@ -116,46 +116,12 @@ before_credit( fd_quic_ctx_t *     ctx,
   ctx->now = now;
 
   if( FD_LIKELY( ctx->bam_status_fseq ) ) {
-    _Bool bam_override_was_active = ctx->bam_override_active;
-    _Bool bam_override = !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
-    if( FD_UNLIKELY( bam_override && ctx->quic->metrics.conn_alloc_cnt ) ) {
-      fd_quic_t *       quic      = ctx->quic;
-      fd_quic_state_t * quic_state = fd_quic_get_state( quic );
-      *charge_busy = 1;
-
-      /* BAM owns TPU ingress while active. Explicitly close and service
-         all outstanding QUIC connections now so cleanup is not deferred
-         until BAM deactivates. */
-      for( ulong conn_idx=0UL; conn_idx<quic->limits.conn_cnt; conn_idx++ ) {
-        fd_quic_conn_t * conn = fd_quic_conn_at_idx( quic_state, conn_idx );
-        switch( conn->state ) {
-          case FD_QUIC_CONN_STATE_INVALID:
-          case FD_QUIC_CONN_STATE_DEAD:
-            continue;
-          case FD_QUIC_CONN_STATE_ABORT:
-            break; /* already scheduled to die; just drain below */
-          default:
-            fd_quic_conn_close( conn, 0U );
-            break;
-        }
-      }
-
-      ulong max_iters = fd_ulong_max( 8UL*quic->limits.conn_cnt, 1UL );
-      while( quic->metrics.conn_alloc_cnt && max_iters ) {
-        if( FD_UNLIKELY( !fd_quic_service( quic, now ) ) ) break;
-        max_iters--;
-      }
-
-      if( FD_UNLIKELY( !bam_override_was_active && quic->metrics.conn_alloc_cnt ) ) {
-        FD_LOG_WARNING(( "BAM override active, but %lu QUIC connections remain after cleanup",
-                         quic->metrics.conn_alloc_cnt ));
-      }
-    }
-    ctx->bam_override_active = bam_override;
-  }
-
-  if( FD_UNLIKELY( ctx->bam_override_active ) ) {
-    return;
+    /* QUIC is intentionally not gated here.  TPU_VOTE_QUIC uses the
+       same netmux protocol as normal TPU_QUIC, so the QUIC tile cannot
+       tell votes from non-votes before decrypting and reassembling the
+       transaction.  Pack re-reads bam_status_fseq after parse and drops
+       non-votes while preserving vote passthrough. */
+    ctx->bam_override_active = !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   }
   *charge_busy = fd_quic_service( ctx->quic, now );
 }
@@ -234,7 +200,6 @@ before_frag( fd_quic_ctx_t * ctx,
 
   ulong proto = fd_disco_netmux_sig_proto( sig );
   if( FD_UNLIKELY( proto!=DST_PROTO_TPU_UDP && proto!=DST_PROTO_TPU_QUIC ) ) return 1;
-  if( FD_UNLIKELY( ctx->bam_override_active && proto!=DST_PROTO_TPU_UDP ) ) return 1;
 
   ulong hash = fd_disco_netmux_sig_hash( sig );
   if( FD_UNLIKELY( (hash % ctx->round_robin_cnt) != ctx->round_robin_id ) ) return 1;

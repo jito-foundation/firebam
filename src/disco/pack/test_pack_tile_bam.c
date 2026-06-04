@@ -37,6 +37,7 @@ static ulong             test_insert_fini_call_cnt;
 static int               test_delete_before_insert_fini;
 static ulong             test_insert_txn_init_call_cnt;
 static ulong             test_insert_txn_fini_call_cnt;
+static ulong             test_insert_txn_cancel_call_cnt;
 static fd_txn_e_t        test_insert_txn_slot[1];
 
 #define TEST_PACK_TILE_DCACHE_CHUNKS 16UL
@@ -81,6 +82,7 @@ test_fd_pack_insert_txn_cancel( fd_pack_t *  pack,
                                 fd_txn_e_t * txn ) {
   (void)pack;
   (void)txn;
+  test_insert_txn_cancel_call_cnt++;
 }
 
 int
@@ -237,6 +239,7 @@ test_pack_tile_harness_new( test_pack_tile_harness_t * h ) {
   test_delete_before_insert_fini  = 0;
   test_insert_txn_init_call_cnt   = 0UL;
   test_insert_txn_fini_call_cnt   = 0UL;
+  test_insert_txn_cancel_call_cnt = 0UL;
   fd_memset( test_insert_txn_slot, 0, sizeof(test_insert_txn_slot) );
   test_pack_tile_out_new( h->out );
 
@@ -302,19 +305,23 @@ test_pack_tile_bam_override_allows_votes_only_from_normal_ingress( void ) {
   struct {
     uchar const * payload;
     ulong         payload_sz;
+    uchar         source_tpu;
     int           is_vote;
   } cases[] = {
-    { test_pack_tile_non_vote,    test_pack_tile_non_vote_sz,    0 },
-    { test_pack_tile_sample_vote, test_pack_tile_sample_vote_sz, 1 },
+    { test_pack_tile_non_vote,    test_pack_tile_non_vote_sz,    FD_TXN_M_TPU_SOURCE_UDP,  0 },
+    { test_pack_tile_sample_vote, test_pack_tile_sample_vote_sz, FD_TXN_M_TPU_SOURCE_UDP,  1 },
+    { test_pack_tile_non_vote,    test_pack_tile_non_vote_sz,    FD_TXN_M_TPU_SOURCE_QUIC, 0 },
+    { test_pack_tile_sample_vote, test_pack_tile_sample_vote_sz, FD_TXN_M_TPU_SOURCE_QUIC, 1 },
   };
 
+  ulong expected_insert_cnt = 0UL;
   for( ulong i=0UL; i<sizeof(cases)/sizeof(cases[0]); i++ ) {
     fd_memset( resolved_buf, 0, FD_TPU_RESOLVED_MTU );
 
     fd_txn_m_t * txnm = (fd_txn_m_t *)resolved_buf;
     txnm->reference_slot = 100UL;
     txnm->payload_sz     = (ushort)cases[ i ].payload_sz;
-    txnm->source_tpu     = FD_TXN_M_TPU_SOURCE_UDP;
+    txnm->source_tpu     = cases[ i ].source_tpu;
     fd_memcpy( fd_txn_m_payload( txnm ), cases[ i ].payload, cases[ i ].payload_sz );
 
     fd_txn_t * txn      = fd_txn_m_txn_t( txnm );
@@ -336,14 +343,150 @@ test_pack_tile_bam_override_allows_votes_only_from_normal_ingress( void ) {
     during_frag( h->ctx, 0UL, 0UL, 100UL, 0UL, sz, 0UL );
     after_frag( h->ctx, 0UL, 0UL, 100UL, sz, 0UL, 0UL, &h->out->stem );
 
-    FD_TEST( test_insert_txn_init_call_cnt == (ulong)cases[ i ].is_vote );
-    FD_TEST( test_insert_txn_fini_call_cnt == (ulong)cases[ i ].is_vote );
+    expected_insert_cnt += (ulong)cases[ i ].is_vote;
+    FD_TEST( test_insert_txn_init_call_cnt == expected_insert_cnt );
+    FD_TEST( test_insert_txn_fini_call_cnt == expected_insert_cnt );
     FD_TEST( h->ctx->cur_spot == NULL );
   }
 
-  FD_TEST( test_insert_txn_slot->txnp->source_tpu == FD_TXN_M_TPU_SOURCE_UDP );
+  FD_TEST( test_insert_txn_slot->txnp->source_tpu == FD_TXN_M_TPU_SOURCE_QUIC );
   FD_TEST( test_insert_txn_slot->txnp->payload_sz == test_pack_tile_sample_vote_sz );
   FD_TEST( fd_txn_is_simple_vote_transaction( TXN( test_insert_txn_slot->txnp ), test_insert_txn_slot->txnp->payload ) );
+
+  test_pack_tile_harness_delete( h );
+}
+
+static void
+test_pack_tile_bam_override_after_frag_preserves_votes_only( void ) {
+  struct {
+    uchar const * payload;
+    ulong         payload_sz;
+    int           is_vote;
+  } cases[] = {
+    { test_pack_tile_non_vote,    test_pack_tile_non_vote_sz,    0 },
+    { test_pack_tile_sample_vote, test_pack_tile_sample_vote_sz, 1 },
+  };
+
+  for( ulong i=0UL; i<sizeof(cases)/sizeof(cases[0]); i++ ) {
+    test_pack_tile_harness_t h[1];
+    uchar                    resolved_buf[ FD_TPU_RESOLVED_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
+    ulong                    bam_status_fseq = 0UL;
+
+    test_pack_tile_harness_new( h );
+    fd_memset( resolved_buf, 0, FD_TPU_RESOLVED_MTU );
+
+    fd_txn_m_t * txnm = (fd_txn_m_t *)resolved_buf;
+    txnm->reference_slot = 100UL;
+    txnm->payload_sz     = (ushort)cases[ i ].payload_sz;
+    txnm->source_tpu     = FD_TXN_M_TPU_SOURCE_QUIC;
+    fd_memcpy( fd_txn_m_payload( txnm ), cases[ i ].payload, cases[ i ].payload_sz );
+
+    fd_txn_t * txn      = fd_txn_m_txn_t( txnm );
+    ulong      txn_t_sz = fd_txn_parse( fd_txn_m_payload( txnm ), cases[ i ].payload_sz, txn, NULL );
+    FD_TEST( txn_t_sz );
+    txnm->txn_t_sz = (ushort)txn_t_sz;
+
+    ulong sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
+    h->ctx->in_kind[ 0 ]    = IN_KIND_RESOLV;
+    h->ctx->in[ 0 ].mem     = (fd_wksp_t *)resolved_buf;
+    h->ctx->in[ 0 ].chunk0  = 0UL;
+    h->ctx->in[ 0 ].wmark   = (sz + FD_CHUNK_SZ - 1UL) >> FD_CHUNK_LG_SZ;
+    h->ctx->leader_slot     = 100UL;
+    h->ctx->bam_status_fseq = &bam_status_fseq;
+
+    during_frag( h->ctx, 0UL, 0UL, 100UL, 0UL, sz, 0UL );
+    FD_TEST( test_insert_txn_init_call_cnt == 1UL );
+    FD_TEST( h->ctx->cur_spot );
+
+    bam_status_fseq = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+    after_frag( h->ctx, 0UL, 0UL, 100UL, sz, 0UL, 0UL, &h->out->stem );
+
+    FD_TEST( test_insert_txn_fini_call_cnt == (ulong)cases[ i ].is_vote );
+    FD_TEST( test_insert_txn_cancel_call_cnt == (ulong)!cases[ i ].is_vote );
+    FD_TEST( h->ctx->cur_spot == NULL );
+
+    test_pack_tile_harness_delete( h );
+  }
+}
+
+static void
+test_pack_tile_bam_override_drops_block_engine_bundles( void ) {
+  test_pack_tile_harness_t h[1];
+  uchar                    resolved_buf[ FD_TPU_RESOLVED_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
+  ulong                    bam_status_fseq = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+
+  test_pack_tile_harness_new( h );
+  fd_memset( resolved_buf, 0, FD_TPU_RESOLVED_MTU );
+
+  fd_txn_m_t * txnm = (fd_txn_m_t *)resolved_buf;
+  txnm->reference_slot = 100UL;
+  txnm->payload_sz     = (ushort)test_pack_tile_non_vote_sz;
+  txnm->source_tpu     = FD_TXN_M_TPU_SOURCE_BUNDLE;
+  txnm->block_engine.bundle_id      = 44UL;
+  txnm->block_engine.bundle_txn_cnt = 2UL;
+  fd_memcpy( fd_txn_m_payload( txnm ), test_pack_tile_non_vote, test_pack_tile_non_vote_sz );
+
+  fd_txn_t * txn = fd_txn_m_txn_t( txnm );
+  ulong txn_t_sz = fd_txn_parse( fd_txn_m_payload( txnm ), test_pack_tile_non_vote_sz, txn, NULL );
+  FD_TEST( txn_t_sz );
+  txnm->txn_t_sz = (ushort)txn_t_sz;
+
+  ulong sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
+  h->ctx->in_kind[ 0 ]    = IN_KIND_RESOLV;
+  h->ctx->in[ 0 ].mem     = (fd_wksp_t *)resolved_buf;
+  h->ctx->in[ 0 ].chunk0  = 0UL;
+  h->ctx->in[ 0 ].wmark   = (sz + FD_CHUNK_SZ - 1UL) >> FD_CHUNK_LG_SZ;
+  h->ctx->leader_slot     = 100UL;
+  h->ctx->bam_status_fseq = &bam_status_fseq;
+
+  h->ctx->current_bundle->id           = 43UL;
+  h->ctx->current_bundle->txn_cnt      = 3UL;
+  h->ctx->current_bundle->txn_received = 1UL;
+  h->ctx->current_bundle->bundle       = h->ctx->current_bundle->_txn;
+  h->ctx->current_bundle_bam->is_bam   = 0;
+
+  during_frag( h->ctx, 0UL, 0UL, 100UL, 0UL, sz, 0UL );
+  after_frag( h->ctx, 0UL, 0UL, 100UL, sz, 0UL, 0UL, &h->out->stem );
+
+  FD_TEST( h->ctx->bundle_kind == PACK_TILE_BUNDLE_KIND_NONE );
+  FD_TEST( h->ctx->current_bundle->bundle == NULL );
+  FD_TEST( test_bundle_cancel_call_cnt == 1UL );
+  FD_TEST( test_bundle_cancel_last_txn_cnt == 3UL );
+  FD_TEST( test_insert_fini_call_cnt == 0UL );
+
+  test_pack_tile_harness_delete( h );
+}
+
+static void
+test_pack_tile_bam_override_after_frag_cancels_block_engine_bundle( void ) {
+  test_pack_tile_harness_t h[1];
+  fd_txn_e_t               staged_txns[ 2 ];
+  ulong                    bam_status_fseq = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+
+  test_pack_tile_harness_new( h );
+  fd_memset( staged_txns, 0, sizeof(staged_txns) );
+
+  h->ctx->in_kind[ 0 ]           = IN_KIND_RESOLV;
+  h->ctx->bam_status_fseq        = &bam_status_fseq;
+  h->ctx->bundle_kind            = PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE;
+  h->ctx->current_bundle->id     = 55UL;
+  h->ctx->current_bundle->txn_cnt      = 2UL;
+  h->ctx->current_bundle->txn_received = 1UL;
+  h->ctx->current_bundle->_txn[ 0 ]    = &staged_txns[ 0 ];
+  h->ctx->current_bundle->_txn[ 1 ]    = &staged_txns[ 1 ];
+  h->ctx->current_bundle->bundle       = h->ctx->current_bundle->_txn;
+  h->ctx->current_bundle_bam->is_bam   = 0;
+  h->ctx->cur_spot = &staged_txns[ 1 ];
+
+  after_frag( h->ctx, 0UL, 0UL, 100UL, 0UL, 0UL, 0UL, &h->out->stem );
+
+  FD_TEST( h->ctx->bundle_kind == PACK_TILE_BUNDLE_KIND_NONE );
+  FD_TEST( h->ctx->current_bundle->bundle == NULL );
+  FD_TEST( h->ctx->current_bundle->txn_received == 0UL );
+  FD_TEST( h->ctx->cur_spot == NULL );
+  FD_TEST( test_bundle_cancel_call_cnt == 1UL );
+  FD_TEST( test_bundle_cancel_last_txn_cnt == 2UL );
+  FD_TEST( test_insert_fini_call_cnt == 0UL );
 
   test_pack_tile_harness_delete( h );
 }
@@ -883,6 +1026,9 @@ main( int     argc,
   test_pack_tile_bam_result_mapping_tracking_reject();
   test_pack_tile_bam_atomic_abandon_reports_missing_deser();
   test_pack_tile_bam_override_allows_votes_only_from_normal_ingress();
+  test_pack_tile_bam_override_after_frag_preserves_votes_only();
+  test_pack_tile_bam_override_drops_block_engine_bundles();
+  test_pack_tile_bam_override_after_frag_cancels_block_engine_bundle();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

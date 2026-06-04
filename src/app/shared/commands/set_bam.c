@@ -116,8 +116,21 @@ set_bam_apply_request( args_t *   args,
     if( st == FD_BAM_CTRL_STATE_SUCCESS || st == FD_BAM_CTRL_STATE_ERROR )
       break;
     if( FD_UNLIKELY( fd_log_wallclock() - start_ns > timeout_ns ) ) {
-      FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_IDLE;
-      FD_LOG_ERR(( "Timed out waiting for BAM runtime update. Is Firedancer currently running?" ));
+      st = FD_VOLATILE_CONST( ctrl->state );
+      if( st == FD_BAM_CTRL_STATE_SUCCESS || st == FD_BAM_CTRL_STATE_ERROR )
+        continue;
+      if( st == FD_BAM_CTRL_STATE_APPLYING ) {
+        FD_LOG_WARNING(( "Still waiting for BAM runtime update to finish" ));
+        start_ns = fd_log_wallclock();
+        continue;
+      }
+      if( st == FD_BAM_CTRL_STATE_REQUEST ) {
+        if( FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_IDLE )==FD_BAM_CTRL_STATE_REQUEST )
+          FD_LOG_ERR(( "Timed out waiting for BAM runtime update to be claimed. Is Firedancer currently running?" ));
+        continue;
+      }
+      FD_LOG_ERR(( "Timed out waiting for BAM runtime update (state=%u). Is Firedancer currently running?",
+                   (uint)st ));
     }
     usleep( 10000 ); /* 10ms */
   }

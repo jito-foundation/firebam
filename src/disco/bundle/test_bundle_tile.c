@@ -1,5 +1,6 @@
 #define FD_TILE_TEST
 #include "fd_bundle_tile.c"
+#include "../../waltz/h2/fd_h2_proto.h"
 #include <stdlib.h>
 
 /* Provide the version string that the tile externs */
@@ -386,6 +387,63 @@ test_saturating_sub( void ) {
   free( wksp );
 }
 
+static void
+test_bam_override_housekeeping_updates_latch( void ) {
+  FD_LOG_NOTICE(( "TEST BAM override updates during housekeeping" ));
+
+  fd_bundle_tile_t ctx[1];
+  memset( ctx, 0, sizeof(fd_bundle_tile_t) );
+
+  FD_TEST( fd_rng_new( ctx->rng, 1U, 0UL ) );
+  ctx->tcp_sock = -1;
+  ctx->grpc_buf_max = 16384UL + sizeof(fd_h2_frame_hdr_t);
+
+  ulong grpc_align     = fd_grpc_client_align();
+  ulong grpc_footprint = fd_ulong_align_up( fd_grpc_client_footprint( ctx->grpc_buf_max ), grpc_align );
+  void * grpc_mem = aligned_alloc( grpc_align, grpc_footprint );
+  FD_TEST( grpc_mem );
+  ctx->grpc_client = fd_grpc_client_new( grpc_mem, &fd_bundle_client_grpc_callbacks, ctx->grpc_metrics, ctx, ctx->grpc_buf_max, 1UL );
+  FD_TEST( ctx->grpc_client );
+
+  ulong pending_align     = pending_txn_align();
+  ulong pending_footprint = fd_ulong_align_up( pending_txn_footprint( 4UL ), pending_align );
+  void * pending_mem = aligned_alloc( pending_align, pending_footprint );
+  FD_TEST( pending_mem );
+  ctx->pending_txns = pending_txn_join( pending_txn_new( pending_mem, 4UL ) );
+  FD_TEST( ctx->pending_txns );
+  pending_txn_push_tail( ctx->pending_txns, (fd_bundle_pending_txn_t){ .sig=0UL, .bundle_seq=0UL } );
+  FD_TEST( !pending_txn_empty( ctx->pending_txns ) );
+
+  uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  void * fseq_shmem = fd_fseq_new( fseq_mem, 0UL );
+  FD_TEST( fseq_shmem );
+  ulong * fseq = fd_fseq_join( fseq_shmem );
+  FD_TEST( fseq );
+  ctx->bam_status_fseq = fseq;
+
+  ctx->bundle_status_plugin = FD_BUNDLE_STATE_CONNECTED;
+  ctx->bundle_status_recent = FD_BUNDLE_STATE_CONNECTED;
+  ctx->bundle_status_logged = FD_BUNDLE_STATE_CONNECTED;
+
+  fd_keyswitch_t keyswitch = {0};
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  ctx->keyswitch = &keyswitch;
+
+  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  fd_bundle_tile_housekeeping( ctx );
+
+  FD_TEST( ctx->bam_override_active );
+  FD_TEST( ctx->bundle_status_plugin == 127 );
+  FD_TEST( ctx->bundle_status_recent == FD_BUNDLE_STATE_DISCONNECTED );
+  FD_TEST( ctx->bundle_status_logged == FD_BUNDLE_STATE_DISCONNECTED );
+  FD_TEST( pending_txn_empty( ctx->pending_txns ) );
+
+  FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
+  FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
+  free( pending_mem );
+  free( grpc_mem );
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -407,6 +465,7 @@ main( int     argc,
   test_replay_triggers_sleep_transition();
   test_boundary_thresholds();
   test_saturating_sub();
+  test_bam_override_housekeeping_updates_latch();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

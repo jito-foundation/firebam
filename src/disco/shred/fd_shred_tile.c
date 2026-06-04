@@ -520,6 +520,11 @@ during_frag( fd_shred_ctx_t * ctx,
       return;
     }
     fd_memcpy( ctx->bam_shred_upd_buf, fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk ), sizeof(fd_bam_shred_update_t) );
+    if( FD_UNLIKELY( ctx->bam_shred_upd_buf->shred_sock_cnt>FD_BAM_SHRED_SOCK_MAX ) ) {
+      FD_LOG_WARNING(( "Malformed BAM shred update receiver count=%u max=%lu",
+                       (uint)ctx->bam_shred_upd_buf->shred_sock_cnt, FD_BAM_SHRED_SOCK_MAX ));
+      ctx->skip_frag = 1;
+    }
     return;
   }
 
@@ -978,6 +983,7 @@ after_frag( fd_shred_ctx_t *    ctx,
   }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BAM_SHRED ) ) {
+    if( FD_UNLIKELY( ctx->skip_frag ) ) return;
     ctx->bam_dests_cnt = ctx->bam_shred_upd_buf->shred_sock_cnt;
     for( ulong i=0UL; i<ctx->bam_dests_cnt; i++ ) {
       ctx->bam_dests[ i ].ip4  = ctx->bam_shred_upd_buf->shred_sock[ i ].addr;
