@@ -678,13 +678,14 @@ fd_bam_note_replay_schedule_slot( fd_bam_tile_t * ctx,
                                   ulong           slot_in_epoch,
                                   ulong           slots_per_epoch ) {
   if( FD_LIKELY( ctx->next_leader_slot!=ULONG_MAX ) ) {
-    ctx->leader_schedule_recheck_slot = ULONG_MAX;
+    ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
     return;
   }
-  if( FD_UNLIKELY( slot==ULONG_MAX || ctx->leader_schedule_recheck_slot==0UL ) ) return;
-  if( FD_UNLIKELY( ctx->leader_schedule_recheck_slot!=ULONG_MAX &&
+  if( FD_UNLIKELY( slot==ULONG_MAX ||
+                   ctx->leader_schedule_recheck_slot==FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT ) ) return;
+  if( FD_UNLIKELY( ctx->leader_schedule_recheck_slot!=FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT &&
                    slot>=ctx->leader_schedule_recheck_slot ) ) {
-    ctx->leader_schedule_recheck_slot = 0UL;
+    ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
     return;
   }
 
@@ -695,8 +696,8 @@ fd_bam_note_replay_schedule_slot( fd_bam_tile_t * ctx,
   }
 
   if( FD_UNLIKELY( recheck_slot<=slot ) ) {
-    ctx->leader_schedule_recheck_slot = 0UL;
-  } else if( FD_UNLIKELY( ctx->leader_schedule_recheck_slot==ULONG_MAX ) ) {
+    ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
+  } else if( FD_UNLIKELY( ctx->leader_schedule_recheck_slot==FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT ) ) {
     ctx->leader_schedule_recheck_slot = recheck_slot;
   } else {
     ctx->leader_schedule_recheck_slot = fd_ulong_min( ctx->leader_schedule_recheck_slot, recheck_slot );
@@ -1290,7 +1291,7 @@ privileged_init( fd_topo_t *      topo,
   ctx->pack_bam_result_in_idx = ULONG_MAX;
   ctx->replay_out_in_idx = ULONG_MAX;
   ctx->next_leader_slot = ULONG_MAX;
-  ctx->leader_schedule_recheck_slot = ULONG_MAX;
+  ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
 
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
   fd_memcpy( ctx->bam_identity_pubkey, public_key, 32UL );
@@ -1469,7 +1470,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->pack_result_in = bam_in_link( topo, result_in );
 
   ctx->next_leader_slot = ULONG_MAX;
-  ctx->leader_schedule_recheck_slot = ULONG_MAX;
+  ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
   ulong replay_in_idx = fd_topo_find_tile_in_link( topo, tile, "replay_out", 0UL );
   if( FD_LIKELY( replay_in_idx != ULONG_MAX ) ) {
     if( FD_UNLIKELY( !tile->in_link_poll[ replay_in_idx ] ) ) FD_LOG_ERR(( "replay_out must be polled" ));

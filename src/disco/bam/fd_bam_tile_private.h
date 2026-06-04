@@ -22,6 +22,8 @@ typedef struct fd_bam_tile fd_bam_tile_t;
 
 #define FD_BAM_ACTIVITY_TIMEOUT_NS ((long)6e9) /* 6 seconds */
 #define FD_BAM_LEADER_SCHEDULE_RECHECK_SLOT_DELTA 64UL
+#define FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT 0UL
+#define FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT ULONG_MAX
 #if FD_HAS_OPENSSL
 #include <openssl/ssl.h> /* SSL_CTX */
 #endif
@@ -267,7 +269,7 @@ struct fd_bam_tile {
   fd_bam_leader_state_t  bam_leader_state;               /* Latest pack_bam_ldr snapshot awaiting publication; newer unsent snapshots supersede older ones */
   fd_bam_leader_slot_end_tracker_t leader_slot_end[ FD_BAM_LEADER_SLOT_END_TRACKER_CNT ]; /* Per-slot metric tracker used to record whether healthy BAM-owned slots saw fresh work before slot end. */
   ulong                 next_leader_slot;                /* Upcoming local leader slot from replay_out reset messages, or ULONG_MAX if none is known */
-  ulong                 leader_schedule_recheck_slot;    /* Slot when BAM may retry while next_leader_slot is unknown; 0 means due, ULONG_MAX means unscheduled */
+  ulong                 leader_schedule_recheck_slot;    /* Slot when BAM may retry while next_leader_slot is unknown; DUE means retry now, NONE means wait for replay progress */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
@@ -699,7 +701,7 @@ fd_bam_tile_leader_schedule_gate_active( fd_bam_tile_t const * ctx ) {
 FD_FN_PURE static inline int
 fd_bam_tile_waiting_for_leader_slot( fd_bam_tile_t const * ctx ) {
   return !!( fd_bam_tile_leader_schedule_gate_active( ctx ) &&
-             ctx->leader_schedule_recheck_slot!=0UL );
+             ctx->leader_schedule_recheck_slot!=FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT );
 }
 
 /* fd_bam_tile_housekeeping runs periodically at a low frequency. */
