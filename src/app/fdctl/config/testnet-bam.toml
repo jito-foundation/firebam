@@ -11,7 +11,7 @@
 [consensus]
     identity_path = "/home/{user}/keys/validator-keypair.json"
     vote_account_path = "/home/{user}/keys/validator-vote.json"
-    authorized_voter_paths = ["/home/{user}/keys/validator-keypair.json"] # remove, this is for testing jito infra
+    authorized_voter_paths = ["/home/{user}/keys/validator-keypair.json"]
     expected_genesis_hash = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
     known_validators = [
         "5D1fNXzvv5NjV1ysLjirC4WY92RNsVH18vjmcszZd8on",
@@ -26,36 +26,24 @@
     full_api = true
     private = true
 
-[layout]
-# Configure 2 shred tiles to handle the increased computational
-# overhead of shred destination calculation, which scales with
-# testnet's expanded validator peer set
-shred_tile_count = 2
-
-[log]
-    #level_stderr = "INFO"
-
 [development]
-    sandbox = false
     core_dump = true
     no_clone = false
+    sandbox = false
 
 [reporting]
     solana_metrics_config = "host=https://metrics.solana.com:8086,db=tds,u=testnet_write,p=c4fa841aa918bf8274e3e2a44d77568d9861b3ea"
 
 [tiles.bundle]
-    enabled = false
+    enabled = true
     url = "https://testnet.block-engine.jito.wtf"
     tip_distribution_program_addr = "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf"
     tip_payment_program_addr = "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
-    tip_distribution_authority = "7heQNXEtxSv3wV8sNbuQsDN5xNGbbpLvHGiyXuJxEf7n"
+    tip_distribution_authority = "7T4inmPmtNBX3MhLwJ9hFsSMnGJYYkKioVABSNTWVRuS"
 
 [tiles.bam]
     enabled = true
     url = "http://testnet.bam.jito.wtf"
-    tls_domain_name = ""
-    keepalive_interval_millis = 5000
-    tls_cert_verify = false
 
 [tiles.gui]
     gui_listen_address = "0.0.0.0"
