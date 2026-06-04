@@ -983,7 +983,6 @@ after_frag( fd_shred_ctx_t *    ctx,
   }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BAM_SHRED ) ) {
-    if( FD_UNLIKELY( ctx->skip_frag ) ) return;
     ctx->bam_dests_cnt = ctx->bam_shred_upd_buf->shred_sock_cnt;
     for( ulong i=0UL; i<ctx->bam_dests_cnt; i++ ) {
       ctx->bam_dests[ i ].ip4  = ctx->bam_shred_upd_buf->shred_sock[ i ].addr;

@@ -1,10 +1,7 @@
 #include "fd_quic_tile.h"
-#include "../bam/fd_bam_types.h"
 #include "../metrics/fd_metrics.h"
 #include "../stem/fd_stem.h"
 #include "../topo/fd_topo.h"
-#include "../../util/pod/fd_pod.h"
-#include "../../tango/fseq/fd_fseq.h"
 #include "fd_tpu.h"
 #include "../../waltz/quic/fd_quic_private.h"
 #include "generated/quic_seccomp.h"
@@ -115,14 +112,6 @@ before_credit( fd_quic_ctx_t *     ctx,
   long now = fd_clock_tile_now( ctx->clock );
   ctx->now = now;
 
-  if( FD_LIKELY( ctx->bam_status_fseq ) ) {
-    /* QUIC is intentionally not gated here.  TPU_VOTE_QUIC uses the
-       same netmux protocol as normal TPU_QUIC, so the QUIC tile cannot
-       tell votes from non-votes before decrypting and reassembling the
-       transaction.  Pack re-reads bam_status_fseq after parse and drops
-       non-votes while preserving vote passthrough. */
-    ctx->bam_override_active = !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
-  }
   *charge_busy = fd_quic_service( ctx->quic, now );
 }
 
@@ -617,15 +606,6 @@ unprivileged_init( fd_topo_t *      topo,
   fd_topo_link_t * verify_out = &topo->links[ tile->out_link_id[ 0 ] ];
 
   ctx->verify_out_mem = topo->workspaces[ topo->objs[ verify_out->dcache_obj_id ].wksp_id ].wksp;
-
-  ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
-  if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
-    ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
-    if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "quic tile missing bam_status fseq" ));
-    ctx->bam_override_active = !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
-  } else {
-    ctx->bam_status_fseq = NULL;
-  }
 
   ctx->quic = quic;
 

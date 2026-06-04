@@ -1078,6 +1078,10 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
       fd_log_sleep( fd_long_min( wait_dur, 1e6 ) );
       return;
     }
+    if( FD_UNLIKELY( fd_bam_tile_leader_schedule_gate_active( ctx ) &&
+                     ctx->leader_schedule_recheck_slot==0UL ) ) {
+      ctx->leader_schedule_recheck_slot = ULONG_MAX;
+    }
     fd_bam_client_create_conn( ctx );
     *charge_busy = 1;
     return;

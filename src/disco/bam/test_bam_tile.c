@@ -3074,10 +3074,10 @@ test_bam_replay_reset_channel_contract( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
 
   union {
-    fd_poh_reset_t reset;
-    uchar          bytes[ sizeof(fd_poh_reset_t) ];
+    fd_replay_message_t msg;
+    uchar               bytes[ sizeof(fd_replay_message_t) ];
   } ingress = {0};
-  ingress.reset.next_leader_slot = 600UL;
+  ingress.msg.reset.next_leader_slot = 600UL;
 
   state->replay_out_in_idx = 2UL;
   state->replay_in = (fd_bam_in_ctx_t){
@@ -3088,13 +3088,70 @@ test_bam_replay_reset_channel_contract( fd_wksp_t * wksp ) {
 
   fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_poh_reset_t) );
   FD_TEST( state->next_leader_slot == 600UL );
+  FD_TEST( state->leader_schedule_recheck_slot == ULONG_MAX );
 
-  ingress.reset.next_leader_slot = 700UL;
+  ingress.msg.reset.next_leader_slot = 700UL;
   fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET+1UL, 0UL, sizeof(fd_poh_reset_t) );
   FD_TEST( state->next_leader_slot == 600UL );
 
   fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_bam_bundle_result_t) );
   FD_TEST( state->next_leader_slot == 600UL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_replay_schedule_recheck_slot_policy( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  union {
+    fd_replay_message_t msg;
+    uchar               bytes[ sizeof(fd_replay_message_t) ];
+  } ingress = {0};
+
+  state->replay_out_in_idx = 2UL;
+  state->replay_in = (fd_bam_in_ctx_t){
+    .mem    = (fd_wksp_t *)ingress.bytes,
+    .chunk0 = 0UL,
+    .wmark  = 0UL
+  };
+  state->next_leader_slot = ULONG_MAX;
+  state->leader_schedule_recheck_slot = ULONG_MAX;
+  state->tcp_sock = -1;
+  state->tcp_sock_connected = 0U;
+
+  ingress.msg.reset.completed_slot = 100UL;
+  ingress.msg.reset.next_leader_slot = ULONG_MAX;
+  fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_poh_reset_t) );
+  FD_TEST( state->leader_schedule_recheck_slot == 164UL );
+  FD_TEST( fd_bam_tile_waiting_for_leader_slot( state ) );
+
+  ingress.msg.slot_completed = (fd_replay_slot_completed_t){
+    .slot            = 150UL,
+    .slot_in_epoch   = 398UL,
+    .slots_per_epoch = 400UL
+  };
+  fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_SLOT_COMPLETED, 0UL, sizeof(fd_replay_slot_completed_t) );
+  FD_TEST( state->leader_schedule_recheck_slot == 151UL );
+  FD_TEST( fd_bam_tile_waiting_for_leader_slot( state ) );
+
+  ingress.msg.slot_completed = (fd_replay_slot_completed_t){
+    .slot            = 151UL,
+    .slot_in_epoch   = 399UL,
+    .slots_per_epoch = 400UL
+  };
+  fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_SLOT_COMPLETED, 0UL, sizeof(fd_replay_slot_completed_t) );
+  FD_TEST( state->leader_schedule_recheck_slot == 0UL );
+  FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
+
+  ingress.msg.reset.completed_slot = 153UL;
+  ingress.msg.reset.next_leader_slot = 220UL;
+  fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_poh_reset_t) );
+  FD_TEST( state->next_leader_slot == 220UL );
+  FD_TEST( state->leader_schedule_recheck_slot == ULONG_MAX );
+  FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
 
   test_bam_env_destroy( env );
 }
@@ -3110,6 +3167,11 @@ test_bam_replay_wait_gate_policy( fd_wksp_t * wksp ) {
   state->tcp_sock          = -1;
   state->tcp_sock_connected = 0U;
 
+  FD_TEST( fd_bam_tile_waiting_for_leader_slot( state ) );
+
+  state->leader_schedule_recheck_slot = 0UL;
+  FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
+  state->leader_schedule_recheck_slot = 500UL;
   FD_TEST( fd_bam_tile_waiting_for_leader_slot( state ) );
 
   state->feedback_queue_depth = 1U;
@@ -3146,6 +3208,12 @@ test_bam_replay_schedule_hint_does_not_disconnect( fd_wksp_t * wksp ) {
   fd_bam_client_step( state, &charge_busy );
   FD_TEST( charge_busy == 0 );
   FD_TEST( state->tcp_sock < 0 );
+
+  state->leader_schedule_recheck_slot = 0UL;
+  charge_busy = 0;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( charge_busy == 1 );
+  FD_TEST( state->leader_schedule_recheck_slot == ULONG_MAX );
 
   test_bam_env_mock_conn( env );
 
@@ -5465,6 +5533,7 @@ main( int     argc,
   test_bam_scheduler_stream_replays_only_retained_leader_state( wksp );
   test_bam_leader_state_supersede_counts_drop( wksp );
   test_bam_replay_reset_channel_contract( wksp );
+  test_bam_replay_schedule_recheck_slot_policy( wksp );
   test_bam_replay_wait_gate_policy( wksp );
   test_bam_replay_schedule_hint_does_not_disconnect( wksp );
   test_bam_pack_leader_channel_contract( wksp );
