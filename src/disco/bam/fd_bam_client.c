@@ -166,6 +166,8 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
      when to fall back to the default ports after seeing the status
      transition so gossip never advertises a half-cleared override. */
   ctx->defer_reset = 0;
+  ctx->leader_schedule_gate_start_ns = 0L;
+  ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
 
   if( FD_UNLIKELY( ctx->builder_info_valid_until && now >= ctx->builder_info_valid_until ) ) {
     ctx->builder_info_valid_until = 0L;
@@ -1002,6 +1004,8 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
 
   if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) ) {
     /* Admin can pause BAM, skip reconnect until re-enabled. */
+    ctx->leader_schedule_gate_start_ns = 0L;
+    ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
     return;
   }
 

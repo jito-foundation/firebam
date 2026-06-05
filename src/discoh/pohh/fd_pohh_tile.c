@@ -1905,7 +1905,9 @@ after_credit( fd_pohh_tile_t *    ctx,
 static inline void
 during_housekeeping( fd_pohh_tile_t * ctx ) {
   if( FD_UNLIKELY( maybe_change_identity( ctx, 0 ) ) ) {
+    ulong old_next_leader_slot = ctx->next_leader_slot;
     ctx->next_leader_slot = next_leader_slot( ctx );
+    if( FD_UNLIKELY( ctx->next_leader_slot!=old_next_leader_slot ) ) publish_replay_reset( ctx );
     FD_LOG_INFO(( "fd_poh_identity_changed(next_leader_slot=%lu)", ctx->next_leader_slot ));
 
     /* Signal replay to check if we are leader again, in-case it's stuck

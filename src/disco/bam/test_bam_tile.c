@@ -3203,6 +3203,37 @@ test_bam_replay_wait_gate_policy( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_replay_wait_gate_cleared_on_reset_or_disable( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  state->replay_out_in_idx = 2UL;
+  state->next_leader_slot = 12345UL;
+  state->leader_schedule_gate_start_ns = 1234L;
+  state->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
+
+  fd_bam_client_reset( state );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
+  FD_TEST( state->leader_schedule_recheck_slot == FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT );
+  FD_TEST( state->next_leader_slot == 12345UL );
+
+  state->enabled = 0;
+  state->next_leader_slot = 67890UL;
+  state->leader_schedule_gate_start_ns = 5678L;
+  state->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
+
+  int charge_busy = 0;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( charge_busy == 0 );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
+  FD_TEST( state->leader_schedule_recheck_slot == FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT );
+  FD_TEST( state->next_leader_slot == 67890UL );
+
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_replay_schedule_hint_does_not_disconnect( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -5574,6 +5605,7 @@ main( int     argc,
   test_bam_replay_reset_channel_contract( wksp );
   test_bam_replay_schedule_recheck_slot_policy( wksp );
   test_bam_replay_wait_gate_policy( wksp );
+  test_bam_replay_wait_gate_cleared_on_reset_or_disable( wksp );
   test_bam_replay_schedule_hint_does_not_disconnect( wksp );
   test_bam_pack_leader_channel_contract( wksp );
   test_bam_pack_leader_slot_change_flushes_immediately( wksp );
