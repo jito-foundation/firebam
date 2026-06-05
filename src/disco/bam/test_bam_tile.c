@@ -4824,44 +4824,66 @@ test_bam_invalid_quic_base_port_does_not_activate( fd_wksp_t * wksp ) {
 
 static void
 test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
-  /* If either BamConfig address is absent, the tile should force gossip back to defaults. */
+  /* An incomplete BamConfig without a cached BAM contact should force gossip
+     back to defaults even if the previous applied state was BAM. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
+  test_bam_env_mock_conn_empty( env );
+  test_bam_env_mock_h2_hs( env->state );
   fd_bam_tile_t * state = env->state;
 
   fd_wksp_t * gossip_mem = test_bam_setup_gossip_out( env );
-  state->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
-  state->enabled = 1;
-
-  test_bam_set_bam_tpu( state, "12.34.56.78", 2222U, "98.76.54.32", 3333U );
-
-  fd_bam_contact_update_t updates[2] = {0};
-  ulong update_cnt = 0UL;
-
-  ulong publish_chunk = state->gossip_out.chunk;
-  fd_bam_gossip_update( state, state->stem, true );
-  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  FD_TEST( updates[0].tpu.addr     == state->bam_tpu.addr );
-  FD_TEST( updates[0].tpu.port     == state->bam_tpu.port );
-  FD_TEST( updates[0].tpu_fwd.addr == state->bam_tpu_fwd.addr );
-  FD_TEST( updates[0].tpu_fwd.port == state->bam_tpu_fwd.port );
-  FD_TEST( updates[0].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
-
-  /* use_bam == false should revert to defaults. */
-  state->bam_tpu_fwd = (fd_ip4_port_t){0};
   FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->default_tpu.addr ) );
   FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &state->default_tpu_fwd.addr ) );
   state->default_tpu.port     = fd_ushort_bswap( 4242 );
   state->default_tpu_fwd.port = fd_ushort_bswap( 4343 );
-  publish_chunk = state->gossip_out.chunk;
-  fd_bam_gossip_update( state, state->stem, false );
-  updates[ update_cnt++ ] = test_bam_read_gossip_update( gossip_mem, publish_chunk );
-  FD_TEST( updates[1].tpu.addr     == state->default_tpu.addr );
-  FD_TEST( updates[1].tpu.port     == state->default_tpu.port );
-  FD_TEST( updates[1].tpu_fwd.addr == state->default_tpu_fwd.addr );
-  FD_TEST( updates[1].tpu_fwd.port == state->default_tpu_fwd.port );
-  FD_TEST( updates[1].version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
+
+  state->tpu_update_state       = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
+  state->client_id_update_state = FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM;
+  state->bam_stream_live        = 1U;
+  state->bam_config_received    = 1U;
+  state->bam_last_builder_activity_ns = fd_bam_now();
+  state->bam_last_validator_heartbeat_ns = fd_bam_now();
+
+  uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  fd_memset( fseq_mem, 0, sizeof(fseq_mem) );
+  void * fseq_shmem = fd_fseq_new( fseq_mem, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  FD_TEST( fseq_shmem );
+  ulong * fseq = fd_fseq_join( fseq_shmem );
+  FD_TEST( fseq );
+  state->bam_status_fseq = fseq;
+
+  bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_bam_config = true;
+  resp.bam_config.has_tpu_sock = true;
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "12.34.56.78", sizeof( resp.bam_config.tpu_sock.ip ) );
+  resp.bam_config.tpu_sock.port = 2222U;
+  resp.bam_config.has_tpu_fwd_sock = false;
+
+  uchar pb_buf[ 256 ];
+  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+
+  ulong publish_chunk = state->gossip_out.chunk;
+  fd_bam_client_grpc_rx_msg( state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+
+  FD_TEST( state->bam_tpu.l == 0UL );
+  FD_TEST( state->bam_tpu_fwd.l == 0UL );
+  FD_TEST( fd_fseq_query( fseq ) == 0UL );
+
+  fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
+  FD_TEST( update.tpu.addr     == state->default_tpu.addr );
+  FD_TEST( update.tpu.port     == state->default_tpu.port );
+  FD_TEST( update.tpu_fwd.addr == state->default_tpu_fwd.addr );
+  FD_TEST( update.tpu_fwd.port == state->default_tpu_fwd.port );
+  FD_TEST( update.version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
+
+  FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
+  FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
+  state->bam_status_fseq = NULL;
 
   test_bam_env_destroy( env );
 }
@@ -5521,41 +5543,9 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
  * Ensure that bundle results aren't lost during temporary disconnections. */
 
 static void
-test_bam_bundle_result_queue_survives_reset( fd_wksp_t * wksp ) {
-  /* Client reset should not wipe queued bundle results; ring head/tail and
-     contents remain intact. */
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
-  fd_bam_tile_t * state = env->state;
-
-  for( uint i=0; i<3; i++ ) {
-    fd_bam_bundle_result_t res = test_make_bundle_result( 100 + i, 1100 + i, 2 );
-    test_enqueue_bundle_result( state, &res );
-  }
-
-  ulong expected_tail = state->bam_results_tail;
-  fd_bam_client_reset( state );
-
-  FD_TEST( state->feedback_queue_depth == 3UL );
-  FD_TEST( state->bam_results_head == 0UL );
-  FD_TEST( state->bam_results_tail == expected_tail );
-  FD_TEST( state->bam_results[0].seq_id == 100UL );
-  FD_TEST( state->bam_results[1].seq_id == 101UL );
-  FD_TEST( state->bam_results[2].seq_id == 102UL );
-
-  test_bam_env_destroy( env );
-}
-
-/* Verifies that buffered bundle results flush cleanly once a new scheduler stream is
-   established. This branch's gRPC client only accepts another stream DATA
-   frame once the previous frame leaves the TX ring, so the test simulates that
-   transport drain between flush attempts. */
-
-static void
 test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
-  /* After reconnecting scheduler stream, pending bundle results should drain
-     fully and advance ring indices. */
+  /* Client reset should preserve queued bundle results, and the next scheduler
+     stream should flush them in FIFO order. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -5566,8 +5556,13 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
     test_enqueue_bundle_result( state, &res );
   }
 
+  ulong expected_tail = state->bam_results_tail;
   fd_bam_client_reset( state );
   FD_TEST( state->feedback_queue_depth == 2UL );
+  FD_TEST( state->bam_results_head == 0UL );
+  FD_TEST( state->bam_results_tail == expected_tail );
+  FD_TEST( state->bam_results[0].seq_id == 200U );
+  FD_TEST( state->bam_results[1].seq_id == 201U );
 
   test_bam_env_mock_conn( env );
   state->bam_stream_live = 0U;
@@ -5717,7 +5712,6 @@ main( int     argc,
   test_bam_builder_fee_info( wksp );
 
   /* Bundle result durability */
-  test_bam_bundle_result_queue_survives_reset( wksp );
   test_bam_bundle_result_queue_flushes_after_reconnect( wksp );
 
   fd_wksp_usage_t wksp_usage;

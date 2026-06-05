@@ -435,6 +435,8 @@ test_bundle_bam_active_pause_resume( fd_wksp_t * wksp ) {
   state->bundle_status_plugin = FD_BUNDLE_STATE_CONNECTED;
   state->bundle_status_recent = FD_BUNDLE_STATE_CONNECTED;
   state->bundle_status_logged = FD_BUNDLE_STATE_CONNECTED;
+  pending_txn_push_tail( state->pending_txns, (fd_bundle_pending_txn_t){ .sig=0UL, .bundle_seq=0UL } );
+  FD_TEST( !pending_txn_empty( state->pending_txns ) );
 
   long before_pause = fd_log_wallclock();
   fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
@@ -447,6 +449,7 @@ test_bundle_bam_active_pause_resume( fd_wksp_t * wksp ) {
   FD_TEST( state->bundle_status_recent == FD_BUNDLE_STATE_DISCONNECTED );
   FD_TEST( state->bundle_status_logged == FD_BUNDLE_STATE_DISCONNECTED );
   FD_TEST( state->last_bundle_status_log_nanos >= before_pause );
+  FD_TEST( pending_txn_empty( state->pending_txns ) );
 
   state->backoff_until = fd_log_wallclock() + (long)30e9;
   state->defer_reset = 1;
