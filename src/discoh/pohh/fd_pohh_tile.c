@@ -752,10 +752,13 @@ static CALLED_FROM_RUST void
 publish_replay_reset( fd_pohh_tile_t * ctx ) {
   if( FD_UNLIKELY( !replay_out.mem ) ) return;
 
+  ulong completed_slot = ULONG_MAX;
+  if( FD_LIKELY( ctx->reset_slot!=ULONG_MAX && ctx->reset_slot>0UL ) ) completed_slot = ctx->reset_slot-1UL;
+
   fd_poh_reset_t reset[1] = {{
     .bank_idx                  = ULONG_MAX,
     .timestamp                 = ctx->reset_slot_start_ns,
-    .completed_slot            = fd_ulong_if( ctx->reset_slot==ULONG_MAX, ULONG_MAX, ctx->reset_slot-1UL ),
+    .completed_slot            = completed_slot,
     .hashcnt_per_tick          = ctx->hashcnt_per_tick,
     .ticks_per_slot            = ctx->ticks_per_slot,
     .tick_duration_ns          = ctx->tick_duration_ns,
@@ -1440,6 +1443,20 @@ fd_ext_poh_reset( ulong         completed_bank_slot, /* The slot that successful
     no_longer_leader( ctx );
   }
   ctx->next_leader_slot = next_leader_slot( ctx );
+  if( FD_LIKELY( replay_out.mem && completed_bank_slot!=ULONG_MAX ) ) {
+    fd_replay_slot_completed_t slot_completed[1] = {{
+      .slot          = completed_bank_slot,
+      .epoch         = ULONG_MAX,
+      .slot_in_epoch = ULONG_MAX
+    }};
+    fd_epoch_leaders_t const * lsched = fd_multi_epoch_leaders_get_lsched_for_slot( ctx->mleaders, completed_bank_slot );
+    if( FD_LIKELY( lsched ) ) {
+      slot_completed->epoch           = lsched->epoch;
+      slot_completed->slot_in_epoch   = completed_bank_slot - lsched->slot0;
+      slot_completed->slots_per_epoch = lsched->slot_cnt;
+    }
+    poh_link_publish( &replay_out, REPLAY_SIG_SLOT_COMPLETED, (uchar const *)slot_completed, sizeof(fd_replay_slot_completed_t) );
+  }
   publish_replay_reset( ctx );
   FD_LOG_INFO(( "fd_ext_poh_reset(slot=%lu,next_leader_slot=%lu)", ctx->reset_slot, ctx->next_leader_slot ));
 
