@@ -5538,9 +5538,10 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
 
 /* --- Bundle result durability ------------------------------------------------------- */
 
-/* Verifies that bundle results buffered in the queue survive
- * fd_bam_client_reset and remain available for flushing after reconnect.
- * Ensure that bundle results aren't lost during temporary disconnections. */
+/* Verifies that bundle results buffered in the queue survive fd_bam_client_reset
+ * and flush after reconnect. The test simulates transport drain between flush
+ * attempts because the gRPC client only accepts another stream DATA frame once
+ * the previous frame leaves the TX ring. */
 
 static void
 test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
