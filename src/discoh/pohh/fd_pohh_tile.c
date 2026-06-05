@@ -745,6 +745,9 @@ poh_link_init( poh_link_t *     link,
    safe at each call rather than annotated. */
 #define CALLED_FROM_RUST
 
+static inline CALLED_FROM_RUST ulong
+next_leader_slot( fd_pohh_tile_t * ctx );
+
 static CALLED_FROM_RUST void
 publish_replay_reset( fd_pohh_tile_t * ctx ) {
   if( FD_UNLIKELY( !replay_out.mem ) ) return;
@@ -863,6 +866,9 @@ fd_ext_poh_initialize( ulong         tick_duration_ns,    /* See clock comments 
     /* See the long comment in after_credit for this limit */
     ctx->max_microblocks_per_slot = fd_ulong_min( MAX_MICROBLOCKS_PER_SLOT, ctx->ticks_per_slot*(ctx->hashcnt_per_tick-1UL) );
   }
+
+  ctx->next_leader_slot = next_leader_slot( ctx );
+  publish_replay_reset( ctx );
 
   fd_ext_poh_write_unlock();
 }

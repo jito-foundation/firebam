@@ -22,6 +22,7 @@ typedef struct fd_bam_tile fd_bam_tile_t;
 
 #define FD_BAM_ACTIVITY_TIMEOUT_NS ((long)6e9) /* 6 seconds */
 #define FD_BAM_LEADER_SCHEDULE_RECHECK_SLOT_DELTA 64UL
+#define FD_BAM_LEADER_SCHEDULE_RECHECK_WALLCLOCK_NS ((long)15e9)
 #define FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT 0UL
 #define FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT ULONG_MAX
 #if FD_HAS_OPENSSL
@@ -270,6 +271,7 @@ struct fd_bam_tile {
   fd_bam_leader_slot_end_tracker_t leader_slot_end[ FD_BAM_LEADER_SLOT_END_TRACKER_CNT ]; /* Per-slot metric tracker used to record whether healthy BAM-owned slots saw fresh work before slot end. */
   ulong                 next_leader_slot;                /* Upcoming local leader slot from replay_out reset messages, or ULONG_MAX if none is known */
   ulong                 leader_schedule_recheck_slot;    /* Slot when BAM may retry while next_leader_slot is unknown; DUE means retry now, NONE means wait for replay progress */
+  long                  leader_schedule_gate_start_ns;   /* fd_bam_now() when the unknown-leader startup gate first began waiting, or 0 if inactive */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */

@@ -3085,10 +3085,12 @@ test_bam_replay_reset_channel_contract( fd_wksp_t * wksp ) {
     .chunk0 = 0UL,
     .wmark  = 0UL
   };
+  state->leader_schedule_gate_start_ns = 1234L;
 
   fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_poh_reset_t) );
   FD_TEST( state->next_leader_slot == 600UL );
   FD_TEST( state->leader_schedule_recheck_slot == FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
 
   ingress.msg.reset.next_leader_slot = 700UL;
   fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET+1UL, 0UL, sizeof(fd_poh_reset_t) );
@@ -3124,8 +3126,10 @@ test_bam_replay_schedule_recheck_slot_policy( fd_wksp_t * wksp ) {
 
   ingress.msg.reset.completed_slot = 100UL;
   ingress.msg.reset.next_leader_slot = ULONG_MAX;
+  state->leader_schedule_gate_start_ns = 111L;
   fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_poh_reset_t) );
   FD_TEST( state->leader_schedule_recheck_slot == 164UL );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
   FD_TEST( fd_bam_tile_waiting_for_leader_slot( state ) );
 
   ingress.msg.slot_completed = (fd_replay_slot_completed_t){
@@ -3133,8 +3137,10 @@ test_bam_replay_schedule_recheck_slot_policy( fd_wksp_t * wksp ) {
     .slot_in_epoch   = 398UL,
     .slots_per_epoch = 400UL
   };
+  state->leader_schedule_gate_start_ns = 222L;
   fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_SLOT_COMPLETED, 0UL, sizeof(fd_replay_slot_completed_t) );
   FD_TEST( state->leader_schedule_recheck_slot == 151UL );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
   FD_TEST( fd_bam_tile_waiting_for_leader_slot( state ) );
 
   ingress.msg.slot_completed = (fd_replay_slot_completed_t){
@@ -3142,15 +3148,19 @@ test_bam_replay_schedule_recheck_slot_policy( fd_wksp_t * wksp ) {
     .slot_in_epoch   = 399UL,
     .slots_per_epoch = 400UL
   };
+  state->leader_schedule_gate_start_ns = 333L;
   fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_SLOT_COMPLETED, 0UL, sizeof(fd_replay_slot_completed_t) );
   FD_TEST( state->leader_schedule_recheck_slot == FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
   FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
 
   ingress.msg.reset.completed_slot = 153UL;
   ingress.msg.reset.next_leader_slot = 220UL;
+  state->leader_schedule_gate_start_ns = 444L;
   fd_bam_test_receive_ingress_frag( state, state->replay_out_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_poh_reset_t) );
   FD_TEST( state->next_leader_slot == 220UL );
   FD_TEST( state->leader_schedule_recheck_slot == FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
   FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
 
   test_bam_env_destroy( env );
@@ -3197,6 +3207,7 @@ test_bam_replay_schedule_hint_does_not_disconnect( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
+  g_clock = (long)50e9;
   state->replay_out_in_idx = 2UL;
   state->replay_in.mem = wksp;
   state->next_leader_slot = ULONG_MAX;
@@ -3208,12 +3219,40 @@ test_bam_replay_schedule_hint_does_not_disconnect( fd_wksp_t * wksp ) {
   fd_bam_client_step( state, &charge_busy );
   FD_TEST( charge_busy == 0 );
   FD_TEST( state->tcp_sock < 0 );
+  FD_TEST( state->leader_schedule_gate_start_ns == g_clock );
+  FD_TEST( state->leader_schedule_recheck_slot == FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT );
 
-  state->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
+  g_clock += FD_BAM_LEADER_SCHEDULE_RECHECK_WALLCLOCK_NS - 1L;
+  charge_busy = 0;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( charge_busy == 0 );
+  FD_TEST( state->tcp_sock < 0 );
+  FD_TEST( state->leader_schedule_gate_start_ns == (long)50e9 );
+  FD_TEST( state->leader_schedule_recheck_slot == FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT );
+
+  state->backoff_until = g_clock + 2L;
+  g_clock++;
+  charge_busy = 0;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( charge_busy == 0 );
+  FD_TEST( state->tcp_sock < 0 );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
+  FD_TEST( state->leader_schedule_recheck_slot == FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT );
+
+  state->backoff_until = 0L;
+
   charge_busy = 0;
   fd_bam_client_step( state, &charge_busy );
   FD_TEST( charge_busy == 1 );
   FD_TEST( state->leader_schedule_recheck_slot == FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
+
+  state->leader_schedule_gate_start_ns = 555L;
+  state->feedback_queue_depth = 1U;
+  charge_busy = 0;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
+  state->feedback_queue_depth = 0U;
 
   test_bam_env_mock_conn( env );
 

@@ -107,30 +107,27 @@ set_bam_apply_request( args_t *   args,
   FD_COMPILER_MFENCE();
   FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_REQUEST;
 
-  long const timeout_ns = (long)5e9;
-  long start_ns = fd_log_wallclock();
+  long const timeout_ns = (long)15e9;
+  long const start_ns = fd_log_wallclock();
   /* Busy-wait until the bam tile processes the request.  The tile only touches state after
      taking ownership via CAS, so polling here is sufficient for synchronization. */
   for( ;; ) {
     uchar st = FD_VOLATILE_CONST( ctrl->state );
     if( st == FD_BAM_CTRL_STATE_SUCCESS || st == FD_BAM_CTRL_STATE_ERROR )
       break;
-    if( FD_UNLIKELY( fd_log_wallclock() - start_ns > timeout_ns ) ) {
+    if( FD_UNLIKELY( fd_log_wallclock() - start_ns >= timeout_ns ) ) {
       st = FD_VOLATILE_CONST( ctrl->state );
       if( st == FD_BAM_CTRL_STATE_SUCCESS || st == FD_BAM_CTRL_STATE_ERROR )
-        continue;
-      if( st == FD_BAM_CTRL_STATE_APPLYING ) {
-        FD_LOG_WARNING(( "Still waiting for BAM runtime update to finish" ));
-        start_ns = fd_log_wallclock();
-        continue;
-      }
-      if( st == FD_BAM_CTRL_STATE_REQUEST ) {
+        break;
+      if( st == FD_BAM_CTRL_STATE_APPLYING )
+        FD_LOG_ERR(( "Timed out waiting for BAM runtime update to finish" ));
+      else if( st == FD_BAM_CTRL_STATE_REQUEST ) {
         if( FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_IDLE )==FD_BAM_CTRL_STATE_REQUEST )
           FD_LOG_ERR(( "Timed out waiting for BAM runtime update to be claimed. Is Firedancer currently running?" ));
-        continue;
+      } else {
+        FD_LOG_ERR(( "Timed out waiting for BAM runtime update (state=%u). Is Firedancer currently running?",
+                     (uint)st ));
       }
-      FD_LOG_ERR(( "Timed out waiting for BAM runtime update (state=%u). Is Firedancer currently running?",
-                   (uint)st ));
     }
     usleep( 10000 ); /* 10ms */
   }

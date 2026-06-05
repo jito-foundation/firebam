@@ -677,30 +677,36 @@ fd_bam_note_replay_schedule_slot( fd_bam_tile_t * ctx,
                                   ulong           slot,
                                   ulong           slot_in_epoch,
                                   ulong           slots_per_epoch ) {
+  ulong const old_recheck_slot = ctx->leader_schedule_recheck_slot;
+  ulong       new_recheck_slot = old_recheck_slot;
+
   if( FD_LIKELY( ctx->next_leader_slot!=ULONG_MAX ) ) {
-    ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
+    new_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
+  } else if( FD_UNLIKELY( slot==ULONG_MAX ||
+                          old_recheck_slot==FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT ) ) {
     return;
-  }
-  if( FD_UNLIKELY( slot==ULONG_MAX ||
-                   ctx->leader_schedule_recheck_slot==FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT ) ) return;
-  if( FD_UNLIKELY( ctx->leader_schedule_recheck_slot!=FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT &&
-                   slot>=ctx->leader_schedule_recheck_slot ) ) {
-    ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
-    return;
-  }
-
-  ulong recheck_slot = fd_ulong_sat_add( slot, FD_BAM_LEADER_SCHEDULE_RECHECK_SLOT_DELTA );
-  if( FD_LIKELY( slot_in_epoch<slots_per_epoch ) ) {
-    ulong epoch_recheck_slot = fd_ulong_sat_add( slot, slots_per_epoch - slot_in_epoch - 1UL );
-    recheck_slot = fd_ulong_min( recheck_slot, epoch_recheck_slot );
-  }
-
-  if( FD_UNLIKELY( recheck_slot<=slot ) ) {
-    ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
-  } else if( FD_UNLIKELY( ctx->leader_schedule_recheck_slot==FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT ) ) {
-    ctx->leader_schedule_recheck_slot = recheck_slot;
+  } else if( FD_UNLIKELY( old_recheck_slot!=FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT &&
+                          slot>=old_recheck_slot ) ) {
+    new_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
   } else {
-    ctx->leader_schedule_recheck_slot = fd_ulong_min( ctx->leader_schedule_recheck_slot, recheck_slot );
+    ulong recheck_slot = fd_ulong_sat_add( slot, FD_BAM_LEADER_SCHEDULE_RECHECK_SLOT_DELTA );
+    if( FD_LIKELY( slot_in_epoch<slots_per_epoch ) ) {
+      ulong epoch_recheck_slot = fd_ulong_sat_add( slot, slots_per_epoch - slot_in_epoch - 1UL );
+      recheck_slot = fd_ulong_min( recheck_slot, epoch_recheck_slot );
+    }
+
+    if( FD_UNLIKELY( recheck_slot<=slot ) ) {
+      new_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
+    } else if( FD_UNLIKELY( old_recheck_slot==FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT ) ) {
+      new_recheck_slot = recheck_slot;
+    } else {
+      new_recheck_slot = fd_ulong_min( old_recheck_slot, recheck_slot );
+    }
+  }
+
+  if( FD_UNLIKELY( new_recheck_slot!=old_recheck_slot ) ) {
+    ctx->leader_schedule_recheck_slot = new_recheck_slot;
+    ctx->leader_schedule_gate_start_ns = 0L;
   }
 }
 
@@ -853,6 +859,7 @@ bam_after_frag( fd_bam_tile_t *     ctx,
   case FD_BAM_FRAG_STAGED_REPLAY_RESET: {
     fd_poh_reset_t const * reset = (fd_poh_reset_t const *)fd_chunk_to_laddr_const( ctx->frag_staged_mem, ctx->frag_staged_chunk );
     ctx->next_leader_slot = reset->next_leader_slot;
+    if( FD_LIKELY( ctx->next_leader_slot!=ULONG_MAX ) ) ctx->leader_schedule_gate_start_ns = 0L;
     fd_bam_note_replay_schedule_slot( ctx, reset->completed_slot, ULONG_MAX, 0UL );
     break;
   }

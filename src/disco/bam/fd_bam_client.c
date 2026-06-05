@@ -1025,7 +1025,16 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     return;
   }
 
-  if( FD_UNLIKELY( fd_bam_tile_waiting_for_leader_slot( ctx ) ) ) return;
+  int leader_schedule_gate_active = fd_bam_tile_leader_schedule_gate_active( ctx );
+  if( FD_LIKELY( !leader_schedule_gate_active ) ) {
+    ctx->leader_schedule_gate_start_ns = 0L;
+  } else if( FD_UNLIKELY( ctx->leader_schedule_recheck_slot!=FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT ) ) {
+    long gate_now = fd_bam_now();
+    if( FD_UNLIKELY( !ctx->leader_schedule_gate_start_ns ) ) ctx->leader_schedule_gate_start_ns = gate_now;
+    if( FD_LIKELY( gate_now - ctx->leader_schedule_gate_start_ns < FD_BAM_LEADER_SCHEDULE_RECHECK_WALLCLOCK_NS ) ) return;
+    ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
+    ctx->leader_schedule_gate_start_ns = 0L;
+  }
 
   /* Wait for TCP socket to connect */
   if( FD_UNLIKELY( !ctx->tcp_sock_connected ) ) {
@@ -1078,9 +1087,10 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
       fd_log_sleep( fd_long_min( wait_dur, 1e6 ) );
       return;
     }
-    if( FD_UNLIKELY( fd_bam_tile_leader_schedule_gate_active( ctx ) &&
+    if( FD_UNLIKELY( leader_schedule_gate_active &&
                      ctx->leader_schedule_recheck_slot==FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT ) ) {
       ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
+      ctx->leader_schedule_gate_start_ns = 0L;
     }
     fd_bam_client_create_conn( ctx );
     *charge_busy = 1;
