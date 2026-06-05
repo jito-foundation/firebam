@@ -9,6 +9,8 @@ void
 set_bam_cmd_args( int *    pargc,
                   char *** pargv,
                   args_t * args ) {
+  char const * usage = "Usage: fdctl set-bam [--enable|--disable] [--url <url>] [--sni <domain>]";
+
   /* Start with sentinel "no change" values.  enable stays at -1 until the user requests
      --enable/--disable, while NULL pointers mean URL/SNI should not be modified. */
   args->set_bam.enable = -1;
@@ -39,12 +41,12 @@ set_bam_cmd_args( int *    pargc,
   }
 
   if( FD_UNLIKELY( *pargc ) )
-    FD_LOG_ERR(( "Usage: fdctl set-bam [--enable|--disable] [--url <url>] [--sni <domain>]" ));
+    FD_LOG_ERR(( "%s", usage ));
 
   if( FD_UNLIKELY( args->set_bam.enable<0 &&
                    !args->set_bam.url &&
                    !args->set_bam.sni ) )
-    FD_LOG_ERR(( "Usage: fdctl set-bam [--enable|--disable] [--url <url>] [--sni <domain>]" ));
+    FD_LOG_ERR(( "%s", usage ));
 }
 
 static fd_bam_ctrl_t *
@@ -69,10 +71,7 @@ join_bam_ctrl( config_t * config ) {
 
 static void
 set_bam_apply_request( args_t *   args,
-                       config_t * config,
                        fd_bam_ctrl_t * ctrl ) {
-  (void)config;
-
   /* Acquire exclusive ownership so request fields cannot be written by two CLI instances. */
   for( ;; ) {
     uchar state = FD_VOLATILE_CONST( ctrl->state );
@@ -109,19 +108,21 @@ set_bam_apply_request( args_t *   args,
 
   long const timeout_ns = (long)15e9;
   long const start_ns = fd_log_wallclock();
+  long       last_wait_log_ns = start_ns;
   /* Busy-wait until the bam tile processes the request.  The tile only touches state after
      taking ownership via CAS, so polling here is sufficient for synchronization. */
   for( ;; ) {
+    long now = fd_log_wallclock();
     uchar st = FD_VOLATILE_CONST( ctrl->state );
     if( st == FD_BAM_CTRL_STATE_SUCCESS || st == FD_BAM_CTRL_STATE_ERROR )
       break;
-    if( FD_UNLIKELY( fd_log_wallclock() - start_ns >= timeout_ns ) ) {
-      st = FD_VOLATILE_CONST( ctrl->state );
-      if( st == FD_BAM_CTRL_STATE_SUCCESS || st == FD_BAM_CTRL_STATE_ERROR )
-        break;
-      if( st == FD_BAM_CTRL_STATE_APPLYING )
-        FD_LOG_ERR(( "Timed out waiting for BAM runtime update to finish" ));
-      else if( st == FD_BAM_CTRL_STATE_REQUEST ) {
+    if( FD_UNLIKELY( now - start_ns >= timeout_ns ) ) {
+      if( st == FD_BAM_CTRL_STATE_APPLYING ) {
+        if( FD_UNLIKELY( now - last_wait_log_ns >= timeout_ns ) ) {
+          FD_LOG_WARNING(( "BAM runtime update is still applying; waiting for BAM tile to finish" ));
+          last_wait_log_ns = now;
+        }
+      } else if( st == FD_BAM_CTRL_STATE_REQUEST ) {
         if( FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_IDLE )==FD_BAM_CTRL_STATE_REQUEST )
           FD_LOG_ERR(( "Timed out waiting for BAM runtime update to be claimed. Is Firedancer currently running?" ));
       } else {
@@ -157,7 +158,7 @@ void
 set_bam_cmd_fn( args_t *   args,
                 config_t * config ) {
   fd_bam_ctrl_t * ctrl = join_bam_ctrl( config );
-  set_bam_apply_request( args, config, ctrl );
+  set_bam_apply_request( args, ctrl );
   fd_topo_leave_workspaces( &config->topo );
 }
 
