@@ -765,7 +765,15 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
     fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_identity_pubkey_b58 );
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
-    ctx->defer_reset = 1;
+    fd_bam_client_reset( ctx );
+    ctx->next_leader_slot                 = ULONG_MAX;
+    ctx->leader_schedule_gate_start_ns    = 0L;
+    ctx->leader_schedule_recheck_slot     = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
+    ctx->bam_leader_state                 = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
+    ctx->bam_leader_pending               = 0U;
+    ctx->backoff_until                    = 0L;
+    ctx->backoff_reset                    = 0L;
+    ctx->backoff_iter                     = 0U;
     FD_LOG_NOTICE(( "BAM identity pubkey updated to %s", ctx->bam_identity_pubkey_b58 ));
   }
 }

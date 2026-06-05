@@ -3234,6 +3234,66 @@ test_bam_replay_wait_gate_cleared_on_reset_or_disable( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_identity_switch_invalidates_leader_schedule_state( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  fd_keyswitch_t keyswitch = {0};
+  keyswitch.state = FD_KEYSWITCH_STATE_SWITCH_PENDING;
+  for( ulong i=0UL; i<32UL; i++ ) keyswitch.bytes[ i ] = (uchar)( 200UL + i );
+  state->keyswitch = &keyswitch;
+
+  char expected_b58[ FD_BASE58_ENCODED_32_SZ ];
+  FD_TEST( fd_base58_encode_32( keyswitch.bytes, NULL, expected_b58 ) );
+
+  state->next_leader_slot              = 12345UL;
+  state->leader_schedule_recheck_slot  = 67890UL;
+  state->leader_schedule_gate_start_ns = 5555L;
+  state->bam_leader_state = (fd_bam_leader_state_t){
+    .slot                         = 42UL,
+    .tick                         = 7U,
+    .slot_cu_budget_remaining     = 999U,
+    .slot_end_ns                  = 8888L,
+    .current_slot_has_bam_work    = 1U,
+  };
+  state->bam_leader_pending = 1U;
+  state->backoff_until      = 111L;
+  state->backoff_reset      = 222L;
+  state->backoff_iter       = 3U;
+  state->defer_reset        = 1U;
+
+  fd_bam_tile_housekeeping( state );
+
+  FD_TEST( 0==memcmp( state->bam_identity_pubkey, keyswitch.bytes, 32UL ) );
+  FD_TEST( 0==strcmp( state->bam_identity_pubkey_b58, expected_b58 ) );
+  FD_TEST( fd_keyswitch_state_query( state->keyswitch ) == FD_KEYSWITCH_STATE_COMPLETED );
+
+  FD_TEST( state->tcp_sock == -1 );
+  FD_TEST( state->tcp_sock_connected == 0U );
+  FD_TEST( state->bam_stream_live == 0U );
+  FD_TEST( state->bam_stream_connecting == 0U );
+  FD_TEST( state->defer_reset == 0U );
+
+  FD_TEST( state->next_leader_slot == ULONG_MAX );
+  FD_TEST( state->leader_schedule_recheck_slot == FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT );
+  FD_TEST( state->leader_schedule_gate_start_ns == 0L );
+  FD_TEST( state->bam_leader_state.slot == ULONG_MAX );
+  FD_TEST( state->bam_leader_state.tick == 0U );
+  FD_TEST( state->bam_leader_state.slot_cu_budget_remaining == 0U );
+  FD_TEST( state->bam_leader_state.slot_end_ns == 0L );
+  FD_TEST( state->bam_leader_state.current_slot_has_bam_work == 0U );
+  FD_TEST( state->bam_leader_pending == 0U );
+  FD_TEST( state->backoff_until == 0L );
+  FD_TEST( state->backoff_reset == 0L );
+  FD_TEST( state->backoff_iter == 0U );
+
+  state->keyswitch = NULL;
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_replay_schedule_hint_does_not_disconnect( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -5606,6 +5666,7 @@ main( int     argc,
   test_bam_replay_schedule_recheck_slot_policy( wksp );
   test_bam_replay_wait_gate_policy( wksp );
   test_bam_replay_wait_gate_cleared_on_reset_or_disable( wksp );
+  test_bam_identity_switch_invalidates_leader_schedule_state( wksp );
   test_bam_replay_schedule_hint_does_not_disconnect( wksp );
   test_bam_pack_leader_channel_contract( wksp );
   test_bam_pack_leader_slot_change_flushes_immediately( wksp );
