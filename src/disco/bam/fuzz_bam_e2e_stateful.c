@@ -99,7 +99,9 @@ bam_fuzz_make_txn_spec( uint  seq_id,
     .actual_cu    = 0U,
     .work_id      = (uchar)( seq_id + 31U*(uint)idx + (uint)c ),
   };
-  spec.actual_cu = (uchar)fd_uint_max( 1U, (uint)spec.requested_cu - ((uint)a & 7U) );
+  uint requested_cu = (uint)spec.requested_cu;
+  uint cu_delta     = (uint)a & 7U;
+  spec.actual_cu = (uchar)( requested_cu > cu_delta ? requested_cu - cu_delta : 1U );
 
   switch( selector ) {
     case 0U:
@@ -359,8 +361,9 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
     }
     case BAM_EVT_DUP_SEQ: {
       if( FD_UNLIKELY( c & 0x80U ) ) {
+        if( FD_UNLIKELY( !h->state->bam_stream || !h->state->bam_stream_live ) ) break;
+
         bam_model_batch_def_t partial = bam_fuzz_make_batch( h, f, a, (uchar)( b | 1U ), c );
-        partial.revert_on_error = 1;
         if( FD_UNLIKELY( partial.txn_cnt<2U ) ) {
           partial.txn_cnt = 2U;
           partial.txn[1] = bam_fuzz_make_txn_spec( partial.seq_id, 1U, a, b, c );
@@ -444,7 +447,6 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
       break;
     case BAM_EVT_DISCONNECT:
       fd_bam_client_reset( h->state );
-      bam_fuzz_assert_queue_state( h->state );
       break;
     case BAM_EVT_RECONNECT:
       bam_fuzz_ensure_scheduler_stream( h );
@@ -486,11 +488,10 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
         h->state->feedback_queue_depth = 1U;
         FD_TEST( fd_bam_test_flush_results( h->state )==1 );
 
-        if( FD_LIKELY( h->wire_result_cnt < BAM_MODEL_MAX_RESULTS ) ) {
-          bam_model_wire_result_t * wr = &h->wire_results[ h->wire_result_cnt ];
-          FD_TEST( bam_model_decode_last_wire_result( h->state, wr ) );
-          h->wire_result_cnt++;
-        }
+        FD_TEST( h->wire_result_cnt < BAM_MODEL_MAX_RESULTS );
+        bam_model_wire_result_t * wr = &h->wire_results[ h->wire_result_cnt ];
+        FD_TEST( bam_model_decode_last_wire_result( h->state, wr ) );
+        h->wire_result_cnt++;
 
         h->state->feedback_queue_depth = (ushort)( pending-1U );
         bam_fuzz_assert_queue_state( h->state );

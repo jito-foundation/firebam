@@ -41,7 +41,7 @@ The checked-in corpus should stay compact: one broad mixed trace plus targeted p
 Default GCC build and smoke:
 
 ```bash
-make -j4 test_bam_model fuzz_bam_e2e_stateful
+make -j test_bam_model fuzz_bam_e2e_stateful
 build/native/gcc-12/unit-test/test_bam_model
 build/native/gcc-12/fuzz-test/fuzz_bam_e2e_stateful corpus/fuzz_bam_e2e_stateful/*
 make fuzz_bam_e2e_stateful_unit
@@ -50,8 +50,8 @@ make fuzz_bam_e2e_stateful_unit
 LibFuzzer:
 
 ```bash
-make CC=clang CXX=clang++ EXTRAS=fuzz -j4 fuzz_bam_e2e_stateful
-build/native/clang/fuzz-test/fuzz_bam_e2e_stateful -max_total_time=60 corpus/fuzz_bam_e2e_stateful/explore corpus/fuzz_bam_e2e_stateful
+make CC=clang CXX=clang++ EXTRAS="fuzz asan" fuzz_bam_e2e_stateful
+build/native/clang/fuzz-test/fuzz_bam_e2e_stateful corpus/fuzz_bam_e2e_stateful/explore corpus/fuzz_bam_e2e_stateful
 ```
 
 Use `BUILDDIR=native/clang-fuzz` only when you want a separate clang fuzz output tree.
@@ -59,7 +59,7 @@ Use `BUILDDIR=native/clang-fuzz` only when you want a separate clang fuzz output
 AFL++:
 
 ```bash
-make CC=clang CXX=clang++ EXTRAS=afl++ AFL_LIB=/usr/lib/afl -j4 fuzz_bam_e2e_stateful
+make CC=clang CXX=clang++ EXTRAS=afl++ AFL_LIB=/usr/lib/afl fuzz_bam_e2e_stateful
 AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_SKIP_CPUFREQ=1 afl-fuzz -i corpus/fuzz_bam_e2e_stateful -o findings -- build/native/clang/fuzz-test/fuzz_bam_e2e_stateful
 ```
 
