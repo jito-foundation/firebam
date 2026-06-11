@@ -761,7 +761,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   bam_fuzz_reset_tile();
 
   uchar selector     = data[0];
-  uchar msg_kind     = (uchar)( selector & 0x3U );        /* 0=config,1=scheduler,2=auth */
+  uchar msg_kind     = (uchar)( selector & 0x3U );        /* 0=config,1=scheduler,2=auth,3=no inbound RPC */
   uchar apply_ctrl   = (uchar)( ( selector>>2 ) & 1U );   /* bit2: drive runtime control */
   uchar enable_ok    = (uchar)( ( selector>>3 ) & 1U );   /* bit3: desired enable state */
   uchar stream_ok    = (uchar)( ( selector>>4 ) & 1U );   /* bit4: open scheduler stream */
@@ -777,9 +777,11 @@ LLVMFuzzerTestOneInput( uchar const * data,
   ulong         payload_sz = size>1 ? size-2 : size-1;
   bam_fuzz_auth_payload_t auth_info = {0};
   uchar structured_ping = 0U;
+  uchar expect_bam_gossip = 0U;
 
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
 
+  uchar has_rpc = (uchar)( msg_kind!=3U );
   ulong request_ctx = FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig;
   if( msg_kind==1 ) request_ctx = FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream;
   else if( msg_kind==2 ) request_ctx = FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge;
@@ -807,18 +809,37 @@ LLVMFuzzerTestOneInput( uchar const * data,
     }
   }
 
-  bam_fuzz_seed_stream_state( ctx, request_ctx );
+  if( has_rpc ) bam_fuzz_seed_stream_state( ctx, request_ctx );
 
-  uchar expect_pong = (uchar)( structured_ping && ctx->bam_stream && ctx->bam_stream_live );
+  uchar expect_pong = (uchar)( structured_ping && stream_ok && ctx->enabled );
   ulong pong_samples_before  = 0UL;
-  ulong pong_enqueued_before = 0UL;
+  ulong pong_outcome_idx     = FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX;
+  ulong pong_outcome_before  = 0UL;
   if( expect_pong ) {
+    FD_TEST( ctx->bam_stream && ctx->bam_stream_live );
     bam_fuzz_clear_grpc_tx( ctx );
+    switch( status_selector & 0x3U ) {
+    case 1U:
+      FD_TEST( fd_h2_tx_ping( fd_grpc_client_h2_conn( ctx->grpc_client ),
+                              fd_grpc_client_rbuf_tx( ctx->grpc_client ) ) );
+      pong_outcome_idx = FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_FRAME_TX_BUSY_IDX;
+      break;
+    case 2U:
+      ctx->grpc_client->request_stream = ctx->bam_stream;
+      ctx->grpc_client->request_tx_op->chunk_sz = 1UL;
+      pong_outcome_idx = FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_REQUEST_BUSY_IDX;
+      break;
+    case 3U:
+      ctx->bam_stream->s.state = FD_H2_STREAM_STATE_CLOSED;
+      pong_outcome_idx = FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_SEND_FAIL_IDX;
+      break;
+    default:
+      break;
+    }
     for( ulong i=0UL; i<FD_HISTF_BUCKET_CNT; i++ ) {
       pong_samples_before += fd_histf_cnt( ctx->metrics.scheduler_pong_send_nanos, i );
     }
-    pong_enqueued_before =
-      ctx->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ];
+    pong_outcome_before = ctx->metrics.scheduler_pong_send_outcome_cnt[ pong_outcome_idx ];
   }
 
   switch( msg_kind ) {
@@ -850,11 +871,10 @@ LLVMFuzzerTestOneInput( uchar const * data,
       pong_samples_after += fd_histf_cnt( ctx->metrics.scheduler_pong_send_nanos, i );
     }
     FD_TEST( pong_samples_after == pong_samples_before + 1UL );
-    FD_TEST( ctx->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] ==
-             pong_enqueued_before + 1UL );
+    FD_TEST( ctx->metrics.scheduler_pong_send_outcome_cnt[ pong_outcome_idx ] == pong_outcome_before + 1UL );
   }
 
-  if( drive_end ) {
+  if( has_rpc && drive_end ) {
     bam_fuzz_drive_grpc_end( ctx, request_ctx, payload, payload_sz, http_status, grpc_status );
     if( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) {
       if( http_status==200U && grpc_status==FD_GRPC_STATUS_OK ) {
@@ -870,8 +890,8 @@ LLVMFuzzerTestOneInput( uchar const * data,
     }
   }
 
-  if( drive_to ) {
-    int deadline_kind = (selector & 1) ? FD_GRPC_DEADLINE_HEADER : FD_GRPC_DEADLINE_RX_END;
+  if( has_rpc && drive_to ) {
+    int deadline_kind = (status_selector & 1U) ? FD_GRPC_DEADLINE_HEADER : FD_GRPC_DEADLINE_RX_END;
     bam_fuzz_seed_stream_state( ctx, request_ctx );
     fd_bam_client_grpc_rx_timeout( ctx, request_ctx, deadline_kind );
     if( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) {
@@ -880,9 +900,21 @@ LLVMFuzzerTestOneInput( uchar const * data,
   }
 
   bam_fuzz_exercise_outbound( ctx, data, size );
+  if( msg_kind==0U && stream_ok && ctx->enabled &&
+      ctx->bam_config_received && fd_bam_has_effective_contact( ctx ) ) {
+    static uchar const heartbeat_payload[] = { 0x0a, 0x04, 0x0a, 0x02, 0x08, 0x01 };
+    FD_TEST( ctx->bam_stream && ctx->bam_stream_live );
+    fd_bam_client_grpc_rx_msg( ctx,
+                               heartbeat_payload,
+                               sizeof( heartbeat_payload ),
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    expect_bam_gossip = 1U;
+  }
+
   ctx->bam_status_recent = fd_bam_client_status( ctx );
   _Bool use_bam = ctx->bam_status_recent == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY &&
                   fd_bam_has_effective_contact( ctx );
+  if( expect_bam_gossip ) FD_TEST( use_bam );
   bam_fuzz_publish_and_check( use_bam );
   return 0;
 }
