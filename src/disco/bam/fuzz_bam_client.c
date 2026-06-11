@@ -134,6 +134,34 @@ bam_fuzz_setup_out( ulong out_idx,
   bam_fuzz_ctx.cr_avail[ out_idx ] = ULONG_MAX;
 }
 
+static void
+bam_fuzz_reset_out_storage( ulong out_idx,
+                            ulong mtu ) {
+  ulong depth = bam_fuzz_ctx.depths[ out_idx ];
+
+  fd_frag_meta_t * mcache = fd_mcache_join( fd_mcache_new( bam_fuzz_ctx.mcache_mem[ out_idx ], depth, 0UL, 0UL ) );
+  FD_TEST( mcache );
+  bam_fuzz_ctx.mcaches[ out_idx ] = mcache;
+
+  ulong dcache_data_sz = fd_dcache_req_data_sz( mtu, depth, 1UL, 1 );
+  uchar * dcache = fd_dcache_join( fd_dcache_new( bam_fuzz_ctx.dcache_mem[ out_idx ], dcache_data_sz, 0UL ) );
+  FD_TEST( dcache );
+  bam_fuzz_ctx.dcaches[ out_idx ] = dcache;
+}
+
+static fd_bam_out_ctx_t
+bam_fuzz_out_ctx( ulong out_idx,
+                  ulong mtu ) {
+  uchar * dcache = bam_fuzz_ctx.dcaches[ out_idx ];
+  return (fd_bam_out_ctx_t) {
+      .idx    = out_idx,
+      .mem    = (fd_wksp_t *)dcache,
+      .chunk0 = 0UL,
+      .chunk  = 0UL,
+      .wmark  = fd_dcache_compact_wmark( dcache, dcache, mtu )
+  };
+}
+
 /* Always leave the response mcache "ready" so fd_keyguard_client_sign
    returns immediately instead of hanging the fuzzer. Response chunk is
    always 64 bytes of zeroed data. */
@@ -189,6 +217,43 @@ bam_fuzz_setup_keyguard( void ) {
   FD_TEST( bam_fuzz_ctx.key_resp_dcache );
 }
 
+static void
+bam_fuzz_reset_reusable_storage( void ) {
+  bam_fuzz_reset_out_storage( BAM_FUZZ_OUT_VERIFY, FD_TPU_PARSED_MTU );
+  bam_fuzz_reset_out_storage( BAM_FUZZ_OUT_GOSSIP, sizeof(fd_bam_contact_update_t) );
+
+  bam_fuzz_ctx.out_verify = bam_fuzz_out_ctx( BAM_FUZZ_OUT_VERIFY, FD_TPU_PARSED_MTU );
+  bam_fuzz_ctx.out_gossip = bam_fuzz_out_ctx( BAM_FUZZ_OUT_GOSSIP, sizeof(fd_bam_contact_update_t) );
+
+  bam_fuzz_ctx.key_req_mcache = fd_mcache_join( fd_mcache_new( bam_fuzz_ctx.key_req_mcache_mem,
+                                                               bam_fuzz_ctx.key_req_depth,
+                                                               0UL,
+                                                               0UL ) );
+  FD_TEST( bam_fuzz_ctx.key_req_mcache );
+  bam_fuzz_ctx.key_resp_mcache = fd_mcache_join( fd_mcache_new( bam_fuzz_ctx.key_resp_mcache_mem,
+                                                                bam_fuzz_ctx.key_resp_depth,
+                                                                0UL,
+                                                                0UL ) );
+  FD_TEST( bam_fuzz_ctx.key_resp_mcache );
+
+  ulong req_dcache_data_sz = fd_dcache_req_data_sz( bam_fuzz_ctx.key_req_mtu, bam_fuzz_ctx.key_req_depth, 1UL, 1 );
+  bam_fuzz_ctx.key_req_dcache = fd_dcache_join( fd_dcache_new( bam_fuzz_ctx.key_req_dcache_mem, req_dcache_data_sz, 0UL ) );
+  FD_TEST( bam_fuzz_ctx.key_req_dcache );
+  ulong resp_dcache_data_sz = fd_dcache_req_data_sz( 64UL, bam_fuzz_ctx.key_resp_depth, 1UL, 1 );
+  bam_fuzz_ctx.key_resp_dcache = fd_dcache_join( fd_dcache_new( bam_fuzz_ctx.key_resp_dcache_mem, resp_dcache_data_sz, 0UL ) );
+  FD_TEST( bam_fuzz_ctx.key_resp_dcache );
+
+  fd_memset( bam_fuzz_ctx.pending_txn_mem, 0, bam_pending_txn_footprint( bam_fuzz_ctx.pending_txn_max ) );
+  fd_memset( bam_fuzz_ctx.grpc_client_mem, 0, fd_grpc_client_footprint( bam_fuzz_ctx.grpc_buf_max ) );
+
+  fd_histf_new( bam_fuzz_ctx.builder_heartbeat_arrival_delta,
+      FD_MHIST_MIN( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ),
+      FD_MHIST_MAX( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ) );
+  fd_histf_new( bam_fuzz_ctx.scheduler_pong_send_nanos,
+      FD_MHIST_MIN( BAM, SCHEDULER_PONG_SEND_NANOS ),
+      FD_MHIST_MAX( BAM, SCHEDULER_PONG_SEND_NANOS ) );
+}
+
 /* One-time environment bring-up: allocate workspace, create output rings,
    initialize metrics backing, and wire the dummy keyguard channels. */
 static void
@@ -226,25 +291,8 @@ bam_fuzz_env_init( int *    pargc,
                                                        1UL );
   FD_TEST( bam_fuzz_ctx.pending_txn_mem );
 
-  bam_fuzz_ctx.out_verify = (fd_bam_out_ctx_t) {
-      .idx    = BAM_FUZZ_OUT_VERIFY,
-      .mem    = (fd_wksp_t *)bam_fuzz_ctx.dcaches[ BAM_FUZZ_OUT_VERIFY ],
-      .chunk0 = 0UL,
-      .chunk  = 0UL,
-      .wmark  = fd_dcache_compact_wmark( bam_fuzz_ctx.dcaches[ BAM_FUZZ_OUT_VERIFY ],
-                                         bam_fuzz_ctx.dcaches[ BAM_FUZZ_OUT_VERIFY ],
-                                         FD_TPU_PARSED_MTU)
-  };
-
-  bam_fuzz_ctx.out_gossip = (fd_bam_out_ctx_t) {
-      .idx    = BAM_FUZZ_OUT_GOSSIP,
-      .mem    = (fd_wksp_t *)bam_fuzz_ctx.dcaches[ BAM_FUZZ_OUT_GOSSIP ],
-      .chunk0 = 0UL,
-      .chunk  = 0UL,
-      .wmark  = fd_dcache_compact_wmark( bam_fuzz_ctx.dcaches[ BAM_FUZZ_OUT_GOSSIP ],
-                                         bam_fuzz_ctx.dcaches[ BAM_FUZZ_OUT_GOSSIP ],
-                                         sizeof(fd_bam_contact_update_t) )
-  };
+  bam_fuzz_ctx.out_verify = bam_fuzz_out_ctx( BAM_FUZZ_OUT_VERIFY, FD_TPU_PARSED_MTU );
+  bam_fuzz_ctx.out_gossip = bam_fuzz_out_ctx( BAM_FUZZ_OUT_GOSSIP, sizeof(fd_bam_contact_update_t) );
 
   /* Metrics macros expect fd_metrics_tl to point at a formatted buffer.
      Create a minimal metrics region so timeout/error paths can update counters. */
@@ -504,6 +552,7 @@ static void
 bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
   fd_memset( ctx, 0, sizeof( fd_bam_tile_t ) );
+  bam_fuzz_reset_reusable_storage();
 
   fd_memset( bam_fuzz_ctx.keyswitch, 0, sizeof( bam_fuzz_ctx.keyswitch ) );
   bam_fuzz_ctx.keyswitch->magic = FD_KEYSWITCH_MAGIC;
@@ -758,6 +807,8 @@ int
 LLVMFuzzerInitialize( int *argc,
                       char ***argv ) {
   putenv( "FD_LOG_BACKTRACE=0" );
+  putenv( "FD_LOG_COLORIZE=0" );
+  putenv( "FD_LOG_DEDUP=0" );
   fd_log_wallclock_set( bam_fuzz_wallclock, NULL );
   fd_boot( argc, argv );
   fd_log_level_core_set( 4 ); /* fail fast on errors */
