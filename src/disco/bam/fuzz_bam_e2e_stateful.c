@@ -38,6 +38,7 @@ typedef enum {
 
 #define BAM_FUZZ_MAX_EVENTS 128UL
 #define BAM_FUZZ_RAW_REJECT_SUBMODE_CNT 6U
+#define BAM_FUZZ_MAX_RAW_BATCHES (FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1U)
 
 typedef struct {
   uint next_seq;
@@ -169,11 +170,12 @@ bam_fuzz_make_batch( bam_model_harness_t const * h,
 }
 
 static void
-bam_fuzz_deliver_batch( bam_model_harness_t *          h,
-                        bam_model_batch_def_t const * def ) {
+bam_fuzz_deliver_batches( bam_model_harness_t *          h,
+                          bam_model_batch_def_t const * defs,
+                          ulong                        def_cnt ) {
   if( FD_UNLIKELY( !h->state->bam_stream || !h->state->bam_stream_live ) ) return;
 
-  bam_model_node_deliver_batches( h, def, 1UL, 0U );
+  bam_model_node_deliver_batches( h, defs, def_cnt, 0U );
   bam_model_apply_pipeline( h );
 }
 
@@ -213,25 +215,47 @@ bam_fuzz_init_real_txn_packet( bam_types_Packet * pkt,
 }
 
 static void
+bam_fuzz_deliver_raw_batches( bam_model_harness_t * h,
+                              uint const *          seq_ids,
+                              bam_types_Packet *    packets,
+                              size_t                packet_stride,
+                              size_t const *        packet_cnts,
+                              size_t                batch_cnt ) {
+  test_bam_packet_encode_ctx_t packet_ctx[ BAM_FUZZ_MAX_RAW_BATCHES ];
+  bam_types_AtomicTxnBatch     batches   [ BAM_FUZZ_MAX_RAW_BATCHES ];
+
+  for( size_t i=0UL; i<batch_cnt; i++ ) {
+    packet_ctx[ i ] = (test_bam_packet_encode_ctx_t) {
+      .packets    = packets ? packets + i*packet_stride : NULL,
+      .packet_cnt = packet_cnts[ i ],
+    };
+
+    batches[ i ] = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
+    batches[ i ].seq_id            = seq_ids[ i ];
+    batches[ i ].max_schedule_slot = bam_model_current_slot( h );
+    batches[ i ].packets.funcs.encode = test_bam_encode_packets_cb;
+    batches[ i ].packets.arg          = &packet_ctx[ i ];
+  }
+
+  uchar pb[ 16384 ];
+  size_t pb_sz = bam_model_encode_scheduler_batches( batches, batch_cnt, pb, sizeof(pb) );
+  bam_model_node_deliver_scheduler_response( h, pb, pb_sz );
+  bam_model_apply_pipeline( h );
+}
+
+static void
 bam_fuzz_deliver_raw_packets( bam_model_harness_t * h,
                               uint                  seq_id,
                               bam_types_Packet *    packets,
                               size_t                packet_cnt ) {
-  test_bam_packet_encode_ctx_t packet_ctx = {
-    .packets    = packets,
-    .packet_cnt = packet_cnt
-  };
-
-  bam_types_AtomicTxnBatch batch = bam_types_AtomicTxnBatch_init_default;
-  batch.seq_id            = seq_id;
-  batch.max_schedule_slot = bam_model_current_slot( h );
-  batch.packets.funcs.encode = test_bam_encode_packets_cb;
-  batch.packets.arg          = &packet_ctx;
-
-  uchar pb[ 8192 ];
-  size_t pb_sz = bam_model_encode_scheduler_batches( &batch, 1UL, pb, sizeof(pb) );
-  bam_model_node_deliver_scheduler_response( h, pb, pb_sz );
-  bam_model_apply_pipeline( h );
+  uint   seq_ids[1]    = { seq_id };
+  size_t packet_cnts[1] = { packet_cnt };
+  bam_fuzz_deliver_raw_batches( h,
+                                seq_ids,
+                                packets,
+                                packet_cnt ? packet_cnt : 1UL,
+                                packet_cnts,
+                                1UL );
 }
 
 static fd_bam_bundle_result_t
@@ -283,22 +307,67 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
       if( FD_UNLIKELY( c & 0x80U ) ) {
         if( FD_UNLIKELY( !h->state->bam_stream || !h->state->bam_stream_live ) ) break;
 
-        uint seq_id = f->next_seq++;
         if( FD_UNLIKELY( b & 0x40U ) ) {
-          _Bool revert_on_error = !!( a & 1U );
-          size_t packet_cnt = revert_on_error
-                            ? 2UL + (size_t)((uint)( a>>1 ) % ( FD_BAM_MAX_TXN_PER_ATOMIC_BATCH-1U ))
-                            : 1UL;
-          bam_types_Packet packets[ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
-          for( size_t i=0UL; i<packet_cnt; i++ ) {
-            bam_fuzz_init_real_txn_packet( &packets[i], (uint)c + (uint)i, revert_on_error );
+          _Bool multi_batch = !!( b & 0x80U );
+          size_t batch_cnt = multi_batch ? 2UL + (size_t)( a & 1U ) : 1UL;
+          if( FD_UNLIKELY( (ulong)h->state->feedback_queue_depth + batch_cnt > FD_BAM_MAX_PENDING_RESULTS ) ) break;
+
+          uint             seq_ids    [ BAM_FUZZ_MAX_RAW_BATCHES ];
+          size_t           packet_cnts[ BAM_FUZZ_MAX_RAW_BATCHES ];
+          bam_types_Packet packets    [ BAM_FUZZ_MAX_RAW_BATCHES ][ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
+
+          for( size_t i=0UL; i<batch_cnt; i++ ) {
+            seq_ids[ i ] = f->next_seq++;
+            _Bool revert_on_error = !multi_batch
+                                  ? !!( a & 1U )
+                                  : !!( ( (uint)a >> ( (uint)i + 1U ) ) & 1U );
+            packet_cnts[ i ] = revert_on_error
+                             ? ( !multi_batch
+                               ? 2UL + (size_t)(( (uint)a >> 1U ) % ( FD_BAM_MAX_TXN_PER_ATOMIC_BATCH-1U ))
+                               : 1UL + (size_t)(( (uint)b + (uint)i ) & 1U ) )
+                             : 1UL;
+
+            uint seed0 = !multi_batch ? (uint)c : (uint)a + 17U*(uint)i;
+            for( size_t j=0UL; j<packet_cnts[ i ]; j++ ) {
+              bam_fuzz_init_real_txn_packet( &packets[ i ][ j ], seed0 + (uint)j, revert_on_error );
+            }
           }
-          bam_fuzz_deliver_raw_packets( h, seq_id, packets, packet_cnt );
+          if( FD_UNLIKELY( multi_batch && ( a & 0x80U ) ) ) {
+            uint t = seq_ids[0];
+            seq_ids[0] = seq_ids[ batch_cnt-1UL ];
+            seq_ids[ batch_cnt-1UL ] = t;
+          }
+
+          bam_fuzz_deliver_raw_batches( h,
+                                        seq_ids,
+                                        &packets[0][0],
+                                        FD_BAM_MAX_TXN_PER_ATOMIC_BATCH,
+                                        packet_cnts,
+                                        batch_cnt );
+          break;
+        }
+
+        if( FD_UNLIKELY( b & 0x80U ) ) {
+          ulong result_cnt = FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL;
+          if( FD_UNLIKELY( (ulong)h->state->feedback_queue_depth + result_cnt > FD_BAM_MAX_PENDING_RESULTS ) ) break;
+
+          bam_model_batch_def_t defs[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1U ];
+          for( ulong i=0UL; i<FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL; i++ ) {
+            defs[ i ] = bam_fuzz_make_batch( h,
+                                             f,
+                                             (uchar)((uint)a + (uint)i),
+                                             (uchar)( (uint)b & 0x0fU ),
+                                             (uchar)((uint)c + (uint)i) );
+          }
+          f->last_batch     = defs[0];
+          f->has_last_batch = 1U;
+          bam_fuzz_deliver_batches( h, defs, FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL );
           break;
         }
 
         if( FD_UNLIKELY( h->state->feedback_queue_depth >= FD_BAM_MAX_PENDING_RESULTS ) ) break;
 
+        uint seq_id = f->next_seq++;
         uint submode = ( (uint)a + 3U*(uint)b + (uint)c ) % BAM_FUZZ_RAW_REJECT_SUBMODE_CNT;
         switch( submode ) {
           case 0U:
@@ -347,7 +416,7 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
       bam_model_batch_def_t def = bam_fuzz_make_batch( h, f, a, b, c );
       f->last_batch     = def;
       f->has_last_batch = 1U;
-      bam_fuzz_deliver_batch( h, &def );
+      bam_fuzz_deliver_batches( h, &def, 1UL );
       break;
     }
     case BAM_EVT_REPLAY: {
@@ -356,7 +425,7 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
         f->last_batch     = def;
         f->has_last_batch = 1U;
       }
-      bam_fuzz_deliver_batch( h, &f->last_batch );
+      bam_fuzz_deliver_batches( h, &f->last_batch, 1UL );
       break;
     }
     case BAM_EVT_DUP_SEQ: {
@@ -392,7 +461,7 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
         f->has_last_batch = 1U;
 
         bam_model_batch_def_t next = bam_fuzz_make_batch( h, f, (uchar)( a + 1U ), b, (uchar)( c + 1U ) );
-        bam_fuzz_deliver_batch( h, &next );
+        bam_fuzz_deliver_batches( h, &next, 1UL );
         break;
       }
 
@@ -408,7 +477,7 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
         if( FD_UNLIKELY( !def.revert_on_error ) ) def.txn_cnt = 1U;
       }
       def.txn[0] = bam_fuzz_make_txn_spec( def.seq_id, 0U, a, b, c );
-      bam_fuzz_deliver_batch( h, &def );
+      bam_fuzz_deliver_batches( h, &def, 1UL );
       break;
     }
     case BAM_EVT_NEW_SEQ_SAME_PAYLOAD: {
@@ -422,7 +491,7 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
       def.seq_id = f->next_seq++;
       if( FD_UNLIKELY( a & 0x80U ) ) def.max_schedule_slot = bam_model_current_slot( h );
       f->last_batch = def;
-      bam_fuzz_deliver_batch( h, &def );
+      bam_fuzz_deliver_batches( h, &def, 1UL );
       break;
     }
     case BAM_EVT_ADVANCE_SLOT: {

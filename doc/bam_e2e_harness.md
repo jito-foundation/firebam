@@ -29,12 +29,14 @@ High-signal extensions:
 
 - `SEND_BATCH` uses the original synthetic valid-batch path unless `c & 0x80`.
 - High-bit `SEND_BATCH` drives production scheduler-ingress decode.
-- With `b & 0x40` clear, high-bit `SEND_BATCH` covers: empty batch, too many packets, non-atomic multi-packet batch, mixed `revert_on_error`, oversize metadata, and simple vote transaction.
-- With `b & 0x40` set, high-bit `SEND_BATCH` sends valid Solana transaction fixtures as either one transaction or an atomic bundle, then the harness models downstream execution.
+- With `b & 0x40` clear, high-bit `SEND_BATCH` covers: empty batch, too many packets, non-atomic multi-packet batch, mixed `revert_on_error`, oversize metadata, simple vote transaction, and with `b & 0x80`, too many `AtomicTxnBatch` entries in one wrapper.
+- With `b & 0x40` set, high-bit `SEND_BATCH` sends valid Solana transaction fixtures as either one transaction or an atomic bundle; with `b & 0x80`, it sends multiple valid batches in one scheduler response.
+- `LEADER_OFF`/`LEADER_ON` plus targeted `SEND_BATCH` events cover non-leader rejection, stale slot hints, missing leader working slot, and bank-unavailable timeout.
 - `FILL_QUEUE` uses bounded direct-result fill unless `a & 0x80`; high-bit `FILL_QUEUE` saturates the result FIFO and asserts one intentional drop.
 - Final wire/model comparison includes only results accepted into the durable BAM result FIFO. Intentionally dropped result attempts are tracked by drop counters.
+- Committed wire results are compared against the model per transaction, including consumed CUs and committed transaction status.
 
-The checked-in corpus should stay compact: one broad mixed trace plus targeted production-ingress rejection, valid-ingress, and forced-drop seeds.
+The checked-in corpus should stay compact: one broad mixed trace plus targeted production-ingress rejection, valid-ingress, multi-batch, leader/bank-state, and forced-drop seeds.
 
 ## Commands
 
@@ -51,7 +53,7 @@ LibFuzzer:
 
 ```bash
 make CC=clang CXX=clang++ EXTRAS="fuzz asan" fuzz_bam_e2e_stateful
-build/native/clang/fuzz-test/fuzz_bam_e2e_stateful corpus/fuzz_bam_e2e_stateful/explore corpus/fuzz_bam_e2e_stateful
+build/native/clang/fuzz-test/fuzz_bam_e2e_stateful corpus/fuzz_bam_e2e_stateful
 ```
 
 Use `BUILDDIR=native/clang-fuzz` only when you want a separate clang fuzz output tree.

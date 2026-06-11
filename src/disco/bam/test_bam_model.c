@@ -77,7 +77,9 @@ bam_model_encode_config( uint commission_bps,
 typedef struct {
   uint  seq_id;
   uchar committed;
+  uchar committed_txn_cnt;
   uchar which_reason;
+  bam_types_TransactionCommittedResult committed_txn[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   bam_types_SchedulingError          scheduling_error;
   bam_types_DeserializationErrorReason deser_reason;
   bam_types_TransactionErrorReason   txn_reason;
@@ -107,11 +109,14 @@ bam_model_decode_last_wire_result( fd_bam_tile_t *         state,
   out->seq_id = res->seq_id;
   if( res->which_result == bam_types_AtomicTxnBatchResult_committed_tag ) {
     out->committed = 1U;
-    out->which_reason = 0U;
+    test_bam_committed_results_t const * committed = &decoded.multi.committed[0];
+    out->committed_txn_cnt = (uchar)committed->txn_cnt;
+    for( uchar i=0U; i<out->committed_txn_cnt; i++ ) {
+      out->committed_txn[ i ] = committed->txns[ i ];
+    }
     return 1;
   }
 
-  out->committed = 0U;
   out->which_reason = (uchar)res->result.not_committed.which_reason;
   if( res->result.not_committed.which_reason == bam_types_NotCommitted_scheduling_error_tag ) {
     out->scheduling_error = res->result.not_committed.reason.scheduling_error;
@@ -1142,6 +1147,15 @@ bam_model_expected_wire_result( fd_bam_bundle_result_t const * res,
 
   if( FD_LIKELY( res->execution_success ) ) {
     out->committed = 1U;
+    out->committed_txn_cnt = res->bundle_txn_cnt;
+    for( uchar i=0U; i<out->committed_txn_cnt; i++ ) {
+      out->committed_txn[ i ] = (bam_types_TransactionCommittedResult) {
+        .cus_consumed               = res->consumed_cus[ i ],
+        .feepayer_balance_lamports  = res->feepayer_balance_lamports[ i ],
+        .loaded_accounts_data_size  = res->loaded_accounts_data_size[ i ],
+        .execution_success          = res->sanitize_success[ i ] && !res->transaction_err_count,
+      };
+    }
     return;
   }
 
@@ -1236,7 +1250,17 @@ bam_model_assert_wire_matches_model( bam_model_harness_t * h ) {
     FD_TEST( actual->committed    == expected.committed );
     FD_TEST( actual->which_reason == expected.which_reason );
 
-    if( expected.which_reason == bam_types_NotCommitted_scheduling_error_tag ) {
+    if( expected.committed ) {
+      FD_TEST( actual->committed_txn_cnt == expected.committed_txn_cnt );
+      for( uchar j=0U; j<expected.committed_txn_cnt; j++ ) {
+        bam_types_TransactionCommittedResult const * act = &actual->committed_txn[ j ];
+        bam_types_TransactionCommittedResult const * exp = &expected.committed_txn[ j ];
+        FD_TEST( act->cus_consumed              == exp->cus_consumed );
+        FD_TEST( act->feepayer_balance_lamports == exp->feepayer_balance_lamports );
+        FD_TEST( act->loaded_accounts_data_size == exp->loaded_accounts_data_size );
+        FD_TEST( act->execution_success         == exp->execution_success );
+      }
+    } else if( expected.which_reason == bam_types_NotCommitted_scheduling_error_tag ) {
       FD_TEST( actual->scheduling_error == expected.scheduling_error );
     } else if( expected.which_reason == bam_types_NotCommitted_deserialization_error_tag ) {
       FD_TEST( actual->deser_reason == expected.deser_reason );
@@ -1767,6 +1791,58 @@ bam_model_run_scenarios( fd_wksp_t * wksp ) {
   for( ulong i=0UL; i<h->intent_cnt; i++ ) {
     FD_TEST( h->intents[i].intent_cnt==1U );
   }
+  bam_model_assert_wire_matches_model( h );
+  bam_model_fini( h );
+
+  bam_model_init( h, wksp );
+  {
+    bam_model_batch_def_t batches[3];
+    batches[0] = bam_model_make_batch( 33U, 100UL, 0U, 1U );
+    batches[1] = bam_model_make_batch( 31U, 100UL, 0U, 1U );
+    batches[2] = bam_model_make_batch( 32U, 100UL, 0U, 1U );
+
+    for( uchar i=0U; i<3U; i++ ) {
+      batches[i].txn[0].requested_cu = 20U;
+      batches[i].txn[0].actual_cu    = (uchar)( 7U + i );
+      batches[i].txn[0].work_id      = (uchar)( 80U + i );
+    }
+
+    bam_model_node_deliver_batches( h, batches, 3UL, 0U );
+    bam_model_apply_pipeline( h );
+
+    FD_TEST( h->model_result_cnt==3UL );
+    FD_TEST( h->model_results[0].seq_id==31U );
+    FD_TEST( h->model_results[1].seq_id==32U );
+    FD_TEST( h->model_results[2].seq_id==33U );
+    FD_TEST( h->model_results[0].consumed_cus[0]==8U );
+    FD_TEST( h->model_results[1].consumed_cus[0]==9U );
+    FD_TEST( h->model_results[2].consumed_cus[0]==7U );
+  }
+  bam_model_assert_trace_metadata( h );
+  bam_model_assert_wire_matches_model( h );
+  bam_model_fini( h );
+
+  bam_model_init( h, wksp );
+  {
+    bam_model_batch_def_t batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1U ];
+    for( ulong i=0UL; i<FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL; i++ ) {
+      batches[i] = bam_model_make_batch( (uint)( 940U + (uint)i ), 100UL, 0U, 1U );
+    }
+
+    bam_model_node_deliver_batches( h, batches, FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL, 0U );
+    bam_model_apply_pipeline( h );
+
+    FD_TEST( h->model_result_cnt==FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL );
+    FD_TEST( h->model_results[0].seq_id==940U + FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
+    FD_TEST( h->model_results[0].bundle_err==FD_BAM_BUNDLE_ERR_DESER );
+    FD_TEST( h->model_results[0].deser_reason==bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
+    FD_TEST( h->model_results[0].deser_index==0U );
+    for( ulong i=0UL; i<FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET; i++ ) {
+      FD_TEST( h->model_results[i+1UL].seq_id==(uint)( 940U + (uint)i ) );
+      FD_TEST( h->model_results[i+1UL].execution_success==1U );
+    }
+  }
+  bam_model_assert_trace_metadata( h );
   bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
