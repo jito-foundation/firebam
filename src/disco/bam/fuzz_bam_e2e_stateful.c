@@ -127,7 +127,7 @@ bam_fuzz_make_txn_spec( uint  seq_id,
     case 8U:
       spec.mode = BAM_MODEL_TXN_EXEC_FAIL;
       break;
-    default:
+    case 9U:
       spec.mode = BAM_MODEL_TXN_POH_TIMEOUT;
       break;
   }
@@ -259,7 +259,7 @@ bam_fuzz_make_direct_result( bam_model_harness_t const * h,
       res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
       res.deser_index  = 0U;
       break;
-    default:
+    case 3U:
       res.sanitize_success[0]     = 1U;
       res.transaction_err_count   = 1U;
       res.transaction_err[0]      = bam_types_TransactionErrorReason_ACCOUNT_IN_USE;
@@ -454,8 +454,8 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
       break;
     case BAM_EVT_FILL_QUEUE: {
       ulong queue_avail = FD_BAM_MAX_PENDING_RESULTS - (ulong)h->state->feedback_queue_depth;
-      ulong model_avail = BAM_MODEL_MAX_RESULTS - h->model_result_cnt;
       if( FD_UNLIKELY( a & 0x80U ) ) {
+        ulong model_avail = BAM_MODEL_MAX_RESULTS - h->model_result_cnt;
         if( FD_UNLIKELY( queue_avail > model_avail ) ) break;
 
         for( ulong i=0UL; i<queue_avail; i++ ) {
@@ -471,7 +471,7 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
       }
 
       ulong n = 1UL + (ulong)( a & 7U );
-      n = fd_ulong_min( n, fd_ulong_min( queue_avail, model_avail ) );
+      n = fd_ulong_min( n, queue_avail );
 
       for( ulong i=0UL; i<n; i++ ) {
         fd_bam_bundle_result_t res = bam_fuzz_make_direct_result( h, f->direct_result_seq++, (uchar)( b + (uchar)i ) );
@@ -498,30 +498,11 @@ bam_fuzz_apply_event( bam_model_harness_t * h,
       }
       break;
     }
-    default:
+    case BAM_EVT_KIND_CNT:
       break;
   }
 
   bam_fuzz_assert_invariants( h );
-}
-
-static void
-bam_fuzz_init_state( bam_model_harness_t * h,
-                     bam_fuzz_state_t *    f,
-                     uint                  seed ) {
-  fd_memset( f, 0, sizeof(*f) );
-  f->next_seq          = ( seed << 1 ) | 1U;
-  f->direct_result_seq = 0x80000000U | ( seed & 0x00ffffffU );
-
-  h->leader_working_slot    = 100UL + (ulong)( seed & 31U );
-  h->bankforks_working_slot = h->leader_working_slot ? h->leader_working_slot-1UL : 0UL;
-  h->leader_working_present = 1U;
-  h->leader_on              = 1U;
-  h->bank_available         = 1U;
-  h->slot_cu_limit          = 200U + (uint)( seed & 0xffU );
-  h->slot_microblock_limit  = 4U + (uint)(( seed>>8 ) & 31U);
-  h->slot_cu_used           = 0U;
-  h->slot_microblock_used   = 0U;
 }
 
 int
@@ -564,7 +545,19 @@ LLVMFuzzerTestOneInput( uchar const * data,
   bam_model_init( h, g_bam_fuzz_wksp );
 
   bam_fuzz_state_t f[1];
-  bam_fuzz_init_state( h, f, seed );
+  fd_memset( f, 0, sizeof(*f) );
+  f->next_seq          = ( seed << 1 ) | 1U;
+  f->direct_result_seq = 0x80000000U | ( seed & 0x00ffffffU );
+
+  h->leader_working_slot    = 100UL + (ulong)( seed & 31U );
+  h->bankforks_working_slot = h->leader_working_slot ? h->leader_working_slot-1UL : 0UL;
+  h->leader_working_present = 1U;
+  h->leader_on              = 1U;
+  h->bank_available         = 1U;
+  h->slot_cu_limit          = 200U + (uint)( seed & 0xffU );
+  h->slot_microblock_limit  = 4U + (uint)(( seed>>8 ) & 31U);
+  h->slot_cu_used           = 0U;
+  h->slot_microblock_used   = 0U;
 
   for( ulong i=0UL, event_cnt=0UL; i<size && event_cnt<BAM_FUZZ_MAX_EVENTS; event_cnt++ ) {
     uchar k = data[ i++ ];
