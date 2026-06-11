@@ -20,6 +20,7 @@ char const fdctl_version_string[] = "fuzz";
 #define BAM_FUZZ_OUT_VERIFY (0UL)
 #define BAM_FUZZ_OUT_GOSSIP (1UL)
 #define BAM_FUZZ_OUT_MAX    (2UL)
+#define BAM_FUZZ_NOW        (1700000000000000000L)
 
 /* Simple BAM gRPC fuzzer.  The fuzzer drives ConfigResponse, SchedulerResponse,
    and AuthChallengeResponse decode paths while also exercising the runtime
@@ -28,6 +29,18 @@ char const fdctl_version_string[] = "fuzz";
    the BamConfig protobuf. */
 
 static fd_wksp_t * g_wksp;
+static long        bam_fuzz_now = BAM_FUZZ_NOW;
+
+static long
+bam_fuzz_wallclock( void const * _ ) {
+  (void)_;
+  return bam_fuzz_now;
+}
+
+long
+fd_bam_now( void ) {
+  return bam_fuzz_now;
+}
 
 static struct {
   fd_bam_tile_t * tile; /* Active tile under test */
@@ -745,6 +758,7 @@ int
 LLVMFuzzerInitialize( int *argc,
                       char ***argv ) {
   putenv( "FD_LOG_BACKTRACE=0" );
+  fd_log_wallclock_set( bam_fuzz_wallclock, NULL );
   fd_boot( argc, argv );
   fd_log_level_core_set( 4 ); /* fail fast on errors */
   bam_fuzz_env_init( argc, argv );
@@ -758,6 +772,7 @@ int
 LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         size ) {
   if( FD_UNLIKELY( size<1UL ) ) return 0;
+  bam_fuzz_now = BAM_FUZZ_NOW;
   bam_fuzz_reset_tile();
 
   uchar selector     = data[0];
