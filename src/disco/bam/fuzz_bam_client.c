@@ -10,6 +10,10 @@
 #include "../../flamenco/gossip/fd_gossip_message.h"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../waltz/grpc/fd_grpc_client_private.h"
+#include "../../util/net/fd_ip4.h"
+
+#include <stdio.h>
+#include <string.h>
 
 char const fdctl_version_string[] = "fuzz";
 
@@ -47,7 +51,9 @@ static struct {
 
   fd_bam_ctrl_t     ctrl;    /* Runtime enable/disable switch */
   fd_bam_fee_cfg_t  fee_cfg; /* Shared fee cfg buffer */
+  fd_keyswitch_t     keyswitch[1];
   fd_histf_t        builder_heartbeat_arrival_delta[1]; /* Histogram backing for the BuilderHeartBeat arrival-delta metric */
+  fd_histf_t        scheduler_pong_send_nanos[1];        /* Histogram backing for scheduler Ping->Pong latency */
 
   void * pending_txn_mem;
   ulong  pending_txn_max;
@@ -80,13 +86,13 @@ typedef struct {
 } bam_fuzz_auth_payload_t;
 
 static uint const bam_fuzz_http_status_map[ 4 ] = { 200U, 401U, 403U, 503U };
-static uint const bam_fuzz_grpc_status_map[ 4 ] = {
+static uint const bam_fuzz_grpc_status_map[ 5 ] = {
     FD_GRPC_STATUS_OK,
     FD_GRPC_STATUS_UNAUTHENTICATED,
     FD_GRPC_STATUS_PERMISSION_DENIED,
-    FD_GRPC_STATUS_UNAVAILABLE
+    FD_GRPC_STATUS_UNAVAILABLE,
+    FD_GRPC_STATUS_INVALID_ARGUMENT
 };
-/* status maps expect a 2-bit index; higher bits are masked off by callers. */
 
 /* Build a single-producer ring for publishing fragments.
    depth>0 and mtu>0 are required; test aborts if footprint alloc fails. */
@@ -251,6 +257,9 @@ bam_fuzz_env_init( int *    pargc,
   fd_histf_new( bam_fuzz_ctx.builder_heartbeat_arrival_delta,
       FD_MHIST_MIN( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ),
       FD_MHIST_MAX( BAM, BUILDER_HEARTBEAT_ARRIVAL_DELTA_NANOS ) );
+  fd_histf_new( bam_fuzz_ctx.scheduler_pong_send_nanos,
+      FD_MHIST_MIN( BAM, SCHEDULER_PONG_SEND_NANOS ),
+      FD_MHIST_MAX( BAM, SCHEDULER_PONG_SEND_NANOS ) );
 
   bam_fuzz_setup_keyguard();
 
@@ -319,44 +328,67 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
 }
 
 static void
-bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
-                            uchar const *   data,
-                            ulong           size ) {
-  if( FD_UNLIKELY( !ctx->grpc_client ) ) return;
-
-  /* Pretend the HTTP/2 handshake completed so request_start / stream_send_msg run. */
+bam_fuzz_prepare_connected_grpc( fd_bam_tile_t * ctx ) {
   ctx->grpc_client->h2_hs_done  = 1U;
   ctx->grpc_client->ssl_hs_done = 1U;
   fd_h2_conn_t * conn = fd_grpc_client_h2_conn( ctx->grpc_client );
-  if( conn ) conn->flags = 0U;
+  if( conn ) {
+    conn->flags = 0U;
+    conn->peer_settings.max_concurrent_streams = FD_GRPC_CLIENT_MAX_STREAMS;
+  }
+  ctx->tcp_sock_connected = 1;
 
-  /* Ensure we have a scheduler stream by sending an AuthProof. */
+  long now = fd_bam_now();
+  ctx->keepalive->ts_next_tx  = now + ctx->keepalive_interval;
+  ctx->keepalive->ts_last_tx  = now;
+  ctx->keepalive->ts_last_rx  = now;
+  ctx->keepalive->ts_deadline = now + ctx->keepalive_interval;
+  ctx->keepalive->inflight    = 0U;
+}
+
+static void
+bam_fuzz_clear_grpc_tx( fd_bam_tile_t * ctx ) {
+  fd_h2_rbuf_t * rbuf_tx = fd_grpc_client_rbuf_tx( ctx->grpc_client );
+  fd_h2_rbuf_init( rbuf_tx, rbuf_tx->buf0, rbuf_tx->bufsz );
+  ctx->grpc_client->request_stream = NULL;
+  *ctx->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
+}
+
+static void
+bam_fuzz_open_scheduler_stream( fd_bam_tile_t * ctx,
+                                uchar const *   data,
+                                ulong           size ) {
+  bam_fuzz_prepare_connected_grpc( ctx );
   if( FD_UNLIKELY( !ctx->bam_stream ) ) {
-    if( FD_UNLIKELY( !ctx->bam_auth_ready ) ) {
-      uchar seed = size ? data[0] : 0;
-      ulong len = fd_ulong_min( (ulong)( seed & 0x3fU ), sizeof( ctx->challenge_to_sign )-1UL );
-      for( ulong i=0UL; i<len; i++ ) ctx->challenge_to_sign[ i ] = (char)('A' + (seed % 26U));
-      ctx->challenge_to_sign[ len ] = '\0';
+    uchar seed = size ? data[0] : 0U;
+    ulong len = fd_ulong_min( (ulong)( seed & 0x3fU ), sizeof( ctx->challenge_to_sign )-1UL );
+    for( ulong i=0UL; i<len; i++ ) ctx->challenge_to_sign[ i ] = (char)('A' + (seed % 26U));
+    ctx->challenge_to_sign[ len ] = '\0';
+    fd_cstr_ncpy( ctx->bam_auth_signature, "1111111111111111111111111111111111", sizeof( ctx->bam_auth_signature ) );
+    ctx->bam_auth_ready    = 1U;
+    ctx->bam_auth_inflight = 0U;
 
-      // todo: use dynamic signature
-      fd_cstr_ncpy( ctx->bam_auth_signature, "1111111111111111111111111111111111", sizeof( ctx->bam_auth_signature ) );
-      ctx->bam_auth_ready            = 1U;
-      ctx->bam_auth_inflight         = 0U;
-    }
-    fd_h2_rbuf_t * rbuf_tx = fd_grpc_client_rbuf_tx( ctx->grpc_client );
-    fd_h2_rbuf_init( rbuf_tx, rbuf_tx->buf0, rbuf_tx->bufsz );
+    bam_fuzz_clear_grpc_tx( ctx );
     (void)fd_bam_test_client_step_reconnect( ctx, fd_bam_now() );
   }
 
-  if( FD_UNLIKELY( ctx->bam_stream && !ctx->bam_stream_live ) ) {
+  if( FD_LIKELY( ctx->bam_stream && !ctx->bam_stream_live ) ) {
     fd_bam_client_grpc_rx_start( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   }
+}
+
+static void
+bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
+                            uchar const *   data,
+                            ulong           size ) {
+  if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) ) return;
+
+  bam_fuzz_open_scheduler_stream( ctx, data, size );
 
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) return;
 
   /* Discard any queued frames so stream sends don't get stuck behind a full TX ring. */
-  fd_h2_rbuf_t * rbuf_tx = fd_grpc_client_rbuf_tx( ctx->grpc_client );
-  fd_h2_rbuf_init( rbuf_tx, rbuf_tx->buf0, rbuf_tx->bufsz );
+  bam_fuzz_clear_grpc_tx( ctx );
 
   /* Force a heartbeat, a leader-state update, and a couple bundle results. */
   long now = fd_bam_now();
@@ -420,20 +452,18 @@ bam_fuzz_build_auth_challenge_payload( uchar selector,
   return info;
 }
 
+static void bam_fuzz_assert_auth_cleared( fd_bam_tile_t * ctx );
+
 /* Verify auth state mirrors the decoded payload when a structured auth
    message was generated. Expects bam_auth_ready=1 with matching challenge
    contents when decode succeeds; otherwise expects cleared auth state. */
 static void
 bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
-                            bam_fuzz_auth_payload_t  info,
-                            _Bool                    structured ) {
-  if( FD_UNLIKELY( !structured ) ) return;
+                            bam_fuzz_auth_payload_t  info ) {
   if( FD_UNLIKELY( !info.payload_sz ) ) return;
 
   if( FD_UNLIKELY( !info.expect_decode_ok ) ) {
-    FD_TEST( ctx->bam_auth_ready==0U );
-    FD_TEST( ctx->bam_auth_inflight==0U );
-    FD_TEST( ctx->challenge_to_sign[ 0 ]=='\0' );
+    bam_fuzz_assert_auth_cleared( ctx );
     return;
   }
 
@@ -441,8 +471,6 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
   FD_TEST( ctx->bam_auth_inflight==0U );
   ulong challenge_len = strnlen( ctx->challenge_to_sign, sizeof( ctx->challenge_to_sign ) );
   FD_TEST( challenge_len==info.expected_len );
-  FD_TEST( challenge_len<sizeof( ctx->challenge_to_sign ) );
-  FD_TEST( ctx->challenge_to_sign[ challenge_len ]=='\0' );
   /* Generator fills challenge_to_sign with a single repeated byte; ensure decode preserved it. */
   for( ulong i=0UL; i<info.expected_len; i++ ) {
     FD_TEST( ((uchar)ctx->challenge_to_sign[ i ])==info.start_byte );
@@ -457,24 +485,6 @@ bam_fuzz_assert_auth_cleared( fd_bam_tile_t * ctx ) {
   FD_TEST( ctx->bam_auth_inflight==0U );
 }
 
-/* Minimal status evaluation for the fuzzer: mirrors the healthy/unhealthy
-   builder-activity gate without requiring full transport state.
-   Full version in fd_bam_client_status() of fd_bam_client.c
-*/
-
-static fd_plugin_bam_update_status_t
-bam_fuzz_status( fd_bam_tile_t const * ctx ) {
-  if( FD_UNLIKELY( !ctx->enabled ) ) return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
-  if( FD_UNLIKELY( !ctx->bam_stream_live ) ) return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
-  long now = fd_log_wallclock();
-  if( FD_UNLIKELY(
-    ( ctx->bam_last_builder_activity_ns<=0L ) ||
-    ( now - ctx->bam_last_builder_activity_ns >= FD_BAM_ACTIVITY_TIMEOUT_NS ) ) ) {
-    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
-  }
-  return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
-}
-
 /* Reinitialize tile state for each fuzz input. Populates default endpoints,
    seeds keepalive/rng, and wires ctrl/fee_cfg/outputs to local buffers. */
 static void
@@ -482,18 +492,11 @@ bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
   fd_memset( ctx, 0, sizeof( fd_bam_tile_t ) );
 
-  /* Keep branch-specific state defaults explicit when later logic depends on
-     meaning beyond "zeroed memory". */
-  ctx->feedback_queue_depth = 0U;
-  ctx->bam_results_head     = 0U;
-  ctx->bam_results_tail     = 0U;
-  ctx->challenge_to_sign[ 0 ] = '\0';
-  ctx->bam_auth_ready         = 0U;
-  ctx->bam_auth_inflight      = 0U;
-  ctx->bam_config_inflight    = 0U;
-  ctx->bam_config_received    = 0U;
-  ctx->bam_stream_live        = 0U;
-  ctx->bam_stream_connecting = 0U;
+  fd_memset( bam_fuzz_ctx.keyswitch, 0, sizeof( bam_fuzz_ctx.keyswitch ) );
+  bam_fuzz_ctx.keyswitch->magic = FD_KEYSWITCH_MAGIC;
+  bam_fuzz_ctx.keyswitch->state = FD_KEYSWITCH_STATE_COMPLETED;
+  ctx->keyswitch = bam_fuzz_ctx.keyswitch;
+
   ctx->bam_leader_state.slot  = ULONG_MAX;
 
   /* Wiring for publish paths */
@@ -522,6 +525,7 @@ bam_fuzz_reset_tile( void ) {
   ctx->fee_cfg = &bam_fuzz_ctx.fee_cfg;
 
   ctx->metrics.builder_heartbeat_arrival_delta_nanos[0] = bam_fuzz_ctx.builder_heartbeat_arrival_delta[0];
+  ctx->metrics.scheduler_pong_send_nanos[0]              = bam_fuzz_ctx.scheduler_pong_send_nanos[0];
   ctx->keepalive_interval = (long)1e9;
   long now = fd_log_wallclock();
   FD_TEST( fd_rng_new( ctx->rng, 1234U, 0UL ) );
@@ -531,6 +535,9 @@ bam_fuzz_reset_tile( void ) {
   ctx->keepalive->ts_deadline = now + ctx->keepalive_interval;
   ctx->keepalive->inflight = 0U;
   fd_memset( ctx->rtt, 0, sizeof( fd_rtt_estimate_t ) );
+
+  ctx->default_tpu     = (fd_ip4_port_t){ .addr = FD_IP4_ADDR( 127, 0, 0, 1 ), .port = fd_ushort_bswap( (ushort)9007U ) };
+  ctx->default_tpu_fwd = (fd_ip4_port_t){ .addr = FD_IP4_ADDR( 127, 0, 0, 1 ), .port = fd_ushort_bswap( (ushort)9008U ) };
 
   /* Default endpoint so runtime control can toggle cleanly */
   static char const default_host[] = "bam.example.com";
@@ -554,14 +561,7 @@ bam_fuzz_reset_tile( void ) {
   FD_TEST( ctx->grpc_client );
   fd_grpc_client_set_version( ctx->grpc_client, fdctl_version_string, strlen( fdctl_version_string ) );
   fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
-  ctx->grpc_client->h2_hs_done  = 1U;
-  ctx->grpc_client->ssl_hs_done = 1U;
-  fd_h2_conn_t * conn = fd_grpc_client_h2_conn( ctx->grpc_client );
-  if( conn ) {
-    conn->flags = 0U;
-    conn->peer_settings.max_concurrent_streams = FD_GRPC_CLIENT_MAX_STREAMS;
-  }
-  ctx->tcp_sock_connected = 1;
+  bam_fuzz_prepare_connected_grpc( ctx );
 
   /* Identity for auth */
   for( ulong i=0UL; i<sizeof( ctx->bam_identity_pubkey ); i++ ) ctx->bam_identity_pubkey[ i ] = (uchar)( i+1U );
@@ -594,11 +594,7 @@ bam_fuzz_reset_tile( void ) {
 static void
 bam_fuzz_seed_stream_state( fd_bam_tile_t * ctx,
                             ulong           request_ctx ) {
-  if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream ) ) {
-    ctx->bam_stream            = (fd_grpc_h2_stream_t *)ctx; /* sentinel non-NULL */
-    ctx->bam_stream_live       = 1U;
-    ctx->bam_stream_connecting = 1U;
-  } else if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) ) {
+  if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) ) {
     ctx->bam_auth_inflight      = 1U;
     ctx->bam_auth_ready         = 0U;
     ctx->challenge_to_sign[ 0 ] = '\0';
@@ -624,8 +620,106 @@ bam_fuzz_drive_grpc_end( fd_bam_tile_t * ctx,
   resp.grpc_msg_len = (uint)fd_ulong_min( payload_sz, sizeof( resp.grpc_msg ) );
   fd_memcpy( resp.grpc_msg, payload, resp.grpc_msg_len );
 
-  bam_fuzz_seed_stream_state( ctx, request_ctx );
+  if( FD_UNLIKELY( request_ctx==FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream &&
+                   grpc_status==FD_GRPC_STATUS_INVALID_ARGUMENT ) ) {
+    ulong rejected_slot  = payload_sz ? (ulong)payload[0] : 7UL;
+    ulong valid_min_slot = rejected_slot + 1UL;
+    ulong valid_max_slot = rejected_slot + 8UL;
+    ctx->bam_leader_state = (fd_bam_leader_state_t){
+      .slot                    = rejected_slot,
+      .tick                    = 1U,
+      .slot_cu_budget_remaining = 1U,
+      .slot_end_ns             = fd_bam_now() + (long)1e9
+    };
+    ctx->bam_leader_pending = 1U;
+    snprintf( resp.grpc_msg,
+              sizeof( resp.grpc_msg ),
+              "Leader state slot %lu is outside of valid range %lu..=%lu",
+              rejected_slot,
+              valid_min_slot,
+              valid_max_slot );
+    resp.grpc_msg_len = (uint)strnlen( resp.grpc_msg, sizeof( resp.grpc_msg ) );
+  }
+
   fd_bam_client_grpc_rx_end( ctx, request_ctx, &resp );
+}
+
+static void
+bam_fuzz_apply_ctrl_request( fd_bam_tile_t * ctx,
+                             uchar           ctrl_selector,
+                             uchar           enable_ok ) {
+  fd_bam_ctrl_t * ctrl = ctx->ctrl;
+  uchar ctrl_case = (uchar)( ctrl_selector & 0x3U );
+
+  char old_host[ FD_FQDN_BUF_MAX ];
+  char old_sni [ FD_SNI_BUF_MAX  ];
+  ushort old_port    = 0U;
+  uchar  old_ssl     = 0U;
+  uchar  old_enabled = 0U;
+  if( ctrl_case==3U ) {
+    fd_cstr_ncpy( old_host, ctx->server_fqdn, sizeof( old_host ) );
+    fd_cstr_ncpy( old_sni,  ctx->server_sni,  sizeof( old_sni  ) );
+    old_port    = ctx->server_tcp_port;
+    old_ssl     = ctx->is_ssl;
+    old_enabled = ctx->enabled;
+  }
+
+  ctrl->enable = !!enable_ok;
+
+  switch( ctrl_case ) {
+  case 0U: /* enable-only */
+    ctrl->command = FD_BAM_CTRL_CMD_ENABLE;
+    break;
+  case 1U: /* valid URL, optional explicit SNI */
+    ctrl->command = FD_BAM_CTRL_CMD_ENABLE | FD_BAM_CTRL_CMD_URL;
+    fd_cstr_ncpy( ctrl->url, "http://new.example.com:8899", sizeof( ctrl->url ) );
+    if( ctrl_selector & 0x4U ) {
+      ctrl->command |= FD_BAM_CTRL_CMD_SNI;
+      fd_cstr_ncpy( ctrl->sni, "custom.sni.invalid", sizeof( ctrl->sni ) );
+    }
+    break;
+  case 2U: /* blank URL clears endpoint and disables */
+    ctrl->command = FD_BAM_CTRL_CMD_URL;
+    fd_cstr_ncpy( ctrl->url, "   \t\n", sizeof( ctrl->url ) );
+    break;
+  default: /* invalid URL should fail without mutating config */
+    ctrl->command = FD_BAM_CTRL_CMD_URL;
+    fd_cstr_ncpy( ctrl->url, "not a url", sizeof( ctrl->url ) );
+    break;
+  }
+
+  FD_VOLATILE( ctrl->state ) = FD_BAM_CTRL_STATE_REQUEST;
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl->state == (uchar)( ctrl_case==3U ? FD_BAM_CTRL_STATE_ERROR : FD_BAM_CTRL_STATE_SUCCESS ) );
+  switch( ctrl_case ) {
+  case 0U:
+    FD_TEST( ctx->enabled == !!enable_ok );
+    break;
+  case 1U: {
+    char const * expected_sni = ( ctrl_selector & 0x4U ) ? "custom.sni.invalid" : "new.example.com";
+    FD_TEST( ctx->enabled == !!enable_ok );
+    FD_TEST( strcmp( ctx->server_fqdn, "new.example.com" )==0 );
+    FD_TEST( ctx->server_tcp_port == 8899U );
+    FD_TEST( ctx->is_ssl == 0U );
+    FD_TEST( strcmp( ctx->server_sni, expected_sni )==0 );
+    break;
+  }
+  case 2U:
+    FD_TEST( ctx->enabled == 0U );
+    FD_TEST( ctx->server_fqdn[0] == '\0' );
+    FD_TEST( ctx->server_tcp_port == 0U );
+    break;
+  default:
+    FD_TEST( ctx->enabled == old_enabled );
+    FD_TEST( strcmp( ctx->server_fqdn, old_host )==0 );
+    FD_TEST( strcmp( ctx->server_sni, old_sni )==0 );
+    FD_TEST( ctx->server_tcp_port == old_port );
+    FD_TEST( ctx->is_ssl == old_ssl );
+    break;
+  }
+
+  bam_fuzz_prepare_connected_grpc( ctx );
 }
 
 /* Publish a gossip update and assert the emitted fields match the tile
@@ -634,7 +728,7 @@ static void
 bam_fuzz_publish_and_check(_Bool use_bam) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
   ulong chunk_before = ctx->gossip_out.chunk;
-  if( FD_UNLIKELY( !fd_bam_gossip_update( ctx, ctx->stem, use_bam ) ) ) return;
+  FD_TEST( fd_bam_gossip_update( ctx, ctx->stem, use_bam ) );
   fd_bam_contact_update_t const * msg = fd_chunk_to_laddr( ctx->gossip_out.mem, chunk_before );
 
   fd_ip4_port_t expected_tpu     = use_bam ? ctx->bam_tpu     : ctx->default_tpu;
@@ -670,46 +764,61 @@ LLVMFuzzerTestOneInput( uchar const * data,
   uchar msg_kind     = (uchar)( selector & 0x3U );        /* 0=config,1=scheduler,2=auth */
   uchar apply_ctrl   = (uchar)( ( selector>>2 ) & 1U );   /* bit2: drive runtime control */
   uchar enable_ok    = (uchar)( ( selector>>3 ) & 1U );   /* bit3: desired enable state */
-  uchar stream_ok    = (uchar)( ( selector>>4 ) & 1U );   /* bit4: mark stream live */
+  uchar stream_ok    = (uchar)( ( selector>>4 ) & 1U );   /* bit4: open scheduler stream */
   uchar drive_end    = (uchar)( ( selector>>5 ) & 1U );   /* bit5: drive rx_end */
   uchar drive_to     = (uchar)( ( selector>>6 ) & 1U );   /* bit6: drive timeout */
   uchar structured   = (uchar)( ( selector>>7 ) & 1U );   /* bit7: build structured auth */
   uchar status_selector = size>1 ? data[1] : (uchar)( selector ^ 0x5a ); /* Second byte chooses status; fallback mixes bits for small inputs */
   uint  http_status  = bam_fuzz_http_status_map[ status_selector & 0x3 ];      /* Maps into {200,401,403,503} */
-  uint  grpc_status  = bam_fuzz_grpc_status_map[ (status_selector>>2) & 0x3 ]; /* Maps into {OK,UNAUTH,PERM,UNAVAIL} */
+  uint  grpc_status  = bam_fuzz_grpc_status_map[
+      ((ulong)status_selector>>2) % (sizeof(bam_fuzz_grpc_status_map)/sizeof(bam_fuzz_grpc_status_map[0])) ];
 
   uchar const * payload    = size>1 ? data+2 : data+1;
   ulong         payload_sz = size>1 ? size-2 : size-1;
   bam_fuzz_auth_payload_t auth_info = {0};
+  uchar structured_ping = 0U;
 
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
-
-  if( stream_ok ) {
-    ctx->bam_stream_live = 1U;
-    long hb_now = fd_log_wallclock();
-    ctx->bam_last_builder_activity_ns    = hb_now;
-    ctx->bam_last_validator_heartbeat_ns = hb_now;
-    ctx->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
-  }
-
-  if( apply_ctrl ) {
-    ctx->ctrl->enable  = enable_ok;
-    ctx->enabled       = ctx->ctrl->enable;
-    FD_VOLATILE( ctx->ctrl->state ) = FD_BAM_CTRL_STATE_SUCCESS;
-  }
 
   ulong request_ctx = FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig;
   if( msg_kind==1 ) request_ctx = FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream;
   else if( msg_kind==2 ) request_ctx = FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge;
 
-  uchar auth_buf[ 512 ];
-  if( structured && msg_kind==2 ) {
-    auth_info = bam_fuzz_build_auth_challenge_payload( payload_sz ? payload[0] : 0U, auth_buf, sizeof( auth_buf ) );
+  if( apply_ctrl ) {
+    uchar ctrl_selector = size>2UL ? data[2] : status_selector;
+    bam_fuzz_apply_ctrl_request( ctx, ctrl_selector, enable_ok );
+  }
+
+  if( stream_ok && ctx->enabled ) {
+    bam_fuzz_open_scheduler_stream( ctx, data, size );
+  }
+
+  uchar structured_buf[ 512 ];
+  if( structured && msg_kind==1 ) {
+    static uchar const ping_payload[] = { 0x0a, 0x04, 0x1a, 0x02, 0x08, 0x07 };
+    payload = ping_payload;
+    payload_sz = sizeof( ping_payload );
+    structured_ping = 1U;
+  } else if( structured && msg_kind==2 ) {
+    auth_info = bam_fuzz_build_auth_challenge_payload( payload_sz ? payload[0] : 0U, structured_buf, sizeof( structured_buf ) );
     if( auth_info.payload_sz ) {
-      payload    = auth_buf;
+      payload    = structured_buf;
       payload_sz = auth_info.payload_sz;
-      ctx->bam_auth_inflight = 1U; /* mirror real request lifecycle */
     }
+  }
+
+  bam_fuzz_seed_stream_state( ctx, request_ctx );
+
+  uchar expect_pong = (uchar)( structured_ping && ctx->bam_stream && ctx->bam_stream_live );
+  ulong pong_samples_before  = 0UL;
+  ulong pong_enqueued_before = 0UL;
+  if( expect_pong ) {
+    bam_fuzz_clear_grpc_tx( ctx );
+    for( ulong i=0UL; i<FD_HISTF_BUCKET_CNT; i++ ) {
+      pong_samples_before += fd_histf_cnt( ctx->metrics.scheduler_pong_send_nanos, i );
+    }
+    pong_enqueued_before =
+      ctx->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ];
   }
 
   switch( msg_kind ) {
@@ -730,24 +839,34 @@ LLVMFuzzerTestOneInput( uchar const * data,
                                payload,
                                payload_sz,
                                FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge );
-    bam_fuzz_assert_auth_state( ctx, auth_info, structured );
     break;
   default:
     break;
   }
 
+  if( expect_pong ) {
+    ulong pong_samples_after = 0UL;
+    for( ulong i=0UL; i<FD_HISTF_BUCKET_CNT; i++ ) {
+      pong_samples_after += fd_histf_cnt( ctx->metrics.scheduler_pong_send_nanos, i );
+    }
+    FD_TEST( pong_samples_after == pong_samples_before + 1UL );
+    FD_TEST( ctx->metrics.scheduler_pong_send_outcome_cnt[ FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX ] ==
+             pong_enqueued_before + 1UL );
+  }
+
   if( drive_end ) {
     bam_fuzz_drive_grpc_end( ctx, request_ctx, payload, payload_sz, http_status, grpc_status );
-    if( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge &&
-        ( http_status!=200U || grpc_status!=FD_GRPC_STATUS_OK ) ) {
-      bam_fuzz_assert_auth_cleared( ctx );
-    } else if( request_ctx==FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream &&
-               ( http_status!=200U || grpc_status!=FD_GRPC_STATUS_OK ) ) {
-      bam_fuzz_assert_auth_cleared( ctx );
-    } else if( ( request_ctx!=FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) &&
-               ( grpc_status==FD_GRPC_STATUS_UNAUTHENTICATED ||
-                 grpc_status==FD_GRPC_STATUS_PERMISSION_DENIED ) ) {
-      bam_fuzz_assert_auth_cleared( ctx );
+    if( request_ctx==FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge ) {
+      if( http_status==200U && grpc_status==FD_GRPC_STATUS_OK ) {
+        if( structured ) bam_fuzz_assert_auth_state( ctx, auth_info );
+      } else {
+        bam_fuzz_assert_auth_cleared( ctx );
+      }
+    }
+    if( request_ctx==FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream &&
+        http_status==200U && grpc_status==FD_GRPC_STATUS_INVALID_ARGUMENT ) {
+      FD_TEST( ctx->bam_leader_state.slot == ULONG_MAX );
+      FD_TEST( ctx->bam_leader_pending == 0U );
     }
   }
 
@@ -761,7 +880,9 @@ LLVMFuzzerTestOneInput( uchar const * data,
   }
 
   bam_fuzz_exercise_outbound( ctx, data, size );
-  ctx->bam_status_recent = bam_fuzz_status( ctx );
-  bam_fuzz_publish_and_check( ctx->bam_status_recent == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+  ctx->bam_status_recent = fd_bam_client_status( ctx );
+  _Bool use_bam = ctx->bam_status_recent == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY &&
+                  fd_bam_has_effective_contact( ctx );
+  bam_fuzz_publish_and_check( use_bam );
   return 0;
 }
