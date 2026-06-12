@@ -60,7 +60,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 3,
+        "h": 9,
         "w": 3,
         "x": 0,
         "y": 1
@@ -197,74 +197,6 @@
       "title": "Tile Status",
       "transparent": true,
       "type": "status-history"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Bundle client connectivity. Series: connected = 1 when the bundle client is connected, 0 when disconnected.",
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 0,
-        "y": 4
-      },
-      "id": 46,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.0-21914300000.patch8",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "min_over_time(bundle_connected{instance=~\"$instance\"}[$__rate_interval])",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Bundle Connected",
-      "type": "stat"
     },
     {
       "datasource": {
@@ -1065,7 +997,7 @@
       },
       "id": 8,
       "panels": [],
-      "title": "Net Tile",
+      "title": "Sock Tile",
       "type": "row"
     },
     {
@@ -1073,7 +1005,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Net tile packet traffic. Series: rx = packets received by the net tile; tx_submit = packets submitted for transmit by the net tile.",
+      "description": "Sock tile packet traffic. Series: rx = packets received by the sock tile; tx = packets sent by the sock tile.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1159,7 +1091,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(net_rx_pkt_cnt{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(sock_rx_pkt_cnt{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "rx",
           "range": true,
@@ -1171,14 +1103,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(net_tx_submit_cnt{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(sock_tx_pkt_cnt{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "tx_submit",
+          "legendFormat": "tx",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Net Packets (PPS)",
+      "title": "Sock Packets (PPS)",
       "type": "timeseries"
     },
     {
@@ -1186,7 +1118,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Net tile byte traffic. Series: rx = bytes received (includes Ethernet header); tx = bytes transmitted (includes Ethernet header).",
+      "description": "Sock tile byte traffic. Series: rx = bytes received; tx = bytes transmitted.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1272,7 +1204,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(net_rx_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(sock_rx_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "rx",
           "range": true,
@@ -1284,14 +1216,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(net_tx_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(sock_tx_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "tx",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Net Bytes (B/s)",
+      "title": "Sock Bytes (B/s)",
       "type": "timeseries"
     },
     {
@@ -1299,7 +1231,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Net receive drops by cause. Series: undersz = packets dropped for being too small; fill_blocked = packets dropped because the fill ring was full; backpressure = packets dropped due to consumer backpressure.",
+      "description": "Sock tile packet drop activity. Series: tx_drop = packets that failed to send.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1384,38 +1316,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(net_rx_undersz_cnt{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(sock_tx_drop_cnt{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "undersz",
+          "legendFormat": "tx_drop",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_rx_fill_blocked_cnt{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "fill_blocked",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_rx_backpressure_cnt{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "backpressure",
-          "range": true,
-          "refId": "C"
         }
       ],
-      "title": "Net RX Drops",
+      "title": "Sock Drops",
       "type": "timeseries"
     },
     {
@@ -1423,167 +1331,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "XDP ring/descriptor errors. Series: rx_dropped_other = packets dropped for other XDP reasons; rx_invalid_descs = packets dropped due to invalid RX descriptor; tx_invalid_descs = packets dropped due to invalid TX descriptor; rx_ring_full = packets dropped due to RX ring full; rx_fill_empty = packets dropped due to empty RX fill ring; tx_ring_empty = packets dropped due to empty TX ring.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 52
-      },
-      "id": 12,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_xdp_rx_dropped_other{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "rx_dropped_other",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_xdp_rx_invalid_descs{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "rx_invalid_descs",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_xdp_tx_invalid_descs{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "tx_invalid_descs",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_xdp_rx_ring_full{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "rx_ring_full",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_xdp_rx_fill_ring_empty_descs{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "rx_fill_empty",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_xdp_tx_ring_empty_descs{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "tx_ring_empty",
-          "range": true,
-          "refId": "F"
-        }
-      ],
-      "title": "Net XDP Errors",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Rates of net_xsk_rx_wakeup_cnt, net_xsk_tx_wakeup_cnt, and net_tx_complete_cnt.",
+      "description": "Sock tile syscall rates. Series: recvmmsg = receive syscalls; sendmmsg = send syscalls by result.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1644,609 +1392,60 @@
       "gridPos": {
         "h": 8,
         "w": 12,
+        "x": 12,
+        "y": 52
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-21914300000.patch7",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(sock_syscalls_recvmmsg{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "recvmmsg/s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (sock_err) (rate(sock_syscalls_sendmmsg{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "sendmmsg {{sock_err}}/s",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Sock Syscalls",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
         "x": 0,
         "y": 60
-      },
-      "id": 78,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_xsk_rx_wakeup_cnt{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "xsk_rx_wakeup/s",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_xsk_tx_wakeup_cnt{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "xsk_tx_wakeup/s",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_tx_complete_cnt{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "tx_complete/s",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Net XSK Wakeups / TX Complete",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 68
-      },
-      "id": 59,
-      "panels": [],
-      "title": "Net/Netlnk Health",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "NIC ring buffer utilization. Series: rx_util = percent of RX ring buffers busy; tx_util = percent of TX ring buffers busy.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 69
-      },
-      "id": 60,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "100 * sum(net_rx_busy_cnt{instance=~\"$instance\"}) / (sum(net_rx_busy_cnt{instance=~\"$instance\"}) + sum(net_rx_idle_cnt{instance=~\"$instance\"}))",
-          "instant": false,
-          "legendFormat": "rx_util",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "100 * sum(net_tx_busy_cnt{instance=~\"$instance\"}) / (sum(net_tx_busy_cnt{instance=~\"$instance\"}) + sum(net_tx_idle_cnt{instance=~\"$instance\"}))",
-          "instant": false,
-          "legendFormat": "tx_util",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Net Ring Utilization %",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Net TX failures by cause. Series: route_fail = TX submits dropped due to missing route; neighbor_fail = TX submits dropped due to unresolved neighbor; ring_full = TX submits dropped due to TX ring full or missing completions.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 69
-      },
-      "id": 61,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_tx_route_fail_cnt{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "route_fail",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_tx_neighbor_fail_cnt{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "neighbor_fail",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(net_tx_full_fail_cnt{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "ring_full",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Net TX Failures",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Netlink churn and drop activity. Series: updates = netlink updates processed; drops = netlink drop events; link_full_syncs = full link table syncs; route_full_syncs = full route table syncs.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 77
-      },
-      "id": 62,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(netlnk_updates{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "updates",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(netlnk_drop_events{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "drops",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(netlnk_link_full_syncs{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "link_full_syncs",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(netlnk_route_full_syncs{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "route_full_syncs",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "Netlink Updates / Drops",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Netlink interface count plus neighbor probe send/fail/rate-limit rates.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 77
-      },
-      "id": 79,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "max(netlnk_interface_count{instance=~\"$instance\"})",
-          "instant": false,
-          "legendFormat": "interface_count",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(netlnk_neigh_probe_sent{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "probe_sent/s",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(netlnk_neigh_probe_fails{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "probe_fail/s",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(netlnk_neigh_probe_rate_limit_host{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "probe_rl_host/s",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(netlnk_neigh_probe_rate_limit_global{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "probe_rl_global/s",
-          "range": true,
-          "refId": "E"
-        }
-      ],
-      "title": "Netlink Probes / Interface Count",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 85
       },
       "id": 13,
       "panels": [],
@@ -2320,7 +1519,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 86
+        "y": 61
       },
       "id": 14,
       "options": {
@@ -2421,7 +1620,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 86
+        "y": 61
       },
       "id": 15,
       "options": {
@@ -2534,7 +1733,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 94
+        "y": 69
       },
       "id": 16,
       "options": {
@@ -2634,7 +1833,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 94
+        "y": 69
       },
       "id": 17,
       "options": {
@@ -2807,7 +2006,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 102
+        "y": 77
       },
       "id": 18,
       "options": {
@@ -2967,7 +2166,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 102
+        "y": 77
       },
       "id": 19,
       "options": {
@@ -3079,7 +2278,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 110
+        "y": 85
       },
       "id": 63,
       "panels": [],
@@ -3152,7 +2351,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 111
+        "y": 86
       },
       "id": 64,
       "options": {
@@ -3312,7 +2511,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 111
+        "y": 86
       },
       "id": 65,
       "options": {
@@ -3436,7 +2635,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 119
+        "y": 94
       },
       "id": 66,
       "options": {
@@ -3585,7 +2784,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 119
+        "y": 94
       },
       "id": 80,
       "options": {
@@ -3710,7 +2909,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 127
+        "y": 102
       },
       "id": 81,
       "options": {
@@ -3774,11 +2973,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 135
+        "y": 110
       },
       "id": 20,
       "panels": [],
-      "title": "Verify/Dedup/Resolv Tiles",
+      "title": "Verify/Dedup/Resolh Tiles",
       "type": "row"
     },
     {
@@ -3847,7 +3046,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 136
+        "y": 111
       },
       "id": 21,
       "options": {
@@ -3871,7 +3070,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(verify_transaction_parse_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(verify_transaction_result{instance=~\"$instance\",verify_tile_result=\"parse_failure\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "parse_failure",
           "range": true,
@@ -3883,7 +3082,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(verify_transaction_dedup_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(verify_transaction_result{instance=~\"$instance\",verify_tile_result=\"dedup_failure\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "dedup_failure",
           "range": true,
@@ -3895,7 +3094,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(verify_transaction_verify_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(verify_transaction_result{instance=~\"$instance\",verify_tile_result=\"verify_failure\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "verify_failure",
           "range": true,
@@ -3907,7 +3106,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(verify_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(verify_transaction_result{instance=~\"$instance\",verify_tile_result=\"bundle_peer_failure\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "bundle_peer_failure",
           "range": true,
@@ -3995,7 +3194,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 136
+        "y": 111
       },
       "id": 22,
       "options": {
@@ -4019,7 +3218,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(dedup_transaction_dedup_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(dedup_transaction_result{instance=~\"$instance\",dedup_tile_result=\"dedup_failure\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "dedup_failure",
           "range": true,
@@ -4031,7 +3230,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(dedup_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(dedup_transaction_result{instance=~\"$instance\",dedup_tile_result=\"bundle_peer_failure\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "bundle_peer_failure",
           "range": true,
@@ -4058,7 +3257,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Resolv-stage drop/error counters. Series: blockhash_expired = transactions dropped due to expired blockhash; no_bank_drop = transactions dropped due to missing bank; bundle_peer_failure = transactions dropped due to bundle peer failure.",
+      "description": "Resolh-stage drop/error counters. Series: blockhash_expired = transactions dropped due to expired blockhash; no_bank_drop = transactions dropped due to missing bank; bundle_peer_failure = transactions dropped due to bundle peer failure.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4119,7 +3318,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 144
+        "y": 119
       },
       "id": 23,
       "options": {
@@ -4143,7 +3342,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(resolv_blockhash_expired{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(resolh_blockhash_expired{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "blockhash_expired",
           "range": true,
@@ -4155,7 +3354,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(resolv_no_bank_drop{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(resolh_no_bank_drop{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "no_bank_drop",
           "range": true,
@@ -4167,14 +3366,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(resolv_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(resolh_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "bundle_peer_failure",
           "range": true,
           "refId": "C"
         }
       ],
-      "title": "Resolv Errors",
+      "title": "Resolh Errors",
       "type": "timeseries"
     },
     {
@@ -4182,7 +3381,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Resolv stash activity. Series: inserted = transactions stashed for unknown blockhash; published = stashed transactions published when the blockhash resolved; removed = stashed transactions removed without publish; overrun = transactions dropped because the stash was full.",
+      "description": "Resolh stash activity. Series: inserted = transactions stashed for unknown blockhash; published = stashed transactions published when the blockhash resolhed; removed = stashed transactions removed without publish; overrun = transactions dropped because the stash was full.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4243,7 +3442,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 144
+        "y": 119
       },
       "id": 24,
       "options": {
@@ -4267,14 +3466,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (resolve_stash_operation) (rate(resolv_stash_operation{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (resolve_stash_operation) (rate(resolh_stash_operation{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "{{resolve_stash_operation}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Resolv Stash Ops",
+      "title": "Resolh Stash Ops",
       "type": "timeseries"
     },
     {
@@ -4283,7 +3482,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 152
+        "y": 127
       },
       "id": 25,
       "panels": [],
@@ -4357,7 +3556,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 153
+        "y": 128
       },
       "id": 26,
       "options": {
@@ -4460,7 +3659,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 153
+        "y": 128
       },
       "id": 27,
       "options": {
@@ -4560,7 +3759,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 161
+        "y": 136
       },
       "id": 28,
       "options": {
@@ -4660,7 +3859,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 161
+        "y": 136
       },
       "id": 29,
       "options": {
@@ -4809,7 +4008,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 169
+        "y": 144
       },
       "id": 30,
       "options": {
@@ -5006,7 +4205,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 169
+        "y": 144
       },
       "id": 31,
       "options": {
@@ -5070,7 +4269,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 177
+        "y": 152
       },
       "id": 67,
       "panels": [],
@@ -5143,7 +4342,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 178
+        "y": 153
       },
       "id": 68,
       "options": {
@@ -5255,7 +4454,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 178
+        "y": 153
       },
       "id": 69,
       "options": {
@@ -5358,7 +4557,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 186
+        "y": 161
       },
       "id": 70,
       "options": {
@@ -5458,7 +4657,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 186
+        "y": 161
       },
       "id": 71,
       "options": {
@@ -5571,7 +4770,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 194
+        "y": 169
       },
       "id": 82,
       "options": {
@@ -5696,7 +4895,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 194
+        "y": 169
       },
       "id": 83,
       "options": {
@@ -5760,11 +4959,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 202
+        "y": 177
       },
       "id": 72,
       "panels": [],
-      "title": "Resolv/Bank Diagnostics",
+      "title": "Resolh/Bank Diagnostics",
       "type": "row"
     },
     {
@@ -5833,7 +5032,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 203
+        "y": 178
       },
       "id": 73,
       "options": {
@@ -5857,14 +5056,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (lut_resolve_result) (rate(resolv_lut_resolved{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (lut_resolve_result) (rate(resolh_lut_resolved{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "{{lut_resolve_result}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Resolv LUT Results",
+      "title": "Resolh LUT Results",
       "type": "timeseries"
     },
     {
@@ -5933,7 +5132,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 203
+        "y": 178
       },
       "id": 74,
       "options": {
@@ -5985,7 +5184,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 211
+        "y": 186
       },
       "id": 32,
       "panels": [],
@@ -6058,7 +5257,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 212
+        "y": 187
       },
       "id": 33,
       "options": {
@@ -6194,7 +5393,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 212
+        "y": 187
       },
       "id": 34,
       "options": {
@@ -6294,7 +5493,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 220
+        "y": 195
       },
       "id": 35,
       "options": {
@@ -6394,7 +5593,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 220
+        "y": 195
       },
       "id": 36,
       "options": {
@@ -6495,7 +5694,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 228
+        "y": 203
       },
       "id": 37,
       "options": {
@@ -6519,7 +5718,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(poh_begin_leader_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_begin_leader_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "begin_leader_p50",
           "range": true,
@@ -6531,7 +5730,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(poh_begin_leader_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pohh_begin_leader_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "begin_leader_p95",
           "range": true,
@@ -6543,7 +5742,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(poh_begin_leader_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(pohh_begin_leader_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "begin_leader_p99",
           "range": true,
@@ -6555,7 +5754,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(poh_first_microblock_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_first_microblock_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "first_microblock_p50",
           "range": true,
@@ -6567,7 +5766,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(poh_first_microblock_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pohh_first_microblock_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "first_microblock_p95",
           "range": true,
@@ -6579,7 +5778,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(poh_first_microblock_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(pohh_first_microblock_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "first_microblock_p99",
           "range": true,
@@ -6591,7 +5790,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(poh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "slot_done_p50",
           "range": true,
@@ -6603,7 +5802,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(poh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pohh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "slot_done_p95",
           "range": true,
@@ -6615,7 +5814,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(poh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(pohh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "slot_done_p99",
           "range": true,
@@ -6627,7 +5826,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(poh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "bundle_init_p50",
           "range": true,
@@ -6639,7 +5838,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(poh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "bundle_init_p95",
           "range": true,
@@ -6651,7 +5850,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(poh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "bundle_init_p99",
           "range": true,
@@ -6728,7 +5927,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 228
+        "y": 203
       },
       "id": 84,
       "options": {
@@ -6752,7 +5951,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "rate(poh_begin_leader_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(poh_begin_leader_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(pohh_begin_leader_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pohh_begin_leader_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
           "instant": false,
           "legendFormat": "begin_leader_mean_s",
           "range": true,
@@ -6764,7 +5963,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "rate(poh_first_microblock_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(poh_first_microblock_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(pohh_first_microblock_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pohh_first_microblock_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
           "instant": false,
           "legendFormat": "first_microblock_mean_s",
           "range": true,
@@ -6776,7 +5975,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "rate(poh_slot_done_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(poh_slot_done_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(pohh_slot_done_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pohh_slot_done_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
           "instant": false,
           "legendFormat": "slot_done_mean_s",
           "range": true,
@@ -6788,7 +5987,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "rate(poh_bundle_initialize_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(poh_bundle_initialize_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(pohh_bundle_initialize_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pohh_bundle_initialize_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
           "instant": false,
           "legendFormat": "bundle_init_mean_s",
           "range": true,
@@ -6804,7 +6003,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 236
+        "y": 211
       },
       "id": 39,
       "panels": [],
@@ -6877,7 +6076,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 237
+        "y": 212
       },
       "id": 40,
       "options": {
@@ -6916,7 +6115,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Shred/FEC rejects, spills, and force-complete events. Series: rejected_initial = shreds rejected before FEC allocation; rejected_unchained = shreds rejected for not being chained merkle; fec_rejected_fatal = FEC sets rejected fatally; fec_spilled = FEC sets spilled; microblocks_abandoned = microblocks abandoned on slot switch; force_complete_failure = failed force complete requests; force_complete_success = successful force complete requests.",
+      "description": "Shred reject/spill counters. Series: rejected_initial = rejected before allocation; rejected_unchained = non-chained merkle shreds; fec_rejected_fatal = fatal FEC rejection; fec_spilled = FEC sets spilled; microblocks_abandoned = microblocks abandoned on slot switch; bad_nonce = repair responses with an incorrect nonce.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -6977,7 +6176,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 237
+        "y": 212
       },
       "id": 41,
       "options": {
@@ -7061,23 +6260,11 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(shred_force_complete_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(shred_bad_nonce{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "force_complete_failure",
+          "legendFormat": "bad_nonce",
           "range": true,
           "refId": "F"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(shred_force_complete_success{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "force_complete_success",
-          "range": true,
-          "refId": "G"
         }
       ],
       "title": "Shred Rejects & Spills",
@@ -7088,7 +6275,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Shred and store timing percentiles. Series: shredding_p50/p95/p99 = time to produce an FEC set; add_shred_p50/p95/p99 = time to verify/process an incoming shred; store_wait_p50/p95/p99 = time waiting for store insert; store_work_p50/p95/p99 = time spent inserting into store.",
+      "description": "Shred duration percentiles. Series: shredding_p50/p95/p99 = producing one FEC set; add_shred_p50/p95/p99 = verifying and processing one received shred.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7150,7 +6337,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 245
+        "y": 220
       },
       "id": 42,
       "options": {
@@ -7239,78 +6426,6 @@
           "legendFormat": "add_shred_p99",
           "range": true,
           "refId": "F"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(shred_store_insert_wait_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "store_wait_p50",
-          "range": true,
-          "refId": "G"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(shred_store_insert_wait_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "store_wait_p95",
-          "range": true,
-          "refId": "H"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(shred_store_insert_wait_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "store_wait_p99",
-          "range": true,
-          "refId": "I"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(shred_store_insert_work_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "store_work_p50",
-          "range": true,
-          "refId": "J"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(shred_store_insert_work_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "store_work_p95",
-          "range": true,
-          "refId": "K"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(shred_store_insert_work_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "store_work_p99",
-          "range": true,
-          "refId": "L"
         }
       ],
       "title": "Shred Durations (p50/p95/p99)",
@@ -7382,7 +6497,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 245
+        "y": 220
       },
       "id": 43,
       "options": {
@@ -7483,7 +6598,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 253
+        "y": 228
       },
       "id": 44,
       "options": {
@@ -7621,7 +6736,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 253
+        "y": 228
       },
       "id": 87,
       "options": {
@@ -7672,7 +6787,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rates of shred_shred_turbine_rcv and shred_shred_out_rcv plus key shred error counters.",
+      "description": "Shred input and error rates. Series: turbine_rcv = turbine shreds received; repair_rcv = repair shreds received; bad_nonce = repair responses with an incorrect nonce; invalid_block_id = blocks created with unknown parent block id.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7734,7 +6849,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 261
+        "y": 236
       },
       "id": 85,
       "options": {
@@ -7770,9 +6885,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(shred_shred_out_rcv{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(shred_shred_repair_rcv{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "shred_out_rcv/s",
+          "legendFormat": "repair_rcv/s",
           "range": true,
           "refId": "B"
         },
@@ -7782,9 +6897,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(shred_force_complete_request{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(shred_bad_nonce{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "force_complete_req/s",
+          "legendFormat": "bad_nonce/s",
           "range": true,
           "refId": "C"
         },
@@ -7809,7 +6924,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Mean shredding/add/store-insert durations from *_sum/*_count rate ratios.",
+      "description": "Mean shred durations from *_sum/*_count rate ratios.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7871,7 +6986,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 261
+        "y": 236
       },
       "id": 86,
       "options": {
@@ -7912,723 +7027,9 @@
           "legendFormat": "add_shred_mean_s",
           "range": true,
           "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "rate(shred_store_insert_wait_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(shred_store_insert_wait_count{instance=~\"$instance\"}[$__rate_interval])",
-          "instant": false,
-          "legendFormat": "store_insert_wait_mean_s",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "rate(shred_store_insert_work_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(shred_store_insert_work_count{instance=~\"$instance\"}[$__rate_interval])",
-          "instant": false,
-          "legendFormat": "store_insert_work_mean_s",
-          "range": true,
-          "refId": "D"
         }
       ],
       "title": "Shred Mean Durations",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 269
-      },
-      "id": 51,
-      "panels": [],
-      "title": "Bundle Tile (Block Engine)",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Bundle stream ingestion activity. Series: transactions = transactions received from bundle stream; packets = packets received; bundles = bundles received.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 270
-      },
-      "id": 49,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(bundle_transaction_received{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "transactions",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(bundle_packet_received{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "packets",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(bundle_bundle_received{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "bundles",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Bundle Rates",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Bundle RTT samples and variance. Series: rtt_sample = latest RTT sample; rtt_var = RTT variance (nanoseconds).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "ns"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 270
-      },
-      "id": 53,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "bundle_rtt_sample{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "rtt_sample",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "bundle_rtt_var{instance=~\"$instance\"}",
-          "instant": false,
-          "legendFormat": "rtt_var",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Bundle RTT Sample / Var",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Bundle liveness signals. Series: keepalives = HTTP/2 PINGs acknowledged; shredstream_heartbeats = ShredStream heartbeats sent.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 278
-      },
-      "id": 52,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(bundle_keepalives{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "keepalives",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(bundle_shredstream_heartbeats{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "shredstream_heartbeats",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Bundle Keepalives / Heartbeats",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Bundle message receive delay percentiles. Series: p50/p95/p99 = message receive delay from bundle server.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "ns"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 278
-      },
-      "id": 54,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(bundle_message_rx_delay_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "p50",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(bundle_message_rx_delay_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "p95",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(bundle_message_rx_delay_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "p99",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Bundle Message RX Delay (p50/p95/p99)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Bundle gRPC errors by type. Series: protobuf = protobuf decode errors; transport = gRPC transport errors; timeout = request timeouts; no_fee_info = bundles missing fee info; ssl_alloc = TLS allocation failures.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 286
-      },
-      "id": 50,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (bundle_error) (rate(bundle_errors{instance=~\"$instance\"}[$__rate_interval]))",
-          "instant": false,
-          "legendFormat": "{{bundle_error}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Bundle Errors",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Bundle heap utilization. Series: utilization = percent of bundle heap in use.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 286
-      },
-      "id": 55,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.0-21914300000.patch7",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "100 * (1 - (bundle_heap_free_bytes{instance=~\"$instance\"} / bundle_heap_size{instance=~\"$instance\"}))",
-          "instant": false,
-          "legendFormat": "utilization",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Bundle Heap Utilization %",
       "type": "timeseries"
     }
   ],

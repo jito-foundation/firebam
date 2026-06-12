@@ -1827,7 +1827,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second bundle-related transaction failures through verify/dedup/resolv plus pack drops. verify/dedup/resolv metrics count transactions that failed because a peer in the same bundle failed; pack_transaction_dropped_partial_bundle counts transactions dropped in pack because the bundle was partial. Failures are per-transaction even when the root cause is a bundle.",
+      "description": "Per-second bundle-related transaction failures through verify/dedup/resolh plus pack drops. verify_transaction_result and dedup_transaction_result use bundle_peer_failure result labels; resolh_transaction_bundle_peer_failure counts resolve-stage peer failures; pack_transaction_dropped_partial_bundle counts transactions dropped in pack because the bundle was partial. Failures are per-transaction even when the root cause is a bundle.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1915,7 +1915,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(verify_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(verify_transaction_result{instance=~\"$instance\",verify_tile_result=\"bundle_peer_failure\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Verify Peer Failures",
           "range": true,
@@ -1927,7 +1927,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(dedup_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(dedup_transaction_result{instance=~\"$instance\",dedup_tile_result=\"bundle_peer_failure\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Dedup Peer Failures",
           "range": true,
@@ -1939,9 +1939,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(resolv_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(resolh_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "Resolv Peer Failures",
+          "legendFormat": "Resolh Peer Failures",
           "range": true,
           "refId": "C"
         },
@@ -2252,7 +2252,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(poh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p50",
           "range": true,
@@ -2264,7 +2264,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(poh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p95",
           "range": true,
@@ -2276,7 +2276,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(poh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p99",
           "range": true,
@@ -3494,7 +3494,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of finalized BAM slot-ingress rollups, grouped by whether the first ingress for a slot arrived before slot end, after slot end, never arrived, lacked a known slot_end_ns, or was finalized unresolved because ingress arrived before any leader-slot attribution was available.",
+      "description": "Rate (events/sec) of finalized BAM slot-ingress rollups, grouped by bam_slot_ingress_result: no_ingress, first_before_end, first_after_end, or unknown_slot_end.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3559,7 +3559,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (transactions/sec) in finalized BAM slot-ingress rollups, grouped by whether counted ingress transactions were before slot end, after slot end, lacked a known slot_end_ns, or were finalized unresolved because ingress arrived before any leader-slot attribution was available.",
+      "description": "Rate (transactions/sec) in finalized BAM slot-ingress rollups, grouped by bam_slot_ingress_txn_timing: before_end, after_end, or unknown_slot_end.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3778,7 +3778,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cross-check active slot timing assumptions. bam_leader_state_slot_end_nanos minus pack_leader_slot_end_nanos should stay near zero; replay_slot_duration_nanos gives the current local slot-length scale for interpreting that delta.",
+      "description": "Cross-check active slot timing assumptions. bam_leader_state_slot_end_nanos minus pack_leader_slot_end_nanos should stay near zero; pohh_slot_done_delay_seconds p50 gives the current local slot-length scale for interpreting that delta.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3840,9 +3840,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (instance) (replay_slot_duration_nanos{instance=~\"$instance\"})",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval]))) * 1e9",
           "instant": false,
-          "legendFormat": "replay slot duration",
+          "legendFormat": "pohh slot done p50",
           "range": true,
           "refId": "B"
         }
@@ -3905,9 +3905,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (pack_bam_leader_slot_first_insert_result) (rate(pack_bam_leader_slot_first_insert_result{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (pack_bam_first_event_result) (rate(pack_bam_leader_slot_first_insert_result{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "insert {{pack_bam_leader_slot_first_insert_result}}",
+          "legendFormat": "insert {{pack_bam_first_event_result}}",
           "range": true,
           "refId": "A"
         },
@@ -3917,9 +3917,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (pack_bam_leader_slot_first_schedule_result) (rate(pack_bam_leader_slot_first_schedule_result{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (pack_bam_first_event_result) (rate(pack_bam_leader_slot_first_schedule_result{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "schedule {{pack_bam_leader_slot_first_schedule_result}}",
+          "legendFormat": "schedule {{pack_bam_first_event_result}}",
           "range": true,
           "refId": "B"
         }
@@ -4329,7 +4329,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Live BAM first-ingress state for the current leader slot. `recorded` becomes 1 after BAM observes a first ingress transaction for the slot, `slot_end_known` becomes 1 when that first observation had a known slot_end_ns, and `after_end` is 1 only when the first ingress arrived after slot end.",
+      "description": "Live BAM first-ingress state for the current leader slot. Exactly one bam_current_leader_slot_first_ingress_state bucket is 1: no_ingress, slot_end_unknown, before_end, or after_end.",
       "fieldConfig": {
         "defaults": {
           "color": {
