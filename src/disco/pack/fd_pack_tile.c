@@ -745,8 +745,8 @@ pack_tile_bam_invalid_reason( ulong current_slot,
                               ulong max_schedule_slot,
                               ulong blockhash_slot ) {
   /* current_slot is the best local execution slot known to pack. If it is not
-     known yet, only an explicit slot hint that already trails the blockhash
-     slot can be rejected immediately.
+     known yet, only a max_schedule_slot that already trails the blockhash slot
+     can be rejected immediately.
 
      Once current_slot is known, BAM matches the model contract: blockhash
      lifetime is checked against current_slot, and max_schedule_slot

@@ -12,16 +12,14 @@
 /* FD_BAM_MAX_PENDING_RESULTS is the bundle result queue depth, so long disconnects
  * don't drop SchedulerMessage payloads. */
 #define FD_BAM_MAX_PENDING_RESULTS 2048U
-#define FD_BAM_STEM_BURST          40UL
 #define FD_BAM_MAX_TXN_PER_ATOMIC_BATCH        5U
 #define FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET   8U
+#define FD_BAM_STEM_BURST                      ((ulong)FD_BAM_MAX_TXN_PER_ATOMIC_BATCH * (ulong)FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET)
 #define FD_BAM_BUNDLE_ERR_NONE            (0U)
 #define FD_BAM_BUNDLE_ERR_DESER           (1U)
 
 FD_STATIC_ASSERT( FD_BAM_MAX_TXN_PER_ATOMIC_BATCH <= FD_PACK_MAX_TXN_PER_BUNDLE,
                   bam_atomic_batch_limit_fits_pack_bundle );
-FD_STATIC_ASSERT( (ulong)FD_BAM_MAX_TXN_PER_ATOMIC_BATCH * (ulong)FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET <= FD_BAM_STEM_BURST,
-                  bam_atomic_batch_limit_fits_stem_burst );
 
 #define FD_BAM_SHRED_SOCK_MAX          8UL
 
@@ -29,7 +27,7 @@ FD_STATIC_ASSERT( _bam_types_TransactionErrorReason_MAX <= UCHAR_MAX, bam_transa
 
 typedef struct {
   uint  seq_id;            /* Uniquely assigned for a single leader rotation. 0 is valid seq_id. UINT_MAX is never produced. */
-  ulong slot;              /* Slot associated with the batch. Executed bundles use the bank/Poh slot. 0 means the scheduler supplied no slot hint. */
+  ulong slot;              /* Slot associated with the batch. Executed bundles use the bank/Poh slot; not-committed results echo the scheduler max_schedule_slot. */
   uchar bundle_txn_cnt;    /* Declared transaction count from the scheduler, capped to FD_PACK_MAX_TXN_PER_BUNDLE. Also the number of per-transaction result entries populated below; consumers must only examine indices [0,bundle_txn_cnt). */
   _Bool execution_success; /* Batch committed flag. Set to true only when the whole batch is committed. Note: individual committed transactions can still have execution_success=false (fees-only / instruction error), encoded via TransactionCommittedResult.execution_success. */
   ushort scheduling_error; /* bam_types_SchedulingError reason code when the batch never scheduled; FD_BAM_SCHED_ERR_NONE when scheduling succeeded or the bundle executed. */

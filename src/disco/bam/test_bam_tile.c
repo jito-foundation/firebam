@@ -623,6 +623,30 @@ test_bam_slot_ingress_timing_tracks_max_schedule_slot_and_rejects_stale_arrival(
   FD_TEST( state->bam_results[0].scheduling_error == FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
   FD_TEST( state->bam_results[0].bundle_err == FD_BAM_BUNDLE_ERR_NONE );
 
+  batch.seq_id = 79U;
+  batch.max_schedule_slot = 0UL;
+  state->bam_leader_state.slot        = 1UL;
+  state->bam_leader_state.slot_end_ns = 3500L;
+  g_clock = 3000L;
+  protobuf_sz = test_bam_encode_scheduler_multi_batch_response( &batch, 1UL, protobuf, sizeof(protobuf) );
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  fd_bam_slot_ingress_timing_t const * zero_entry = fd_bam_slot_ingress_timing_query_const( state, 0UL );
+  FD_TEST( zero_entry );
+  FD_TEST( zero_entry->first_rx_after_slot_end == 1U );
+  FD_TEST( zero_entry->txn_after_slot_end == 0UL );
+  FD_TEST( zero_entry->txn_unknown_slot_end == 1UL );
+  FD_TEST( state->feedback_queue_depth == 2UL );
+  FD_TEST( state->bam_results[1].seq_id == 79U );
+  FD_TEST( state->bam_results[1].slot == 0UL );
+  FD_TEST( state->bam_results[1].bundle_txn_cnt == 1U );
+  FD_TEST( state->bam_results[1].execution_success == 0 );
+  FD_TEST( state->bam_results[1].scheduling_error == FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+  FD_TEST( state->bam_results[1].bundle_err == FD_BAM_BUNDLE_ERR_NONE );
+
   test_bam_env_destroy( env );
 }
 
@@ -941,7 +965,7 @@ test_bam_pending_over_stem_burst_drains_in_multiple_passes( fd_wksp_t * wksp ) {
   bam_types_AtomicTxnBatch batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ];
   test_bam_fill_max_atomic_batches( packets, packet_ctx, batches, 900U, 900UL );
 
-  uchar protobuf[8192];
+  uchar protobuf[ TEST_BAM_PROTOBUF_BUF_SZ ];
   size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( batches,
                                                                        FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET,
                                                                        protobuf,
@@ -1020,7 +1044,7 @@ test_bam_queue_full_rejects_whole_batch_without_partial_enqueue( fd_wksp_t * wks
 static void
 test_bam_multiple_batches_accept_limit_counts( fd_wksp_t * wksp ) {
   /* The transactional decoder should still accept packets exactly at both hard
-     limits: 5 txns per AtomicTxnBatch and 8 AtomicTxnBatch entries per packet. */
+     limits: 5 txns per AtomicTxnBatch and the receive-window batch burst. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
@@ -1033,7 +1057,7 @@ test_bam_multiple_batches_accept_limit_counts( fd_wksp_t * wksp ) {
   bam_types_AtomicTxnBatch batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ];
   test_bam_fill_max_atomic_batches( packets, packet_ctx, batches, 700U, 100UL );
 
-  uchar protobuf[8192];
+  uchar protobuf[ TEST_BAM_PROTOBUF_BUF_SZ ];
   size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( batches,
                                                                        FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET,
                                                                        protobuf,
@@ -1563,7 +1587,7 @@ test_bam_multiple_batches_reject_excess_batch_count( fd_wksp_t * wksp ) {
     batches[ i ].packets.arg          = &packet_ctx[ i ];
   }
 
-  uchar protobuf[4096];
+  uchar protobuf[ TEST_BAM_PROTOBUF_BUF_SZ ];
   size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( batches,
                                                                        FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL,
                                                                        protobuf,

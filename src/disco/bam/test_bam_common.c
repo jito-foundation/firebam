@@ -95,10 +95,13 @@ typedef struct {
   ulong                                txn_cnt;
 } test_bam_committed_results_t;
 
+#define TEST_BAM_MAX_DECODED_RESULTS 8UL
+#define TEST_BAM_PROTOBUF_BUF_SZ     (64UL*1024UL)
+
 typedef struct {
-  bam_types_AtomicTxnBatchResult results[ 8 ];
+  bam_types_AtomicTxnBatchResult results[ TEST_BAM_MAX_DECODED_RESULTS ];
   ulong                          result_cnt;
-  test_bam_committed_results_t   committed[ 8 ];
+  test_bam_committed_results_t   committed[ TEST_BAM_MAX_DECODED_RESULTS ];
 } test_bam_multi_results_t;
 
 typedef struct {
@@ -235,7 +238,7 @@ test_bam_decode_atomic_result_cb( pb_istream_t *      stream,
                                   void **             arg ) {
   (void)field;
   test_bam_multi_results_t * multi = (test_bam_multi_results_t *)(*arg);
-  FD_TEST( multi->result_cnt < 8UL );
+  FD_TEST( multi->result_cnt < TEST_BAM_MAX_DECODED_RESULTS );
 
   bam_types_AtomicTxnBatchResult * res = &multi->results[ multi->result_cnt ];
   *res = (bam_types_AtomicTxnBatchResult)bam_types_AtomicTxnBatchResult_init_default;
@@ -420,10 +423,10 @@ test_bam_env_create( test_bam_env_t * env,
                      fd_wksp_t *      wksp ) {
   fd_memset( env, 0, sizeof(test_bam_env_t) );
 
-  ulong const mcache_depth = 128UL;
+  ulong const mcache_depth = fd_ulong_pow2_up( FD_BAM_STEM_BURST + 1UL );
   fd_frag_meta_t * mcache = fd_mcache_join( fd_mcache_new(
       fd_wksp_alloc_laddr( wksp, fd_mcache_align(), fd_mcache_footprint( mcache_depth, 0UL ), 1UL ),
-      128UL, 0UL, 0UL ) );
+      mcache_depth, 0UL, 0UL ) );
   FD_TEST( mcache );
 
   ulong const mtu = FD_TPU_PARSED_MTU;

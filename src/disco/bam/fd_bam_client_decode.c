@@ -347,7 +347,6 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
                        fd_bam_batch_ctx_t const *       state,
                        bam_types_AtomicTxnBatch const * batch ) {
   if( FD_UNLIKELY( ctx->bam_leader_state.slot!=ULONG_MAX &&
-                   batch->max_schedule_slot &&
                    batch->max_schedule_slot<ctx->bam_leader_state.slot ) ) {
     /* Stale scheduler work still contributes to slot-ingress timing for the
        hinted slot even though it will never be published.  This preserves the
@@ -473,7 +472,7 @@ fd_bam_record_batch_ingress_timing( fd_bam_tile_t *            ctx,
                                entry->txn_unknown_slot_end );
   _Bool after_slot_end = have_slot_end
     ? rx_ts_ns > entry->slot_end_ns
-    : !!( leader_slot!=ULONG_MAX && max_schedule_slot && max_schedule_slot < leader_slot );
+    : !!( leader_slot!=ULONG_MAX && max_schedule_slot < leader_slot );
   if( FD_UNLIKELY( first_observation ) ) {
     entry->first_rx_ts_ns          = rx_ts_ns;
     entry->first_rx_after_slot_end = (uchar)after_slot_end;

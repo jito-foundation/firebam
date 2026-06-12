@@ -41,6 +41,8 @@ bam_model_encode_scheduler_batches( bam_types_AtomicTxnBatch * batches,
   return ostream.bytes_written;
 }
 
+#define BAM_MODEL_MAX_NODE_DELIVER_BATCHES (FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL)
+
 static size_t
 bam_model_encode_config( uint commission_bps,
                        uchar const * prio_fee_recipient,
@@ -506,10 +508,10 @@ bam_model_node_deliver_batches( bam_model_harness_t *      h,
                               bam_model_batch_def_t const * defs,
                               ulong                     def_cnt,
                               uchar                     drop_last_idx ) {
-  bam_types_AtomicTxnBatch batches[ 32 ];
-  test_bam_packet_encode_ctx_t packet_ctx[ 32 ];
-  bam_types_Packet packets[ 32 ][ FD_PACK_MAX_TXN_PER_BUNDLE ];
-  FD_TEST( def_cnt <= 32UL );
+  bam_types_AtomicTxnBatch batches[ BAM_MODEL_MAX_NODE_DELIVER_BATCHES ];
+  test_bam_packet_encode_ctx_t packet_ctx[ BAM_MODEL_MAX_NODE_DELIVER_BATCHES ];
+  bam_types_Packet packets[ BAM_MODEL_MAX_NODE_DELIVER_BATCHES ][ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  FD_TEST( def_cnt <= BAM_MODEL_MAX_NODE_DELIVER_BATCHES );
 
   for( ulong i=0UL; i<def_cnt; i++ ) {
     bam_model_batch_def_t const * def = &defs[ i ];
@@ -543,7 +545,7 @@ bam_model_node_deliver_batches( bam_model_harness_t *      h,
     batches[ i ].packets.arg          = &packet_ctx[ i ];
   }
 
-  uchar pb[4096];
+  uchar pb[ TEST_BAM_PROTOBUF_BUF_SZ ];
   size_t pb_sz = bam_model_encode_scheduler_batches( batches, def_cnt, pb, sizeof(pb) );
   bam_model_node_deliver_scheduler_response( h, pb, pb_sz );
 }
@@ -591,29 +593,10 @@ bam_model_ready_push( bam_model_harness_t * h,
   h->ready[ h->ready_cnt++ ] = *b;
 }
 
-static inline int
-bam_model_has_slot_hint( ulong max_schedule_slot ) {
-  return max_schedule_slot!=0UL;
-}
-
 static int
 bam_model_batch_precheck_fail( bam_model_batch_t const * b,
                              ulong                   current_slot,
                              fd_bam_bundle_result_t * out ) {
-  if( FD_UNLIKELY( !b->txn_cnt ) ) {
-    *out = (fd_bam_bundle_result_t){
-      .seq_id            = b->seq_id,
-      .slot              = b->max_schedule_slot,
-      .bundle_txn_cnt    = 0U,
-      .execution_success = 0U,
-      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
-      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
-      .deser_reason      = bam_types_DeserializationErrorReason_EMPTY,
-      .deser_index       = 0U,
-    };
-    return 1;
-  }
-
   if( FD_UNLIKELY( b->txn_cnt>FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
     *out = (fd_bam_bundle_result_t){
       .seq_id            = b->seq_id,
@@ -628,8 +611,7 @@ bam_model_batch_precheck_fail( bam_model_batch_t const * b,
     return 1;
   }
 
-  if( FD_UNLIKELY( bam_model_has_slot_hint( b->max_schedule_slot ) &&
-                   b->max_schedule_slot<current_slot ) ) {
+  if( FD_UNLIKELY( current_slot!=ULONG_MAX && b->max_schedule_slot<current_slot ) ) {
     *out = (fd_bam_bundle_result_t){
       .seq_id            = b->seq_id,
       .slot              = b->max_schedule_slot,
@@ -637,6 +619,20 @@ bam_model_batch_precheck_fail( bam_model_batch_t const * b,
       .execution_success = 0U,
       .scheduling_error  = FD_BAM_SCHED_ERR_OUTSIDE_SLOT,
       .bundle_err        = FD_BAM_BUNDLE_ERR_NONE,
+    };
+    return 1;
+  }
+
+  if( FD_UNLIKELY( !b->txn_cnt ) ) {
+    *out = (fd_bam_bundle_result_t){
+      .seq_id            = b->seq_id,
+      .slot              = b->max_schedule_slot,
+      .bundle_txn_cnt    = 0U,
+      .execution_success = 0U,
+      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
+      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
+      .deser_reason      = bam_types_DeserializationErrorReason_EMPTY,
+      .deser_index       = 0U,
     };
     return 1;
   }
@@ -678,7 +674,7 @@ bam_model_execute_batch( bam_model_harness_t * h,
 
   if( FD_UNLIKELY( h->slot_microblock_used + b->txn_cnt > h->slot_microblock_limit ) ) {
     res.execution_success = 0U;
-    res.scheduling_error  = FD_BAM_SCHED_ERR_CONTAINER_FULL;
+    res.scheduling_error  = FD_BAM_SCHED_ERR_POH_TIMEOUT;
     return res;
   }
 
@@ -851,8 +847,7 @@ bam_model_process_ready( bam_model_harness_t * h ) {
     bam_model_batch_t const * b = &h->ready[ i ];
     fd_bam_bundle_result_t res;
 
-    if( FD_UNLIKELY( bam_model_has_slot_hint( b->max_schedule_slot ) &&
-                     b->max_schedule_slot<current_slot ) ) {
+    if( FD_UNLIKELY( current_slot!=ULONG_MAX && b->max_schedule_slot<current_slot ) ) {
       res = bam_model_make_outside_slot_result( b->seq_id, b->max_schedule_slot, b->txn_cnt );
       bam_model_emit_model_result( h, &res );
       continue;
@@ -1324,6 +1319,21 @@ bam_model_run_scenario_prevalidation_too_many_packets( bam_model_harness_t * h )
 }
 
 static void
+bam_model_run_scenario_prevalidation_stale_slot_precedence( bam_model_harness_t * h ) {
+  ulong current_slot = bam_model_current_slot( h );
+  bam_model_batch_t empty_stale = {
+    .seq_id            = 909U,
+    .max_schedule_slot = current_slot - 1UL,
+    .revert_on_error   = 1U,
+    .txn_cnt           = 0U,
+  };
+  fd_bam_bundle_result_t rej = {0};
+  FD_TEST( bam_model_batch_precheck_fail( &empty_stale, current_slot, &rej ) );
+  FD_TEST( rej.scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+  FD_TEST( rej.bundle_err==FD_BAM_BUNDLE_ERR_NONE );
+}
+
+static void
 bam_model_run_scenario_prevalidation_inconsistent_revert( bam_model_harness_t * h ) {
   /* Seed a partial atomic batch and then inject a same-seq packet with a
      different revert flag to enforce INCONSISTENT_BUNDLE handling. */
@@ -1372,6 +1382,23 @@ bam_model_run_scenario_prevalidation_stale_slot( bam_model_harness_t * h ) {
 
   FD_TEST( h->model_result_cnt==1UL );
   FD_TEST( !h->model_results[0].execution_success );
+  FD_TEST( h->model_results[0].scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+}
+
+static void
+bam_model_run_scenario_zero_slot_is_stale( bam_model_harness_t * h ) {
+  h->leader_working_present = 1U;
+  h->leader_working_slot    = 1UL;
+  h->bankforks_working_slot = 1UL;
+
+  bam_model_batch_def_t b = bam_model_make_batch( 931U, 0UL, 1U, 1U );
+  bam_model_node_deliver_batches( h, &b, 1UL, 0U );
+  bam_model_apply_pipeline( h );
+
+  FD_TEST( h->model_result_cnt==1UL );
+  FD_TEST( h->model_results[0].seq_id==931U );
+  FD_TEST( !h->model_results[0].execution_success );
+  FD_TEST( h->model_results[0].slot==0UL );
   FD_TEST( h->model_results[0].scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
 }
 
@@ -1434,7 +1461,7 @@ bam_model_run_scenario_non_leader_rejects_buffered_and_new_work( bam_model_harne
 }
 
 static void
-bam_model_run_scenario_non_leader_rejects_work_without_slot_hint( bam_model_harness_t * h ) {
+bam_model_run_scenario_non_leader_rejects_zero_slot_work( bam_model_harness_t * h ) {
   h->leader_on = 0U;
 
   bam_model_batch_def_t buffered = bam_model_make_batch( 908U, 0UL, 1U, 1U );
@@ -1704,6 +1731,7 @@ bam_model_run_scenario_limit_edges( bam_model_harness_t * h ) {
 
   FD_TEST( h->model_result_cnt==2UL );
   FD_TEST( h->model_results[1].execution_success==0U );
+  FD_TEST( h->model_results[1].scheduling_error==FD_BAM_SCHED_ERR_POH_TIMEOUT );
 }
 
 static void
@@ -1751,12 +1779,21 @@ bam_model_run_scenarios( fd_wksp_t * wksp ) {
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
+  bam_model_run_scenario_prevalidation_stale_slot_precedence( h );
+  bam_model_fini( h );
+
+  bam_model_init( h, wksp );
   bam_model_run_scenario_prevalidation_inconsistent_revert( h );
   bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
   bam_model_run_scenario_prevalidation_stale_slot( h );
+  bam_model_assert_wire_matches_model( h );
+  bam_model_fini( h );
+
+  bam_model_init( h, wksp );
+  bam_model_run_scenario_zero_slot_is_stale( h );
   bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
@@ -1776,7 +1813,7 @@ bam_model_run_scenarios( fd_wksp_t * wksp ) {
   bam_model_fini( h );
 
   bam_model_init( h, wksp );
-  bam_model_run_scenario_non_leader_rejects_work_without_slot_hint( h );
+  bam_model_run_scenario_non_leader_rejects_zero_slot_work( h );
   bam_model_assert_wire_matches_model( h );
   bam_model_fini( h );
 
@@ -1824,6 +1861,9 @@ bam_model_run_scenarios( fd_wksp_t * wksp ) {
 
   bam_model_init( h, wksp );
   {
+    h->slot_cu_limit         = 100000U;
+    h->slot_microblock_limit = FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET;
+
     bam_model_batch_def_t batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1U ];
     for( ulong i=0UL; i<FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL; i++ ) {
       batches[i] = bam_model_make_batch( (uint)( 940U + (uint)i ), 100UL, 0U, 1U );
