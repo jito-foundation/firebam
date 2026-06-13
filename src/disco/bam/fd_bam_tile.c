@@ -645,6 +645,18 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
 
 static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
 
+static inline void
+fd_bam_tile_forget_scheduler_work( fd_bam_tile_t * ctx ) {
+  while( FD_UNLIKELY( !bam_pending_txn_empty( ctx->pending_txns ) ) )
+    bam_pending_txn_remove_head( ctx->pending_txns );
+
+  if( FD_UNLIKELY( ctx->feedback_queue_depth ) ) {
+    ctx->metrics.feedback_results_dropped_cnt += (ulong)ctx->feedback_queue_depth;
+    ctx->bam_results_head      = ctx->bam_results_tail;
+    ctx->feedback_queue_depth  = 0U;
+  }
+}
+
 /* Two-phase fragment staging kind.
    - bam_during_frag validates size/range and stores chunk + kind.
    - bam_after_frag consumes that staged chunk based on kind.
@@ -762,6 +774,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
     fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_identity_pubkey_b58 );
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
+    fd_bam_tile_forget_scheduler_work( ctx );
     fd_bam_client_reset( ctx );
     ctx->next_leader_slot                 = ULONG_MAX;
     ctx->leader_schedule_gate_start_ns    = 0L;
@@ -908,7 +921,10 @@ after_credit( fd_bam_tile_t *  ctx,
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
 
   ulong drain_cnt = 0UL;
-  while( FD_LIKELY( !bam_pending_txn_empty( ctx->pending_txns ) ) && FD_LIKELY( drain_cnt<STEM_BURST ) ) {
+  _Bool drain_enabled = !!FD_VOLATILE_CONST( ctx->enabled );
+  while( FD_LIKELY( drain_enabled ) &&
+         FD_LIKELY( !bam_pending_txn_empty( ctx->pending_txns ) ) &&
+         FD_LIKELY( drain_cnt<STEM_BURST ) ) {
     fd_bam_pending_txn_t const * head = bam_pending_txn_peek_head_const( ctx->pending_txns );
     ulong batch_cnt = (ulong)head->batch_cnt;
 
@@ -1072,6 +1088,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   uchar  new_ssl  = ctx->is_ssl;
   char   new_host[ FD_FQDN_BUF_MAX ];
   _Bool  need_reset = 0;
+  _Bool  scheduler_work_stale = 0;
 
   if( command & FD_BAM_CTRL_CMD_URL ) {
     char const * p = ctx->ctrl->url;
@@ -1080,6 +1097,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     if( FD_UNLIKELY( !*p ) ) {
       /* Runtime blank URL means "clear BAM URL" and disable the client. */
       need_reset = !!ctx->server_fqdn_len || !!ctx->server_sni_len || !!ctx->server_tcp_port || !!ctx->is_ssl || !!ctx->enabled;
+      scheduler_work_stale = 1;
       fd_bam_tile_clear_endpoint( ctx );
       fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
       goto finalize;
@@ -1106,6 +1124,9 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     new_host[ runtime_url.host_len ] = '\0';
     new_port = parse_port;
     new_ssl  = parse_ssl;
+    scheduler_work_stale = !!( strcmp( new_host, ctx->server_fqdn ) ||
+                               new_port != ctx->server_tcp_port ||
+                               !!new_ssl != !!ctx->is_ssl );
 #if !FD_HAS_OPENSSL
     if( FD_UNLIKELY( new_ssl ) ) {
       /* CLI can introduce TLS endpoints at runtime; without OpenSSL we must refuse early
@@ -1140,6 +1161,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   }
 
   if( command & (FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI) ) {
+    scheduler_work_stale |= !!strcmp( new_sni, ctx->server_sni );
     fd_cstr_ncpy( ctx->server_sni, new_sni, sizeof( ctx->server_sni ) );
     ctx->server_sni_len = (ushort)fd_cstr_nlen( ctx->server_sni, sizeof( ctx->server_sni ) );
     fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
@@ -1147,11 +1169,13 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   }
 
   if( ( command & FD_BAM_CTRL_CMD_ENABLE ) && ( new_enable != ctx->enabled ) ) {
+    scheduler_work_stale |= !new_enable;
     ctx->enabled = new_enable;
     need_reset = 1;
   }
 
 finalize:
+  if( FD_UNLIKELY( scheduler_work_stale ) ) fd_bam_tile_forget_scheduler_work( ctx );
   if( need_reset ) {
     fd_bam_client_reset( ctx );
     ctx->backoff_until = 0; /* Clear any backoff so admin-triggered changes take effect immediately. */

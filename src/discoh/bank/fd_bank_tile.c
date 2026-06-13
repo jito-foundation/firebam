@@ -330,6 +330,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     if( FD_UNLIKELY( !(processing_results[ sanitized_idx-1UL ] & FD_BANK_TRANSACTION_EXECUTED) && ( actual_execution_cus + actual_acct_data_cus > requested_exec_plus_acct_data_cus ) ) ) {
       FD_LOG_WARNING(( "FeesOnly txn actual CUs (%u+%u) exceed requested (%u), dropping",
                        actual_execution_cus, actual_acct_data_cus, requested_exec_plus_acct_data_cus ));
+      bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, transaction_err_idx, 1, 0UL, 0U );
       skip_commit = 1;
       ctx->metrics.processing_failed++;
       continue;

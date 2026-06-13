@@ -221,7 +221,8 @@ bam_fill_txn_result( fd_bam_bundle_result_t * res,
   else if( FD_UNLIKELY( txn_out->accounts.rollback_fee_payer ) )
     feepayer_balance_lamports = txn_out->accounts.rollback_fee_payer->lamports;
 
-  fd_bam_result_mark_sanitize_success( res, idx );
+  if( FD_LIKELY( txn_out->err.txn_err!=FD_RUNTIME_TXN_ERR_SANITIZE_FAILURE ) )
+    fd_bam_result_mark_sanitize_success( res, idx );
   res->consumed_cus[ idx ]              = actual_execution_cus + actual_acct_data_cus;
   res->feepayer_balance_lamports[ idx ] = feepayer_balance_lamports;
   res->loaded_accounts_data_size[ idx ] = (uint)fd_ulong_min( txn_out->details.loaded_accounts_data_size, (ulong)UINT_MAX );
@@ -612,8 +613,10 @@ handle_bundle( fd_execle_tile_t *  ctx,
     if( FD_UNLIKELY( is_bam_revert ) ) {
       bam_res->execution_success = 0U;
       bam_res->transaction_err_count = (uchar)txn_cnt;
+      _Bool failed_sanitize = ctx->txn_out[ failed_idx ].err.txn_err==FD_RUNTIME_TXN_ERR_SANITIZE_FAILURE;
       for( ulong i=0UL; i<txn_cnt; i++ ) {
-        fd_bam_result_mark_sanitize_success( bam_res, i );
+        if( FD_LIKELY( i!=failed_idx || !failed_sanitize ) )
+          fd_bam_result_mark_sanitize_success( bam_res, i );
         fd_bam_result_set_txn_error( bam_res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
       }
       fd_bam_result_set_txn_error( bam_res, failed_idx, fd_bam_txn_err_from_runtime_err( ctx->txn_out[ failed_idx ].err.txn_err ) );

@@ -3455,6 +3455,20 @@ test_bam_replay_wait_gate_cleared_on_reset_or_disable( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_seed_scheduler_work( fd_bam_tile_t * state,
+                              uint            pending_seq,
+                              uint            result_seq ) {
+  fd_bam_pending_txn_t * pending = bam_pending_txn_push_tail_nocopy( state->pending_txns );
+  fd_memset( pending, 0, sizeof(*pending) );
+  pending->payload_sz = 1U;
+  pending->batch_cnt  = 1U;
+  pending->seq_id     = pending_seq;
+
+  fd_bam_bundle_result_t res = test_make_bundle_result( result_seq, (ulong)result_seq + 1000UL, 1U );
+  test_enqueue_bundle_result( state, &res );
+}
+
+static void
 test_bam_identity_switch_invalidates_leader_schedule_state( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -3482,6 +3496,8 @@ test_bam_identity_switch_invalidates_leader_schedule_state( fd_wksp_t * wksp ) {
   state->bam_leader_pending = 1U;
   state->backoff_until      = 111L;
   state->defer_reset        = 1U;
+  test_bam_seed_scheduler_work( state, 700U, 701U );
+  ulong dropped_before = state->metrics.feedback_results_dropped_cnt;
 
   fd_bam_tile_housekeeping( state );
 
@@ -3505,6 +3521,10 @@ test_bam_identity_switch_invalidates_leader_schedule_state( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_leader_state.current_slot_has_bam_work == 0U );
   FD_TEST( state->bam_leader_pending == 0U );
   FD_TEST( state->backoff_until == 0L );
+  FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+  FD_TEST( state->bam_results_head == state->bam_results_tail );
+  FD_TEST( state->metrics.feedback_results_dropped_cnt == dropped_before+1UL );
 
   state->keyswitch = NULL;
   test_bam_env_destroy( env );
@@ -4121,6 +4141,8 @@ test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
   keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
   keyswitch.param = 0UL;
   ctx->keyswitch = &keyswitch;
+  test_bam_seed_scheduler_work( ctx, 710U, 711U );
+  ulong dropped_before = ctx->metrics.feedback_results_dropped_cnt;
 
   ctrl.command = FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI;
   ctrl.enable  = 1U;
@@ -4144,6 +4166,10 @@ test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
   FD_TEST( !strcmp( ctx->ctrl->error, "" ) );
   FD_TEST( !strcmp( ctx->grpc_client->host, "custom.sni.invalid" ) );
   FD_TEST( ctx->grpc_client->port == 8899 );
+  FD_TEST( bam_pending_txn_empty( ctx->pending_txns ) );
+  FD_TEST( ctx->feedback_queue_depth == 0UL );
+  FD_TEST( ctx->bam_results_head == ctx->bam_results_tail );
+  FD_TEST( ctx->metrics.feedback_results_dropped_cnt == dropped_before+1UL );
 
   ctx->keyswitch = NULL;
   test_bam_env_destroy( env );
@@ -4164,6 +4190,8 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
   keyswitch.param = 0UL;
   ctx->keyswitch = &keyswitch;
+  test_bam_seed_scheduler_work( ctx, 720U, 721U );
+  ulong dropped_before = ctx->metrics.feedback_results_dropped_cnt;
 
   uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
   fd_memset( fseq_mem, 0, sizeof(fseq_mem) );
@@ -4201,6 +4229,10 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setContactInfoClientId\"" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "[2]" ) );
   FD_TEST( !strcmp( ctrl.url, "http://testnet.bam.jito.wtf:50055" ) );
+  FD_TEST( bam_pending_txn_empty( ctx->pending_txns ) );
+  FD_TEST( ctx->feedback_queue_depth == 0UL );
+  FD_TEST( ctx->bam_results_head == ctx->bam_results_tail );
+  FD_TEST( ctx->metrics.feedback_results_dropped_cnt == dropped_before+1UL );
 
   ctrl.command = FD_BAM_CTRL_CMD_ENABLE;
   ctrl.enable  = 1U;
