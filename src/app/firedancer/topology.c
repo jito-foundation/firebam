@@ -338,6 +338,16 @@ fd_topo_initialize( config_t * config ) {
   int bam_enabled       = leader_enabled && config->tiles.bam.enabled;
   int pack_sign_enabled = leader_enabled && ( config->tiles.bundle.enabled || config->tiles.bam.enabled );
 
+  /* Pack assembles BAM bundles in strict batch_idx order, but multiple resolv
+     tiles shard transactions round-robin by sequence number and would split a
+     bundle's members across tiles, delivering them out of order (tripping an
+     FD_TEST in pack).  Require a single resolv tile. */
+  if( FD_UNLIKELY( bam_enabled && config->firedancer.layout.resolv_tile_count>1U ) ) {
+    FD_LOG_ERR(( "BAM requires firedancer.layout.resolv_tile_count=1 (got %u); multiple "
+                 "resolv tiles would split BAM bundles out of order into pack.",
+                 config->firedancer.layout.resolv_tile_count ));
+  }
+
   fd_topo_t * topo = fd_topob_new( &config->topo, config->name );
 
   topo->max_page_size = fd_cstr_to_shmem_page_sz( config->hugetlbfs.max_page_size );

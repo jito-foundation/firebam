@@ -452,6 +452,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
 
   ulong slot = fd_disco_poh_sig_slot( sig );
   ulong txn_cnt = (sz-sizeof(fd_microblock_execle_trailer_t))/sizeof(fd_txn_e_t);
+  FD_TEST( txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
 
   /* Use ALT accounts copied to context for rebates. These were resolved
      by resolv_tile and are needed because the LUT may be deactivated by
@@ -616,7 +617,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   /* We need to publish each transaction separately into its own
      microblock, so make a temporary copy on the stack so we can move
      all the data around. */
-  fd_txn_p_t bundle_txn_temp[ 5UL ];
+  fd_txn_p_t bundle_txn_temp[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   for( ulong i=0UL; i<txn_cnt; i++ ) {
     bundle_txn_temp[ i ] = txns[ i ];
   }

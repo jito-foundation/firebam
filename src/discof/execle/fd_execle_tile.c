@@ -477,6 +477,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
 
   ulong slot = fd_disco_poh_sig_slot( sig );
   ulong txn_cnt = (sz-sizeof(fd_microblock_execle_trailer_t))/sizeof(fd_txn_e_t);
+  FD_TEST( txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
 
   fd_bank_t * bank = fd_banks_bank_query( ctx->banks, ctx->_bank_idx );
   FD_TEST( bank );
@@ -661,7 +662,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
   /* We need to publish each transaction separately into its own
      microblock, so make a temporary copy on the stack so we can move
      all the data around. */
-  fd_txn_p_t bundle_txn_temp[ 5UL ];
+  fd_txn_p_t bundle_txn_temp[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   for( ulong i=0UL; i<txn_cnt; i++ ) {
     bundle_txn_temp[ i ] = txns[ i ];
   }

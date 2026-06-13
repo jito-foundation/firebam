@@ -555,7 +555,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   ushort new_commission_bps = (ushort)fd_uint_min( cfg->commission_bps, 10000U );
   if( FD_UNLIKELY( ctx->commission_bps != new_commission_bps ) ) {
     ctx->commission_bps = new_commission_bps;
-    bam_config_fee_updated = 1;
+    bam_config_fee_updated = true;
   }
 
   if( cfg->prio_fee_recipient_pubkey[0] ) {
@@ -580,14 +580,23 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   }
 
   if( FD_UNLIKELY( bam_config_fee_updated ) ) {
-    /* Broadcast the new validator fee settings to shared memory readers. */
-    ctx->fee_cfg_version++;
-    fd_memcpy( ctx->fee_cfg->prio_fee_recipient, ctx->prio_fee_recipient, sizeof( ctx->fee_cfg->prio_fee_recipient ) );
-    ctx->fee_cfg->commission_bps         = ctx->commission_bps;
-    ctx->fee_cfg->has_prio_fee_recipient = ctx->prio_fee_recipient_set;
-    FD_COMPILER_MFENCE();
-    ctx->fee_cfg->version = ctx->fee_cfg_version;
-    FD_COMPILER_MFENCE();
+    fd_bam_fee_cfg_t * fee_cfg = ctx->fee_cfg;
+    if( FD_LIKELY( fee_cfg ) ) {
+      /* Publish to the pack tile via a seqlock: set the version's
+         write-in-progress marker, store the fields, then commit the next
+         counter value. A reader therefore never sees a torn
+         prio_fee_recipient. x86-64/TSO, so compiler fences suffice. */
+      FD_VOLATILE( fee_cfg->version ) = fd_uint_set_bit( ctx->fee_cfg_version, 31 );
+      FD_COMPILER_MFENCE();
+      fd_memcpy( fee_cfg->prio_fee_recipient, ctx->prio_fee_recipient, sizeof( fee_cfg->prio_fee_recipient ) );
+      fee_cfg->commission_bps         = ctx->commission_bps;
+      fee_cfg->has_prio_fee_recipient = ctx->prio_fee_recipient_set;
+      FD_COMPILER_MFENCE();
+
+      ctx->fee_cfg_version = fd_uint_clear_bit( ctx->fee_cfg_version + 1U, 31 );
+      if( FD_UNLIKELY( !ctx->fee_cfg_version ) ) ctx->fee_cfg_version = 1U;
+      FD_VOLATILE( fee_cfg->version ) = ctx->fee_cfg_version;
+    }
   }
 }
 

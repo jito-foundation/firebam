@@ -257,6 +257,58 @@ test_pack_tile_harness_delete( test_pack_tile_harness_t * h ) {
 }
 
 static void
+test_pack_tile_bam_fee_meta_seqlock_keeps_last_snapshot( void ) {
+  test_pack_tile_harness_t h[1];
+  test_pack_tile_harness_new( h );
+
+  fd_bam_fee_cfg_t cfg[1];
+  fd_memset( cfg, 0, sizeof(cfg) );
+  h->ctx->bam_fee_cfg = cfg;
+
+  uchar recipient0[ 32 ];
+  uchar recipient1[ 32 ];
+  uchar zero[ 32 ] = {0};
+  for( ulong i=0UL; i<sizeof(recipient0); i++ ) {
+    recipient0[ i ] = (uchar)( 0x10U + i );
+    recipient1[ i ] = (uchar)( 0x80U + i );
+  }
+
+  fd_memcpy( cfg->prio_fee_recipient, recipient0, sizeof(recipient0) );
+  cfg->commission_bps         = 3500U;
+  cfg->has_prio_fee_recipient = 1U;
+  cfg->version                = 1U;
+  pack_tile_refresh_bam_fee_meta( h->ctx );
+  FD_TEST( h->ctx->bam_fee_cfg_version == 1U );
+  FD_TEST( h->ctx->bam_fee_meta->commission == 35UL );
+  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, recipient0, sizeof(recipient0) ) );
+
+  fd_memcpy( cfg->prio_fee_recipient, recipient1, sizeof(recipient1) );
+  cfg->commission_bps         = 9900U;
+  cfg->has_prio_fee_recipient = 1U;
+  cfg->version                = fd_uint_set_bit( 1U, 31 );
+  pack_tile_refresh_bam_fee_meta( h->ctx );
+  FD_TEST( h->ctx->bam_fee_cfg_version == 1U );
+  FD_TEST( h->ctx->bam_fee_meta->commission == 35UL );
+  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, recipient0, sizeof(recipient0) ) );
+
+  cfg->version = 2U;
+  pack_tile_refresh_bam_fee_meta( h->ctx );
+  FD_TEST( h->ctx->bam_fee_cfg_version == 2U );
+  FD_TEST( h->ctx->bam_fee_meta->commission == 99UL );
+  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, recipient1, sizeof(recipient1) ) );
+
+  cfg->has_prio_fee_recipient = 0U;
+  cfg->commission_bps         = 0U;
+  cfg->version                = 3U;
+  pack_tile_refresh_bam_fee_meta( h->ctx );
+  FD_TEST( h->ctx->bam_fee_cfg_version == 3U );
+  FD_TEST( h->ctx->bam_fee_meta->commission == 0UL );
+  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, zero, sizeof(zero) ) );
+
+  test_pack_tile_harness_delete( h );
+}
+
+static void
 test_pack_tile_fill_sig( uchar sig[ static FD_ED25519_SIG_SZ ],
                          uchar seed ) {
   for( ulong i=0UL; i<sizeof(fd_ed25519_sig_t); i++ ) sig[ i ] = (uchar)( seed + i );
@@ -992,6 +1044,7 @@ main( int     argc,
   test_pack_tile_bam_override_after_frag_preserves_votes_only();
   test_pack_tile_bam_override_drops_block_engine_bundles();
   test_pack_tile_bam_override_after_frag_cancels_block_engine_bundle();
+  test_pack_tile_bam_fee_meta_seqlock_keeps_last_snapshot();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

@@ -388,8 +388,10 @@ struct fd_pack_ctx {
   /* Scratch metadata for the next bundle insertion. */
   block_builder_info_t bundle_meta[1];
 
-  /* Optional BAM fee config shared object. */
+  /* Optional BAM fee config shared object and last consistent snapshot. */
   fd_bam_fee_cfg_t const * bam_fee_cfg;
+  uint                      bam_fee_cfg_version;
+  block_builder_info_t      bam_fee_meta[1];
 
   /* Last leader-state message published to pack_bam_ldr. */
   fd_bam_leader_state_t last_bam_leader_state;
@@ -991,6 +993,34 @@ pack_tile_publish_bam_tracking_reject( fd_pack_ctx_t *          ctx,
   fd_bam_bundle_result_t res = fd_bam_result_base( seq_id, max_schedule_slot, txn_cnt );
   res.scheduling_error = FD_BAM_SCHED_ERR_CONTAINER_FULL;
   pack_tile_enqueue_bam_result( ctx, &res );
+}
+
+static inline void
+pack_tile_refresh_bam_fee_meta( fd_pack_ctx_t * ctx ) {
+  fd_bam_fee_cfg_t const * cfg = ctx->bam_fee_cfg;
+  if( FD_UNLIKELY( !cfg ) ) return;
+
+  for( int attempt=0; attempt<4; attempt++ ) {
+    uint v0 = FD_VOLATILE_CONST( cfg->version );
+    if( FD_UNLIKELY( !v0 || fd_uint_extract_bit( v0, 31 ) ) ) continue;
+    if( FD_LIKELY( v0==ctx->bam_fee_cfg_version ) ) return;
+
+    uchar recipient[ 32 ];
+    FD_COMPILER_MFENCE();
+    uint has            = FD_VOLATILE_CONST( cfg->has_prio_fee_recipient );
+    uint commission_bps = FD_VOLATILE_CONST( cfg->commission_bps );
+    fd_memcpy( recipient, cfg->prio_fee_recipient, sizeof(recipient) );
+    FD_COMPILER_MFENCE();
+    if( FD_UNLIKELY( FD_VOLATILE_CONST( cfg->version )!=v0 ) ) continue;
+
+    fd_memset( ctx->bam_fee_meta, 0, sizeof(ctx->bam_fee_meta) );
+    if( FD_LIKELY( has ) ) {
+      fd_memcpy( ctx->bam_fee_meta->commission_pubkey->b, recipient, sizeof(recipient) );
+      ctx->bam_fee_meta->commission = (ulong)fd_uint_min( commission_bps/100U, 100U );
+    }
+    ctx->bam_fee_cfg_version = v0;
+    return;
+  }
 }
 
 
@@ -2177,11 +2207,9 @@ after_frag( fd_pack_ctx_t *     ctx,
       }
 
       fd_memset( ctx->bundle_meta, 0, sizeof(block_builder_info_t) );
-      if( FD_LIKELY( ctx->bam_fee_cfg && FD_VOLATILE_CONST( ctx->bam_fee_cfg->has_prio_fee_recipient ) ) ) {
-        fd_memcpy( ctx->bundle_meta->commission_pubkey->b,
-                   ctx->bam_fee_cfg->prio_fee_recipient,
-                   32UL );
-        ctx->bundle_meta->commission = (ulong)fd_uint_min( FD_VOLATILE_CONST( ctx->bam_fee_cfg->commission_bps )/100U, 100U );
+      if( FD_LIKELY( ctx->bam_fee_cfg ) ) {
+        pack_tile_refresh_bam_fee_meta( ctx );
+        *ctx->bundle_meta = *ctx->bam_fee_meta;
       }
 
       fd_ed25519_sig_t bam_sig[ FD_PACK_MAX_TXN_PER_BUNDLE ];
@@ -2658,6 +2686,8 @@ unprivileged_init( fd_topo_t *      topo,
   memset( ctx->current_bundle,            '\0', sizeof(ctx->current_bundle)            );
   memset( ctx->current_bundle_bam,        '\0', sizeof(ctx->current_bundle_bam)        );
   memset( ctx->bundle_meta,               '\0', sizeof(ctx->bundle_meta)               );
+  memset( ctx->bam_fee_meta,              '\0', sizeof(ctx->bam_fee_meta)              );
+  ctx->bam_fee_cfg_version      = 0U;
   ctx->bam_work_cnt             = 0UL;
   ctx->bam_result_queue_head    = 0UL;
   ctx->bam_pending_work_cnt     = 0UL;
