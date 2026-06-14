@@ -3,7 +3,7 @@
 #include "../verify/fd_verify_tile.c"
 #undef fd_tile_verify
 
-#include "fuzz_bam_e2e_verify.h"
+#include "fuzz_bam_pipeline_stage_verify.h"
 
 static void (* const bam_fuzz_verify_init_refs[])( fd_topo_t *, fd_topo_tile_t * ) __attribute__((unused)) = {
   privileged_init,

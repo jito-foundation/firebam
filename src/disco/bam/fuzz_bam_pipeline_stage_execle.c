@@ -3,7 +3,7 @@
 #include "../../discof/execle/fd_execle_tile.c"
 #undef fd_tile_execle
 
-#include "fuzz_bam_e2e_execle.h"
+#include "fuzz_bam_pipeline_stage_execle.h"
 #include "../../flamenco/accdb/fd_accdb_sync.h"
 #include "../../flamenco/log_collector/fd_log_collector.h"
 #include "../../flamenco/runtime/fd_blockhashes.h"

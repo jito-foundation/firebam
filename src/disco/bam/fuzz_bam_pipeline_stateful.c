@@ -6,11 +6,11 @@
 
 #include "fd_bam_tile.h"
 #include "fd_bam_tile_private.h"
-#include "fuzz_bam_e2e_dedup.h"
-#include "fuzz_bam_e2e_execle.h"
-#include "fuzz_bam_e2e_pack.h"
-#include "fuzz_bam_e2e_resolv.h"
-#include "fuzz_bam_e2e_verify.h"
+#include "fuzz_bam_pipeline_stage_dedup.h"
+#include "fuzz_bam_pipeline_stage_execle.h"
+#include "fuzz_bam_pipeline_stage_pack.h"
+#include "fuzz_bam_pipeline_stage_resolv.h"
+#include "fuzz_bam_pipeline_stage_verify.h"
 #include "../tiles.h"
 #include "test_bam_common.c"
 #include <errno.h>
@@ -33,7 +33,7 @@ FD_IMPORT_BINARY( bam_fuzz_pack_txn7, "src/disco/pack/fixtures/txn7.bin" );
 
 #define BAM_FUZZ_FIXTURE_CNT (9U)
 
-/* Stateful BAM end-to-end fuzzer, staged real-path conversion.
+/* Stateful BAM pipeline fuzzer, staged real-path conversion.
 
    Current stages exercise the real BAM scheduler protobuf decode,
    pending transaction queue, bam_verif publication, verify/dedup/resolv tile
@@ -99,9 +99,9 @@ bam_fuzz_wksp_new_lazy( ulong footprint ) {
   ulong data_max = fd_wksp_data_max_est( footprint, part_max );
   FD_TEST( data_max );
 
-  fd_wksp_t * wksp = fd_wksp_join( fd_wksp_new( mem, "bam-e2e-fuzz", 1U, part_max, data_max ) );
+  fd_wksp_t * wksp = fd_wksp_join( fd_wksp_new( mem, "bam-pipeline-fuzz", 1U, part_max, data_max ) );
   FD_TEST( wksp );
-  FD_TEST( !fd_shmem_join_anonymous( "bam-e2e-fuzz",
+  FD_TEST( !fd_shmem_join_anonymous( "bam-pipeline-fuzz",
                                      FD_SHMEM_JOIN_MODE_READ_WRITE,
                                      wksp,
                                      mem,
@@ -1274,7 +1274,7 @@ LLVMFuzzerInitialize( int *    argc,
       ? fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ),
                                page_cnt,
                                fd_shmem_cpu_idx( numa_idx ),
-                               "bam-e2e-fuzz",
+                               "bam-pipeline-fuzz",
                                512UL )
       : bam_fuzz_wksp_new_lazy( BAM_FUZZ_WKSP_FOOTPRINT );
   FD_TEST( g_bam_fuzz_wksp );

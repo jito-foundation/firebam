@@ -3,7 +3,7 @@
 #include "../dedup/fd_dedup_tile.c"
 #undef fd_tile_dedup
 
-#include "fuzz_bam_e2e_dedup.h"
+#include "fuzz_bam_pipeline_stage_dedup.h"
 
 static void (* const bam_fuzz_dedup_init_refs[])( fd_topo_t *, fd_topo_tile_t * ) __attribute__((unused)) = {
   privileged_init,

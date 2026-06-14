@@ -1,8 +1,8 @@
-#ifndef HEADER_fd_src_disco_bam_fuzz_bam_e2e_verify_h
-#define HEADER_fd_src_disco_bam_fuzz_bam_e2e_verify_h
+#ifndef HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_verify_h
+#define HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_verify_h
 
 #include "fd_bam_tile.h"
-#include "fuzz_bam_e2e_links.h"
+#include "fuzz_bam_pipeline_links.h"
 #include "../fd_txn_m.h"
 
 typedef struct bam_fuzz_verify bam_fuzz_verify_t;
@@ -30,4 +30,4 @@ bam_fuzz_verify_frag( bam_fuzz_verify_t * h,
                       fd_frag_meta_t const * meta,
                       ulong seq );
 
-#endif /* HEADER_fd_src_disco_bam_fuzz_bam_e2e_verify_h */
+#endif /* HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_verify_h */

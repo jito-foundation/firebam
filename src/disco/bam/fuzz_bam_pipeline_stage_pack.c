@@ -3,7 +3,7 @@
 #include "../pack/fd_pack_tile.c"
 #undef fd_tile_pack
 
-#include "fuzz_bam_e2e_pack.h"
+#include "fuzz_bam_pipeline_stage_pack.h"
 
 static void (* const bam_fuzz_pack_init_refs[])( fd_topo_t *, fd_topo_tile_t * ) __attribute__((unused)) = {
   privileged_init,

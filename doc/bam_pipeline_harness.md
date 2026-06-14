@@ -1,11 +1,13 @@
-# BAM Stateful Fuzz Harness
+# BAM Pipeline Stateful Fuzz Harness
 
 This doc is for the BAM model/fuzzer surface in `src/disco/bam/`.
 
 ## Files
 
 - `test_bam_tile.c`: production BAM tile/client integration tests for protobuf ingress, result FIFO flushing, leader/control paths, and malformed-ingress rejection.
-- `fuzz_bam_e2e_stateful.c`: stateful fuzz target that drives scheduler protobuf ingress through the synthetic `verify -> dedup -> resolv -> pack -> execle -> bam` path and checks the durable outbound result/leader streams.
+- `fuzz_bam_pipeline_stateful.c`: stateful fuzz target that drives scheduler protobuf ingress through the synthetic `verify -> dedup -> resolv -> pack -> execle -> bam` path and checks the durable outbound result/leader streams.
+- `fuzz_bam_pipeline_stage_*.{c,h}`: per-stage adapters used by the stateful target; these are not standalone fuzz targets.
+- `fuzz_bam_pipeline_links.h`: shared synthetic mcache/dcache link helpers for the stage adapters.
 
 Contract references: `BAM_docs.md`, `BAM_Validator_Spec.md`, and `src/disco/bam/`.
 
@@ -41,15 +43,15 @@ The checked-in corpus should stay compact: one broad mixed trace plus targeted p
 Default GCC build and smoke:
 
 ```bash
-make -j fuzz_bam_e2e_stateful
-build/native/gcc-12/fuzz-test/fuzz_bam_e2e_stateful corpus/fuzz_bam_e2e_stateful/*
+make -j fuzz_bam_pipeline_stateful
+build/native/gcc-12/fuzz-test/fuzz_bam_pipeline_stateful corpus/fuzz_bam_pipeline_stateful/*
 ```
 
 LibFuzzer:
 
 ```bash
-make CC=clang CXX=clang++ EXTRAS="fuzz asan" fuzz_bam_e2e_stateful
-build/native/clang/fuzz-test/fuzz_bam_e2e_stateful corpus/fuzz_bam_e2e_stateful
+make CC=clang CXX=clang++ EXTRAS="fuzz asan" fuzz_bam_pipeline_stateful
+build/native/clang/fuzz-test/fuzz_bam_pipeline_stateful corpus/fuzz_bam_pipeline_stateful
 ```
 
 Use `BUILDDIR=native/clang-fuzz` only when you want a separate clang fuzz output tree.
@@ -57,8 +59,8 @@ Use `BUILDDIR=native/clang-fuzz` only when you want a separate clang fuzz output
 AFL++:
 
 ```bash
-make CC=clang CXX=clang++ EXTRAS=afl++ AFL_LIB=/usr/lib/afl fuzz_bam_e2e_stateful
-AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_SKIP_CPUFREQ=1 afl-fuzz -i corpus/fuzz_bam_e2e_stateful -o findings -- build/native/clang/fuzz-test/fuzz_bam_e2e_stateful
+make CC=clang CXX=clang++ EXTRAS=afl++ AFL_LIB=/usr/lib/afl fuzz_bam_pipeline_stateful
+AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_SKIP_CPUFREQ=1 afl-fuzz -i corpus/fuzz_bam_pipeline_stateful -o findings -- build/native/clang/fuzz-test/fuzz_bam_pipeline_stateful
 ```
 
 On failure, reproduce with the libFuzzer artifact or the failing corpus path printed by the runner.

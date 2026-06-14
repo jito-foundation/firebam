@@ -1,5 +1,5 @@
-#ifndef HEADER_fd_src_disco_bam_fuzz_bam_e2e_links_h
-#define HEADER_fd_src_disco_bam_fuzz_bam_e2e_links_h
+#ifndef HEADER_fd_src_disco_bam_fuzz_bam_pipeline_links_h
+#define HEADER_fd_src_disco_bam_fuzz_bam_pipeline_links_h
 
 #include "fd_bam_tile.h"
 
@@ -39,4 +39,4 @@ bam_fuzz_delete_fseq( ulong ** fseq,
   *fseq = NULL;
 }
 
-#endif /* HEADER_fd_src_disco_bam_fuzz_bam_e2e_links_h */
+#endif /* HEADER_fd_src_disco_bam_fuzz_bam_pipeline_links_h */

@@ -1,8 +1,8 @@
-#ifndef HEADER_fd_src_disco_bam_fuzz_bam_e2e_pack_h
-#define HEADER_fd_src_disco_bam_fuzz_bam_e2e_pack_h
+#ifndef HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_pack_h
+#define HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_pack_h
 
 #include "fd_bam_tile.h"
-#include "fuzz_bam_e2e_links.h"
+#include "fuzz_bam_pipeline_links.h"
 #include "../fd_txn_m.h"
 
 typedef struct bam_fuzz_pack bam_fuzz_pack_t;
@@ -48,4 +48,4 @@ bam_fuzz_pack_frag( bam_fuzz_pack_t *    h,
 bam_fuzz_pack_result_t
 bam_fuzz_pack_credit( bam_fuzz_pack_t * h );
 
-#endif /* HEADER_fd_src_disco_bam_fuzz_bam_e2e_pack_h */
+#endif /* HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_pack_h */

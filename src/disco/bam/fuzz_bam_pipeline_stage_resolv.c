@@ -3,7 +3,7 @@
 #include "../../discof/resolv/fd_resolv_tile.c"
 #undef fd_tile_resolv
 
-#include "fuzz_bam_e2e_resolv.h"
+#include "fuzz_bam_pipeline_stage_resolv.h"
 
 static void (* const bam_fuzz_resolv_init_refs[])( fd_topo_t *, fd_topo_tile_t * ) __attribute__((unused)) = {
   unprivileged_init,

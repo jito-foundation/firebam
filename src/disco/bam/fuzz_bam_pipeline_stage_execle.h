@@ -1,8 +1,8 @@
-#ifndef HEADER_fd_src_disco_bam_fuzz_bam_e2e_execle_h
-#define HEADER_fd_src_disco_bam_fuzz_bam_e2e_execle_h
+#ifndef HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_execle_h
+#define HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_execle_h
 
 #include "fd_bam_tile.h"
-#include "fuzz_bam_e2e_links.h"
+#include "fuzz_bam_pipeline_links.h"
 #include "../fd_txn_m.h"
 #include "../../flamenco/accdb/fd_accdb_base.h"
 #include "../../flamenco/runtime/fd_bank.h"
@@ -40,4 +40,4 @@ bam_fuzz_execle_frag( bam_fuzz_execle_t *    h,
                       fd_frag_meta_t const * meta,
                       ulong                  seq );
 
-#endif /* HEADER_fd_src_disco_bam_fuzz_bam_e2e_execle_h */
+#endif /* HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_execle_h */
