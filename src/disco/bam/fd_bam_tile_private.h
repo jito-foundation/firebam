@@ -293,6 +293,7 @@ struct fd_bam_tile {
   ulong                 next_leader_slot;                /* Upcoming local leader slot from replay_out reset messages, or ULONG_MAX if none is known */
   ulong                 leader_schedule_recheck_slot;    /* Slot when BAM may retry while next_leader_slot is unknown; DUE means retry now, NONE means wait for replay progress */
   long                  leader_schedule_gate_start_ns;   /* fd_bam_now() when the unknown-leader startup gate first began waiting, or 0 if inactive */
+  ushort                scheduler_gen;                   /* Incremented when the configured scheduler identity changes or BAM is disabled. */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
@@ -347,6 +348,12 @@ typedef struct fd_bam_tile fd_bam_tile_t;
 FD_FN_UNUSED static inline void
 fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
                        fd_bam_bundle_result_t const * res ) {
+  if( FD_UNLIKELY( res->scheduler_gen != ctx->scheduler_gen ) ) {
+    FD_LOG_WARNING(( "Dropping stale BAM bundle result: seq_id=%u result_gen=%u current_gen=%u",
+                     res->seq_id, (uint)res->scheduler_gen, (uint)ctx->scheduler_gen ));
+    ctx->metrics.feedback_results_dropped_cnt++;
+    return;
+  }
   if( FD_UNLIKELY( ctx->feedback_queue_depth>=FD_BAM_MAX_PENDING_RESULTS ) ) {
     FD_LOG_WARNING(( "Dropping BAM bundle result (bam tile queue full): seq_id=%u slot=%lu bundle_txn_cnt=%u exec_success=%u sched_err=%u",
                      res->seq_id, res->slot, res->bundle_txn_cnt, (uint)res->execution_success, res->scheduling_error ));

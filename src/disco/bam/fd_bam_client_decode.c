@@ -354,6 +354,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
     fd_bam_record_batch_ingress_timing( ctx, state, batch->max_schedule_slot );
     fd_bam_enqueue_result( ctx, &(fd_bam_bundle_result_t) {
       .seq_id            = batch->seq_id,
+      .scheduler_gen     = ctx->scheduler_gen,
       .slot              = batch->max_schedule_slot,
       .bundle_txn_cnt    = state->packet_cnt,
       .execution_success = 0,
@@ -367,6 +368,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
+      .scheduler_gen     = ctx->scheduler_gen,
       .slot              = batch->max_schedule_slot,
       .bundle_txn_cnt    = state->packet_cnt,
       .execution_success = 0,
@@ -383,6 +385,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_BATCH_IDX ]++;
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
+      .scheduler_gen     = ctx->scheduler_gen,
       .slot              = batch->max_schedule_slot,
       .bundle_txn_cnt    = state->packet_cnt,
       .execution_success = 0,
@@ -401,6 +404,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
        packet so we can return one result per seq_id without BAM-node changes. */
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
+      .scheduler_gen     = ctx->scheduler_gen,
       .slot              = batch->max_schedule_slot,
       .bundle_txn_cnt    = state->packet_cnt,
       .execution_success = 0,
@@ -427,6 +431,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_VOTE_TRANSACTION_IDX ]++;
     fd_bam_bundle_result_t res = {
       .seq_id            = batch->seq_id,
+      .scheduler_gen     = ctx->scheduler_gen,
       .slot              = batch->max_schedule_slot,
       .bundle_txn_cnt    = state->packet_cnt,
       .execution_success = 0,
@@ -549,6 +554,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     ctx->metrics.transaction_rejected_backpressure_cnt += packet_cnt;
     fd_bam_enqueue_result( ctx, &(fd_bam_bundle_result_t) {
       .seq_id            = batch->seq_id,
+      .scheduler_gen     = ctx->scheduler_gen,
       .slot              = batch->max_schedule_slot,
       .bundle_txn_cnt    = packet_cnt,
       .execution_success = 0,
@@ -606,6 +612,7 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
     FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)", PB_GET_ERROR( stream ) ));
     fd_bam_bundle_result_t res = {
       .seq_id            = decoded->batch.seq_id,
+      .scheduler_gen     = ctx->scheduler_gen,
       .slot              = decoded->batch.max_schedule_slot,
       .bundle_txn_cnt    = decoded->state.packet_cnt,
       .execution_success = 0,
@@ -686,6 +693,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       decoded_multi->has_err_result = 1;
       decoded_multi->err_result = (fd_bam_bundle_result_t){
         .seq_id            = overflow_batch.batch.seq_id,
+        .scheduler_gen     = ctx->scheduler_gen,
         .slot              = overflow_batch.batch.max_schedule_slot,
         .bundle_txn_cnt    = overflow_batch.state.packet_cnt,
         .execution_success = 0,
@@ -724,6 +732,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
     decoded_multi->has_err_result = 1;
     decoded_multi->err_result = (fd_bam_bundle_result_t){
       .seq_id            = 0U,
+      .scheduler_gen     = ctx->scheduler_gen,
       .slot              = 0UL,
       .bundle_txn_cnt    = 0,
       .execution_success = 0,

@@ -657,6 +657,21 @@ fd_bam_tile_forget_scheduler_work( fd_bam_tile_t * ctx ) {
   }
 }
 
+static inline void
+fd_bam_tile_begin_scheduler_generation( fd_bam_tile_t * ctx ) {
+  ctx->scheduler_gen++;
+  if( FD_UNLIKELY( !ctx->scheduler_gen ) ) ctx->scheduler_gen++;
+
+  fd_bam_tile_forget_scheduler_work( ctx );
+
+  ctx->bam_tpu            = (fd_ip4_port_t){0};
+  ctx->bam_tpu_fwd        = (fd_ip4_port_t){0};
+  ctx->bam_shred_sock_cnt = 0U;
+  fd_memset( ctx->bam_shred_sock, 0, sizeof(ctx->bam_shred_sock) );
+  ctx->tpu_update_state       = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
+  ctx->client_id_update_state = FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN;
+}
+
 /* Two-phase fragment staging kind.
    - bam_during_frag validates size/range and stores chunk + kind.
    - bam_after_frag consumes that staged chunk based on kind.
@@ -766,7 +781,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     tracker->counted = 1U;
   }
 
-  _Bool bam_active = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY && fd_bam_has_effective_contact( ctx );
+  _Bool bam_active = status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
   fd_bam_publish_active_state( ctx, ctx->stem, bam_active );
   ctx->bam_status_recent = status;
 
@@ -774,7 +789,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
     fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
     fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_identity_pubkey_b58 );
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
-    fd_bam_tile_forget_scheduler_work( ctx );
+    fd_bam_tile_begin_scheduler_generation( ctx );
     fd_bam_client_reset( ctx );
     ctx->next_leader_slot                 = ULONG_MAX;
     ctx->leader_schedule_gate_start_ns    = 0L;
@@ -921,7 +936,9 @@ after_credit( fd_bam_tile_t *  ctx,
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
 
   ulong drain_cnt = 0UL;
-  _Bool drain_enabled = !!FD_VOLATILE_CONST( ctx->enabled );
+  _Bool drain_enabled = !!( FD_VOLATILE_CONST( ctx->enabled ) &&
+                            ctx->bam_status_fseq &&
+                            ( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) );
   while( FD_LIKELY( drain_enabled ) &&
          FD_LIKELY( !bam_pending_txn_empty( ctx->pending_txns ) ) &&
          FD_LIKELY( drain_cnt<STEM_BURST ) ) {
@@ -949,6 +966,7 @@ after_credit( fd_bam_tile_t *  ctx,
         .bam = {
           .max_schedule_slot = pending->max_schedule_slot,
           .seq_id            = pending->seq_id,
+          .scheduler_gen     = ctx->scheduler_gen,
           .txn_cnt           = pending->batch_cnt,
           .batch_idx         = pending->batch_idx,
           .revert_on_error   = pending->revert_on_error,
@@ -1175,7 +1193,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   }
 
 finalize:
-  if( FD_UNLIKELY( scheduler_work_stale ) ) fd_bam_tile_forget_scheduler_work( ctx );
+  if( FD_UNLIKELY( scheduler_work_stale ) ) fd_bam_tile_begin_scheduler_generation( ctx );
   if( need_reset ) {
     fd_bam_client_reset( ctx );
     ctx->backoff_until = 0; /* Clear any backoff so admin-triggered changes take effect immediately. */

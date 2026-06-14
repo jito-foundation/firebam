@@ -936,6 +936,7 @@ bam_fuzz_enqueue_synthetic_result( test_bam_env_t *   env,
       test_make_bundle_result( bam_fuzz_next_seq( f ),
                                f->current_slot + (ulong)( b & 7U ),
                                txn_cnt );
+  res.scheduler_gen = state->scheduler_gen;
   fd_bam_enqueue_result( state, &res );
 
   if( FD_UNLIKELY( depth_before>=FD_BAM_MAX_PENDING_RESULTS ) ) {

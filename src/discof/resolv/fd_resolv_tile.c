@@ -530,7 +530,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
     txnm->reference_slot = blockhash->slot;
     if( FD_UNLIKELY( txnm->reference_slot+151UL<ctx->completed_slot ) ) {
       if( FD_UNLIKELY( emit_bam_result ) ) {
-        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
+        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.scheduler_gen, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
         fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
         fd_bam_result_mark_sanitize_success_all( &res );
         publish_bam_result( ctx, stem, &res );
@@ -586,7 +586,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
 
     if( FD_UNLIKELY( failed ) ) {
       if( FD_UNLIKELY( emit_bam_result ) ) {
-        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
+        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.scheduler_gen, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
         res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
         res.deser_index  = txnm->bam.batch_idx;
         res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;

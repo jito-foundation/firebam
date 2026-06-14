@@ -122,7 +122,7 @@ bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
   if( FD_UNLIKELY( txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM || txn->bam.revert_on_error ) ) return;
 
   _Bool committed = !!( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
-  fd_bam_bundle_result_t res = fd_bam_result_base( txn->bam.seq_id, slot, 1U );
+  fd_bam_bundle_result_t res = fd_bam_result_base( txn->bam.seq_id, txn->bam.scheduler_gen, slot, 1U );
   res.execution_success = committed;
   res.consumed_cus[ 0 ] = txn->execle_cu.actual_consumed_cus;
   res.feepayer_balance_lamports[ 0 ] = feepayer_balance_lamports;
@@ -576,7 +576,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   if( FD_LIKELY( txn_cnt ) ) {
     fd_txn_p_t const * first = &txns[ 0 ];
     if( FD_LIKELY( first->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && first->bam.revert_on_error ) ) {
-      fd_bam_bundle_result_t res = fd_bam_result_base( first->bam.seq_id, slot, (uchar)txn_cnt );
+      fd_bam_bundle_result_t res = fd_bam_result_base( first->bam.seq_id, first->bam.scheduler_gen, slot, (uchar)txn_cnt );
       res.execution_success = execution_success;
 
       for( ulong i=0UL; i<txn_cnt; i++ ) {

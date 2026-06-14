@@ -523,7 +523,6 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     }
   }
 
-  fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   /* A disconnect means Firedancer should resume advertising its local
      TPU ports so TPU clients do not get stuck targeting the BAM host. */
   _Bool has_valid_new_contact = !!new_tpu.addr && !!new_tpu.port && !!new_tpu_fwd.addr && !!new_tpu_fwd.port;
@@ -547,9 +546,10 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
      complete effective contact data. Config responses can arrive while
      connecting or after an admin disable, and incomplete refreshes should
      not force a BAM TPU override unless a prior valid contact is cached. */
+  fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   fd_bam_publish_active_state( ctx,
                                ctx->stem,
-                               ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) && fd_bam_has_effective_contact( ctx ) );
+                               status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
   _Bool bam_config_fee_updated = false;
   ushort new_commission_bps = (ushort)fd_uint_min( cfg->commission_bps, 10000U );
@@ -1389,6 +1389,9 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
   }
 
   if( FD_UNLIKELY( !ctx->bam_config_received ) ) {
+    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
+  }
+  if( FD_UNLIKELY( !fd_bam_has_effective_contact( ctx ) ) ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
   }
 

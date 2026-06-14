@@ -346,6 +346,7 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
   {
     fd_bam_bundle_result_t res = {0};
     res.seq_id            = (uint)seed0;
+    res.scheduler_gen     = ctx->scheduler_gen;
     res.slot              = (ulong)seed0;
     res.bundle_txn_cnt    = (uchar)( 1U + ( seed0 % FD_PACK_MAX_TXN_PER_BUNDLE ) );
     res.execution_success = 1U;
@@ -360,6 +361,7 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
   {
     fd_bam_bundle_result_t res = {0};
     res.seq_id            = seed0 | ((uint)seed1<<8);
+    res.scheduler_gen     = ctx->scheduler_gen;
     res.slot              = (ulong)seed1;
     res.bundle_txn_cnt    = (uchar)( 1U + ( seed1 % FD_PACK_MAX_TXN_PER_BUNDLE ) );
 

@@ -27,6 +27,7 @@ FD_STATIC_ASSERT( _bam_types_TransactionErrorReason_MAX <= UCHAR_MAX, bam_transa
 
 typedef struct {
   uint  seq_id;            /* Uniquely assigned for a single leader rotation. 0 is valid seq_id. UINT_MAX is never produced. */
+  ushort scheduler_gen;    /* Internal BAM scheduler identity generation; not encoded on the protobuf wire. */
   ulong slot;              /* Slot associated with the batch. Executed bundles use the bank/Poh slot; not-committed results echo the scheduler max_schedule_slot. */
   uchar bundle_txn_cnt;    /* Declared transaction count from the scheduler, capped to FD_PACK_MAX_TXN_PER_BUNDLE. Also the number of per-transaction result entries populated below; consumers must only examine indices [0,bundle_txn_cnt). */
   _Bool execution_success; /* Batch committed flag. Set to true only when the whole batch is committed. Note: individual committed transactions can still have execution_success=false (fees-only / instruction error), encoded via TransactionCommittedResult.execution_success. */
@@ -92,10 +93,12 @@ typedef struct {
 
 static inline fd_bam_bundle_result_t
 fd_bam_result_base( uint  seq_id,
+                    ushort scheduler_gen,
                     ulong slot,
                     uchar txn_cnt ) {
   return (fd_bam_bundle_result_t) {
     .seq_id           = seq_id,
+    .scheduler_gen    = scheduler_gen,
     .slot             = slot,
     .bundle_txn_cnt   = txn_cnt,
     .scheduling_error = FD_BAM_SCHED_ERR_NONE,

@@ -281,7 +281,7 @@ handle_microblock( fd_execle_tile_t *  ctx,
     _Bool bam_independent = txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txn->bam.revert_on_error;
     fd_bam_bundle_result_t bam_res[1];
     if( FD_UNLIKELY( bam_independent ) ) {
-      *bam_res = fd_bam_result_base( txn->bam.seq_id, slot, 1U );
+      *bam_res = fd_bam_result_base( txn->bam.seq_id, txn->bam.scheduler_gen, slot, 1U );
     }
 
     /* Stash the result in the flags value so that pack can inspect it. */
@@ -502,7 +502,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
   _Bool is_bam_revert     = !!( txn_cnt && txns->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txns[0].bam.revert_on_error );
   fd_bam_bundle_result_t bam_res[1];
   if( FD_UNLIKELY( is_bam_revert ) ) {
-    *bam_res = fd_bam_result_base( txns[0].bam.seq_id, slot, (uchar)txn_cnt );
+    *bam_res = fd_bam_result_base( txns[0].bam.seq_id, txns[0].bam.scheduler_gen, slot, (uchar)txn_cnt );
   }
 
   /* Every transaction in the bundle should be executed in order against

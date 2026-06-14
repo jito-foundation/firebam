@@ -158,7 +158,9 @@ FD_FN_UNUSED static void
 test_enqueue_bundle_result( fd_bam_tile_t *               state,
                             fd_bam_bundle_result_t const * res ) {
   FD_TEST( state->feedback_queue_depth < FD_BAM_MAX_PENDING_RESULTS );
-  state->bam_results[ state->bam_results_tail ] = *res;
+  fd_bam_bundle_result_t copy = *res;
+  copy.scheduler_gen = state->scheduler_gen;
+  state->bam_results[ state->bam_results_tail ] = copy;
   state->bam_results_tail = (ushort)(( state->bam_results_tail + 1U ) % FD_BAM_MAX_PENDING_RESULTS);
   state->feedback_queue_depth = (ushort)( state->feedback_queue_depth + 1U );
 }
@@ -529,9 +531,28 @@ test_bam_env_drain_pending_txns( test_bam_env_t * env ) {
   ulong out_idx = state->verify_out.idx;
   ulong seq_before = env->stem_seqs[ out_idx ];
   ulong pending_before = bam_pending_txn_cnt( state->pending_txns );
+  ulong * prev_fseq = state->bam_status_fseq;
+  ulong   prev_fseq_val = prev_fseq ? fd_fseq_query( prev_fseq ) : 0UL;
+  uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  void * fseq_shmem = NULL;
+  if( FD_LIKELY( prev_fseq ) ) {
+    fd_fseq_update( prev_fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  } else {
+    fseq_shmem = fd_fseq_new( fseq_mem, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+    FD_TEST( fseq_shmem );
+    state->bam_status_fseq = fd_fseq_join( fseq_shmem );
+    FD_TEST( state->bam_status_fseq );
+  }
   int opt_poll_in = 1;
   int charge_busy = 0;
   fd_bam_test_after_credit( state, env->stem, &opt_poll_in, &charge_busy );
+  if( FD_LIKELY( prev_fseq ) ) {
+    fd_fseq_update( prev_fseq, prev_fseq_val );
+  } else {
+    FD_TEST( fd_fseq_leave( state->bam_status_fseq ) == fseq_shmem );
+    FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
+    state->bam_status_fseq = NULL;
+  }
   ulong published = env->stem_seqs[ out_idx ] - seq_before;
   if( FD_UNLIKELY( pending_before ) ) {
     FD_TEST( published>0UL );

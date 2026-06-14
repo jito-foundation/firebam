@@ -156,6 +156,7 @@ after_frag( fd_verify_ctx_t *   ctx,
     if( FD_UNLIKELY( is_bam && txnm->bam.batch_idx==0U ) ) {
       fd_bam_bundle_result_t bam_res = {
         .seq_id           = txnm->bam.seq_id,
+        .scheduler_gen    = txnm->bam.scheduler_gen,
         .slot             = txnm->bam.max_schedule_slot,
         .bundle_txn_cnt   = txnm->bam.txn_cnt,
         .scheduling_error = FD_BAM_SCHED_ERR_NONE,

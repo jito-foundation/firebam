@@ -494,10 +494,31 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
   FD_TEST( env->stem_seqs[0] == 0UL );
 
-  FD_TEST( test_bam_env_drain_pending_txns( env ) == 1UL );
+  uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  fd_memset( fseq_mem, 0, sizeof(fseq_mem) );
+  void * fseq_shmem = fd_fseq_new( fseq_mem, 0UL );
+  FD_TEST( fseq_shmem );
+  ulong * fseq = fd_fseq_join( fseq_shmem );
+  FD_TEST( fseq );
+  state->bam_status_fseq = fseq;
+
+  int opt_poll_in = 1;
+  int charge_busy = 0;
+  fd_bam_test_after_credit( state, env->stem, &opt_poll_in, &charge_busy );
+  FD_TEST( env->stem_seqs[0] == 0UL );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+  FD_TEST( state->metrics.transaction_published_cnt == 0UL );
+  FD_TEST( opt_poll_in == 1 );
+  FD_TEST( charge_busy == 0 );
+
+  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  fd_bam_test_after_credit( state, env->stem, &opt_poll_in, &charge_busy );
+  FD_TEST( env->stem_seqs[0] == 1UL );
   FD_TEST( state->metrics.transaction_published_cnt == 1UL );
   FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
+  FD_TEST( opt_poll_in == 0 );
+  FD_TEST( charge_busy == 1 );
 
   zero_meta_ts( env->out_mcache, 1UL );
   fd_frag_meta_t expected[1] = {
@@ -509,9 +530,14 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( first->source_tpu    == FD_TXN_M_TPU_SOURCE_BAM );
   FD_TEST( first->bam.seq_id    == 0U );
   FD_TEST( first->bam.txn_cnt == 1UL );
+  FD_TEST( first->bam.scheduler_gen == state->scheduler_gen );
   FD_TEST( first->block_engine.bundle_id == 0UL );
   FD_TEST( first->block_engine.bundle_txn_cnt == 0UL );
   FD_TEST( first->scheduler_arrival_tspub != 0U );
+
+  FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
+  FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
+  state->bam_status_fseq = NULL;
 
   test_bam_env_destroy( env );
 }
@@ -5390,6 +5416,80 @@ test_bam_config_reuses_cached_contact_for_incomplete_refresh( fd_wksp_t * wksp )
   test_bam_env_destroy( env );
 }
 
+static void
+test_bam_endpoint_change_forgets_cached_contact_before_incomplete_refresh( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  FD_TEST( fd_bam_has_effective_contact( state ) );
+  state->bam_shred_sock_cnt = 1U;
+  FD_TEST( fd_cstr_to_ip4_addr( "9.9.9.9", &state->bam_shred_sock[0].addr ) );
+  state->bam_shred_sock[0].port = fd_ushort_bswap( 9999U );
+
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_defaults( state, &ctrl );
+
+  static fd_keyswitch_t keyswitch = {0};
+  keyswitch.magic = FD_KEYSWITCH_MAGIC;
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  keyswitch.param = 0UL;
+  state->keyswitch = &keyswitch;
+
+  ushort old_gen = state->scheduler_gen;
+  ctrl.command = FD_BAM_CTRL_CMD_URL;
+  fd_cstr_ncpy( ctrl.url, "http://new.example.com:8899", sizeof( ctrl.url ) );
+  ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( state );
+
+  FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( state->scheduler_gen != old_gen );
+  FD_TEST( state->bam_tpu.l == 0UL );
+  FD_TEST( state->bam_tpu_fwd.l == 0UL );
+  FD_TEST( state->bam_shred_sock_cnt == 0U );
+  FD_TEST( state->bam_shred_sock[0].l == 0UL );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+
+  ulong dropped_before = state->metrics.feedback_results_dropped_cnt;
+  fd_bam_bundle_result_t stale = test_make_bundle_result( 730U, 1730UL, 1U );
+  stale.scheduler_gen = old_gen;
+  fd_bam_enqueue_result( state, &stale );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+  FD_TEST( state->metrics.feedback_results_dropped_cnt == dropped_before+1UL );
+
+  test_bam_env_mock_conn_empty( env );
+  test_bam_env_mock_h2_hs( state );
+  state->bam_stream_live = 1U;
+  state->bam_last_builder_activity_ns = fd_bam_now();
+  state->bam_last_validator_heartbeat_ns = fd_bam_now();
+
+  bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_bam_config = true;
+  resp.bam_config.has_tpu_sock = true;
+  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "7.7.7.7", sizeof( resp.bam_config.tpu_sock.ip ) );
+  resp.bam_config.tpu_sock.port = 7000U;
+  resp.bam_config.has_tpu_fwd_sock = false;
+
+  uchar pb_buf[ 256 ];
+  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+  state->bam_config_inflight = 1U;
+  fd_bam_client_grpc_rx_msg( state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+
+  FD_TEST( state->bam_config_received == 1U );
+  FD_TEST( state->bam_tpu.l == 0UL );
+  FD_TEST( state->bam_tpu_fwd.l == 0UL );
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
+
+  state->keyswitch = NULL;
+  test_bam_env_destroy( env );
+}
+
 /* --- Config and fee propagation ----------------------------------------------------- */
 
 static void
@@ -5838,6 +5938,7 @@ main( int     argc,
   test_bam_shred_update_publishes_receiver_list( wksp );
   test_bam_shred_update_disconnect_uses_empty_without_clearing_receivers( wksp );
   test_bam_config_reuses_cached_contact_for_incomplete_refresh( wksp );
+  test_bam_endpoint_change_forgets_cached_contact_before_incomplete_refresh( wksp );
 
   /* Config and fees */
   test_bam_config_updates_contact_info( wksp );

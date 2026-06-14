@@ -61,12 +61,13 @@ struct fd_txn_m {
   } block_engine;
 
   struct {
-      /* An 'atomic transaction batch' is a bundle of transactions that must be processed together */
-      ulong max_schedule_slot; // Solana slot for which this bundle is valid for (inclusive). eg if we're building slot 100, and max_schedule_slot == 100, process the txn
-      uint  seq_id;  // unique for a single leader rotation, propagated so downstream stages can correlate execution results
-      uchar txn_cnt; // how many transactions are expected in the atomic transaction batch
-      uchar batch_idx; // index of this transaction inside the atomic transaction batch
-      _Bool revert_on_error; // if true and any transaction in the batch fails, revert everything. otherwise commit errors
+    /* An 'atomic transaction batch' is a bundle of transactions that must be processed together */
+    ulong  max_schedule_slot; /* Solana slot for which this bundle is valid for (inclusive). eg if we're building slot 100, and max_schedule_slot == 100, process the txn */
+    uint   seq_id;            /* Unique for a single leader rotation, propagated so downstream stages can correlate execution results */
+    ushort scheduler_gen;     /* BAM scheduler identity generation, propagated to discard stale in-flight results after endpoint/key changes */
+    uchar  txn_cnt;           /* How many transactions are expected in the atomic transaction batch */
+    uchar  batch_idx;         /* Index of this transaction inside the atomic transaction batch */
+    _Bool  revert_on_error;   /* If true and any transaction in the batch fails, revert everything. otherwise commit errors */
   } bam;
 
   /* There are three additional fields at the end here, which are

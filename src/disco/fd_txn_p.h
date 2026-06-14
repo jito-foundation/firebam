@@ -48,6 +48,7 @@ struct __attribute__((aligned(64))) fd_txn_p {
      slot hint in sidecar state to preserve the fd_txn_p_t layout. */
   struct {
     uint  seq_id;
+    ushort scheduler_gen;
     uchar batch_idx;
     _Bool revert_on_error;
   } bam;

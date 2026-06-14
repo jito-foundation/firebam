@@ -567,7 +567,7 @@ test_pack_tile_bam_stale_max_schedule_slot_rejected( void ) {
   test_pack_tile_fill_sig( sigs + 0UL, 11U );
   test_pack_tile_fill_sig( sigs + sizeof(fd_ed25519_sig_t), 22U );
 
-  FD_TEST( pack_tile_track_bam_work( h->ctx, sigs, 0L, 55U, 100UL, 100UL, 100UL, 2U ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, sigs, 0L, 55U, 0U, 100UL, 100UL, 100UL, 2U ) );
   FD_TEST( h->ctx->bam_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_pending_work_cnt == 1UL );
 
@@ -599,7 +599,7 @@ test_pack_tile_bam_stale_results_drain_without_drop( void ) {
 
   for( uchar i=0U; i<3U; i++ ) {
     test_pack_tile_fill_sig( sigs[ i ], (uchar)( 40U + 10U*i ) );
-    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ i ], 0L, (uint)( 100U + i ), 100UL, 100UL, 100UL, 1U ) );
+    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ i ], 0L, (uint)( 100U + i ), 0U, 100UL, 100UL, 100UL, 1U ) );
   }
 
   pack_tile_evict_invalid_pending_bam_work( h->ctx, 101UL );
@@ -645,7 +645,7 @@ test_pack_tile_bam_same_seq_pending_duplicate_replaces_before_insert( void ) {
   fd_memcpy( new_txn[ 0 ].txnp->payload + 1UL, old_sigs, sizeof(fd_ed25519_sig_t) );
   new_txn[ 0 ].txnp->scheduler_arrival_time_nanos = 20L;
 
-  FD_TEST( pack_tile_track_bam_work( h->ctx, old_sigs, 10L, 10U, 100UL, 100UL, 100UL, 2U ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, old_sigs, 10L, 10U, 0U, 100UL, 100UL, 100UL, 2U ) );
   FD_TEST( h->ctx->bam_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_pending_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_ENTERED_IDX ] == 1UL );
@@ -688,7 +688,7 @@ test_pack_tile_bam_different_seq_pending_duplicate_rejected_before_insert( void 
   fd_memcpy( new_txn[ 0 ].txnp->payload + 1UL, old_sigs, sizeof(fd_ed25519_sig_t) );
   new_txn[ 0 ].txnp->scheduler_arrival_time_nanos = 20L;
 
-  FD_TEST( pack_tile_track_bam_work( h->ctx, old_sigs, 10L, 10U, 100UL, 100UL, 100UL, 2U ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, old_sigs, 10L, 10U, 0U, 100UL, 100UL, 100UL, 2U ) );
   FD_TEST( h->ctx->bam_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_pending_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_ENTERED_IDX ] == 1UL );
@@ -733,7 +733,7 @@ test_pack_tile_bam_scheduled_duplicate_rejected_before_insert( void ) {
   fd_memset( new_txns, 0, sizeof(new_txns) );
 
   test_pack_tile_fill_sig( sig, 41U );
-  FD_TEST( pack_tile_track_bam_work( h->ctx, sig, 10L, 20U, 100UL, 100UL, 100UL, 1U ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, sig, 10L, 20U, 0U, 100UL, 100UL, 100UL, 1U ) );
   pack_bam_work_t * scheduled = test_pack_tile_mark_bam_work_scheduled( h, sig );
   FD_TEST( scheduled->seq_id == 20U );
   FD_TEST( h->ctx->bam_pending_work_cnt == 0UL );
@@ -781,13 +781,13 @@ test_pack_tile_bam_pending_result_does_not_shadow_new_work( void ) {
   test_pack_tile_harness_new( h );
 
   test_pack_tile_fill_sig( sig, 70U );
-  FD_TEST( pack_tile_track_bam_work( h->ctx, sig, 0L, 200U, 100UL, 100UL, 100UL, 1U ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, sig, 0L, 200U, 0U, 100UL, 100UL, 100UL, 1U ) );
   pack_tile_evict_invalid_pending_bam_work( h->ctx, 101UL );
 
   FD_TEST( h->ctx->bam_work_cnt == 0UL );
   FD_TEST( h->ctx->bam_pending_result_cnt == 1UL );
 
-  FD_TEST( pack_tile_track_bam_work( h->ctx, sig, 0L, 201U, 102UL, 102UL, 102UL, 1U ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, sig, 0L, 201U, 0U, 102UL, 102UL, 102UL, 1U ) );
 
   FD_TEST( h->ctx->bam_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_pending_result_cnt == 1UL );
@@ -808,10 +808,10 @@ test_pack_tile_bam_queued_results_preserve_fifo_before_direct_publish( void ) {
   test_pack_tile_harness_new( h );
 
   test_pack_tile_fill_sig( sig, 80U );
-  FD_TEST( pack_tile_track_bam_work( h->ctx, sig, 0L, 100U, 100UL, 100UL, 100UL, 1U ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, sig, 0L, 100U, 0U, 100UL, 100UL, 100UL, 1U ) );
   pack_tile_evict_invalid_pending_bam_work( h->ctx, 101UL );
 
-  pack_tile_publish_bam_insert_reject( h->ctx, 200U, 200UL, 1U, FD_PACK_INSERT_REJECT_DUPLICATE );
+  pack_tile_publish_bam_insert_reject( h->ctx, 200U, 0U, 200UL, 1U, FD_PACK_INSERT_REJECT_DUPLICATE );
 
   FD_TEST( h->out->seqs[ 0 ] == 0UL );
   FD_TEST( h->ctx->bam_pending_result_cnt == 2UL );
@@ -824,7 +824,7 @@ test_pack_tile_bam_queued_results_preserve_fifo_before_direct_publish( void ) {
   test_pack_tile_assert_last_result( h, 200U, 200UL, 1U, FD_BAM_SCHED_ERR_NONE, 1U );
   FD_TEST( h->ctx->bam_pending_result_cnt == 0UL );
 
-  pack_tile_publish_bam_insert_reject( h->ctx, 201U, 201UL, 1U, FD_PACK_INSERT_REJECT_DUPLICATE );
+  pack_tile_publish_bam_insert_reject( h->ctx, 201U, 0U, 201UL, 1U, FD_PACK_INSERT_REJECT_DUPLICATE );
 
   FD_TEST( h->out->seqs[ 0 ] == 2UL );
   FD_TEST( h->ctx->bam_pending_result_cnt == 1UL );
@@ -846,7 +846,7 @@ test_pack_tile_bam_pending_results_reserve_direct_result_headroom( void ) {
 
   for( uchar i=0U; i<TEST_PACK_TILE_BAM_WORK_CAP; i++ ) {
     test_pack_tile_fill_sig( sigs[ i ], (uchar)( 90U + i ) );
-    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ i ], 0L, (uint)( 300U + i ), 100UL, 100UL, 100UL, 1U ) );
+    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ i ], 0L, (uint)( 300U + i ), 0U, 100UL, 100UL, 100UL, 1U ) );
   }
   FD_TEST( h->ctx->bam_work_cnt == TEST_PACK_TILE_BAM_WORK_CAP );
 
@@ -857,10 +857,10 @@ test_pack_tile_bam_pending_results_reserve_direct_result_headroom( void ) {
 
   for( uchar i=0U; i<TEST_PACK_TILE_BAM_WORK_CAP-1U; i++ ) {
     test_pack_tile_fill_sig( sigs[ i ], (uchar)( 120U + i ) );
-    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ i ], 0L, (uint)( 400U + i ), 102UL, 102UL, 102UL, 1U ) );
+    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ i ], 0L, (uint)( 400U + i ), 0U, 102UL, 102UL, 102UL, 1U ) );
   }
   test_pack_tile_fill_sig( sigs[ TEST_PACK_TILE_BAM_WORK_CAP-1U ], 130U );
-  FD_TEST( !pack_tile_track_bam_work( h->ctx, sigs[ TEST_PACK_TILE_BAM_WORK_CAP-1U ], 0L, 499U, 102UL, 102UL, 102UL, 1U ) );
+  FD_TEST( !pack_tile_track_bam_work( h->ctx, sigs[ TEST_PACK_TILE_BAM_WORK_CAP-1U ], 0L, 499U, 0U, 102UL, 102UL, 102UL, 1U ) );
   FD_TEST( h->ctx->bam_work_cnt == TEST_PACK_TILE_BAM_WORK_CAP-1UL );
   FD_TEST( h->ctx->bam_pending_result_cnt == TEST_PACK_TILE_BAM_WORK_CAP );
 
@@ -880,7 +880,7 @@ test_pack_tile_bam_scheduled_work_does_not_consume_result_headroom( void ) {
 
   for( uchar i=0U; i<4U; i++ ) {
     test_pack_tile_fill_sig( sigs[ i ], (uchar)( 150U + i ) );
-    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ i ], 0L, (uint)( 500U + i ), ULONG_MAX, 200UL, 200UL, 1U ) );
+    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ i ], 0L, (uint)( 500U + i ), 0U, ULONG_MAX, 200UL, 200UL, 1U ) );
     (void)test_pack_tile_mark_bam_work_scheduled( h, sigs[ i ] );
   }
 
@@ -891,7 +891,7 @@ test_pack_tile_bam_scheduled_work_does_not_consume_result_headroom( void ) {
   h->ctx->bam_pending_result_cnt = 2UL*TEST_PACK_TILE_BAM_WORK_CAP - h->ctx->bam_scheduled_work_cnt;
 
   test_pack_tile_fill_sig( sigs[ 4 ], 190U );
-  FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ 4 ], 0L, 600U, 201UL, 201UL, 201UL, 1U ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ 4 ], 0L, 600U, 0U, 201UL, 201UL, 201UL, 1U ) );
   FD_TEST( h->ctx->bam_work_cnt == 5UL );
   FD_TEST( h->ctx->bam_pending_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_scheduled_work_cnt == 4UL );
@@ -905,7 +905,7 @@ test_pack_tile_bam_result_mapping_insert_reject( void ) {
 
   test_pack_tile_harness_new( h );
 
-  pack_tile_publish_bam_insert_reject( h->ctx, 77U, 123UL, 2U, FD_PACK_INSERT_REJECT_DUPLICATE );
+  pack_tile_publish_bam_insert_reject( h->ctx, 77U, 0U, 123UL, 2U, FD_PACK_INSERT_REJECT_DUPLICATE );
 
   FD_TEST( h->out->seqs[ 0 ] == 0UL );
   FD_TEST( h->ctx->bam_pending_result_cnt == 1UL );
@@ -916,7 +916,7 @@ test_pack_tile_bam_result_mapping_insert_reject( void ) {
   FD_TEST( dup->sanitize_success[ 1 ] == 1U );
 
   h->ctx->bam_result_publish_cnt = 0UL;
-  pack_tile_publish_bam_insert_reject( h->ctx, 78U, 124UL, 1U, FD_PACK_INSERT_REJECT_PRIORITY );
+  pack_tile_publish_bam_insert_reject( h->ctx, 78U, 0U, 124UL, 1U, FD_PACK_INSERT_REJECT_PRIORITY );
 
   FD_TEST( h->ctx->bam_pending_result_cnt == 1UL );
   FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
@@ -938,6 +938,7 @@ test_pack_tile_bam_result_mapping_tracking_reject( void ) {
                                          sig0,
                                          0L,
                                          88U,
+                                         0U,
                                          200UL,
                                          201UL,
                                          199UL,
