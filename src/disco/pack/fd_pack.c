@@ -1451,7 +1451,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
        sense to drop an earlier bundle for this one.  That means that
        really, the best thing to do is drop this one. */
   if( FD_UNLIKELY( !initializer_bundle &&
-                   ( !txn_cnt || bundle[ 0 ]->txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) &&
+                   bundle[ 0 ]->txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM &&
                    pending_b_txn_cnt+txn_cnt>pack->pack_depth/2UL ) ) err = FD_PACK_INSERT_REJECT_PRIORITY;
 
   if( FD_UNLIKELY( expires_at<pack->expire_before                                         ) ) err = FD_PACK_INSERT_REJECT_EXPIRED;
@@ -2297,14 +2297,9 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
         _cur = treap_rev_iter_next( _cur, pool );
         if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
         cur = treap_rev_iter_ele( _cur, pool );
-      } while( FD_UNLIKELY( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )==skipped_bundle_idx ) );
-
-      while( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) {
-        _cur = treap_rev_iter_next( _cur, pool );
-        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
-        if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
-        cur = treap_rev_iter_ele( _cur, pool );
-      }
+        if( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
+      } while( FD_UNLIKELY( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )==skipped_bundle_idx ||
+                            cur->skip==pack->compressed_slot_number ) );
     }
   }
 
@@ -2520,11 +2515,8 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     out_txnp->source_ipv4                     = cur->txn->source_ipv4;
     out_txnp->flags                           = cur->txn->flags;
     out_txnp->bam                             = cur->txn->bam;
-    if( FD_UNLIKELY( txn_cnt==1UL &&
-                     out_txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
-                     !out_txnp->bam.revert_on_error ) ) {
-      out_txnp->flags &= ~FD_TXN_P_FLAGS_BUNDLE;
-    }
+    if( FD_UNLIKELY( txn_cnt==1UL && out_txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                     !out_txnp->bam.revert_on_error ) ) out_txnp->flags &= ~FD_TXN_P_FLAGS_BUNDLE;
     /* Copy the ALT accounts from the source fd_txn_e_t */
     ulong alt_acct_cnt = (ulong)txn->addr_table_adtl_cnt;
     fd_memcpy( out->alt_accts, cur->txn_e->alt_accts, alt_acct_cnt * sizeof(fd_acct_addr_t) );
@@ -2647,7 +2639,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
   /* Bundle can't mix with votes, so only try to schedule a bundle if we
      didn't get any votes. */
   if( FD_UNLIKELY( !!(schedule_flags & FD_PACK_SCHEDULE_BUNDLE) & (status1.txns_scheduled==0UL) ) ) {
-    int bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, !!( schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY ), out );
+    int bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY, out );
     if( FD_UNLIKELY( bundle_result>0                         ) ) return (ulong)bundle_result;
     if( FD_UNLIKELY( bundle_result==TRY_BUNDLE_HAS_CONFLICTS ) ) return 0UL;
     /* in the NO_READY_BUNDLES or DOES_NOT_FIT case, we schedule like
