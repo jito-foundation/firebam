@@ -32,19 +32,6 @@ typedef struct {
   fd_bam_bundle_result_t err_result;
 } fd_bam_decoded_multi_batch_t;
 
-typedef enum {
-  FD_BAM_V0_STAGED_HEARTBEAT = 1,
-  FD_BAM_V0_STAGED_MULTI     = 2,
-  FD_BAM_V0_STAGED_PING      = 3
-} fd_bam_v0_staged_kind_t;
-
-typedef struct {
-  fd_bam_v0_staged_kind_t kind;
-  uint64_t                heartbeat_time_sent_microseconds;
-  uint32_t                ping_id;
-  fd_bam_decoded_multi_batch_t multi;
-} fd_bam_decoded_v0_t;
-
 static ulong
 fd_bam_dump_appendf( char *       buf,
                      ulong        buf_sz,
@@ -366,7 +353,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
 
   if( FD_UNLIKELY( state->has_deser_err ) ) {
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
-    fd_bam_bundle_result_t res = {
+    fd_bam_enqueue_result( ctx, &(fd_bam_bundle_result_t) {
       .seq_id            = batch->seq_id,
       .scheduler_gen     = ctx->scheduler_gen,
       .slot              = batch->max_schedule_slot,
@@ -376,14 +363,13 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
       .deser_reason      = state->deser_reason,
       .deser_index       = state->deser_index
-    };
-    fd_bam_enqueue_result( ctx, &res );
+    } );
     return 0;
   }
 
   if( FD_UNLIKELY( state->packet_cnt == 0U ) ) {
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_EMPTY_BATCH_IDX ]++;
-    fd_bam_bundle_result_t res = {
+    fd_bam_enqueue_result( ctx, &(fd_bam_bundle_result_t) {
       .seq_id            = batch->seq_id,
       .scheduler_gen     = ctx->scheduler_gen,
       .slot              = batch->max_schedule_slot,
@@ -393,8 +379,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
       .deser_reason      = bam_types_DeserializationErrorReason_EMPTY,
       .deser_index       = 0
-    };
-    fd_bam_enqueue_result( ctx, &res );
+    } );
     return 0;
   }
 
@@ -402,7 +387,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ]++;
     /* For now, revert_on_error=0 batches are assumed to contain exactly one
        packet so we can return one result per seq_id without BAM-node changes. */
-    fd_bam_bundle_result_t res = {
+    fd_bam_enqueue_result( ctx, &(fd_bam_bundle_result_t) {
       .seq_id            = batch->seq_id,
       .scheduler_gen     = ctx->scheduler_gen,
       .slot              = batch->max_schedule_slot,
@@ -412,8 +397,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
       .deser_reason      = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE,
       .deser_index       = 0
-    };
-    fd_bam_enqueue_result( ctx, &res );
+    } );
     return 0;
   }
 
@@ -429,7 +413,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   }
   if( FD_UNLIKELY( simple_vote_idx >= 0 ) ) {
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_VOTE_TRANSACTION_IDX ]++;
-    fd_bam_bundle_result_t res = {
+    fd_bam_enqueue_result( ctx, &(fd_bam_bundle_result_t) {
       .seq_id            = batch->seq_id,
       .scheduler_gen     = ctx->scheduler_gen,
       .slot              = batch->max_schedule_slot,
@@ -439,8 +423,7 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
       .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
       .deser_reason      = bam_types_DeserializationErrorReason_VOTE_TRANSACTION_FAILURE,
       .deser_index       = (uchar)simple_vote_idx,
-    };
-    fd_bam_enqueue_result( ctx, &res );
+    } );
     return 0;
   }
 
@@ -610,7 +593,7 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
                        : decoded->state.packet_cnt;
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
     FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)", PB_GET_ERROR( stream ) ));
-    fd_bam_bundle_result_t res = {
+    fd_bam_enqueue_result( ctx, &(fd_bam_bundle_result_t) {
       .seq_id            = decoded->batch.seq_id,
       .scheduler_gen     = ctx->scheduler_gen,
       .slot              = decoded->batch.max_schedule_slot,
@@ -620,8 +603,7 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
       .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
       .deser_reason      = deser_reason,
       .deser_index       = deser_index
-    };
-    fd_bam_enqueue_result( ctx, &res );
+    } );
     return 0;
   }
 
@@ -745,101 +727,6 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
   return 1;
 }
 
-/* Decodes the v0 scheduler response payload (heartbeats, nested batches, and
-   ping probes) into staged state. Returns 1 once the message was consumed;
-   returns 0 on protobuf failures so the caller can reject the message before
-   commit. */
-static int
-fd_bam_decode_scheduler_response_v0( fd_bam_tile_t * ctx,
-                                     pb_istream_t *   stream,
-                                     long             rx_ts_ns,
-                                     uint             rx_tspub,
-                                     ulong            leader_slot_at_rx,
-                                     long             leader_slot_end_ns_at_rx,
-                                     fd_bam_decoded_v0_t * decoded_v0 ) {
-  fd_memset( decoded_v0, 0, sizeof(fd_bam_decoded_v0_t) );
-
-  uint32_t       tag;
-  pb_wire_type_t wire_type;
-  bool           eof = false;
-  uint32_t       selected_tag = 0U;
-  uchar const *  selected_data = NULL;
-  size_t         selected_data_sz = 0UL;
-
-  while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
-    switch( tag ) {
-    case bam_api_SchedulerResponseV0_heart_beat_tag:
-    case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag:
-    case bam_api_SchedulerResponseV0_ping_tag:
-      break;
-    case 0:
-      PB_SET_ERROR( stream, "zero tag" );
-      return 0;
-    default:
-      PB_SET_ERROR( stream, "unexpected tag" );
-      return 0;
-    }
-
-    if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
-      PB_SET_ERROR( stream, "wrong wire type" );
-      return 0;
-    }
-
-    pb_istream_t substream;
-    if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) return 0;
-    selected_tag = tag;
-    selected_data = (uchar const *)substream.state;
-    selected_data_sz = substream.bytes_left;
-    if( FD_UNLIKELY( !pb_close_string_substream( stream, &substream ) ) ) return 0;
-  }
-  if( FD_UNLIKELY( !eof ) ) return 0;
-  if( FD_UNLIKELY( !selected_tag ) ) {
-    PB_SET_ERROR( stream, "missing v0 response" );
-    return 0;
-  }
-
-  switch( selected_tag ) {
-  case bam_api_SchedulerResponseV0_heart_beat_tag: {
-    pb_istream_t hb_stream = pb_istream_from_buffer( selected_data, selected_data_sz );
-    bam_types_BuilderHeartBeat hb = bam_types_BuilderHeartBeat_init_default;
-    if( FD_UNLIKELY( !pb_decode( &hb_stream, &bam_types_BuilderHeartBeat_msg, &hb ) ) ) {
-      FD_LOG_WARNING(( "BuilderHeartBeat decode failed: %s", PB_GET_ERROR( &hb_stream ) ));
-      return 0;
-    }
-    decoded_v0->kind = FD_BAM_V0_STAGED_HEARTBEAT;
-    decoded_v0->heartbeat_time_sent_microseconds = hb.time_sent_microseconds;
-    break;
-  }
-  case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag: {
-    pb_istream_t substream = pb_istream_from_buffer( selected_data, selected_data_sz );
-    if( FD_UNLIKELY( !fd_bam_decode_multiple_atomic_txn_batch( ctx,
-                                                               &substream,
-                                                               rx_ts_ns,
-                                                               rx_tspub,
-                                                               leader_slot_at_rx,
-                                                               leader_slot_end_ns_at_rx,
-                                                               &decoded_v0->multi ) ) ) {
-      return 0;
-    }
-    ctx->metrics.ingress_multi_message_received_cnt++;
-    decoded_v0->kind = FD_BAM_V0_STAGED_MULTI;
-    break;
-  }
-  case bam_api_SchedulerResponseV0_ping_tag: {
-    pb_istream_t ping_stream = pb_istream_from_buffer( selected_data, selected_data_sz );
-    bam_types_Ping ping = bam_types_Ping_init_default;
-    if( FD_UNLIKELY( !pb_decode( &ping_stream, &bam_types_Ping_msg, &ping ) ) ) {
-      FD_LOG_WARNING(( "Ping decode failed: %s", PB_GET_ERROR( &ping_stream ) ));
-      return 0;
-    }
-    decoded_v0->kind    = FD_BAM_V0_STAGED_PING;
-    decoded_v0->ping_id = ping.id;
-    break;
-  }
-  }
-  return 1;
-}
-
 /* Decodes bam_api.SchedulerResponse (versioned envelope) using a two-phase
    stage/commit flow. Envelope decode failures and unsupported versions bump
    bam_failure, while handled AtomicTxnBatch rejects stay in
@@ -860,6 +747,9 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
   uint32_t       unsupported_version_tag = 0U;
   uchar const *  selected_v0_data        = NULL;
   size_t         selected_v0_data_sz     = 0UL;
+  uint32_t       selected_tag            = 0U;
+  uchar const *  selected_data           = NULL;
+  size_t         selected_data_sz        = 0UL;
 
   while( pb_decode_tag( &istream, &wire_type, &tag, &eof ) ) {
     if( FD_UNLIKELY( !tag ) ) {
@@ -896,50 +786,99 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
     return;
   }
 
-  fd_bam_decoded_v0_t decoded_v0;
   pb_istream_t v0_stream = pb_istream_from_buffer( selected_v0_data, selected_v0_data_sz );
-  if( FD_UNLIKELY( !fd_bam_decode_scheduler_response_v0( ctx,
-                                                         &v0_stream,
-                                                         rx_ts_ns,
-                                                         rx_tspub,
-                                                         leader_slot_at_rx,
-                                                         leader_slot_end_ns_at_rx,
-                                                         &decoded_v0 ) ) ) {
+  eof = false;
+  while( pb_decode_tag( &v0_stream, &wire_type, &tag, &eof ) ) {
+    switch( tag ) {
+    case bam_api_SchedulerResponseV0_heart_beat_tag:
+    case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag:
+    case bam_api_SchedulerResponseV0_ping_tag:
+      break;
+    case 0:
+      PB_SET_ERROR( (&istream), "zero tag" );
+      goto fail;
+    default:
+      PB_SET_ERROR( (&istream), "unexpected tag" );
+      goto fail;
+    }
+
+    if( FD_UNLIKELY( wire_type != PB_WT_STRING ) ) {
+      PB_SET_ERROR( (&istream), "wrong wire type" );
+      goto fail;
+    }
+
+    pb_istream_t substream;
+    if( FD_UNLIKELY( !pb_make_string_substream( &v0_stream, &substream ) ) ) goto fail;
+    selected_tag     = tag;
+    selected_data    = (uchar const *)substream.state;
+    selected_data_sz = substream.bytes_left;
+    if( FD_UNLIKELY( !pb_close_string_substream( &v0_stream, &substream ) ) ) goto fail;
+  }
+  if( FD_UNLIKELY( !eof ) ) goto fail;
+  if( FD_UNLIKELY( !selected_tag ) ) {
+    PB_SET_ERROR( (&istream), "missing v0 response" );
     goto fail;
   }
 
-  switch( decoded_v0.kind ) {
-  case FD_BAM_V0_STAGED_HEARTBEAT:
+  switch( selected_tag ) {
+  case bam_api_SchedulerResponseV0_heart_beat_tag: {
+    pb_istream_t hb_stream = pb_istream_from_buffer( selected_data, selected_data_sz );
+    bam_types_BuilderHeartBeat hb = bam_types_BuilderHeartBeat_init_default;
+    if( FD_UNLIKELY( !pb_decode( &hb_stream, &bam_types_BuilderHeartBeat_msg, &hb ) ) ) {
+      FD_LOG_WARNING(( "BuilderHeartBeat decode failed: %s", PB_GET_ERROR( &hb_stream ) ));
+      PB_SET_ERROR( (&istream), PB_GET_ERROR( &hb_stream ) );
+      goto fail;
+    }
     ctx->bam_last_builder_activity_ns = rx_ts_ns;
-    if( FD_LIKELY( decoded_v0.heartbeat_time_sent_microseconds ) ) {
-      ulong tsorig_ns = decoded_v0.heartbeat_time_sent_microseconds * 1000UL;
+    if( FD_LIKELY( hb.time_sent_microseconds ) ) {
+      ulong tsorig_ns = hb.time_sent_microseconds * 1000UL;
       ulong rx_ts_u   = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
       fd_histf_sample( ctx->metrics.builder_heartbeat_arrival_delta_nanos, fd_ulong_sat_sub( rx_ts_u, tsorig_ns ) );
     }
     ctx->metrics.builder_heartbeats_decoded_cnt++;
     break;
-  case FD_BAM_V0_STAGED_MULTI: {
-    fd_bam_decoded_multi_batch_t * decoded_multi = &decoded_v0.multi;
-    ctx->metrics.ingress_batch_commit_attempt_cnt += decoded_multi->batch_cnt;
-    for( uint i=0U; i<decoded_multi->batch_cnt; i++ ) {
+  }
+  case bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag: {
+    fd_bam_decoded_multi_batch_t decoded_multi;
+    pb_istream_t substream = pb_istream_from_buffer( selected_data, selected_data_sz );
+    if( FD_UNLIKELY( !fd_bam_decode_multiple_atomic_txn_batch( ctx,
+                                                               &substream,
+                                                               rx_ts_ns,
+                                                               rx_tspub,
+                                                               leader_slot_at_rx,
+                                                               leader_slot_end_ns_at_rx,
+                                                               &decoded_multi ) ) ) {
+      PB_SET_ERROR( (&istream), PB_GET_ERROR( &substream ) );
+      goto fail;
+    }
+    ctx->metrics.ingress_multi_message_received_cnt++;
+    ctx->metrics.ingress_batch_commit_attempt_cnt += decoded_multi.batch_cnt;
+    for( uint i=0U; i<decoded_multi.batch_cnt; i++ ) {
       if( FD_UNLIKELY( !fd_bam_validate_batch( ctx,
-                                               &decoded_multi->batches[ i ].state,
-                                               &decoded_multi->batches[ i ].batch ) ) ) {
+                                               &decoded_multi.batches[ i ].state,
+                                               &decoded_multi.batches[ i ].batch ) ) ) {
         continue;
       }
       fd_bam_publish_batch( ctx,
-                            &decoded_multi->batches[ i ].state,
-                            &decoded_multi->batches[ i ].batch );
+                            &decoded_multi.batches[ i ].state,
+                            &decoded_multi.batches[ i ].batch );
     }
-    if( FD_UNLIKELY( decoded_multi->has_err_result ) ) {
+    if( FD_UNLIKELY( decoded_multi.has_err_result ) ) {
       /* Reject counters are recorded at the decode site where err_result was staged
          (overflow/empty wrapper) so the batch/message taxonomy remains accurate. */
-      fd_bam_enqueue_result( ctx, &decoded_multi->err_result );
+      fd_bam_enqueue_result( ctx, &decoded_multi.err_result );
     }
     ctx->bam_last_builder_activity_ns = rx_ts_ns;
     break;
   }
-  case FD_BAM_V0_STAGED_PING: {
+  case bam_api_SchedulerResponseV0_ping_tag: {
+    pb_istream_t ping_stream = pb_istream_from_buffer( selected_data, selected_data_sz );
+    bam_types_Ping ping = bam_types_Ping_init_default;
+    if( FD_UNLIKELY( !pb_decode( &ping_stream, &bam_types_Ping_msg, &ping ) ) ) {
+      FD_LOG_WARNING(( "Ping decode failed: %s", PB_GET_ERROR( &ping_stream ) ));
+      PB_SET_ERROR( (&istream), PB_GET_ERROR( &ping_stream ) );
+      goto fail;
+    }
     /* Scheduler proto Ping is only a latency probe. It must be answered on
        the protobuf stream, but it does not refresh the builder-activity
        watchdog or HTTP/2 keepalive state. */
@@ -953,7 +892,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
     bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
     msg.which_versioned_msg        = bam_api_SchedulerMessage_v0_tag;
     msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_pong_tag;
-    msg.versioned_msg.v0.msg.pong.id = decoded_v0.ping_id;
+    msg.versioned_msg.v0.msg.pong.id = ping.id;
 
     ulong outcome_idx = FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_ENQUEUED_IDX;
     int send_ok = fd_grpc_client_stream_send_msg( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg );
@@ -964,7 +903,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
         outcome_idx = FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_REQUEST_BUSY_IDX;
       } else {
         outcome_idx = FD_METRICS_ENUM_BAM_SCHEDULER_PONG_SEND_OUTCOME_V_SEND_FAIL_IDX;
-        FD_LOG_WARNING(( "Failed to send BAM scheduler pong (id=%u)", decoded_v0.ping_id ));
+        FD_LOG_WARNING(( "Failed to send BAM scheduler pong (id=%u)", ping.id ));
       }
     }
     ctx->metrics.scheduler_pong_send_outcome_cnt[ outcome_idx ]++;
