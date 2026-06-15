@@ -2,20 +2,14 @@
 
 #define _GNU_SOURCE /* SOL_TCP */
 #include "fd_bam_tile_private.h"
-#include "proto/bam_api.pb.h"
-#include "proto/bam_types.pb.h"
 #include "fd_bam_tile.h"
-#include "fd_bam_types.h"
 #include "../keyguard/fd_keyguard.h"
-#include "../../discoh/plugin/fd_plugin.h"
-#include "../metrics/fd_metrics.h"
 #include "../../waltz/h2/fd_h2_conn.h"
 #include "../../waltz/http/fd_url.h" /* fd_url_unescape */
 #include "../../waltz/openssl/fd_openssl.h" /* fd_openssl_bio_new_socket */
 #include "../../ballet/base58/fd_base58.h"
 #include "../../ballet/nanopb/pb_decode.h"
 #include "../../ballet/nanopb/pb_encode.h"
-#include "../../util/net/fd_ip4.h"
 #include "../../util/fd_util.h"
 
 #include <fcntl.h>
@@ -26,14 +20,6 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <stdio.h> /* snprintf */
-
-typedef struct {
-  fd_bam_bundle_result_t const * res;
-} fd_bam_encode_ctx_t;
-
-typedef struct {
-  bam_types_AtomicTxnBatchResult const * atomic_res;
-} fd_bam_encode_batch_ctx_t;
 
 __attribute__((weak)) long
 fd_bam_now( void ) {
@@ -54,13 +40,6 @@ fd_bam_client_retry_ms( fd_bam_tile_t * ctx ) {
   if( wait_ns < 0L ) wait_ns = 0L;
   return (double)wait_ns / 1e6;
 }
-
-typedef enum {
-  FD_BAM_LEADER_PENDING_DROP_CLIENT_RESET = 0,    /* dropped by full client reset */
-  FD_BAM_LEADER_PENDING_DROP_REQUEST_FAILED,      /* dropped when stream request fails */
-  FD_BAM_LEADER_PENDING_DROP_STREAM_ENDED,        /* dropped when stream ends */
-  FD_BAM_LEADER_PENDING_DROP_STREAM_TIMEOUT       /* dropped when stream times out */
-} fd_bam_leader_pending_drop_reason_t;
 
 static inline void
 fd_bam_set_stream_live( fd_bam_tile_t * ctx,
@@ -120,35 +99,20 @@ fd_bam_clear_scheduler_rejected_leader_state( fd_bam_tile_t * ctx,
 }
 
 static inline void
-fd_bam_drop_pending_leader_state( fd_bam_tile_t *                       ctx,
-                                  fd_bam_leader_pending_drop_reason_t    reason ) {
+fd_bam_drop_pending_leader_state( fd_bam_tile_t * ctx,
+                                  uint            reason_idx ) {
   if( FD_LIKELY( !ctx->bam_leader_pending ) ) return;
-
-  switch( reason ) {
-  case FD_BAM_LEADER_PENDING_DROP_CLIENT_RESET:
-    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_CLIENT_RESET_IDX ]++;
-    break;
-  case FD_BAM_LEADER_PENDING_DROP_REQUEST_FAILED:
-    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_REQUEST_FAILED_IDX ]++;
-    break;
-  case FD_BAM_LEADER_PENDING_DROP_STREAM_ENDED:
-    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_ENDED_IDX ]++;
-    break;
-  case FD_BAM_LEADER_PENDING_DROP_STREAM_TIMEOUT:
-    ctx->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_TIMEOUT_IDX ]++;
-    break;
-  }
-
+  ctx->metrics.leader_pending_dropped_cnt[ reason_idx ]++;
   ctx->bam_leader_pending = 0U;
 }
 
 static inline void
-fd_bam_clear_stream_state( fd_bam_tile_t *                    ctx,
-                           fd_bam_leader_pending_drop_reason_t reason ) {
+fd_bam_clear_stream_state( fd_bam_tile_t * ctx,
+                           uint            reason_idx ) {
   ctx->bam_stream            = NULL;
   fd_bam_set_stream_live( ctx, 0U );
   ctx->bam_stream_connecting = 0;
-  fd_bam_drop_pending_leader_state( ctx, reason );
+  fd_bam_drop_pending_leader_state( ctx, reason_idx );
 }
 
 void
@@ -202,7 +166,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
      scheduler stream comes up.  The server expects every dispatched
      bundle to eventually produce a result; dropping them here would lose
      that guarantee. */
-  fd_bam_drop_pending_leader_state( ctx, FD_BAM_LEADER_PENDING_DROP_CLIENT_RESET );
+  fd_bam_drop_pending_leader_state( ctx, FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_CLIENT_RESET_IDX );
 }
 
 static void
@@ -323,9 +287,8 @@ static bool
 fd_bam_encode_committed_cb( pb_ostream_t *          stream,
                             pb_field_t const *       field,
                             void * const *           arg ) {
-  fd_bam_encode_ctx_t const * ctx = (fd_bam_encode_ctx_t const *)*arg;
-  if( FD_UNLIKELY( !ctx || !ctx->res ) ) return false;
-  fd_bam_bundle_result_t const * res = ctx->res;
+  fd_bam_bundle_result_t const * res = (fd_bam_bundle_result_t const *)*arg;
+  if( FD_UNLIKELY( !res ) ) return false;
   for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
     bam_types_TransactionCommittedResult txn_res = bam_types_TransactionCommittedResult_init_default;
     txn_res.cus_consumed               = res->consumed_cus[ i ];
@@ -342,10 +305,10 @@ static bool
 fd_bam_encode_batch_results_cb( pb_ostream_t *          stream,
                                 pb_field_t const *       field,
                                 void * const *           arg ) {
-  fd_bam_encode_batch_ctx_t const * ctx = (fd_bam_encode_batch_ctx_t const *)*arg;
-  if( FD_UNLIKELY( !ctx || !ctx->atomic_res ) ) return false;
+  bam_types_AtomicTxnBatchResult const * atomic_res = (bam_types_AtomicTxnBatchResult const *)*arg;
+  if( FD_UNLIKELY( !atomic_res ) ) return false;
   if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
-  return pb_encode_submessage( stream, bam_types_AtomicTxnBatchResult_fields, ctx->atomic_res );
+  return pb_encode_submessage( stream, bam_types_AtomicTxnBatchResult_fields, atomic_res );
 }
 
 static void
@@ -671,12 +634,10 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
   bam_types_AtomicTxnBatchResult atomic_res = bam_types_AtomicTxnBatchResult_init_default;
   atomic_res.seq_id = res->seq_id;
 
-  fd_bam_encode_ctx_t encode_ctx = { .res = res };
-
   if( FD_LIKELY( res->execution_success ) ) {
     atomic_res.which_result = bam_types_AtomicTxnBatchResult_committed_tag;
     atomic_res.result.committed.transaction_results.funcs.encode = fd_bam_encode_committed_cb;
-    atomic_res.result.committed.transaction_results.arg          = &encode_ctx;
+    atomic_res.result.committed.transaction_results.arg          = (void *)res;
   } else {
     atomic_res.which_result = bam_types_AtomicTxnBatchResult_not_committed_tag;
     bam_types_NotCommitted * out = &atomic_res.result.not_committed;
@@ -738,9 +699,8 @@ fd_bam_send_result( fd_bam_tile_t *               ctx,
   }
 
   bam_types_MultipleAtomicTxnBatchResult multi = bam_types_MultipleAtomicTxnBatchResult_init_default;
-  fd_bam_encode_batch_ctx_t batch_ctx = { .atomic_res = &atomic_res };
   multi.results.funcs.encode = fd_bam_encode_batch_results_cb;
-  multi.results.arg          = &batch_ctx;
+  multi.results.arg          = &atomic_res;
 
   bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
   msg.which_versioned_msg                        = bam_api_SchedulerMessage_v0_tag;
@@ -1228,7 +1188,7 @@ fd_bam_client_request_failed( fd_bam_tile_t * ctx,
     ctx->bam_config_inflight = 0;
     break;
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
-    fd_bam_clear_stream_state( ctx, FD_BAM_LEADER_PENDING_DROP_REQUEST_FAILED );
+    fd_bam_clear_stream_state( ctx, FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_REQUEST_FAILED_IDX );
     ctx->bam_auth_ready = 0;
     ctx->challenge_to_sign[ 0 ] = '\0';
     break;
@@ -1290,7 +1250,7 @@ fd_bam_client_grpc_rx_end(
     ctx->bam_config_inflight = 0;
     break;
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
-    fd_bam_clear_stream_state( ctx, FD_BAM_LEADER_PENDING_DROP_STREAM_ENDED );
+    fd_bam_clear_stream_state( ctx, FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_ENDED_IDX );
     break;
   }
 }
@@ -1314,7 +1274,7 @@ fd_bam_client_grpc_rx_timeout(
     ctx->bam_config_inflight = 0;
     break;
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
-    fd_bam_clear_stream_state( ctx, FD_BAM_LEADER_PENDING_DROP_STREAM_TIMEOUT );
+    fd_bam_clear_stream_state( ctx, FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_TIMEOUT_IDX );
     break;
   }
 }
