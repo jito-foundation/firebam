@@ -219,9 +219,6 @@ fd_gui_new( void *                shmem,
 
   memset( &gui->bam, 0, sizeof( gui->bam ) );
   gui->block_engine.has_block_engine = 0;
-  gui->bam.has_bam     = 0;
-  gui->bam.enabled     = 0;
-  gui->bam.status      = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
 
   gui->epoch.has_epoch[ 0 ] = 0;
   gui->epoch.has_epoch[ 1 ] = 0;
@@ -654,7 +651,6 @@ fd_gui_txn_waterfall_snap( fd_gui_t *               gui,
     cur->out.bank_nonce_wrong_blockhash  += execle_metrics[ MIDX( COUNTER, EXECLE, TRANSACTION_RESULT_NONCE_WRONG_BLOCKHASH ) ];
   }
 
-  cur->in.bam = 0UL;
   ulong bam_tile_idx = fd_topo_find_tile( topo, "bam", 0UL );
   if( FD_LIKELY( bam_tile_idx!=ULONG_MAX ) ) {
     fd_topo_tile_t const * bam = &topo->tiles[ bam_tile_idx ];
@@ -2708,21 +2704,6 @@ fd_gui_handle_block_engine_update( fd_gui_t *                              gui,
 }
 
 static void
-fd_gui_handle_plugin_block_engine_update( fd_gui_t *    gui,
-                                          uchar const * msg ) {
-  fd_plugin_msg_block_engine_update_t const * update = (fd_plugin_msg_block_engine_update_t const *)msg;
-
-  gui->block_engine.has_block_engine = 1;
-  fd_cstr_ncpy( gui->block_engine.name,    update->name,    sizeof(gui->block_engine.name   ) );
-  fd_cstr_ncpy( gui->block_engine.url,     update->url,     sizeof(gui->block_engine.url    ) );
-  fd_cstr_ncpy( gui->block_engine.ip_cstr, update->ip_cstr, sizeof(gui->block_engine.ip_cstr) );
-  gui->block_engine.status = update->status;
-
-  fd_gui_printf_block_engine( gui );
-  fd_http_server_ws_broadcast( gui->http );
-}
-
-static void
 fd_gui_handle_bam_update( fd_gui_t *    gui,
                           uchar const * msg ) {
   fd_plugin_msg_bam_update_t const * update = (fd_plugin_msg_bam_update_t const *)msg;
@@ -3314,7 +3295,14 @@ fd_gui_plugin_message( fd_gui_t *   gui,
       break;
     }
     case FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE: {
-      fd_gui_handle_plugin_block_engine_update( gui, msg );
+      fd_plugin_msg_block_engine_update_t const * update = (fd_plugin_msg_block_engine_update_t const *)msg;
+      gui->block_engine.has_block_engine = 1;
+      fd_cstr_ncpy( gui->block_engine.name,    update->name,    sizeof(gui->block_engine.name   ) );
+      fd_cstr_ncpy( gui->block_engine.url,     update->url,     sizeof(gui->block_engine.url    ) );
+      fd_cstr_ncpy( gui->block_engine.ip_cstr, update->ip_cstr, sizeof(gui->block_engine.ip_cstr) );
+      gui->block_engine.status = update->status;
+      fd_gui_printf_block_engine( gui );
+      fd_http_server_ws_broadcast( gui->http );
       break;
     }
     case FD_PLUGIN_MSG_BAM_UPDATE: {
