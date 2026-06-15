@@ -7,7 +7,6 @@
 #include "../topo/fd_topo.h"
 #include "../keyguard/fd_keyload.h"
 #include "../../util/pod/fd_pod.h"
-#include "../../tango/fseq/fd_fseq.h"
 #include "../../waltz/http/fd_url.h"
 #include "../../waltz/openssl/fd_openssl_tile.h"
 
