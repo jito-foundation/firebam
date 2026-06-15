@@ -35,32 +35,22 @@ render_header( fd_prom_render_t *        r,
 }
 
 static void
-format_metric_value( char                          buf[ static 64 ],
-                     fd_metrics_meta_t const *     metric,
-                     ulong                         value ) {
-  switch( metric->converter ) {
-  case FD_METRICS_CONVERTER_NANOSECONDS:
-    value = fd_metrics_convert_ticks_to_nanoseconds( value );
-    FD_TEST( fd_cstr_printf_check( buf, 64UL, NULL, "%lu", value ) );
-    return;
-  case FD_METRICS_CONVERTER_NONE:
-    FD_TEST( fd_cstr_printf_check( buf, 64UL, NULL, "%lu", value ) );
-    return;
-  default:
-    FD_LOG_ERR(( "unknown converter %i", metric->converter ));
-  }
-}
-
-static void
 render_link( fd_prom_render_t *        r,
              fd_metrics_meta_t const * metric,
              fd_topo_tile_t const *    tile,
              fd_topo_link_t const *    link,
              ulong                     value ) {
   render_header( r, metric );
-  char value_str[ 64 ];
-  format_metric_value( value_str, metric, value );
-  fd_http_server_printf( r->http, "%s{kind=\"%s\",kind_id=\"%lu\",link_kind=\"%s\",link_kind_id=\"%lu\"} %s\n", metric->name, tile->name, tile->kind_id, link->name, link->kind_id, value_str );
+  switch( metric->converter ) {
+  case FD_METRICS_CONVERTER_NANOSECONDS:
+    value = fd_metrics_convert_ticks_to_nanoseconds( value );
+    break;
+  case FD_METRICS_CONVERTER_NONE:
+    break;
+  default:
+    FD_LOG_ERR(( "unknown converter %i", metric->converter ));
+  }
+  fd_http_server_printf( r->http, "%s{kind=\"%s\",kind_id=\"%lu\",link_kind=\"%s\",link_kind_id=\"%lu\"} %lu\n", metric->name, tile->name, tile->kind_id, link->name, link->kind_id, value );
 }
 
 static void
@@ -116,21 +106,25 @@ render_counter( fd_prom_render_t *        r,
                 fd_metrics_meta_t const * metric,
                 fd_topo_tile_t const *    tile ) {
   render_header( r, metric );
-  ulong value = *(fd_metrics_tile( tile->metrics ) + metric->offset);
-
-  char value_str[ 64 ];
-  if( FD_LIKELY( metric->converter==FD_METRICS_CONVERTER_SECONDS ) ) {
-    ulong seconds = (ulong)(fd_metrics_convert_ticks_to_seconds( value ) + 0.5); /* round, not truncate */
-    FD_TEST( fd_cstr_printf_check( value_str, sizeof(value_str), NULL, "%lu", seconds ) );
-  } else {
-    format_metric_value( value_str, metric, value );
-  }
+  ulong raw_value = *(fd_metrics_tile( tile->metrics ) + metric->offset);
 
   fd_http_server_printf( r->http, "%s{kind=\"%s\",kind_id=\"%lu\"", metric->name, tile->name, tile->kind_id );
   if( metric->enum_name ) {
     fd_http_server_printf( r->http, ",%s=\"%s\"", metric->enum_name, metric->enum_variant );
   }
-  fd_http_server_printf( r->http, "} %s\n", value_str );
+  switch( metric->converter ) {
+  case FD_METRICS_CONVERTER_NANOSECONDS:
+    fd_http_server_printf( r->http, "} %lu\n", fd_metrics_convert_ticks_to_nanoseconds( raw_value ) );
+    break;
+  case FD_METRICS_CONVERTER_SECONDS:
+    fd_http_server_printf( r->http, "} %e\n", fd_metrics_convert_ticks_to_seconds( raw_value ) );
+    break;
+  case FD_METRICS_CONVERTER_NONE:
+    fd_http_server_printf( r->http, "} %lu\n", raw_value );
+    break;
+  default:
+    FD_LOG_ERR(( "unknown converter %i", metric->converter ));
+  }
 }
 
 static void

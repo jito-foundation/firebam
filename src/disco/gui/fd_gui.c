@@ -2713,17 +2713,9 @@ fd_gui_handle_plugin_block_engine_update( fd_gui_t *    gui,
   fd_plugin_msg_block_engine_update_t const * update = (fd_plugin_msg_block_engine_update_t const *)msg;
 
   gui->block_engine.has_block_engine = 1;
-
-  FD_TEST( fd_cstr_nlen( update->name,    sizeof(gui->block_engine.name   ) ) < sizeof(gui->block_engine.name   ) );
-  FD_TEST( fd_cstr_nlen( update->url,     sizeof(gui->block_engine.url    ) ) < sizeof(gui->block_engine.url    ) );
-  FD_TEST( fd_cstr_nlen( update->ip_cstr, sizeof(gui->block_engine.ip_cstr) ) < sizeof(gui->block_engine.ip_cstr) );
-  ulong name_len    = fd_cstr_nlen( update->name,    sizeof(gui->block_engine.name   ) );
-  ulong url_len     = fd_cstr_nlen( update->url,     sizeof(gui->block_engine.url    ) );
-  ulong ip_cstr_len = fd_cstr_nlen( update->ip_cstr, sizeof(gui->block_engine.ip_cstr) );
-  fd_memcpy( gui->block_engine.name,    update->name,    name_len+1UL );
-  fd_memcpy( gui->block_engine.url,     update->url,     url_len+1UL );
-  fd_memcpy( gui->block_engine.ip_cstr, update->ip_cstr, ip_cstr_len+1UL );
-
+  fd_cstr_ncpy( gui->block_engine.name,    update->name,    sizeof(gui->block_engine.name   ) );
+  fd_cstr_ncpy( gui->block_engine.url,     update->url,     sizeof(gui->block_engine.url    ) );
+  fd_cstr_ncpy( gui->block_engine.ip_cstr, update->ip_cstr, sizeof(gui->block_engine.ip_cstr) );
   gui->block_engine.status = update->status;
 
   fd_gui_printf_block_engine( gui );
@@ -2739,18 +2731,12 @@ fd_gui_handle_bam_update( fd_gui_t *    gui,
   gui->bam.status  = update->status_code;
   gui->bam.enabled = update->enabled;
 
-  memcpy( gui->bam.name, update->name, sizeof( gui->bam.name )-1 );
-  gui->bam.name[ sizeof( gui->bam.name )-1 ] = '\0';
-  memcpy( gui->bam.url, update->url, sizeof( gui->bam.url )-1 );
-  gui->bam.url[ sizeof( gui->bam.url )-1 ] = '\0';
-  memcpy( gui->bam.sni, update->sni, sizeof( gui->bam.sni )-1 );
-  gui->bam.sni[ sizeof( gui->bam.sni )-1 ] = '\0';
-  memcpy( gui->bam.ip_cstr, update->ip_cstr, sizeof( gui->bam.ip_cstr )-1 );
-  gui->bam.ip_cstr[ sizeof( gui->bam.ip_cstr )-1 ] = '\0';
-  memcpy( gui->bam.tpu_cstr, update->tpu_cstr, sizeof( gui->bam.tpu_cstr )-1 );
-  gui->bam.tpu_cstr[ sizeof( gui->bam.tpu_cstr )-1 ] = '\0';
-  memcpy( gui->bam.tpu_fwd_cstr, update->tpu_fwd_cstr, sizeof( gui->bam.tpu_fwd_cstr )-1 );
-  gui->bam.tpu_fwd_cstr[ sizeof( gui->bam.tpu_fwd_cstr )-1 ] = '\0';
+  fd_cstr_ncpy( gui->bam.name,         update->name,         sizeof(gui->bam.name        ) );
+  fd_cstr_ncpy( gui->bam.url,          update->url,          sizeof(gui->bam.url         ) );
+  fd_cstr_ncpy( gui->bam.sni,          update->sni,          sizeof(gui->bam.sni         ) );
+  fd_cstr_ncpy( gui->bam.ip_cstr,      update->ip_cstr,      sizeof(gui->bam.ip_cstr     ) );
+  fd_cstr_ncpy( gui->bam.tpu_cstr,     update->tpu_cstr,     sizeof(gui->bam.tpu_cstr    ) );
+  fd_cstr_ncpy( gui->bam.tpu_fwd_cstr, update->tpu_fwd_cstr, sizeof(gui->bam.tpu_fwd_cstr) );
 
   gui->bam.keepalive_rtt_sample    = update->keepalive_rtt_sample;
   gui->bam.keepalive_rtt_smoothed  = update->keepalive_rtt_smoothed;
