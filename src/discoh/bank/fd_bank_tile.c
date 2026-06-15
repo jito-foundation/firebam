@@ -464,7 +464,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     writable_alt[i] = ctx->_alt_accts[i];
   }
 
-  _Bool execution_success = 1;
+  int execution_success = 1;
 
   ulong sidecar_footprint_bytes = 0UL;
   for( ulong i=0UL; i<txn_cnt; i++ ) {
@@ -499,7 +499,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
   ulong feepayer_balance_lamports[ MAX_TXN_PER_MICROBLOCK ] = { 0UL };
   uint loaded_accounts_data_size [ MAX_TXN_PER_MICROBLOCK ] = { 0U  };
   if( FD_LIKELY( execution_success ) ) {
-    execution_success = !!fd_ext_bank_execute_and_commit_bundle( ctx->_bank, ctx->txn_abi_mem, txn_cnt, transaction_err, actual_execution_cus, actual_acct_data_cus, out_timestamps, tips, &remove_simple_vote_from_cost_model, feepayer_balance_lamports, loaded_accounts_data_size );
+    execution_success = fd_ext_bank_execute_and_commit_bundle( ctx->_bank, ctx->txn_abi_mem, txn_cnt, transaction_err, actual_execution_cus, actual_acct_data_cus, out_timestamps, tips, &remove_simple_vote_from_cost_model, feepayer_balance_lamports, loaded_accounts_data_size );
   }
 
   if( FD_LIKELY( execution_success ) ) {
@@ -573,44 +573,31 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     }
   }
 
-  if( FD_LIKELY( txn_cnt ) ) {
-    fd_txn_p_t const * first = &txns[ 0 ];
-    if( FD_LIKELY( first->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && first->bam.revert_on_error ) ) {
-      fd_bam_bundle_result_t res = fd_bam_result_base( first->bam.seq_id, first->bam.scheduler_gen, slot, (uchar)txn_cnt );
-      res.execution_success = execution_success;
+  if( FD_LIKELY( txn_cnt && txns->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txns->bam.revert_on_error ) ) {
+    fd_bam_bundle_result_t res = fd_bam_result_base( txns->bam.seq_id, txns->bam.scheduler_gen, slot, (uchar)txn_cnt );
+    res.execution_success = execution_success;
 
-      for( ulong i=0UL; i<txn_cnt; i++ ) {
-        _Bool sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
-        if( FD_LIKELY( sanitize_success ) ) fd_bam_result_mark_sanitize_success( &res, i );
-        res.consumed_cus[ i ]     = txns[ i ].execle_cu.actual_consumed_cus;
-      }
-
+    for( ulong i=0UL; i<txn_cnt; i++ ) {
+      _Bool sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
+      if( FD_LIKELY( sanitize_success ) ) fd_bam_result_mark_sanitize_success( &res, i );
+      res.consumed_cus[ i ] = txns[ i ].execle_cu.actual_consumed_cus;
       if( FD_LIKELY( execution_success ) ) {
-        for( ulong i=0UL; i<txn_cnt; i++ ) {
-          res.feepayer_balance_lamports[ i ] = feepayer_balance_lamports[ i ];
-          res.loaded_accounts_data_size[ i ] = loaded_accounts_data_size[ i ];
-        }
+        res.feepayer_balance_lamports[ i ] = feepayer_balance_lamports[ i ];
+        res.loaded_accounts_data_size[ i ] = loaded_accounts_data_size[ i ];
       }
-
-      if( FD_UNLIKELY( !execution_success ) ) {
-        res.transaction_err_count = (uchar)txn_cnt;
-        for( ulong i=0UL; i<txn_cnt; i++ ) {
-          _Bool sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
-          if( FD_UNLIKELY( !sanitize_success ) ) {
-            fd_bam_result_set_txn_error( &res, i, bam_types_TransactionErrorReason_SANITIZE_FAILURE );
-            continue;
-          }
-          int transaction_err_idx = transaction_err[ i ];
-          if( FD_UNLIKELY( transaction_err_idx==FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ) ) {
-            fd_bam_result_set_txn_error( &res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
-          } else {
-            fd_bam_result_set_txn_error( &res, i, fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) );
-          }
-        }
-      }
-
-      bank_tile_publish_bam_result( ctx, stem, &res );
     }
+
+    if( FD_UNLIKELY( !execution_success ) ) {
+      for( ulong i=0UL; i<txn_cnt; i++ ) {
+        int transaction_err_idx = transaction_err[ i ];
+        fd_bam_result_add_txn_error( &res, i,
+            !( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS ) ? bam_types_TransactionErrorReason_SANITIZE_FAILURE :
+            transaction_err_idx==FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ? bam_types_TransactionErrorReason_COMMIT_CANCELLED :
+            fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) );
+      }
+    }
+
+    bank_tile_publish_bam_result( ctx, stem, &res );
   }
 
   fd_pack_rebate_sum_add_txn( ctx->rebater, txns, writable_alt, txn_cnt );
@@ -675,19 +662,14 @@ after_frag( fd_bank_ctx_t *     ctx,
     ctx->rebates_for_slot = slot;
   }
 
-  if( FD_UNLIKELY( ctx->_is_bundle ) ) {
+  int is_bundle = ctx->_is_bundle;
+  if( FD_UNLIKELY( is_bundle ) ) {
     ulong txn_cnt = (sz-sizeof(fd_microblock_execle_trailer_t))/sizeof(fd_txn_e_t);
     fd_txn_p_t const * txns = (fd_txn_p_t const *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
-    if( FD_UNLIKELY( txn_cnt &&
-                     txns[0].source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
-                     !txns[0].bam.revert_on_error ) ) {
-      handle_microblock( ctx, seq, sig, sz, tspub, stem );
-    } else {
-      handle_bundle( ctx, seq, sig, sz, tspub, stem );
-    }
-  } else {
-    handle_microblock( ctx, seq, sig, sz, tspub, stem );
+    is_bundle = !( txn_cnt && txns[0].source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txns[0].bam.revert_on_error );
   }
+  if( FD_UNLIKELY( is_bundle ) ) handle_bundle( ctx, seq, sig, sz, tspub, stem );
+  else                           handle_microblock( ctx, seq, sig, sz, tspub, stem );
 
   /* TODO: Use fancier logic to coalesce rebates e.g. and move this to
      after_credit */
@@ -739,21 +721,14 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->out_wmark  = fd_dcache_compact_wmark ( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache, topo->links[ tile->out_link_id[ 0 ] ].mtu );
   ctx->out_chunk  = ctx->out_chunk0;
 
-  ctx->bam_out_idx    = ULONG_MAX;
-  ctx->bam_out_mem    = NULL;
-  ctx->bam_out_chunk0 = 0UL;
-  ctx->bam_out_wmark  = 0UL;
-  ctx->bam_out_chunk  = 0UL;
-  ulong bam_out_idx = fd_topo_find_tile_out_link( topo, tile, "bank_bam", tile->kind_id );
-  if( FD_LIKELY( bam_out_idx!=ULONG_MAX ) ) {
-    ctx->bam_out_idx = bam_out_idx;
-    fd_topo_link_t const * bam_out = &topo->links[ tile->out_link_id[ bam_out_idx ] ];
+  ctx->bam_out_idx = fd_topo_find_tile_out_link( topo, tile, "bank_bam", tile->kind_id );
+  if( FD_LIKELY( ctx->bam_out_idx!=ULONG_MAX ) ) {
+    fd_topo_link_t const * bam_out = &topo->links[ tile->out_link_id[ ctx->bam_out_idx ] ];
     ctx->bam_out_mem    = topo->workspaces[ topo->objs[ bam_out->dcache_obj_id ].wksp_id ].wksp;
     ctx->bam_out_chunk0 = fd_dcache_compact_chunk0( ctx->bam_out_mem, bam_out->dcache );
     ctx->bam_out_wmark  = fd_dcache_compact_wmark ( ctx->bam_out_mem, bam_out->dcache, bam_out->mtu );
     ctx->bam_out_chunk  = ctx->bam_out_chunk0;
   }
-
 
   ctx->rebate_mem    = topo->workspaces[ topo->objs[ topo->links[ tile->out_link_id[ 1 ] ].dcache_obj_id ].wksp_id ].wksp;
   ctx->rebate_chunk0 = fd_dcache_compact_chunk0( ctx->rebate_mem, topo->links[ tile->out_link_id[ 1 ] ].dcache );
