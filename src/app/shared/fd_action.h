@@ -2,6 +2,7 @@
 #define HEADER_fd_src_app_shared_fd_action_h
 
 #include "../platform/fd_cap_chk.h"
+#include "../../disco/bam/fd_bam_ctrl.h"
 
 union fdctl_args {
   struct {
@@ -39,6 +40,14 @@ union fdctl_args {
   struct {
     uchar const * keypair;
   } add_authorized_voter;
+
+  struct {
+    char         enable; /* -1 => retain current enable state, 0 => disable BAM runtime, 1 => enable */
+    char const * url;    /* BAM control endpoint; NULL => no change, empty string => clear URL */
+    char const * sni;    /* TLS SNI override; NULL => no change, empty string => clear override */
+    /* Edge cases: CLI rejects simultaneous --enable/--disable, requires at least one change, and
+       forwards empty strings so callers can intentionally clear URL/SNI. */
+  } set_bam;
 
   struct {
     int  parent_pipefd;

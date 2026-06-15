@@ -170,9 +170,9 @@ struct fd_microblock_execle_trailer {
      transactions. */
   ulong pack_txn_idx;
 
-  /* If the microblock is a bundle, with a set of potentially
-     conflicting transactions that should be executed in order, and
-     all either commit or fail atomically. */
+  /* If the microblock was scheduled from the bundle treap, with a set of
+     potentially conflicting transactions that should be executed in order.
+     Atomic commit/fail behavior is determined by the bundle source. */
   int is_bundle;
 };
 typedef struct fd_microblock_execle_trailer fd_microblock_execle_trailer_t;

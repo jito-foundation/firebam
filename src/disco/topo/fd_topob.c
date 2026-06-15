@@ -390,6 +390,7 @@ fd_topob_auto_layout_cpus( fd_topo_t *      topo,
     "sock",
     "quic",
     "bundle",
+    "bam",
     "verify",
     "dedup",
     "resolh", /* FRANK only */

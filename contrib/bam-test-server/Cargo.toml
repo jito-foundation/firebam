@@ -1,0 +1,29 @@
+[package]
+name = "bam-test-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+bincode = "1.3"
+clap = { version = "4", features = ["derive", "env"] }
+prost = "0.13.4"
+prost-types = "0.13.4"
+solana-compute-budget-interface = "~3.0"
+solana-keypair = "~3.0"
+solana-pubkey = "~3.0"
+solana-signer = "~3.0"
+solana-system-interface = { version = "2.0", features = ["bincode"] }
+solana-transaction = { version = "~3.0", features = ["bincode"] }
+tokio = { version = "1.43.0", features = ["full"] }
+tokio-stream = "0.1.14"
+tonic = { version = "0.12.3", features = ["tls-webpki-roots"] }
+
+[build-dependencies]
+protobuf-src = "1.1.0"
+tonic-build = "0.12.3"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+split-debuginfo = "packed"
