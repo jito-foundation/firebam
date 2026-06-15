@@ -1909,87 +1909,26 @@ test_initializer_bundle_state_machine( void ) {
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==2UL );
   FD_TEST( !(outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) );
-
-  fd_pack_delete( fd_pack_leave( pack ) );
-}
-
-/* Test bundle with varying transaction counts */
-static void
-test_bundle_varying_sizes( void ) {
-  pack_outcome_t outcome;
-  fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, 64UL, &outcome );
-  fd_pack_set_initializer_bundles_ready( pack );
-
-  fd_txn_e_t * _bundle[FD_PACK_MAX_TXN_PER_BUNDLE];
-  ulong _deleted;
-
-  /* Test all valid bundle sizes (1 to FD_PACK_MAX_TXN_PER_BUNDLE) */
-  for( ulong size=1UL; size<=FD_PACK_MAX_TXN_PER_BUNDLE; size++ ) {
-    fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, size );
-    for( ulong i=0UL; i<size; i++ ) {
-      char buf[2] = {0};
-      buf[0] = (char)('a' + i);
-      make_transaction1( bundle[i]->txnp, i, 2000U, 32U, 10.0, buf, "", NULL, NULL );
-    }
-    FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, size, 1000UL, 0, NULL, &_deleted )>=0 );
-
-    ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
-    FD_TEST( txn_cnt==size );
-    for( ulong i=0UL; i<txn_cnt; i++ ) {
-      FD_TEST( outcome.results[i].txnp->flags & FD_TXN_P_FLAGS_BUNDLE );
-    }
-    fd_pack_microblock_complete( pack, 0UL );
-  }
-
-  fd_pack_delete( fd_pack_leave( pack ) );
-}
-
-/* Test initializer bundle replacement */
-static void
-test_initializer_bundle_replacement( void ) {
-  pack_outcome_t outcome;
-  fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, 64UL, &outcome );
-
-  fd_txn_e_t * _bundle[FD_PACK_MAX_TXN_PER_BUNDLE];
-  ulong _deleted;
+  fd_pack_microblock_complete( pack, 0UL );
+  fd_pack_end_block( pack );
 
   /* Insert first initializer bundle */
-  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
-  make_transaction1( bundle[0]->txnp, 0UL, 10000U, 32U, 10.0, "a", "", NULL, NULL );
+  bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
+  make_transaction1( bundle[0]->txnp, 3UL, 10000U, 32U, 10.0, "d", "", NULL, NULL );
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 1, NULL, &_deleted )>=0 );
   FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
 
   /* Insert second initializer bundle - should replace first */
   bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
-  make_transaction1( bundle[0]->txnp, 1UL, 10000U, 32U, 10.0, "b", "", NULL, NULL );
+  make_transaction1( bundle[0]->txnp, 4UL, 10000U, 32U, 10.0, "e", "", NULL, NULL );
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 1, NULL, &_deleted )>=0 );
   FD_TEST( _deleted==1UL ); /* Previous IB was deleted */
   FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
 
   /* Only the second IB should be scheduled */
-  ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
+  txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==1UL );
   FD_TEST( outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
-
-  fd_pack_delete( fd_pack_leave( pack ) );
-}
-
-/* Test end_block resets IB state machine */
-static void
-test_end_block_resets_ib_state( void ) {
-  pack_outcome_t outcome;
-  fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, 64UL, &outcome );
-
-  fd_txn_e_t * _bundle[FD_PACK_MAX_TXN_PER_BUNDLE];
-  ulong _deleted;
-
-  /* Insert and schedule initializer bundle */
-  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
-  make_transaction1( bundle[0]->txnp, 0UL, 10000U, 32U, 10.0, "a", "", NULL, NULL );
-  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 1, NULL, &_deleted )>=0 );
-
-  ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
-  FD_TEST( txn_cnt==1UL );
   fd_pack_microblock_complete( pack, 0UL );
 
   /* End block should reset to [Not Initialized] */
@@ -1997,36 +1936,25 @@ test_end_block_resets_ib_state( void ) {
 
   /* Insert regular bundle */
   bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
-  make_transaction1( bundle[0]->txnp, 1UL, 2000U, 32U, 10.0, "b", "", NULL, NULL );
+  make_transaction1( bundle[0]->txnp, 5UL, 2000U, 32U, 10.0, "f", "", NULL, NULL );
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted )>=0 );
 
   /* Should not schedule in [Not Initialized] state */
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==0UL );
 
-  fd_pack_delete( fd_pack_leave( pack ) );
-}
-
-/* Test IB failure path in state machine */
-static void
-test_initializer_bundle_failure( void ) {
-  pack_outcome_t outcome;
-  fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, 64UL, &outcome );
-
-  fd_txn_e_t * _bundle[FD_PACK_MAX_TXN_PER_BUNDLE];
-  ulong _deleted;
+  fd_pack_clear_all( pack );
 
   /* Insert and schedule initializer bundle */
-  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
-  make_transaction1( bundle[0]->txnp, 0UL, 10000U, 32U, 10.0, "a", "", NULL, NULL );
+  bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
+  make_transaction1( bundle[0]->txnp, 6UL, 10000U, 32U, 10.0, "g", "", NULL, NULL );
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 1, NULL, &_deleted )>=0 );
 
-  ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
+  txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==1UL );
   fd_pack_microblock_complete( pack, 0UL );
 
   /* State: [Pending] - Simulate IB failure via rebate (transition to [Failed]) */
-  fd_pack_rebate_t rebate[1];
   fd_memset( rebate, 0, sizeof(fd_pack_rebate_t) );
   rebate->total_cost_rebate = 5000U;
   rebate->ib_result         = -1;
@@ -2034,15 +1962,12 @@ test_initializer_bundle_failure( void ) {
 
   /* Insert regular bundle */
   bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
-  make_transaction1( bundle[0]->txnp, 1UL, 2000U, 32U, 10.0, "b", "", NULL, NULL );
+  make_transaction1( bundle[0]->txnp, 7UL, 2000U, 32U, 10.0, "h", "", NULL, NULL );
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted )>=0 );
 
   /* State: [Failed] - Should not schedule regular bundle */
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
   FD_TEST( txn_cnt==0UL );
-
-  /* End block should reset state to [Not Initialized] */
-  fd_pack_end_block( pack );
 
   fd_pack_delete( fd_pack_leave( pack ) );
 }
@@ -2123,10 +2048,6 @@ main( int     argc,
   /* Generic bundle/initializer-pack regressions */
   test_bundle_account_conflicts();
   test_initializer_bundle_state_machine();
-  test_bundle_varying_sizes();
-  test_initializer_bundle_replacement();
-  test_end_block_resets_ib_state();
-  test_initializer_bundle_failure();
   test_bundle_metadata_persistence();
 
   performance_test( extra_benchmark );

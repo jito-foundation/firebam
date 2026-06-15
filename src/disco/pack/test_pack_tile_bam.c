@@ -332,6 +332,35 @@ test_pack_tile_mark_bam_work_scheduled( test_pack_tile_harness_t * h,
   return item;
 }
 
+static ulong
+test_pack_tile_prepare_resolv_frag( test_pack_tile_harness_t * h,
+                                    uchar *                    resolved_buf,
+                                    uchar const *              payload,
+                                    ulong                      payload_sz,
+                                    uchar                      source_tpu,
+                                    ulong                      slot ) {
+  fd_memset( resolved_buf, 0, FD_TPU_RESOLVED_MTU );
+
+  fd_txn_m_t * txnm = (fd_txn_m_t *)resolved_buf;
+  txnm->reference_slot = slot;
+  txnm->payload_sz     = (ushort)payload_sz;
+  txnm->source_tpu     = source_tpu;
+  fd_memcpy( fd_txn_m_payload( txnm ), payload, payload_sz );
+
+  fd_txn_t * txn      = fd_txn_m_txn_t( txnm );
+  ulong      txn_t_sz = fd_txn_parse( fd_txn_m_payload( txnm ), payload_sz, txn, NULL );
+  FD_TEST( txn_t_sz );
+  txnm->txn_t_sz = (ushort)txn_t_sz;
+
+  ulong sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
+  h->ctx->in_kind[ 0 ]   = IN_KIND_RESOLV;
+  h->ctx->in[ 0 ].mem    = (fd_wksp_t *)resolved_buf;
+  h->ctx->in[ 0 ].chunk0 = 0UL;
+  h->ctx->in[ 0 ].wmark  = (sz + FD_CHUNK_SZ - 1UL) >> FD_CHUNK_LG_SZ;
+  h->ctx->leader_slot    = slot;
+  return sz;
+}
+
 static void
 test_pack_tile_bam_override_allows_votes_only_from_normal_ingress( void ) {
   test_pack_tile_harness_t h[1];
@@ -354,26 +383,12 @@ test_pack_tile_bam_override_allows_votes_only_from_normal_ingress( void ) {
 
   ulong expected_insert_cnt = 0UL;
   for( ulong i=0UL; i<sizeof(cases)/sizeof(cases[0]); i++ ) {
-    fd_memset( resolved_buf, 0, FD_TPU_RESOLVED_MTU );
+    ulong sz = test_pack_tile_prepare_resolv_frag( h, resolved_buf, cases[ i ].payload, cases[ i ].payload_sz, cases[ i ].source_tpu, 100UL );
 
     fd_txn_m_t * txnm = (fd_txn_m_t *)resolved_buf;
-    txnm->reference_slot = 100UL;
-    txnm->payload_sz     = (ushort)cases[ i ].payload_sz;
-    txnm->source_tpu     = cases[ i ].source_tpu;
-    fd_memcpy( fd_txn_m_payload( txnm ), cases[ i ].payload, cases[ i ].payload_sz );
-
-    fd_txn_t * txn      = fd_txn_m_txn_t( txnm );
-    ulong      txn_t_sz = fd_txn_parse( fd_txn_m_payload( txnm ), cases[ i ].payload_sz, txn, NULL );
-    FD_TEST( txn_t_sz );
-    txnm->txn_t_sz = (ushort)txn_t_sz;
+    fd_txn_t *   txn  = fd_txn_m_txn_t( txnm );
     FD_TEST( fd_txn_is_simple_vote_transaction( txn, fd_txn_m_payload( txnm ) )==cases[ i ].is_vote );
 
-    ulong sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
-    h->ctx->in_kind[ 0 ]               = IN_KIND_RESOLV;
-    h->ctx->in[ 0 ].mem                = (fd_wksp_t *)resolved_buf;
-    h->ctx->in[ 0 ].chunk0             = 0UL;
-    h->ctx->in[ 0 ].wmark              = (sz + FD_CHUNK_SZ - 1UL) >> FD_CHUNK_LG_SZ;
-    h->ctx->leader_slot                = 100UL;
     h->ctx->bam_status_fseq            = &bam_status_fseq;
     h->ctx->current_bundle->bundle     = NULL;
     h->ctx->current_bundle_bam->is_bam = 0;
@@ -411,25 +426,7 @@ test_pack_tile_bam_override_after_frag_preserves_votes_only( void ) {
     ulong                    bam_status_fseq = 0UL;
 
     test_pack_tile_harness_new( h );
-    fd_memset( resolved_buf, 0, FD_TPU_RESOLVED_MTU );
-
-    fd_txn_m_t * txnm = (fd_txn_m_t *)resolved_buf;
-    txnm->reference_slot = 100UL;
-    txnm->payload_sz     = (ushort)cases[ i ].payload_sz;
-    txnm->source_tpu     = FD_TXN_M_TPU_SOURCE_QUIC;
-    fd_memcpy( fd_txn_m_payload( txnm ), cases[ i ].payload, cases[ i ].payload_sz );
-
-    fd_txn_t * txn      = fd_txn_m_txn_t( txnm );
-    ulong      txn_t_sz = fd_txn_parse( fd_txn_m_payload( txnm ), cases[ i ].payload_sz, txn, NULL );
-    FD_TEST( txn_t_sz );
-    txnm->txn_t_sz = (ushort)txn_t_sz;
-
-    ulong sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
-    h->ctx->in_kind[ 0 ]    = IN_KIND_RESOLV;
-    h->ctx->in[ 0 ].mem     = (fd_wksp_t *)resolved_buf;
-    h->ctx->in[ 0 ].chunk0  = 0UL;
-    h->ctx->in[ 0 ].wmark   = (sz + FD_CHUNK_SZ - 1UL) >> FD_CHUNK_LG_SZ;
-    h->ctx->leader_slot     = 100UL;
+    ulong sz = test_pack_tile_prepare_resolv_frag( h, resolved_buf, cases[ i ].payload, cases[ i ].payload_sz, FD_TXN_M_TPU_SOURCE_QUIC, 100UL );
     h->ctx->bam_status_fseq = &bam_status_fseq;
 
     during_frag( h->ctx, 0UL, 0UL, 100UL, 0UL, sz, 0UL );
@@ -454,27 +451,12 @@ test_pack_tile_bam_override_drops_block_engine_bundles( void ) {
   ulong                    bam_status_fseq = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
 
   test_pack_tile_harness_new( h );
-  fd_memset( resolved_buf, 0, FD_TPU_RESOLVED_MTU );
+  ulong sz = test_pack_tile_prepare_resolv_frag( h, resolved_buf, test_pack_tile_non_vote, test_pack_tile_non_vote_sz, FD_TXN_M_TPU_SOURCE_BUNDLE, 100UL );
 
   fd_txn_m_t * txnm = (fd_txn_m_t *)resolved_buf;
-  txnm->reference_slot = 100UL;
-  txnm->payload_sz     = (ushort)test_pack_tile_non_vote_sz;
-  txnm->source_tpu     = FD_TXN_M_TPU_SOURCE_BUNDLE;
   txnm->block_engine.bundle_id      = 44UL;
   txnm->block_engine.bundle_txn_cnt = 2UL;
-  fd_memcpy( fd_txn_m_payload( txnm ), test_pack_tile_non_vote, test_pack_tile_non_vote_sz );
 
-  fd_txn_t * txn = fd_txn_m_txn_t( txnm );
-  ulong txn_t_sz = fd_txn_parse( fd_txn_m_payload( txnm ), test_pack_tile_non_vote_sz, txn, NULL );
-  FD_TEST( txn_t_sz );
-  txnm->txn_t_sz = (ushort)txn_t_sz;
-
-  ulong sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
-  h->ctx->in_kind[ 0 ]    = IN_KIND_RESOLV;
-  h->ctx->in[ 0 ].mem     = (fd_wksp_t *)resolved_buf;
-  h->ctx->in[ 0 ].chunk0  = 0UL;
-  h->ctx->in[ 0 ].wmark   = (sz + FD_CHUNK_SZ - 1UL) >> FD_CHUNK_LG_SZ;
-  h->ctx->leader_slot     = 100UL;
   h->ctx->bam_status_fseq = &bam_status_fseq;
 
   h->ctx->current_bundle->id           = 43UL;
@@ -610,23 +592,15 @@ test_pack_tile_bam_stale_results_drain_without_drop( void ) {
   FD_TEST( h->ctx->bam_pending_work_cnt == 0UL );
   FD_TEST( h->ctx->bam_pending_result_cnt == 3UL );
 
-  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
-  test_pack_tile_assert_last_result( h, 100U, 100UL, 1U, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, 0U );
-  FD_TEST( h->out->seqs[ 0 ] == 1UL );
-  FD_TEST( h->ctx->bam_pending_result_cnt == 2UL );
+  for( uchar i=0U; i<3U; i++ ) {
+    if( FD_LIKELY( i ) ) h->ctx->bam_result_publish_cnt = 0UL;
+    FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+    test_pack_tile_assert_last_result( h, (uint)( 100U + i ), 100UL, 1U, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, 0U );
+    FD_TEST( h->out->seqs[ 0 ] == (ulong)i + 1UL );
+    FD_TEST( h->ctx->bam_pending_result_cnt == 2UL - (ulong)i );
+  }
 
-  h->ctx->bam_result_publish_cnt = 0UL;
-  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
-  test_pack_tile_assert_last_result( h, 101U, 100UL, 1U, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, 0U );
-  FD_TEST( h->out->seqs[ 0 ] == 2UL );
-  FD_TEST( h->ctx->bam_pending_result_cnt == 1UL );
-
-  h->ctx->bam_result_publish_cnt = 0UL;
-  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
-  test_pack_tile_assert_last_result( h, 102U, 100UL, 1U, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, 0U );
-  FD_TEST( h->out->seqs[ 0 ] == 3UL );
   FD_TEST( h->ctx->bam_work_cnt == 0UL );
-  FD_TEST( h->ctx->bam_pending_result_cnt == 0UL );
 
   test_pack_tile_harness_delete( h );
 }

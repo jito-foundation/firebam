@@ -347,7 +347,7 @@ bam_fuzz_pack_new( fd_wksp_t * wksp,
   memset( h->ctx->metric_timing, '\0', sizeof(h->ctx->metric_timing) );
   memset( h->ctx->current_bundle, '\0', sizeof(h->ctx->current_bundle) );
   memset( h->ctx->current_bundle_bam, '\0', sizeof(h->ctx->current_bundle_bam) );
-  memset( h->ctx->bundle_meta, '\0', sizeof(h->ctx->bundle_meta) );
+  memset( h->ctx->blk_engine_cfg, '\0', sizeof(h->ctx->blk_engine_cfg) );
   memset( h->ctx->last_sched_metrics, '\0', sizeof(h->ctx->last_sched_metrics) );
   memset( h->ctx->start_block_sched_metrics, '\0', sizeof(h->ctx->start_block_sched_metrics) );
   memset( h->ctx->crank, '\0', sizeof(h->ctx->crank) );
