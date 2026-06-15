@@ -5,6 +5,7 @@
 #include "../platform/fd_net_util.h"
 #include "../platform/fd_sys_util.h"
 #include "../../ballet/toml/fd_toml.h"
+#include "../../disco/bam/fd_bam_types.h"
 #include "../../disco/genesis/fd_genesis_cluster.h"
 
 #include <unistd.h>
@@ -553,6 +554,11 @@ fd_config_validate( fd_config_t const * config ) {
 
   CFG_HAS_NON_ZERO( tiles.verify.signature_cache_size );
   CFG_HAS_NON_ZERO( tiles.verify.receive_buffer_size );
+  if( FD_UNLIKELY( config->tiles.bam.enabled &&
+                   config->tiles.verify.receive_buffer_size < FD_BAM_STEM_BURST ) ) {
+    FD_LOG_ERR(( "`tiles.verify.receive_buffer_size` must be at least %lu when `tiles.bam.enabled` is true",
+                 FD_BAM_STEM_BURST ));
+  }
 
   CFG_HAS_NON_ZERO( tiles.dedup.signature_cache_size );
 
@@ -569,6 +575,11 @@ fd_config_validate( fd_config_t const * config ) {
     FD_LOG_ERR(( "`tiles.bundle.keepalive_interval_millis` must be in range [3000, 3,600,000]" ));
   }
 
+  if( FD_UNLIKELY( config->tiles.bam.keepalive_interval_millis <    3000 ||
+                   config->tiles.bam.keepalive_interval_millis > 3600000 ) ) {
+    FD_LOG_ERR(( "`tiles.bam.keepalive_interval_millis` must be in range [3000, 3,600,000]" ));
+  }
+
   CFG_HAS_NON_EMPTY( development.core_dump );
 
   CFG_HAS_NON_ZERO( development.genesis.target_tick_duration_micros );
@@ -581,6 +592,7 @@ fd_config_validate( fd_config_t const * config ) {
   CFG_HAS_NON_EMPTY( development.bench.affinity );
 
   CFG_HAS_NON_ZERO( development.bundle.ssl_heap_size_mib );
+  CFG_HAS_NON_ZERO( development.bam.ssl_heap_size_mib );
 }
 
 #undef CFG_HAS_NON_EMPTY

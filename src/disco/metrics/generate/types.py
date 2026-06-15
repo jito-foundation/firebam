@@ -38,6 +38,7 @@ class Tile(Enum):
     GUI = 37
     METRIC = 38
     RPC = 39
+    BAM = 40
 
     RESOLH = 100
     BANK = 101
@@ -89,8 +90,9 @@ class CounterMetric(Metric):
         self.converter = converter
 
 class GaugeMetric(Metric):
-    def __init__(self, name: str, tile: Optional[Tile], description: str):
+    def __init__(self, name: str, tile: Optional[Tile], description: str, converter: HistogramConverter = HistogramConverter.NONE):
         super().__init__(MetricType.GAUGE, name, tile, description)
+        self.converter = converter
 
 class HistogramMetric(Metric):
     def __init__(self, name: str, tile: Optional[Tile], description: str, converter: HistogramConverter, min: str, max: str):
@@ -117,10 +119,11 @@ class CounterEnumMetric(Metric):
         return len(self.enum.values)
 
 class GaugeEnumMetric(Metric):
-    def __init__(self, name: str, tile: Optional[Tile], description: str, enum: MetricEnum):
+    def __init__(self, name: str, tile: Optional[Tile], description: str, enum: MetricEnum, converter: HistogramConverter = HistogramConverter.NONE):
         super().__init__(MetricType.GAUGE, name, tile, description)
 
         self.enum = enum
+        self.converter = converter
 
     def footprint(self) -> int:
         return 8 * len(self.enum.values)
@@ -168,24 +171,23 @@ def parse_metric(tile: Optional[Tile], metric: ET.Element, enums: Dict[str, Metr
     elif 'summary' in metric.attrib:
         description = metric.attrib['summary']
 
-    if metric.tag == 'counter':
-        converter = HistogramConverter.NONE
-        if 'converter' in metric.attrib:
-            converter_str = metric.attrib['converter'].upper()
-            if converter_str in HistogramConverter.__members__:
-                converter = HistogramConverter[converter_str]
+    converter = HistogramConverter.NONE
+    if 'converter' in metric.attrib:
+        converter_str = metric.attrib['converter'].upper()
+        if converter_str in HistogramConverter.__members__:
+            converter = HistogramConverter[converter_str]
 
+    if metric.tag == 'counter':
         if 'enum' in metric.attrib:
             return CounterEnumMetric(name, tile, description, enums[metric.attrib['enum']], converter)
         else:
             return CounterMetric(name, tile, description, converter)
     elif metric.tag == 'gauge':
         if 'enum' in metric.attrib:
-            return GaugeEnumMetric(name, tile, description, enums[metric.attrib['enum']])
+            return GaugeEnumMetric(name, tile, description, enums[metric.attrib['enum']], converter)
         else:
-            return GaugeMetric(name, tile, description)
+            return GaugeMetric(name, tile, description, converter)
     elif metric.tag == 'histogram':
-        converter = None
         if 'converter' in metric.attrib:
             converter = HistogramConverter[metric.attrib['converter'].upper()]
         else:

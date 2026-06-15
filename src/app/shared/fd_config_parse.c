@@ -227,6 +227,12 @@ fd_config_extract_pod( uchar *       pod,
   CFG_POP      ( ulong,  tiles.bundle.keepalive_interval_millis           );
   CFG_POP      ( bool,   tiles.bundle.tls_cert_verify                     );
 
+  CFG_POP      ( bool,   tiles.bam.enabled                                );
+  CFG_POP      ( cstr,   tiles.bam.url                                    );
+  CFG_POP      ( cstr,   tiles.bam.tls_domain_name                        );
+  CFG_POP      ( ulong,  tiles.bam.keepalive_interval_millis              );
+  CFG_POP      ( bool,   tiles.bam.tls_cert_verify                        );
+
   CFG_POP      ( uint,   tiles.pack.max_pending_transactions              );
   CFG_POP      ( bool,   tiles.pack.use_consumed_cus                      );
   CFG_POP      ( cstr,   tiles.pack.schedule_strategy                     );
@@ -311,6 +317,12 @@ fd_config_extract_pod( uchar *       pod,
 
   CFG_POP      ( bool,   development.event.report_shreds                  );
   CFG_POP      ( bool,   development.event.report_transactions            );
+
+  CFG_POP      ( cstr,   development.bam.ssl_key_log_file                 );
+  CFG_POP      ( uint,   development.bam.buffer_size_kib                  );
+  CFG_POP      ( uint,   development.bam.ssl_heap_size_mib                );
+  CFG_POP      ( bool,   development.bam.dump_bam_txns                    );
+  CFG_POP      ( bool,   development.bam.dump_bam_slot_first_txn          );
 
   CFG_POP      ( cstr,   development.pktgen.affinity                      );
   CFG_POP      ( cstr,   development.pktgen.fake_dst_ip                   );

@@ -1,7 +1,10 @@
 #include "test_bundle_common.c"
+#include "fd_bundle_tile.h"
 #include "proto/block_engine.pb.h"
+#include "../bam/fd_bam_types.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../ballet/nanopb/pb_encode.h"
+#include "../../tango/fseq/fd_fseq.h"
 #include "../../util/tmpl/fd_unit_test.c"
 
 FD_IMPORT_BINARY( test_bundle_response, "src/disco/bundle/test_bundle_response.binpb" );
@@ -401,6 +404,63 @@ FD_UNIT_TEST( bundle_keyswitch ) {
 
   test_bundle_env_destroy( env );
   fd_wksp_free_laddr( keyswitch_mem );
+}
+
+FD_UNIT_TEST( bundle_bam_active_pause_resume ) {
+  test_bundle_env_t env[1];
+  test_bundle_env_create( env, wksp );
+  test_bundle_env_mock_conn( env );
+  fd_bundle_tile_t * state = env->state;
+
+  fd_keyswitch_t keyswitch = {0};
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  state->keyswitch = &keyswitch;
+
+  uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  fd_memset( fseq_mem, 0, sizeof(fseq_mem) );
+  void * fseq_shmem = fd_fseq_new( fseq_mem, 0UL );
+  FD_TEST( fseq_shmem );
+  ulong * fseq = fd_fseq_join( fseq_shmem );
+  FD_TEST( fseq );
+  state->bam_status_fseq = fseq;
+
+  state->bundle_status_plugin = FD_BUNDLE_STATE_CONNECTED;
+  state->bundle_status_recent = FD_BUNDLE_STATE_CONNECTED;
+  state->bundle_status_logged = FD_BUNDLE_STATE_CONNECTED;
+  pending_txn_push_tail( state->pending_txns, (fd_bundle_pending_txn_t){ .sig=0UL, .bundle_seq=0UL } );
+  FD_TEST( !pending_txn_empty( state->pending_txns ) );
+
+  long before_pause = fd_log_wallclock();
+  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  fd_bundle_tile_housekeeping( state );
+
+  FD_TEST( state->bam_override_active );
+  FD_TEST( state->tcp_sock == -1 );
+  FD_TEST( state->tcp_sock_connected == 0 );
+  FD_TEST( state->bundle_status_plugin == 127 );
+  FD_TEST( state->bundle_status_recent == FD_BUNDLE_STATE_DISCONNECTED );
+  FD_TEST( state->bundle_status_logged == FD_BUNDLE_STATE_DISCONNECTED );
+  FD_TEST( state->last_bundle_status_log_nanos >= before_pause );
+  FD_TEST( pending_txn_empty( state->pending_txns ) );
+
+  state->backoff_until = fd_log_wallclock() + (long)30e9;
+  state->defer_reset = 1;
+  state->last_bundle_status_log_nanos = fd_log_wallclock() - (long)31e9;
+
+  long before_resume = fd_log_wallclock();
+  fd_fseq_update( fseq, 0UL );
+  fd_bundle_tile_housekeeping( state );
+
+  FD_TEST( !state->bam_override_active );
+  FD_TEST( state->backoff_until == 0L );
+  FD_TEST( state->defer_reset == 0 );
+  FD_TEST( state->last_bundle_status_log_nanos >= before_resume );
+
+  FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
+  FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
+  state->bam_status_fseq = NULL;
+  state->keyswitch = NULL;
+  test_bundle_env_destroy( env );
 }
 
 /* Verify that the bundle client status is reported correctly */
