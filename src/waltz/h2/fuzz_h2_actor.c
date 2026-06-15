@@ -118,28 +118,6 @@ fuzz_u32( fuzz_cursor_t * cur ) {
   return v;
 }
 
-static void
-fuzz_validate_rbuf( fd_h2_rbuf_t const * rbuf ) {
-  FD_TEST( rbuf );
-  FD_TEST( rbuf->buf0 );
-  FD_TEST( rbuf->buf1 );
-  FD_TEST( rbuf->buf0 < rbuf->buf1 );
-  FD_TEST( rbuf->bufsz == (ulong)( rbuf->buf1-rbuf->buf0 ) );
-  FD_TEST( rbuf->lo >= rbuf->buf0 );
-  FD_TEST( rbuf->lo <  rbuf->buf1 );
-  FD_TEST( rbuf->hi >= rbuf->buf0 );
-  FD_TEST( rbuf->hi <  rbuf->buf1 );
-  FD_TEST( rbuf->lo_off <= rbuf->hi_off );
-
-  ulong used_sz = fd_h2_rbuf_used_sz( rbuf );
-  ulong free_sz = fd_h2_rbuf_free_sz( rbuf );
-  FD_TEST( used_sz <= rbuf->bufsz );
-  FD_TEST( free_sz <= rbuf->bufsz );
-  FD_TEST( used_sz+free_sz == rbuf->bufsz );
-  FD_TEST( (ulong)( rbuf->lo-rbuf->buf0 ) == rbuf->lo_off % rbuf->bufsz );
-  FD_TEST( (ulong)( rbuf->hi-rbuf->buf0 ) == rbuf->hi_off % rbuf->bufsz );
-}
-
 static inline fuzz_endpoint_t *
 fuzz_ep_from_actor( uchar actor ) {
   return actor==FUZZ_ACTOR_SERVER ? g_server : g_client;
@@ -373,8 +351,8 @@ fuzz_decode_program( fuzz_cursor_t *  cur,
 
 static void
 fuzz_validate_endpoint( fuzz_endpoint_t * ep ) {
-  fuzz_validate_rbuf( ep->rbuf_rx );
-  fuzz_validate_rbuf( ep->rbuf_tx );
+  fd_h2_rbuf_validate_private( ep->rbuf_rx );
+  fd_h2_rbuf_validate_private( ep->rbuf_tx );
 
   FD_TEST( !ep->conn_mem->tx_frame_p );
   FD_TEST( ep->conn_final_cnt <= 1UL );

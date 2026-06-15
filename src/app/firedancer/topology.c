@@ -840,7 +840,9 @@ fd_topo_initialize( config_t * config ) {
     FOR(verify_tile_cnt) fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     execle_tile_cnt+i, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
     FOR(resolv_tile_cnt) fd_topob_tile_out( topo, "resolv", i,                          "bank_bam",     execle_tile_cnt+verify_tile_cnt+i                    );
     FOR(resolv_tile_cnt) fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     execle_tile_cnt+verify_tile_cnt+i, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
-    if( leader_enabled ) fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "replay_out",   0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
+    if( leader_enabled ) {
+      /**/               fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "replay_out",   0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
+    }
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_shred",    0UL                                                );
     FOR(shred_tile_cnt)  fd_topob_tile_in(  topo, "shred",  i,             "metric_in", "bam_shred",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
 
