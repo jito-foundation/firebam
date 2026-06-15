@@ -36,19 +36,6 @@ typedef struct {
 #define FD_GOSSIP_LINK_MSG_SIZE    (58U + FD_GOSSIP_UPDATE_MSG_NUM_SOCKETS * 6U)
 #define FD_VALIDATOR_INFO_MSG_SIZE (          608U)
 
-#define FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE           (14UL)
-
-#define FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_DISCONNECTED (0)
-#define FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTING   (1)
-#define FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_CONNECTED    (2)
-
-typedef struct {
-  char name[ 16 ];
-  char url[ FD_URL_MAX ];
-  char ip_cstr[ 40 ]; /* IPv4 or IPv6 cstr */
-  int status;
-} fd_plugin_msg_block_engine_update_t;
-
 #define FD_PLUGIN_MSG_BAM_UPDATE                    (15UL)
 
 typedef enum {

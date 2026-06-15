@@ -3294,17 +3294,6 @@ fd_gui_plugin_message( fd_gui_t *   gui,
       fd_gui_handle_genesis_hash( gui, msg );
       break;
     }
-    case FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE: {
-      fd_plugin_msg_block_engine_update_t const * update = (fd_plugin_msg_block_engine_update_t const *)msg;
-      gui->block_engine.has_block_engine = 1;
-      fd_cstr_ncpy( gui->block_engine.name,    update->name,    sizeof(gui->block_engine.name   ) );
-      fd_cstr_ncpy( gui->block_engine.url,     update->url,     sizeof(gui->block_engine.url    ) );
-      fd_cstr_ncpy( gui->block_engine.ip_cstr, update->ip_cstr, sizeof(gui->block_engine.ip_cstr) );
-      gui->block_engine.status = update->status;
-      fd_gui_printf_block_engine( gui );
-      fd_http_server_ws_broadcast( gui->http );
-      break;
-    }
     case FD_PLUGIN_MSG_BAM_UPDATE: {
       fd_gui_handle_bam_update( gui, msg );
       break;

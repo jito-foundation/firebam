@@ -6,7 +6,6 @@
 #include "../metrics/fd_metrics.h"
 #include "../topo/fd_topo.h"
 #include "../keyguard/fd_keyload.h"
-#include "../../discoh/plugin/fd_plugin.h"
 #include "../../util/pod/fd_pod.h"
 #include "../../tango/fseq/fd_fseq.h"
 #include "../../waltz/http/fd_url.h"
@@ -153,7 +152,7 @@ fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
     ctx->last_bundle_status_log_nanos = now_ns;
     if( bam_active ) {
       fd_bundle_client_reset( ctx );
-      while( FD_UNLIKELY( ctx->pending_txns && !pending_txn_empty( ctx->pending_txns ) ) )
+      while( FD_UNLIKELY( !pending_txn_empty( ctx->pending_txns ) ) )
         pending_txn_remove_head( ctx->pending_txns );
       ctx->bundle_status_plugin = 127;
       ctx->bundle_status_recent = FD_BUNDLE_STATE_DISCONNECTED;
@@ -219,42 +218,6 @@ fd_bundle_tile_publish_block_engine_update(
       tspub
   );
   ctx->plugin_out.chunk = fd_dcache_compact_next( ctx->plugin_out.chunk, sizeof(fd_bundle_block_engine_update_t), ctx->plugin_out.chunk0, ctx->plugin_out.wmark );
-}
-
-static void
-fd_bundle_tile_publish_plugin_block_engine_update(
-    fd_bundle_tile_t *  ctx,
-    fd_stem_context_t * stem
-) {
-  fd_plugin_msg_block_engine_update_t * update =
-      fd_chunk_to_laddr( ctx->plugin_msg_out.mem, ctx->plugin_msg_out.chunk );
-  memset( update, 0, sizeof(fd_plugin_msg_block_engine_update_t) );
-
-  strncpy( update->name, "jito", sizeof(update->name) );
-
-  snprintf( update->url, sizeof(update->url), "%s://%.*s:%u",
-            ctx->is_ssl ? "https" : "http",
-            (int)ctx->server_fqdn_len,
-            ctx->server_fqdn,
-            ctx->server_tcp_port );
-
-  snprintf( update->ip_cstr, sizeof(update->ip_cstr),
-            FD_IP4_ADDR_FMT,
-            FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ) );
-
-  update->status = (int)ctx->bundle_status_recent;
-
-  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_bundle_now() );
-  fd_stem_publish(
-      stem,
-      ctx->plugin_msg_out.idx,
-      FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE,
-      ctx->plugin_msg_out.chunk,
-      sizeof(fd_plugin_msg_block_engine_update_t),
-      0UL,
-      0UL,
-      tspub );
-  ctx->plugin_msg_out.chunk = fd_dcache_compact_next( ctx->plugin_msg_out.chunk, sizeof(fd_plugin_msg_block_engine_update_t), ctx->plugin_msg_out.chunk0, ctx->plugin_msg_out.wmark );
 }
 
 static void
@@ -360,10 +323,9 @@ after_credit( fd_bundle_tile_t *  ctx,
     *opt_poll_in = 0;
   }
 
-  if( ctx->plugin_out.mem || ctx->plugin_msg_out.mem ) {
+  if( ctx->plugin_out.mem ) {
     if( FD_UNLIKELY( ctx->bundle_status_recent != ctx->bundle_status_plugin ) ) {
-      if( ctx->plugin_out.mem     ) fd_bundle_tile_publish_block_engine_update( ctx, stem );
-      if( ctx->plugin_msg_out.mem ) fd_bundle_tile_publish_plugin_block_engine_update( ctx, stem );
+      fd_bundle_tile_publish_block_engine_update( ctx, stem );
       ctx->bundle_status_plugin = (uchar)ctx->bundle_status_recent;
       *charge_busy = 1;
     }
@@ -588,14 +550,6 @@ unprivileged_init( fd_topo_t const *      topo,
     ctx->plugin_out = (fd_bundle_out_ctx_t){ .idx=ULONG_MAX };
   }
 
-  ulong plugin_msg_out_idx = fd_topo_find_tile_out_link( topo, tile, "bundle_plugi", tile->kind_id );
-  if( plugin_msg_out_idx!=ULONG_MAX ) {
-    ctx->plugin_msg_out = bundle_out_link( topo, &topo->links[ tile->out_link_id[ plugin_msg_out_idx ] ], plugin_msg_out_idx );
-  } else {
-    ctx->plugin_msg_out = (fd_bundle_out_ctx_t){ .idx=ULONG_MAX };
-  }
-
-  /* Init BAM override fields. Bundle tile should disconnect when BAM is active */
   ulong bam_status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
   if( FD_LIKELY( bam_status_obj_id!=ULONG_MAX ) ) {
     ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
