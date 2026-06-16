@@ -26,7 +26,7 @@ FD_STATIC_ASSERT( TEST_BAM_RESOLVE_BAM_OUT_IDX < TEST_BAM_RESOLVE_OUT_CNT,
                   test_bam_resolve_bam_out_idx );
 
 typedef struct {
-  TEST_BAM_RESOLVE_CTX_T ctx[1];
+  TEST_BAM_RESOLVE_CTX_T * ctx;
 
   uchar pack_dcache[ TEST_DCACHE_CHUNKS*FD_CHUNK_SZ ] __attribute__((aligned(FD_CHUNK_ALIGN)));
 #if TEST_BAM_RESOLVE_HAS_REPLAY
@@ -66,6 +66,7 @@ test_alloc( ulong align,
 
 static void
 test_harness_delete( test_harness_t * h ) {
+  free( h->ctx );
   free( h->map_chain_mem );
   free( h->pool_mem );
   free( h->map_mem );
@@ -76,6 +77,7 @@ static void
 test_harness_new( test_harness_t * h ) {
   fd_memset( h, 0, sizeof(test_harness_t) );
 
+  h->ctx           = test_alloc( alignof(TEST_BAM_RESOLVE_CTX_T), sizeof(TEST_BAM_RESOLVE_CTX_T) );
   h->map_mem       = test_alloc( map_align(),       map_footprint()            );
   h->pool_mem      = test_alloc( pool_align(),      pool_footprint( 4UL )      );
   h->map_chain_mem = test_alloc( map_chain_align(), map_chain_footprint( 8UL ) );

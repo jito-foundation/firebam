@@ -48,9 +48,7 @@ static const blockhash_t null_blockhash = { 0 };
    history.  Beyond this, the validator is likely to be restarted, and
    lose the history anyway. */
 
-#ifndef BLOCKHASH_LG_RING_CNT
 #define BLOCKHASH_LG_RING_CNT 22UL
-#endif
 #define BLOCKHASH_RING_LEN   (1UL<<BLOCKHASH_LG_RING_CNT)
 
 #define MAP_NAME              map
