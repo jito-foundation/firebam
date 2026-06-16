@@ -2,7 +2,6 @@
 
 #include "../../disco/tiles.h"
 #include "../../disco/fd_txn_m.h"
-#include "../../disco/bam/fd_bam_types.h"
 #include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/pack/fd_pack.h"
 #include "../../disco/pack/fd_pack_cost.h"
@@ -280,47 +279,56 @@ handle_microblock( fd_execle_tile_t *  ctx,
 
     _Bool bam_independent = txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txn->bam.revert_on_error;
     fd_bam_bundle_result_t bam_res[1];
-    if( FD_UNLIKELY( bam_independent ) ) {
-      *bam_res = fd_bam_result_base( txn->bam.seq_id, txn->bam.scheduler_gen, slot, 1U );
-    }
+    if( FD_UNLIKELY( bam_independent ) ) *bam_res = fd_bam_result_base( txn->bam.seq_id, txn->bam.scheduler_gen, slot, 1U );
 
     /* Stash the result in the flags value so that pack can inspect it. */
     txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-txn_out->err.txn_err)<<24);
 
-    int drop_txn = !txn_out->err.is_committable;
-    if( FD_UNLIKELY( drop_txn ) ) FD_TEST( !txn_out->err.is_fees_only );
+    if( FD_UNLIKELY( !txn_out->err.is_committable ) ) {
+      FD_TEST( !txn_out->err.is_fees_only );
+      if( FD_UNLIKELY( bam_independent ) ) {
+        bam_res->execution_success = 0U;
+        fd_bam_result_add_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
+        bam_fill_txn_result( bam_res, 0UL, txn_out );
+        publish_bam_result( ctx, stem, bam_res );
+      }
+      fd_runtime_cancel_txn( ctx->runtime, txn_out );
+      /* Use pre-resolved ALT accounts for rebates even for unlanded transactions */
+      fd_acct_addr_t const * writable_alt = ctx->_alt_accts[i];
+      if( FD_LIKELY( ctx->enable_rebates ) ) fd_pack_rebate_sum_add_txn( ctx->rebater, txn, &writable_alt, 1UL );
+      ctx->metrics.txn_landed[ FD_METRICS_ENUM_TRANSACTION_LANDED_V_UNLANDED_IDX ]++;
+      ctx->metrics.txn_result[ fd_execle_err_from_runtime_err( txn_out->err.txn_err ) ]++;
+      continue;
+    }
 
     /* Check for FeesOnly transactions where actual CUs exceed
        requested.  This can happen for durable nonce transactions
        with oversized nonce accounts.  Skip the commit to prevent
        underflow in the rebate computation.  The transaction keeps its
        default full rebate set at the top of the loop. */
-    if( FD_UNLIKELY( !drop_txn && txn_out->err.is_fees_only ) ) {
+    if( FD_UNLIKELY( txn_out->err.is_fees_only ) ) {
       uint fee_only_actual_exec_cus = (uint)(txn_out->details.compute_budget.compute_unit_limit - txn_out->details.compute_budget.compute_meter);
       uint fee_only_actual_data_cus = (uint)(txn_out->details.txn_cost.transaction.loaded_accounts_data_size_cost);
       if( FD_UNLIKELY( fee_only_actual_exec_cus + fee_only_actual_data_cus > requested_exec_plus_acct_data_cus ) ) {
         FD_LOG_WARNING(( "FeesOnly txn actual CUs (%u+%u) exceed requested (%u), dropping",
                          fee_only_actual_exec_cus, fee_only_actual_data_cus, requested_exec_plus_acct_data_cus ));
         txn_out->err.is_committable = 0;
-        drop_txn = 1;
+        if( FD_UNLIKELY( bam_independent ) ) {
+          bam_res->execution_success = 0U;
+          fd_bam_result_add_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
+          bam_fill_txn_result( bam_res, 0UL, txn_out );
+          publish_bam_result( ctx, stem, bam_res );
+        }
+        fd_runtime_cancel_txn( ctx->runtime, txn_out );
+        /* txn->execle_cu already initialized to full rebate at top of loop */
+        fd_acct_addr_t const * writable_alt = ctx->_alt_accts[i];
+        if( FD_LIKELY( ctx->enable_rebates ) ) fd_pack_rebate_sum_add_txn( ctx->rebater, txn, &writable_alt, 1UL );
+        ctx->metrics.txn_landed[ FD_METRICS_ENUM_TRANSACTION_LANDED_V_UNLANDED_IDX ]++;
+        ctx->metrics.txn_result[ fd_execle_err_from_runtime_err( txn_out->err.txn_err ) ]++;
+        /* FD_TXN_P_FLAGS_EXECUTE_SUCCESS = 0 ensures txn won't be
+           mixed-in by POH */
+        continue;
       }
-    }
-
-    if( FD_UNLIKELY( drop_txn ) ) {
-      if( FD_UNLIKELY( bam_independent ) ) {
-        bam_res->execution_success     = 0U;
-        bam_res->transaction_err_count = 1U;
-        fd_bam_result_set_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
-        bam_fill_txn_result( bam_res, 0UL, txn_out );
-        publish_bam_result( ctx, stem, bam_res );
-      }
-      fd_runtime_cancel_txn( ctx->runtime, txn_out );
-      fd_acct_addr_t const * writable_alt = ctx->_alt_accts[i];
-      if( FD_LIKELY( ctx->enable_rebates ) ) fd_pack_rebate_sum_add_txn( ctx->rebater, txn, &writable_alt, 1UL );
-      ctx->metrics.txn_landed[ FD_METRICS_ENUM_TRANSACTION_LANDED_V_UNLANDED_IDX ]++;
-      ctx->metrics.txn_result[ fd_execle_err_from_runtime_err( txn_out->err.txn_err ) ]++;
-      /* FD_TXN_P_FLAGS_EXECUTE_SUCCESS = 0 ensures txn won't be mixed into PoH. */
-      continue;
     }
 
     if( FD_UNLIKELY( txn_out->err.is_fees_only ) ) ctx->metrics.txn_landed[ FD_METRICS_ENUM_TRANSACTION_LANDED_V_LANDED_FEES_ONLY_IDX ]++;
@@ -335,10 +343,8 @@ handle_microblock( fd_execle_tile_t *  ctx,
 
     if( FD_UNLIKELY( bam_independent ) ) {
       bam_res->execution_success = 1U;
-      if( FD_UNLIKELY( txn_out->err.txn_err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
-        bam_res->transaction_err_count = 1U;
-        fd_bam_result_set_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
-      }
+      if( FD_UNLIKELY( txn_out->err.txn_err!=FD_RUNTIME_EXECUTE_SUCCESS ) )
+        fd_bam_result_add_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
       bam_fill_txn_result( bam_res, 0UL, txn_out );
     }
 
@@ -501,9 +507,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
   ulong failed_idx        = ULONG_MAX;
   _Bool is_bam_revert     = !!( txn_cnt && txns->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txns[0].bam.revert_on_error );
   fd_bam_bundle_result_t bam_res[1];
-  if( FD_UNLIKELY( is_bam_revert ) ) {
-    *bam_res = fd_bam_result_base( txns[0].bam.seq_id, txns[0].bam.scheduler_gen, slot, (uchar)txn_cnt );
-  }
+  if( FD_UNLIKELY( is_bam_revert ) ) *bam_res = fd_bam_result_base( txns[0].bam.seq_id, txns[0].bam.scheduler_gen, slot, (uchar)txn_cnt );
 
   /* Every transaction in the bundle should be executed in order against
      different transaciton contexts. */
@@ -612,12 +616,11 @@ handle_bundle( fd_execle_tile_t *  ctx,
     FD_TEST( failed_idx != ULONG_MAX );
     if( FD_UNLIKELY( is_bam_revert ) ) {
       bam_res->execution_success = 0U;
-      bam_res->transaction_err_count = (uchar)txn_cnt;
       _Bool failed_sanitize = ctx->txn_out[ failed_idx ].err.txn_err==FD_RUNTIME_TXN_ERR_SANITIZE_FAILURE;
       for( ulong i=0UL; i<txn_cnt; i++ ) {
         if( FD_LIKELY( i!=failed_idx || !failed_sanitize ) )
           fd_bam_result_mark_sanitize_success( bam_res, i );
-        fd_bam_result_set_txn_error( bam_res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+        fd_bam_result_add_txn_error( bam_res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
       }
       fd_bam_result_set_txn_error( bam_res, failed_idx, fd_bam_txn_err_from_runtime_err( ctx->txn_out[ failed_idx ].err.txn_err ) );
       for( ulong i=0UL; i<=failed_idx; i++ ) bam_fill_txn_result( bam_res, i, &ctx->txn_out[ i ] );
