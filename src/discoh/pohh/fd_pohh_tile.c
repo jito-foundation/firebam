@@ -748,12 +748,13 @@ poh_link_init( poh_link_t *           link,
 static inline CALLED_FROM_RUST ulong
 next_leader_slot( fd_pohh_tile_t * ctx );
 
+/* The fdctl BAM topology consumes pohh replay_out as a reduced hint
+   stream.  Only the fields BAM reads are populated by these publishers. */
 static CALLED_FROM_RUST void
 publish_replay_reset( fd_pohh_tile_t * ctx ) {
   if( FD_UNLIKELY( !replay_out.mem ) ) return;
 
-  ulong completed_slot = ULONG_MAX;
-  if( FD_LIKELY( ctx->reset_slot!=ULONG_MAX && ctx->reset_slot>0UL ) ) completed_slot = ctx->reset_slot-1UL;
+  ulong completed_slot = fd_ulong_if( ctx->reset_slot!=ULONG_MAX && ctx->reset_slot>0UL, ctx->reset_slot-1UL, ULONG_MAX );
 
   fd_poh_reset_t reset[1] = {{
     .bank_idx                  = ULONG_MAX,
@@ -763,8 +764,7 @@ publish_replay_reset( fd_pohh_tile_t * ctx ) {
     .ticks_per_slot            = ctx->ticks_per_slot,
     .tick_duration_ns          = ctx->tick_duration_ns,
     .next_leader_slot          = ctx->next_leader_slot,
-    .max_microblocks_in_slot   = ctx->max_microblocks_per_slot,
-    .wfs_paused                = 0
+    .max_microblocks_in_slot   = ctx->max_microblocks_per_slot
   }};
   memcpy( reset->completed_blockhash, ctx->reset_hash, 32UL );
   if( FD_LIKELY( ctx->parent_slot==reset->completed_slot ) )
@@ -1111,7 +1111,6 @@ publish_became_leader( fd_pohh_tile_t * ctx,
   uchar * dst = (uchar *)fd_chunk_to_laddr( ctx->pack_out->mem, ctx->pack_out->chunk );
 
   fd_became_leader_t * leader = (fd_became_leader_t *)dst;
-  leader->slot                    = slot; // FIXME: check if breaking anything
   leader->slot_start_ns           = slot_start_ns;
   leader->slot_end_ns             = (long)((double)slot_start_ns + ctx->slot_duration_ns);
   leader->bank                    = ctx->current_leader_bank;
@@ -1331,7 +1330,8 @@ maybe_change_identity( fd_pohh_tile_t * ctx,
 }
 
 static CALLED_FROM_RUST void
-no_longer_leader( fd_pohh_tile_t * ctx ) {
+no_longer_leader( fd_pohh_tile_t * ctx,
+                  _Bool           publish_reset ) {
   /* If we acquired a bank for the store tile and never produced its
      block_complete entry, the store tile never gets the chance to
      drop the refcount, so we drop it directly here. */
@@ -1349,7 +1349,7 @@ no_longer_leader( fd_pohh_tile_t * ctx ) {
   ctx->current_leader_bank = NULL;
   int identity_changed = maybe_change_identity( ctx, 1 );
   ctx->next_leader_slot = next_leader_slot( ctx );
-  publish_replay_reset( ctx );
+  if( FD_LIKELY( publish_reset ) ) publish_replay_reset( ctx );
   if( FD_UNLIKELY( identity_changed ) ) {
     FD_LOG_INFO(( "fd_poh_identity_changed(next_leader_slot=%lu)", ctx->next_leader_slot ));
   }
@@ -1440,7 +1440,7 @@ fd_ext_poh_reset( ulong         completed_bank_slot, /* The slot that successful
 
        The order is important here, ctx->hashcnt must be updated before
        calling no_longer_leader. */
-    no_longer_leader( ctx );
+    no_longer_leader( ctx, 0 );
   }
   ctx->next_leader_slot = next_leader_slot( ctx );
   if( FD_LIKELY( replay_out.mem && completed_bank_slot!=ULONG_MAX ) ) {
@@ -1903,7 +1903,7 @@ after_credit( fd_pohh_tile_t *    ctx,
     publish_plugin_slot_end( ctx, ctx->next_leader_slot, ctx->cus_used );
     FD_LOG_INFO(( "fd_poh_ticked_outof_leader(slot=%lu)", ctx->next_leader_slot ));
 
-    no_longer_leader( ctx );
+    no_longer_leader( ctx, 1 );
     ctx->expect_sequential_leader_slot = ctx->slot;
 
     double tick_per_ns = fd_tempo_tick_per_ns( NULL );
@@ -2235,7 +2235,7 @@ after_frag( fd_pohh_tile_t *    ctx,
          the state machine. */
       publish_plugin_slot_end( ctx, ctx->next_leader_slot, ctx->cus_used );
 
-      no_longer_leader( ctx );
+      no_longer_leader( ctx, 1 );
 
       if( FD_UNLIKELY( ctx->slot>=ctx->next_leader_slot ) ) {
         /* We finished a leader slot, and are immediately leader for the
@@ -2471,9 +2471,9 @@ unprivileged_init( fd_topo_t const *      topo,
   poh_link_init( &executed_txn,            topo, tile, out1( topo, tile, "executed_txn" ).idx );
 
   ulong replay_out_idx = fd_topo_find_tile_out_link( topo, tile, "replay_out", 0UL );
-  if( FD_LIKELY( replay_out_idx!=ULONG_MAX ) ) {
+  if( FD_LIKELY( replay_out_idx!=ULONG_MAX ) )
     poh_link_init( &replay_out, topo, tile, replay_out_idx );
-  } else {
+  else {
     FD_COMPILER_MFENCE();
     replay_out.mem    = NULL;
     replay_out.mcache = (fd_frag_meta_t *)1;
