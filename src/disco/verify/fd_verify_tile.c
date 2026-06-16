@@ -1,6 +1,5 @@
 #include "fd_verify_tile.h"
 #include "../fd_txn_m.h"
-#include "../bam/fd_bam_types.h"
 #include "../bam/fd_bam_publish.h"
 #include "../metrics/fd_metrics.h"
 #include "generated/fd_verify_tile_seccomp.h"
@@ -43,7 +42,7 @@ before_frag( fd_verify_ctx_t * ctx,
      regular transaction and should be round-robined between verify
      tiles, while bundles need to go through verify:0 currently to
      prevent interleaving of bundle streams. */
-  int is_bundle_packet = ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE && !sig;
+  int is_bundle_packet = (ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE && !sig);
 
   if( FD_LIKELY( is_bundle_packet || ctx->in_kind[ in_idx ]==IN_KIND_QUIC ) ) {
     return (seq % ctx->round_robin_cnt) != ctx->round_robin_idx;
@@ -115,10 +114,9 @@ after_frag( fd_verify_ctx_t *   ctx,
     FD_LOG_ERR(( "verify: txn payload size %hu exceeds max %lu", txnm->payload_sz, FD_TPU_MTU ));
   }
   fd_txn_t *  txnt = fd_txn_m_txn_t( txnm );
-  int is_bam    = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
-  int is_bundle = !!txnm->block_engine.bundle_id;
-
   txnm->txn_t_sz = (ushort)fd_txn_parse( fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, NULL );
+
+  int is_bundle = !!txnm->block_engine.bundle_id;
 
   if( FD_UNLIKELY( is_bundle & (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
@@ -134,15 +132,10 @@ after_frag( fd_verify_ctx_t *   ctx,
   if( FD_UNLIKELY( !txnm->txn_t_sz ) ) {
     failure_idx = FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_PARSE_FAILURE_IDX;
   } else {
-    /* Users sometimes send transactions as part of a bundle (with a tip)
-       and via the normal path (without a tip).  Regardless of which
-       arrives first, we want to pack the one with the tip.  Thus, we
-       exempt bundles from the normal HA dedup checks.  Likewise, BAM
-       traffic is already sequenced by the BAM node and may legitimately
-       resend signatures, so it bypasses early signature dedup entirely. */
-    int do_sig_dedup = fd_txn_m_use_prepack_sig_dedup( txnm );
+    /* BAM can resend txns that did not land in previous leader slots, so
+       leave duplicate handling to the bundle-aware downstream stages. */
     ulong _txn_sig;
-    int res = fd_txn_verify( ctx, fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, do_sig_dedup, &_txn_sig );
+    int res = fd_txn_verify( ctx, fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, fd_txn_m_use_prepack_sig_dedup( txnm ), &_txn_sig );
     if( FD_UNLIKELY( res!=FD_TXN_VERIFY_SUCCESS ) )
       failure_idx = fd_ulong_if( res==FD_TXN_VERIFY_DEDUP,
                                  FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_DEDUP_FAILURE_IDX,
@@ -151,9 +144,9 @@ after_frag( fd_verify_ctx_t *   ctx,
 
   if( FD_UNLIKELY( failure_idx!=ULONG_MAX ) ) {
     if( FD_UNLIKELY( is_bundle ) ) ctx->bundle_failed = 1;
-    /* BAM batch_idx 0 owns immediate verify failures. Later atomic members
-       leave pack to report the first missing member if the prefix is incomplete. */
-    if( FD_UNLIKELY( is_bam && txnm->bam.batch_idx==0U ) ) {
+    /* For BAM atomic batches, txn 0 owns immediate verify failures; later
+       missing members are reported by pack if the batch prefix is incomplete. */
+    if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.batch_idx==0U ) ) {
       fd_bam_bundle_result_t bam_res = {
         .seq_id           = txnm->bam.seq_id,
         .scheduler_gen    = txnm->bam.scheduler_gen,
@@ -246,20 +239,15 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->out_chunk  = ctx->out_chunk0;
 
   ctx->bam_result_out_idx = ULONG_MAX;
-  ulong bam_result_out_idx = ULONG_MAX;
   for( ulong i=0UL; i<tile->out_cnt; i++ ) {
-    if( !strcmp( topo->links[ tile->out_link_id[ i ] ].name, "bank_bam" ) ) {
-      bam_result_out_idx = i;
-      break;
-    }
-  }
-  if( FD_LIKELY( bam_result_out_idx!=ULONG_MAX ) ) {
-    fd_topo_link_t const * bam_result_out = &topo->links[ tile->out_link_id[ bam_result_out_idx ] ];
-    ctx->bam_result_out_idx    = bam_result_out_idx;
+    fd_topo_link_t const * bam_result_out = &topo->links[ tile->out_link_id[ i ] ];
+    if( strcmp( bam_result_out->name, "bank_bam" ) ) continue;
+    ctx->bam_result_out_idx    = i;
     ctx->bam_result_out_mem    = topo->workspaces[ topo->objs[ bam_result_out->dcache_obj_id ].wksp_id ].wksp;
     ctx->bam_result_out_chunk0 = fd_dcache_compact_chunk0( ctx->bam_result_out_mem, bam_result_out->dcache );
     ctx->bam_result_out_wmark  = fd_dcache_compact_wmark ( ctx->bam_result_out_mem, bam_result_out->dcache, bam_result_out->mtu );
     ctx->bam_result_out_chunk  = ctx->bam_result_out_chunk0;
+    break;
   }
 
   ulong scratch_top = FD_SCRATCH_ALLOC_FINI( l, scratch_align() );

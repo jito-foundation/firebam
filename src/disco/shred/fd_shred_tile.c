@@ -1465,8 +1465,6 @@ unprivileged_init( fd_topo_t const *      topo,
     ctx->adtl_dests_leader[i].port = tile->shred.adtl_dests_leader[i].port;
   }
   ctx->bam_dests_cnt = 0U;
-  fd_memset( ctx->in, 0, sizeof(ctx->in) );
-  fd_memset( ctx->in_kind, 0, sizeof(ctx->in_kind) );
 
   uchar has_contact_info_in = 0;
   ulong polled_in_idx = 0UL;
@@ -1474,48 +1472,38 @@ unprivileged_init( fd_topo_t const *      topo,
     if( FD_UNLIKELY( !tile->in_link_poll[ i ] ) ) continue;
 
     fd_topo_link_t const * link = &topo->links[ tile->in_link_id[ i ] ];
-    fd_wksp_t * link_mem = NULL;
+
+    if( FD_LIKELY(      !strcmp( link->name, "net_shred"    ) ) ) {
+      ctx->in_kind[ polled_in_idx ] = IN_KIND_NET;
+      fd_net_rx_bounds_init( &ctx->in[ polled_in_idx ].net_rx, link->dcache );
+      polled_in_idx++;
+      continue; /* only net_rx needs to be set in this case. */
+    }
+    else if( FD_LIKELY( !strcmp( link->name, "poh_shred"    ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_POH;       /* Firedancer */
+    else if( FD_LIKELY( !strcmp( link->name, "pohh_shred"   ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_POH;       /* Frankendancer */
+    else if( FD_LIKELY( !strcmp( link->name, "stake_out"    ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_STAKE;     /* Frankendancer */
+    else if( FD_LIKELY( !strcmp( link->name, "replay_stake" ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_STAKE;     /* Firedancer */
+    else if( FD_LIKELY( !strcmp( link->name, "replay_epoch" ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_EPOCH;     /* Firedancer */
+    else if( FD_LIKELY( !strcmp( link->name, "sign_shred"   ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_SIGN;
+    else if( FD_LIKELY( !strcmp( link->name, "repair_shred" ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_REPAIR;
+    else if( FD_LIKELY( !strcmp( link->name, "ipecho_out"   ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_IPECHO;
+    else if( FD_LIKELY( !strcmp( link->name, "tower_out"    ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_ROOTED;
+    else if( FD_LIKELY( !strcmp( link->name, "replay_resol" ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_ROOTEDH;
+    else if( FD_LIKELY( !strcmp( link->name, "crds_shred"   ) ) ) { ctx->in_kind[ polled_in_idx ] = IN_KIND_CONTACT;
+      if( FD_UNLIKELY( has_contact_info_in ) ) FD_LOG_ERR(( "shred tile has multiple contact info in link types, can only be either gossip_out or crds_shred" ));
+      has_contact_info_in = 1;
+    }
+    else if( FD_LIKELY( !strcmp( link->name, "gossip_out"   ) ) ) { ctx->in_kind[ polled_in_idx ] = IN_KIND_GOSSIP;
+      if( FD_UNLIKELY( has_contact_info_in ) ) FD_LOG_ERR(( "shred tile has multiple contact info in link types, can only be either gossip_out or crds_shred" ));
+      has_contact_info_in = 1;
+    }
+    else if( FD_LIKELY( !strcmp( link->name, "bam_shred"    ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_BAM_SHRED;
+
+    else FD_LOG_ERR(( "shred tile has unexpected input link %lu %s", i, link->name ));
+
     if( FD_LIKELY( !!link->mtu ) ) {
       fd_topo_wksp_t const * link_wksp = &topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ];
-      link_mem = link_wksp->wksp;
-    }
-
-    int in_kind;
-    if( FD_LIKELY(      !strcmp( link->name, "net_shred"    ) ) ) in_kind = IN_KIND_NET;
-    else if( FD_LIKELY( !strcmp( link->name, "poh_shred"    ) ) ) in_kind = IN_KIND_POH;
-    else if( FD_LIKELY( !strcmp( link->name, "pohh_shred"   ) ) ) in_kind = IN_KIND_POH;
-    else if( FD_LIKELY( !strcmp( link->name, "stake_out"    ) ) ) in_kind = IN_KIND_STAKE;
-    else if( FD_LIKELY( !strcmp( link->name, "replay_stake" ) ) ) in_kind = IN_KIND_STAKE;
-    else if( FD_LIKELY( !strcmp( link->name, "replay_epoch" ) ) ) in_kind = IN_KIND_EPOCH;
-    else if( FD_LIKELY( !strcmp( link->name, "sign_shred"   ) ) ) in_kind = IN_KIND_SIGN;
-    else if( FD_LIKELY( !strcmp( link->name, "repair_shred" ) ) ) in_kind = IN_KIND_REPAIR;
-    else if( FD_LIKELY( !strcmp( link->name, "ipecho_out"   ) ) ) in_kind = IN_KIND_IPECHO;
-    else if( FD_LIKELY( !strcmp( link->name, "tower_out"    ) ) ) in_kind = IN_KIND_ROOTED;
-    else if( FD_LIKELY( !strcmp( link->name, "replay_resol" ) ) ) in_kind = IN_KIND_ROOTEDH;
-    else if( FD_LIKELY( !strcmp( link->name, "crds_shred"   ) ) ) {
-      if( FD_UNLIKELY( has_contact_info_in ) ) FD_LOG_ERR(( "shred tile has multiple contact info in link types, can only be either gossip_out or crds_shred" ));
-      has_contact_info_in = 1;
-      in_kind = IN_KIND_CONTACT;
-    } else if( FD_LIKELY( !strcmp( link->name, "gossip_out" ) ) ) {
-      if( FD_UNLIKELY( has_contact_info_in ) ) FD_LOG_ERR(( "shred tile has multiple contact info in link types, can only be either gossip_out or crds_shred" ));
-      has_contact_info_in = 1;
-      in_kind = IN_KIND_GOSSIP;
-    } else if( FD_LIKELY( !strcmp( link->name, "bam_shred"  ) ) ) {
-      in_kind = IN_KIND_BAM_SHRED;
-    } else {
-      FD_LOG_ERR(( "shred tile has unexpected input link %lu %s", i, link->name ));
-    }
-
-    ctx->in_kind[ polled_in_idx ] = in_kind;
-    if( FD_LIKELY( in_kind==IN_KIND_NET ) ) {
-      if( FD_LIKELY( !!link->dcache ) ) fd_net_rx_bounds_init( &ctx->in[ polled_in_idx ].net_rx, link->dcache );
-      polled_in_idx++;
-      continue;
-    }
-
-    if( FD_LIKELY( !!link->mtu ) ) {
-      FD_TEST( !!link_mem );
-      ctx->in[ polled_in_idx ].mem    = link_mem;
+      ctx->in[ polled_in_idx ].mem    = link_wksp->wksp;
       ctx->in[ polled_in_idx ].chunk0 = fd_dcache_compact_chunk0( ctx->in[ polled_in_idx ].mem, link->dcache );
       ctx->in[ polled_in_idx ].wmark  = fd_dcache_compact_wmark ( ctx->in[ polled_in_idx ].mem, link->dcache, link->mtu );
     }
