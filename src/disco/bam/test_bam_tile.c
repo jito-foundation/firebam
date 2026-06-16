@@ -2828,6 +2828,24 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
                                    request_mcache, request_data,
                                    response_mcache, response_data, request_mtu ) );
 
+  bam_api_AuthChallengeResponse bad_resp = bam_api_AuthChallengeResponse_init_default;
+  fd_cstr_ncpy( bad_resp.challenge_to_sign, "12345678", sizeof( bad_resp.challenge_to_sign ) );
+
+  uchar bad_pb_buf[ 128 ];
+  pb_ostream_t bad_ostream = pb_ostream_from_buffer( bad_pb_buf, sizeof(bad_pb_buf) );
+  FD_TEST( pb_encode( &bad_ostream, bam_api_AuthChallengeResponse_fields, &bad_resp ) );
+
+  state->bam_auth_inflight = 1U;
+  fd_bam_client_grpc_rx_msg( state,
+                             bad_pb_buf,
+                             bad_ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge );
+
+  FD_TEST( state->bam_auth_inflight == 0U );
+  FD_TEST( state->bam_auth_ready == 0U );
+  FD_TEST( state->challenge_to_sign[ 0 ] == '\0' );
+  FD_TEST( state->keyguard_client->request_seq == 0UL );
+
   uchar signature[ 64 ];
   for( uchar i=0; i<64; i++ ) signature[ i ] = (uchar)( i + 1 );
   ulong resp_chunk = state->keyguard_client->response_chunk0;

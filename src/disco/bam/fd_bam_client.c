@@ -390,9 +390,20 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   uchar  sign_payload[ FD_BAM_AUTH_LABEL_LEN + sizeof(resp.challenge_to_sign) ];
   fd_memcpy( sign_payload, FD_BAM_AUTH_LABEL, FD_BAM_AUTH_LABEL_LEN );
   fd_memcpy( sign_payload + FD_BAM_AUTH_LABEL_LEN, resp.challenge_to_sign, challenge_len );
+  ulong sign_payload_sz = FD_BAM_AUTH_LABEL_LEN + challenge_len;
+
+  ulong payload_mask = fd_keyguard_payload_match( sign_payload, sign_payload_sz,
+                                                  FD_KEYGUARD_SIGN_TYPE_ED25519 );
+  if( FD_UNLIKELY( payload_mask != FD_KEYGUARD_PAYLOAD_BAM_AUTH ) ) {
+    fd_bam_clear_auth_state( ctx );
+    FD_LOG_WARNING(( "AuthChallengeResponse challenge yields ambiguous or invalid BAM auth payload (challenge_len=%lu mask=%#lx)",
+                     (ulong)challenge_len, payload_mask ));
+    return 0;
+  }
 
   uchar signature[ 64 ];
-  fd_keyguard_client_sign( ctx->keyguard_client, signature, sign_payload, FD_BAM_AUTH_LABEL_LEN + challenge_len, FD_KEYGUARD_SIGN_TYPE_ED25519 );
+  fd_keyguard_client_sign( ctx->keyguard_client, signature, sign_payload, sign_payload_sz,
+                           FD_KEYGUARD_SIGN_TYPE_ED25519 );
 
   fd_base58_encode_64( signature, NULL, ctx->bam_auth_signature );
   ctx->bam_auth_ready = 1;
