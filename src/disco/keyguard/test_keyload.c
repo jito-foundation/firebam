@@ -236,20 +236,19 @@ test_madvise( void ) {
   FD_TEST( !fclose( maps ) );
 }
 
-static void
-test_keyguard_identity( uchar identity[ static 32 ] ) {
-  for( uchar i=0U; i<32U; i++ ) identity[ i ] = i;
-}
+static int
+authorize_contact_info_client_id( ushort client_id ) {
+  fd_keyguard_authority_t authority = {0};
 
-static ulong
-build_contact_info_sign_payload( uchar * out,
-                                 ulong   out_sz,
-                                 ushort  client_id ) {
   fd_gossip_value_t value;
   fd_memset( &value, 0, sizeof(value) );
 
+  for( uchar i=0U; i<32U; i++ ) {
+    authority.identity_pubkey[ i ] = i;
+    value.origin[ i ]              = i;
+  }
+
   value.tag = FD_GOSSIP_VALUE_CONTACT_INFO;
-  test_keyguard_identity( value.origin );
   value.wallclock = 0UL;
   value.contact_info->outset              = 1UL;
   value.contact_info->shred_version       = 1U;
@@ -259,23 +258,10 @@ build_contact_info_sign_payload( uchar * out,
   uchar crds_value[ FD_GOSSIP_VALUE_MAX_SZ ];
   long crds_value_sz = fd_gossip_value_serialize( &value, crds_value, sizeof(crds_value) );
   FD_TEST( crds_value_sz>64L );
-  FD_TEST( (ulong)(crds_value_sz-64L)<=out_sz );
-
-  fd_memcpy( out, crds_value+64UL, (ulong)(crds_value_sz-64L) );
-  return (ulong)(crds_value_sz-64L);
-}
-
-static int
-authorize_contact_info_client_id( ushort client_id ) {
-  fd_keyguard_authority_t authority;
-  test_keyguard_identity( authority.identity_pubkey );
-
-  uchar payload[ FD_GOSSIP_VALUE_MAX_SZ ];
-  ulong payload_sz = build_contact_info_sign_payload( payload, sizeof(payload), client_id );
 
   return fd_keyguard_payload_authorize( &authority,
-                                        payload,
-                                        payload_sz,
+                                        crds_value+64UL,
+                                        (ulong)(crds_value_sz-64L),
                                         FD_KEYGUARD_ROLE_GOSSIP,
                                         FD_KEYGUARD_SIGN_TYPE_ED25519 );
 }
