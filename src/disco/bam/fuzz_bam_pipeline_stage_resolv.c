@@ -1,4 +1,3 @@
-#define BLOCKHASH_LG_RING_CNT 8UL
 #define fd_tile_resolv bam_fuzz_resolv_tile_unused
 #include "../../discof/resolv/fd_resolv_tile.c"
 #undef fd_tile_resolv
