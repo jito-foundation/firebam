@@ -304,7 +304,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Approximate time since each tile last heartbeated. Computed from tile heartbeat tick deltas (same-instance baseline), then normalized to seconds using observed heartbeat tick rate.",
+      "description": "Approximate time since each tile last heartbeated. Computed as current Prometheus scrape time minus tile_heartbeat, converted from nanoseconds to seconds.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -390,7 +390,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "(scalar(max(tile_heartbeat{instance=~\"$instance\"})) - tile_heartbeat{instance=~\"$instance\"}) / scalar(max(rate(tile_heartbeat{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "(time() * 1e9 - tile_heartbeat{instance=~\"$instance\"}) / 1e9",
           "instant": false,
           "legendFormat": "{{kind}}:{{kind_id}}",
           "range": true,
@@ -405,7 +405,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Backpressure events by tile. Series: each line is a tile (kind/kind_id); value is times the tile had to wait for consumers to catch up before publishing.",
+      "description": "Backpressure event rate by tile. Series: each line is a tile (kind/kind_id); value is how often the tile had to wait for consumers to catch up before publishing.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -497,7 +497,7 @@
           "refId": "A"
         }
       ],
-      "title": "Tile Backpressure Count",
+      "title": "Tile Backpressure Rate",
       "type": "timeseries"
     },
     {
@@ -732,7 +732,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Link health signals for producer/consumer pressure. Series: overrun_polling = times the link was overrun while polling; overrun_reading = times the link was overrun while reading; slow = times the producer detected the consumer was throttling.",
+      "description": "Link health rates for producer/consumer pressure. Series: overrun_polling = link overrun while polling; overrun_reading = link overrun while reading; slow = producer detected consumer throttling.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -856,7 +856,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Link fragment flow and drop signals. Series: consumed = fragments consumed by the link reader; filtered = fragments filtered and not consumed; overrun_poll_frag = fragments not processed because the link was overrun while polling; overrun_read_frag = fragments not processed because the link was overrun while reading.",
+      "description": "Link fragment flow and drop rates. Series: consumed = fragments consumed by the link reader; filtered = fragments filtered and not consumed; overrun_poll_frag = fragments not processed because the link was overrun while polling; overrun_read_frag = fragments not processed because the link was overrun while reading.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -997,7 +997,7 @@
       },
       "id": 8,
       "panels": [],
-      "title": "Sock Tile",
+      "title": "Net Tile",
       "type": "row"
     },
     {
@@ -1005,7 +1005,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Sock tile packet traffic. Series: rx = packets received by the sock tile; tx = packets sent by the sock tile.",
+      "description": "Net tile packet rates. Series: rx = packets received by the net tile; tx = packet transmit completions by the net tile.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1091,7 +1091,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sock_rx_pkt_cnt{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(net_rx_pkt_cnt{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "rx",
           "range": true,
@@ -1103,14 +1103,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sock_tx_pkt_cnt{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(net_tx_complete_cnt{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "tx",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Sock Packets (PPS)",
+      "title": "Net Packets (PPS)",
       "type": "timeseries"
     },
     {
@@ -1118,7 +1118,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Sock tile byte traffic. Series: rx = bytes received; tx = bytes transmitted.",
+      "description": "Net tile byte rates. Series: rx = bytes received; tx = bytes transmitted.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1204,7 +1204,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sock_rx_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(net_rx_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "rx",
           "range": true,
@@ -1216,14 +1216,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sock_tx_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(net_tx_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "tx",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Sock Bytes (B/s)",
+      "title": "Net Bytes (B/s)",
       "type": "timeseries"
     },
     {
@@ -1231,7 +1231,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Sock tile packet drop activity. Series: tx_drop = packets that failed to send.",
+      "description": "Net tile packet drop/failure rates. Series: tx_fail = transmit route/neighbor/full-ring/GRE/XDP failures; rx_drop = receive undersize/fill/backpressure/source/GRE/XDP drops.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1316,14 +1316,26 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sock_tx_drop_cnt{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(net_tx_route_fail_cnt{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_tx_neighbor_fail_cnt{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_tx_full_fail_cnt{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_tx_gre_route_fail_cnt{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_xdp_tx_invalid_descs{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_xdp_tx_ring_empty_descs{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "tx_drop",
+          "legendFormat": "tx_fail",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(net_rx_undersz_cnt{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_rx_fill_blocked_cnt{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_rx_backpressure_cnt{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_rx_src_addr_invalid_cnt{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_rx_gre_invalid_cnt{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_rx_gre_ignored_cnt{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_xdp_rx_dropped_other{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_xdp_rx_invalid_descs{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_xdp_rx_ring_full{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(net_xdp_rx_fill_ring_empty_descs{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "rx_drop",
+          "range": true,
+          "refId": "B"
         }
       ],
-      "title": "Sock Drops",
+      "title": "Net Drops",
       "type": "timeseries"
     },
     {
@@ -1331,7 +1343,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Sock tile syscall rates. Series: recvmmsg = receive syscalls; sendmmsg = send syscalls by result.",
+      "description": "Net tile XSK wakeup syscall rates. Series: xsk_rx_wakeup = XSK recvmsg wakeups; xsk_tx_wakeup = XSK sendto wakeups.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1417,9 +1429,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sock_syscalls_recvmmsg{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(net_xsk_rx_wakeup_cnt{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "recvmmsg/s",
+          "legendFormat": "xsk_rx_wakeup/s",
           "range": true,
           "refId": "A"
         },
@@ -1429,14 +1441,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (sock_err) (rate(sock_syscalls_sendmmsg{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(net_xsk_tx_wakeup_cnt{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "sendmmsg {{sock_err}}/s",
+          "legendFormat": "xsk_tx_wakeup/s",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Sock Syscalls",
+      "title": "Net XSK Wakeups",
       "type": "timeseries"
     },
     {
@@ -1449,7 +1461,7 @@
       },
       "id": 13,
       "panels": [],
-      "title": "Quic Tile",
+      "title": "QUIC Tile",
       "type": "row"
     },
     {
@@ -1457,7 +1469,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Inbound TPU transactions by receive type. Series: each line is a tpu_recv_type; value is TPU transactions received via that path (udp, quic_fast, quic_frag).",
+      "description": "Inbound TPU transaction rates by receive type. Series: each line is a tpu_recv_type; value is TPU transactions received via that path (udp, quic_fast, quic_frag).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1558,7 +1570,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "QUIC wire traffic. Series: rx = bytes received (includes IP/UDP/QUIC headers); tx = bytes sent (includes headers).",
+      "description": "QUIC wire byte rates. Series: rx = bytes received (includes IP/UDP/QUIC headers); tx = bytes sent (includes headers).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1772,7 +1784,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "QUIC packet errors by cause. Series: crypto_failed = packets dropped due to decrypt failure; no_key = packets dropped due to missing key; no_conn = packets dropped for unknown connection; oversz = packets dropped for being too large; undersz = packets dropped for being too small; quic_header_invalid = packets dropped for invalid QUIC header; net_header_invalid = packets dropped for invalid IP/UDP header.",
+      "description": "QUIC packet error/drop rates by cause. Series: crypto_failed = packets dropped due to decrypt failure; no_key = packets dropped due to missing key; no_conn = packets dropped for unknown connection; wrong_src = packets dropped due to wrong source IP; oversz = packets dropped for being too large; undersz = packets dropped for being too small; quic_header_invalid = packets dropped for invalid QUIC header; net_header_invalid = packets dropped for invalid IP/UDP header.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1893,11 +1905,23 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
+          "expr": "sum(rate(quic_pkt_wrong_src{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "wrong_src",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
           "expr": "sum(rate(quic_pkt_oversz{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "oversz",
           "range": true,
-          "refId": "D"
+          "refId": "E"
         },
         {
           "datasource": {
@@ -1909,7 +1933,7 @@
           "instant": false,
           "legendFormat": "undersz",
           "range": true,
-          "refId": "E"
+          "refId": "F"
         },
         {
           "datasource": {
@@ -1921,7 +1945,7 @@
           "instant": false,
           "legendFormat": "quic_header_invalid",
           "range": true,
-          "refId": "F"
+          "refId": "G"
         },
         {
           "datasource": {
@@ -1933,7 +1957,7 @@
           "instant": false,
           "legendFormat": "net_header_invalid",
           "range": true,
-          "refId": "G"
+          "refId": "H"
         }
       ],
       "title": "QUIC Packet Errors",
@@ -2105,7 +2129,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "QUIC connection lifecycle events. Series: created/closed/aborted/timed_out/retried = connection lifecycle events; no_slots = connection creation failures due to no slots; retry_fail = retry failures.",
+      "description": "QUIC connection lifecycle event rates. Series: created/closed/aborted/timed_out/retried = connection lifecycle events; no_slots = connection creation failures due to no slots; retry_fail = retry failures.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2290,7 +2314,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "QUIC transaction fragment and reassembly activity. Series: reasms_started = fragmented transaction reassembly starts; frags_ok = transaction fragments received; frags_gap = fragments dropped due to gaps; frags_dup = fragments dropped as duplicates; txns_overrun = transactions dropped due to reassembly overrun; txns_abandoned = transactions abandoned because a connection was lost.",
+      "description": "QUIC transaction fragment, reassembly, and size-drop rates. Series: reasms_started = fragmented transaction reassembly starts; frags_ok = transaction fragments received; frags_gap = fragments dropped due to gaps; frags_dup = fragments dropped as duplicates; txns_overrun = transactions dropped due to reassembly overrun; txns_abandoned = transactions abandoned because a connection was lost; txn_undersz/txn_oversz = QUIC transactions dropped by size; legacy_txn_undersz/legacy_txn_oversz = non-QUIC TPU packets dropped by transaction size.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2440,6 +2464,54 @@
           "legendFormat": "txns_abandoned",
           "range": true,
           "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(quic_txn_undersz{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "txn_undersz",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(quic_txn_oversz{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "txn_oversz",
+          "range": true,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(quic_legacy_txn_undersz{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "legacy_txn_undersz",
+          "range": true,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(quic_legacy_txn_oversz{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "legacy_txn_oversz",
+          "range": true,
+          "refId": "J"
         }
       ],
       "title": "QUIC Reassembly / Fragments",
@@ -2450,7 +2522,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "QUIC handshake pressure. Series: created = handshakes created; alloc_fail = handshakes dropped due to allocation failure; evicted = handshakes evicted.",
+      "description": "QUIC handshake pressure rates. Series: created = handshakes created; alloc_fail = handshakes dropped due to allocation failure; evicted = handshakes evicted.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2574,7 +2646,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "QUIC packet traffic and reliability events. Series: rx_packets = packets received; tx_packets = packets sent; retransmits = packets retransmitted; retry_sent = retry packets sent; verneg = version negotiation packets received.",
+      "description": "QUIC packet traffic and reliability rates. Series: rx_packets = packets received; tx_packets = packets sent; retransmits = packets retransmitted; retry_sent = retry packets sent; verneg = version negotiation packets received.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2977,7 +3049,7 @@
       },
       "id": 20,
       "panels": [],
-      "title": "Verify/Dedup/Resolh Tiles",
+      "title": "Verify/Dedup/Resolv Tiles",
       "type": "row"
     },
     {
@@ -2985,7 +3057,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Verify-stage transaction errors and gossip votes. Series: parse_failure = transactions that failed to parse; dedup_failure = transactions that failed dedup in verify stage; verify_failure = transactions that failed signature verification; bundle_peer_failure = transactions dropped due to bundle peer failure; gossip_votes = simple vote transactions received via gossip.",
+      "description": "Verify-stage transaction error and gossip vote rates. Series: parse_failure = transactions that failed to parse; dedup_failure = transactions that failed dedup in verify stage; verify_failure = transactions that failed signature verification; bundle_peer_failure = transactions dropped due to bundle peer failure; gossip_votes = simple vote transactions received via gossip.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3133,7 +3205,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Dedup-stage transaction errors and gossip votes. Series: dedup_failure = transactions that failed dedup in dedup stage; bundle_peer_failure = transactions dropped due to bundle peer failure; gossip_votes = simple vote transactions received via gossip.",
+      "description": "Dedup-stage transaction error and gossip vote rates. Series: dedup_failure = transactions that failed dedup in dedup stage; bundle_peer_failure = transactions dropped due to bundle peer failure; gossip_votes = simple vote transactions received via gossip.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3257,7 +3329,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Resolh-stage drop/error counters. Series: blockhash_expired = transactions dropped due to expired blockhash; no_bank_drop = transactions dropped due to missing bank; bundle_peer_failure = transactions dropped due to bundle peer failure.",
+      "description": "Resolv-stage drop/error rates. Series: blockhash_expired = transactions dropped due to expired blockhash; no_bank_drop = transactions dropped due to missing bank; bundle_peer_failure = transactions dropped due to bundle peer failure.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3342,7 +3414,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(resolh_blockhash_expired{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(resolv_blockhash_expired{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "blockhash_expired",
           "range": true,
@@ -3354,7 +3426,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(resolh_no_bank_drop{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(resolv_no_bank_drop{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "no_bank_drop",
           "range": true,
@@ -3366,14 +3438,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(resolh_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(resolv_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "bundle_peer_failure",
           "range": true,
           "refId": "C"
         }
       ],
-      "title": "Resolh Errors",
+      "title": "Resolv Errors",
       "type": "timeseries"
     },
     {
@@ -3381,7 +3453,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Resolh stash activity. Series: inserted = transactions stashed for unknown blockhash; published = stashed transactions published when the blockhash resolhed; removed = stashed transactions removed without publish; overrun = transactions dropped because the stash was full.",
+      "description": "Resolv stash operation rates. Series: inserted = transactions stashed for unknown blockhash; published = stashed transactions published when the blockhash resolved; removed = stashed transactions removed without publish; overrun = transactions dropped because the stash was full.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3466,14 +3538,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (resolve_stash_operation) (rate(resolh_stash_operation{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (resolve_stash_operation) (rate(resolv_stash_operation{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "{{resolve_stash_operation}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Resolh Stash Ops",
+      "title": "Resolv Stash Ops",
       "type": "timeseries"
     },
     {
@@ -3698,7 +3770,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Pack scheduling decision outcomes. Series: taken = transaction scheduled; cu_limit = skipped due to block CU limit; fast_path = skipped due to account conflict (fast check); byte_limit = skipped due to block data limit; write_cost = skipped due to per-account write cost limit; slow_path = skipped due to account conflict (full check); defer_skip = skipped after repeated per-account write cost limit.",
+      "description": "Pack scheduling decision rates. Series: taken = transaction scheduled; cu_limit = skipped due to block CU limit; fast_path = skipped due to account conflict (fast check); byte_limit = skipped due to block data limit; write_cost = skipped due to per-account write cost limit; slow_path = skipped due to account conflict (full check); defer_skip = skipped after repeated per-account write cost limit.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3798,7 +3870,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Pack transaction drop reasons. Series: expired = transactions dropped because TTL expired; deleted = transactions dropped by delete request; dropped_extra = transactions dropped from extra storage; partial_bundle = transactions dropped because part of a partial bundle; already_executed = transactions dropped because already executed.",
+      "description": "Pack transaction drop rates by reason. Series: expired = transactions dropped because TTL expired; deleted = transactions dropped by delete request; dropped_extra = transactions dropped from extra storage; partial_bundle = transactions dropped because part of a partial bundle; already_executed = transactions dropped because already executed.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4281,7 +4353,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Pack input vs accepted transactions. Series: received = normal TPU transactions received; inserted = transactions accepted into pack.",
+      "description": "Pack input vs accepted transaction rates. Series: received = normal TPU transactions received; inserted = transactions accepted into pack.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4393,7 +4465,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Pack insertion outcomes. Series: each line is a pack_txn_insert_return outcome; value is insert attempts that returned that outcome.",
+      "description": "Pack insertion outcome rates. Series: each line is a pack_txn_insert_return outcome; value is insert attempts that returned that outcome.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4596,7 +4668,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Pack block-level limit hits. Series: microblock_limit = times pack could not pack due to microblock-per-block limit; data_limit = times pack could not pack due to data-per-block limit.",
+      "description": "Pack block-level limit hit rates. Series: microblock_limit = pack could not pack due to microblock-per-block limit; data_limit = pack could not pack due to data-per-block limit.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4963,7 +5035,7 @@
       },
       "id": 72,
       "panels": [],
-      "title": "Resolh/Bank Diagnostics",
+      "title": "Resolv/Execle Diagnostics",
       "type": "row"
     },
     {
@@ -4971,7 +5043,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Address lookup table resolve outcomes. Series: success = LUT resolved; invalid_lookup_index = LUT lookup index missing; account_uninitialized = LUT account not initialized; invalid_account_data = LUT account data invalid; invalid_account_owner = LUT account owned by wrong program; account_not_found = LUT account missing.",
+      "description": "Address lookup table resolve outcome rates. Series: success = LUT resolved; invalid_lookup_index = LUT lookup index missing; account_uninitialized = LUT account not initialized; invalid_account_data = LUT account data invalid; invalid_account_owner = LUT account owned by wrong program; account_not_found = LUT account missing.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5056,14 +5128,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (lut_resolve_result) (rate(resolh_lut_resolved{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (lut_resolve_result) (rate(resolv_lut_resolved{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "{{lut_resolve_result}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Resolh LUT Results",
+      "title": "Resolv LUT Results",
       "type": "timeseries"
     },
     {
@@ -5071,7 +5143,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Bank pre-execution failures. Series: sanitize_failure = transactions that failed sanitize; not_executed = transactions that did not execute.",
+      "description": "Execle pre-execution or non-landed outcome rates. Series: sanitize_failure = transactions that failed sanitize; unlanded = transactions that did not land.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5156,7 +5228,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(bank_transaction_sanitize_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(execle_transaction_result{instance=~\"$instance\",transaction_result=\"sanitize_failure\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "sanitize_failure",
           "range": true,
@@ -5168,14 +5240,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(bank_transaction_not_executed_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(execle_transaction_landed{instance=~\"$instance\",transaction_landed=\"unlanded\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "not_executed",
+          "legendFormat": "unlanded",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Bank Sanitize / Not Executed",
+      "title": "Execle Sanitize / Unlanded",
       "type": "timeseries"
     },
     {
@@ -5188,7 +5260,7 @@
       },
       "id": 32,
       "panels": [],
-      "title": "Bank & PoH Tiles",
+      "title": "Execle Tile",
       "type": "row"
     },
     {
@@ -5196,7 +5268,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Bank transaction outcomes. Series: success = transactions executed and succeeded; executed_failed = transactions executed and failed; fee_only = transactions that paid fee but did not execute; processing_failed = transactions dropped before chain.",
+      "description": "Execle transaction landing outcome rates. Series: success = transactions landed and succeeded; executed_failed = transactions landed and failed; fee_only = transactions that paid fee but did not execute; unlanded = transactions that did not land.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5281,7 +5353,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(bank_successful_transactions{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(execle_transaction_landed{instance=~\"$instance\",transaction_landed=\"landed_success\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "success",
           "range": true,
@@ -5293,7 +5365,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(bank_executed_failed_transactions{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(execle_transaction_landed{instance=~\"$instance\",transaction_landed=\"landed_failed\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "executed_failed",
           "range": true,
@@ -5305,7 +5377,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(bank_fee_only_transactions{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(execle_transaction_landed{instance=~\"$instance\",transaction_landed=\"landed_fees_only\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "fee_only",
           "range": true,
@@ -5317,14 +5389,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(bank_processing_failed{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(execle_transaction_landed{instance=~\"$instance\",transaction_landed=\"unlanded\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "processing_failed",
+          "legendFormat": "unlanded",
           "range": true,
           "refId": "D"
         }
       ],
-      "title": "Bank Transaction Outcomes",
+      "title": "Execle Transaction Outcomes",
       "type": "timeseries"
     },
     {
@@ -5332,7 +5404,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Bank transaction errors. Series: each line is a transaction_error value; value is failed transactions with that error.",
+      "description": "Execle transaction error rates. Series: each line is a transaction_result value; value is failed transactions with that result.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5417,14 +5489,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "topk(5, sum by (transaction_error) (rate(bank_transaction_result{instance=~\"$instance\",transaction_error!=\"success\"}[$__rate_interval])))",
+          "expr": "topk(5, sum by (transaction_result) (rate(execle_transaction_result{instance=~\"$instance\",transaction_result!=\"success\"}[$__rate_interval])))",
           "instant": false,
-          "legendFormat": "{{transaction_error}}",
+          "legendFormat": "{{transaction_result}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Bank Errors (Top 5)",
+      "title": "Execle Errors (Top 5)",
       "type": "timeseries"
     },
     {
@@ -5432,7 +5504,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cost model undercount events. Series: undercount = transactions that exceeded the cost model allowance.",
+      "description": "Execle compute units. Series: cu/s = estimated compute units executed per second.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5517,14 +5589,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(bank_cost_model_undercount{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(execle_compute_units_total{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "undercount",
+          "legendFormat": "cu/s",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Bank Cost Model Undercount",
+      "title": "Execle Compute Units",
       "type": "timeseries"
     },
     {
@@ -5532,7 +5604,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Bank ALUT load outcomes. Series: success = ALUT loaded; slot_hashes_sysvar_not_found = slot hashes sysvar missing; account_not_found = ALUT account missing or deactivated; invalid_account_owner = ALUT account owned by wrong program; invalid_account_data = ALUT account data invalid; invalid_index = ALUT lookup index missing.",
+      "description": "Execle address lookup table error rates from transaction_result. Series: address_lookup_table_not_found, invalid_address_lookup_table_owner, invalid_address_lookup_table_data, and invalid_address_lookup_table_index.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5617,14 +5689,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (bank_load_address_lookup_table) (rate(bank_transaction_load_address_tables{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (transaction_result) (rate(execle_transaction_result{instance=~\"$instance\",transaction_result=~\"address_lookup_table_not_found|invalid_address_lookup_table_owner|invalid_address_lookup_table_data|invalid_address_lookup_table_index\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "{{bank_load_address_lookup_table}}",
+          "legendFormat": "{{transaction_result}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Bank ALUT Load Results",
+      "title": "Execle ALUT Errors",
       "type": "timeseries"
     },
     {
@@ -5632,7 +5704,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Leader pipeline delay percentiles. Series: begin_leader_p50/p95/p99 = delay from leader start to bank receipt; first_microblock_p50/p95/p99 = delay to first microblock; slot_done_p50/p95/p99 = delay to slot completion; bundle_init_p50/p95/p99 = delay to bundle crank init.",
+      "description": "Execle transaction regime time as a percentage of wall time per execle tile. Series: setup, exec, and commit by execle tile id.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5686,7 +5758,7 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "percent"
         },
         "overrides": []
       },
@@ -5718,146 +5790,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_begin_leader_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "100 * sum by (kind_id, txn_regime) (rate(execle_txn_regime{instance=~\"$instance\"}[$__rate_interval])) / 1e9",
           "instant": false,
-          "legendFormat": "begin_leader_p50",
+          "legendFormat": "execle:{{kind_id}} {{txn_regime}}",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(pohh_begin_leader_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "begin_leader_p95",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(pohh_begin_leader_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "begin_leader_p99",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_first_microblock_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "first_microblock_p50",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(pohh_first_microblock_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "first_microblock_p95",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(pohh_first_microblock_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "first_microblock_p99",
-          "range": true,
-          "refId": "F"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "slot_done_p50",
-          "range": true,
-          "refId": "G"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(pohh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "slot_done_p95",
-          "range": true,
-          "refId": "H"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(pohh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "slot_done_p99",
-          "range": true,
-          "refId": "I"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "bundle_init_p50",
-          "range": true,
-          "refId": "J"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "bundle_init_p95",
-          "range": true,
-          "refId": "K"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
-          "instant": false,
-          "legendFormat": "bundle_init_p99",
-          "range": true,
-          "refId": "L"
         }
       ],
-      "title": "PoH Delays (p50/p95/p99)",
+      "title": "Execle Transaction Regime %",
       "type": "timeseries"
     },
     {
@@ -5865,7 +5805,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Mean PoH delays by stage from *_sum/*_count rate ratios.",
+      "description": "Execle VM regime time as a percentage of wall time per execle tile. Series: setup, commit, setup_cpi, commit_cpi, and interpreter by execle tile id.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5919,7 +5859,7 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "percent"
         },
         "overrides": []
       },
@@ -5951,50 +5891,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "rate(pohh_begin_leader_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pohh_begin_leader_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "100 * sum by (kind_id, vm_regime) (rate(execle_vm_regime{instance=~\"$instance\"}[$__rate_interval])) / 1e9",
           "instant": false,
-          "legendFormat": "begin_leader_mean_s",
+          "legendFormat": "execle:{{kind_id}} {{vm_regime}}",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "rate(pohh_first_microblock_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pohh_first_microblock_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
-          "instant": false,
-          "legendFormat": "first_microblock_mean_s",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "rate(pohh_slot_done_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pohh_slot_done_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
-          "instant": false,
-          "legendFormat": "slot_done_mean_s",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "rate(pohh_bundle_initialize_delay_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(pohh_bundle_initialize_delay_seconds_count{instance=~\"$instance\"}[$__rate_interval])",
-          "instant": false,
-          "legendFormat": "bundle_init_mean_s",
-          "range": true,
-          "refId": "D"
         }
       ],
-      "title": "PoH Mean Delay by Stage",
+      "title": "Execle VM Regime %",
       "type": "timeseries"
     },
     {
@@ -6007,7 +5911,7 @@
       },
       "id": 39,
       "panels": [],
-      "title": "Shred / Store / Sign Tiles",
+      "title": "Shred / Replay / Sign Tiles",
       "type": "row"
     },
     {
@@ -6015,7 +5919,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Incoming shred processing results. Series: bad_slot = shreds for slots with unknown leader; parse_failed = shreds that failed to parse; rejected = invalid shreds; ignored = duplicate or already reconstructed shreds; okay = shreds accepted into incomplete FEC sets; completes = shreds that completed FEC sets.",
+      "description": "Incoming shred processing result rates. Series: bad_slot = shreds for slots with unknown leader; parse_failed = shreds that failed to parse; rejected = invalid shreds; ignored = duplicate or already reconstructed shreds; okay = shreds accepted into incomplete FEC sets; completes = shreds that completed FEC sets.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -6115,7 +6019,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Shred reject/spill counters. Series: rejected_initial = rejected before allocation; rejected_unchained = non-chained merkle shreds; fec_rejected_fatal = fatal FEC rejection; fec_spilled = FEC sets spilled; microblocks_abandoned = microblocks abandoned on slot switch; bad_nonce = repair responses with an incorrect nonce.",
+      "description": "Shred reject/spill rates. Series: rejected_initial = rejected before allocation; rejected_unchained = non-chained merkle shreds; fec_rejected_fatal = fatal FEC rejection; fec_spilled = FEC sets spilled; microblocks_abandoned = microblocks abandoned on slot switch; bad_nonce = repair responses with an incorrect nonce.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -6436,7 +6340,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Leader transactions inserted into store. Series: inserted = leader transactions inserted into store.",
+      "description": "Replay processed rates. Series: transactions = transactions processed overall on the current fork; slots = slots replayed successfully or leader slots packed and shredded successfully.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -6521,14 +6425,26 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(store_transactions_inserted{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(replay_transactions_total{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "inserted",
+          "legendFormat": "transactions/s",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(replay_slots_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "slots/s",
+          "range": true,
+          "refId": "B"
         }
       ],
-      "title": "Store Transactions Inserted",
+      "title": "Replay Processed Totals",
       "type": "timeseries"
     },
     {

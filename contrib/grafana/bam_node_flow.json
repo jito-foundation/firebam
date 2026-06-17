@@ -301,28 +301,14 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Current BAM healthy takeover state. Max across the selected instance(s) returns 1 when at least one BAM client is healthy enough to own TPU ingress, 0 otherwise.",
+      "description": "Current number of validated BAM scheduler transactions buffered and waiting for bam_verif credits (bam_pending_transactions).",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "thresholds"
           },
           "decimals": 0,
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "index": 0,
-                  "text": "Unhealthy"
-                },
-                "1": {
-                  "index": 1,
-                  "text": "Healthy"
-                }
-              },
-              "type": "value"
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -332,10 +318,6 @@
               },
               {
                 "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
                 "value": 1
               }
             ]
@@ -378,14 +360,14 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "max(bam_healthy{instance=~\"$instance\"})",
+          "expr": "sum(bam_pending_transactions{instance=~\"$instance\"})",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
           "refId": "A"
         }
       ],
-      "title": "BAM Healthy",
+      "title": "BAM Pending Txns",
       "type": "stat"
     },
     {
@@ -1331,7 +1313,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Relative BAM node heartbeat arrival-delta distribution, computed from the builder heartbeat timestamp to Frankendancer scheduler-stream receive callback time. This includes remote clock offset/skew and is not network RTT.",
+      "description": "Relative BAM node heartbeat arrival-delta distribution, computed from the builder heartbeat timestamp to the local scheduler-stream receive callback time. This includes remote clock offset/skew and is not network RTT.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1609,7 +1591,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Drop rates from BAM ingest and feedback. bam_ingress_packet_oversize counts BAM packets rejected because their declared payload exceeded the local MTU; bam_feedback_results_dropped counts feedback results dropped because the local result queue was full.",
+      "description": "Drop rates from BAM ingest, scheduler backpressure, and feedback. bam_ingress_packet_oversize counts packets rejected because their declared payload exceeded the local MTU; bam_transaction_rejected_backpressure counts scheduler transactions rejected because the pending queue lacked capacity; bam_feedback_results_dropped counts feedback results dropped because the local result queue was full.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1714,6 +1696,18 @@
           "legendFormat": "Feedback Results Dropped",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(bam_transaction_rejected_backpressure{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "Transaction Backpressure Rejects",
+          "range": true,
+          "refId": "C"
         }
       ],
       "title": "BAM Drops",
@@ -1827,7 +1821,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second bundle-related transaction failures through verify/dedup/resolh plus pack drops. verify_transaction_result and dedup_transaction_result use bundle_peer_failure result labels; resolh_transaction_bundle_peer_failure counts resolve-stage peer failures; pack_transaction_dropped_partial_bundle counts transactions dropped in pack because the bundle was partial. Failures are per-transaction even when the root cause is a bundle.",
+      "description": "Per-second bundle-related transaction failures through verify/dedup/resolv plus pack drops. verify_transaction_result and dedup_transaction_result use bundle_peer_failure result labels; resolv_transaction_bundle_peer_failure counts resolve-stage peer failures; pack_transaction_dropped_partial_bundle counts transactions dropped in pack because the bundle was partial. Failures are per-transaction even when the root cause is a bundle.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1939,9 +1933,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(resolh_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(resolv_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
-          "legendFormat": "Resolh Peer Failures",
+          "legendFormat": "Resolv Peer Failures",
           "range": true,
           "refId": "C"
         },
@@ -1966,7 +1960,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second rate of bank execution results labeled transaction_error=bundle_peer. These are transactions that failed because a peer transaction in the same bundle failed (bank_transaction_result counter).",
+      "description": "Per-second rate of full Firedancer execution results labeled transaction_result=bundle_peer. These are transactions that failed because a peer transaction in the same bundle failed (execle_transaction_result counter).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2054,14 +2048,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(bank_transaction_result{instance=~\"$instance\",transaction_error=\"bundle_peer\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(execle_transaction_result{instance=~\"$instance\",transaction_result=\"bundle_peer\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Bundle Peer Failure",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Bank Bundle Peer Failures",
+      "title": "Execle Bundle Peer Failures",
       "type": "timeseries"
     },
     {
@@ -2168,7 +2162,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Delay in starting the slot caused by loading data needed for bundle crank transactions.",
+      "description": "Full Firedancer pack microblock scheduler and completion duration histograms from pack_schedule_microblock_duration_seconds and pack_complete_microblock_duration_seconds.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2252,9 +2246,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pack_schedule_microblock_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
-          "legendFormat": "p50",
+          "legendFormat": "schedule p50",
           "range": true,
           "refId": "A"
         },
@@ -2264,9 +2258,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pack_schedule_microblock_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
-          "legendFormat": "p95",
+          "legendFormat": "schedule p95",
           "range": true,
           "refId": "B"
         },
@@ -2276,14 +2270,26 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(pohh_bundle_initialize_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pack_complete_microblock_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
-          "legendFormat": "p99",
+          "legendFormat": "complete p50",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pack_complete_microblock_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "instant": false,
+          "legendFormat": "complete p95",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "PoH Bundle Init Delay",
+      "title": "Pack Microblock Duration",
       "type": "timeseries"
     },
     {
@@ -2619,7 +2625,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Total pending leader-state updates cleared or superseded before send over the selected time range, grouped by bam_leader_pending_drop_reason. Healthy steady state is typically near zero; superseded indicates a newer pending leader-state replaced an older unsent one.",
+      "description": "Total leader-state updates cleared, suppressed, or superseded over the selected time range. bam_leader_pending_dropped groups unsent pending updates cleared before send; bam_leader_state_suppressed groups pack-provided updates suppressed because they were not locally live; bam_leader_pending_replaced counts latest-value-wins replacements.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2693,9 +2699,21 @@
           "legendFormat": "replaced",
           "range": false,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (bam_leader_state_suppress_reason) (increase(bam_leader_state_suppressed{instance=~\"$instance\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "suppressed {{bam_leader_state_suppress_reason}}",
+          "range": false,
+          "refId": "C"
         }
       ],
-      "title": "BAM Leader Pending Clears/Replacements (Range Count)",
+      "title": "BAM Leader State Clears/Replacements (Range Count)",
       "type": "stat"
     },
     {
@@ -2925,7 +2943,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rate (events/sec) of pending BAM leader-state updates cleared before send, split between explicit drops in bam_leader_pending_dropped and latest-value-wins replacements in bam_leader_pending_replaced.",
+      "description": "Rate (events/sec) of BAM leader-state updates cleared, suppressed, or superseded. This combines pending-send drops, pack-provided leader-state suppressions, and latest-value-wins replacements.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2996,9 +3014,21 @@
           "legendFormat": "replaced",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (bam_leader_state_suppress_reason) (rate(bam_leader_state_suppressed{instance=~\"$instance\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "suppressed {{bam_leader_state_suppress_reason}}",
+          "range": true,
+          "refId": "C"
         }
       ],
-      "title": "BAM Pending Leader Clears/Replacements",
+      "title": "BAM Leader State Clears/Replacements",
       "type": "timeseries"
     },
     {
@@ -3778,7 +3808,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cross-check active slot timing assumptions. bam_leader_state_slot_end_nanos minus pack_leader_slot_end_nanos should stay near zero; pohh_slot_done_delay_seconds p50 gives the current local slot-length scale for interpreting that delta.",
+      "description": "Cross-check active slot timing assumptions. bam_leader_state_slot_end_nanos minus pack_leader_slot_end_nanos should stay near zero when both current leader snapshots are populated.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3833,18 +3863,6 @@
           "legendFormat": "bam - pack slot_end_ns",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(pohh_slot_done_delay_seconds_bucket{instance=~\"$instance\"}[$__rate_interval]))) * 1e9",
-          "instant": false,
-          "legendFormat": "pohh slot done p50",
-          "range": true,
-          "refId": "B"
         }
       ],
       "title": "Slot Timing Assumptions",
@@ -4703,7 +4721,7 @@
     }
   ],
   "preload": false,
-  "refresh": "",
+  "refresh": "10s",
   "schemaVersion": 42,
   "tags": [],
   "templating": {
@@ -4748,8 +4766,8 @@
     ]
   },
   "time": {
-    "from": "2026-03-08T02:24:54.010Z",
-    "to": "2026-03-08T02:31:40.279Z"
+    "from": "now-15m",
+    "to": "now"
   },
   "timepicker": {},
   "timezone": "utc",
