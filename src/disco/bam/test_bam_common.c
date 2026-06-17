@@ -425,7 +425,8 @@ test_bam_env_create( test_bam_env_t * env,
                      fd_wksp_t *      wksp ) {
   fd_memset( env, 0, sizeof(test_bam_env_t) );
 
-  ulong const mcache_depth = fd_ulong_pow2_up( FD_BAM_STEM_BURST + 1UL );
+  ulong const mcache_depth = fd_ulong_pow2_up( fd_ulong_max( FD_BAM_STEM_BURST + 1UL,
+                                                             FD_BAM_MAX_TXN_PER_MESSAGE + 1UL ) );
   fd_frag_meta_t * mcache = fd_mcache_join( fd_mcache_new(
       fd_wksp_alloc_laddr( wksp, fd_mcache_align(), fd_mcache_footprint( mcache_depth, 0UL ), 1UL ),
       mcache_depth, 0UL, 0UL ) );
@@ -467,6 +468,11 @@ test_bam_env_create( test_bam_env_t * env,
   FD_TEST( env->pending_txn_mem );
   state->pending_txns = bam_pending_txn_join( bam_pending_txn_new( env->pending_txn_mem, pending_max ) );
   FD_TEST( state->pending_txns );
+  state->decoded_multi = fd_wksp_alloc_laddr( wksp,
+                                              alignof(fd_bam_decoded_multi_batch_t),
+                                              sizeof(fd_bam_decoded_multi_batch_t),
+                                              1UL );
+  FD_TEST( state->decoded_multi );
   state->verify_out = (fd_bam_out_ctx_t) {
     .idx    = 0UL,
     .mem    = dcache,
@@ -633,6 +639,10 @@ test_bam_env_destroy( test_bam_env_t * env ) {
     fd_wksp_free_laddr( bam_pending_txn_delete( bam_pending_txn_leave( env->state->pending_txns ) ) );
     env->state->pending_txns = NULL;
     env->pending_txn_mem = NULL;
+  }
+  if( env->state->decoded_multi ) {
+    fd_wksp_free_laddr( env->state->decoded_multi );
+    env->state->decoded_multi = NULL;
   }
   fd_wksp_free_laddr( fd_mcache_delete( fd_mcache_leave( env->out_mcache ) ) );
   void * dcache_shmem = fd_dcache_leave( env->out_dcache );

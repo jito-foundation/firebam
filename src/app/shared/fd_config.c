@@ -555,9 +555,9 @@ fd_config_validate( fd_config_t const * config ) {
   CFG_HAS_NON_ZERO( tiles.verify.signature_cache_size );
   CFG_HAS_NON_ZERO( tiles.verify.receive_buffer_size );
   if( FD_UNLIKELY( config->tiles.bam.enabled &&
-                   config->tiles.verify.receive_buffer_size < FD_BAM_STEM_BURST ) ) {
+                   config->tiles.verify.receive_buffer_size < FD_BAM_MAX_TXN_PER_MESSAGE ) ) {
     FD_LOG_ERR(( "`tiles.verify.receive_buffer_size` must be at least %lu when `tiles.bam.enabled` is true",
-                 FD_BAM_STEM_BURST ));
+                 FD_BAM_MAX_TXN_PER_MESSAGE ));
   }
 
   CFG_HAS_NON_ZERO( tiles.dedup.signature_cache_size );

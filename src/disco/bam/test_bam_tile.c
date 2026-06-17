@@ -76,12 +76,13 @@ fd_bam_now( void ) {
 }
 
 static void
-test_bam_fill_max_atomic_batches( bam_types_Packet             packets[ static FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ][ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ],
-                                  test_bam_packet_encode_ctx_t packet_ctx[ static FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ],
-                                  bam_types_AtomicTxnBatch     batches[ static FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ],
-                                  uint                         seq_base,
-                                  ulong                        slot_base ) {
-  for( ulong i=0UL; i<FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET; i++ ) {
+test_bam_fill_full_txn_batches( bam_types_Packet             (* packets)[ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ],
+                                test_bam_packet_encode_ctx_t *  packet_ctx,
+                                bam_types_AtomicTxnBatch *      batches,
+                                ulong                           batch_cnt,
+                                uint                            seq_base,
+                                ulong                           slot_base ) {
+  for( ulong i=0UL; i<batch_cnt; i++ ) {
     fd_memset( packets[ i ], 0, sizeof(packets[ i ]) );
     for( ulong j=0UL; j<FD_BAM_MAX_TXN_PER_ATOMIC_BATCH; j++ ) {
       packets[ i ][ j ].data.size      = 1U;
@@ -94,6 +95,31 @@ test_bam_fill_max_atomic_batches( bam_types_Packet             packets[ static F
     packet_ctx[ i ] = (test_bam_packet_encode_ctx_t){
       .packets    = packets[ i ],
       .packet_cnt = FD_BAM_MAX_TXN_PER_ATOMIC_BATCH
+    };
+
+    batches[ i ] = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
+    batches[ i ].seq_id            = (uint32_t)( seq_base + (uint)i );
+    batches[ i ].max_schedule_slot = slot_base + i;
+    batches[ i ].packets.funcs.encode = test_bam_encode_packets_cb;
+    batches[ i ].packets.arg          = &packet_ctx[ i ];
+  }
+}
+
+static void
+test_bam_fill_single_txn_batches( bam_types_Packet *             packets,
+                                  test_bam_packet_encode_ctx_t * packet_ctx,
+                                  bam_types_AtomicTxnBatch *     batches,
+                                  ulong                          batch_cnt,
+                                  uint                           seq_base,
+                                  ulong                          slot_base ) {
+  for( ulong i=0UL; i<batch_cnt; i++ ) {
+    packets[ i ] = (bam_types_Packet)bam_types_Packet_init_default;
+    packets[ i ].data.size      = 1U;
+    packets[ i ].data.bytes[ 0 ] = (uchar)( 'a' + (int)( i % 26UL ) );
+
+    packet_ctx[ i ] = (test_bam_packet_encode_ctx_t){
+      .packets    = &packets[ i ],
+      .packet_cnt = 1UL
     };
 
     batches[ i ] = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
@@ -986,14 +1012,14 @@ test_bam_pending_over_stem_burst_drains_in_multiple_passes( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  bam_types_Packet packets[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ][ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
-  test_bam_packet_encode_ctx_t packet_ctx[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ];
-  bam_types_AtomicTxnBatch batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ];
-  test_bam_fill_max_atomic_batches( packets, packet_ctx, batches, 900U, 900UL );
+  bam_types_Packet packets[ FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST ][ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
+  test_bam_packet_encode_ctx_t packet_ctx[ FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST ];
+  bam_types_AtomicTxnBatch batches[ FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST ];
+  test_bam_fill_full_txn_batches( packets, packet_ctx, batches, FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST, 900U, 900UL );
 
   uchar protobuf[ TEST_BAM_PROTOBUF_BUF_SZ ];
   size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( batches,
-                                                                       FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET,
+                                                                       FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST,
                                                                        protobuf,
                                                                        sizeof(protobuf) );
   fd_bam_client_grpc_rx_msg( state,
@@ -1012,13 +1038,13 @@ test_bam_pending_over_stem_burst_drains_in_multiple_passes( fd_wksp_t * wksp ) {
   FD_TEST( test_bam_env_drain_pending_txns( env ) == FD_BAM_STEM_BURST );
   FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
   FD_TEST( state->metrics.transaction_published_cnt == FD_BAM_STEM_BURST );
-  FD_TEST( state->metrics.atomic_batch_published_cnt == FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
-  FD_TEST( state->metrics.ingress_batch_published_cnt == FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST );
+  FD_TEST( state->metrics.ingress_batch_published_cnt == FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST );
 
   FD_TEST( test_bam_env_drain_pending_txns( env ) == 1UL );
   FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
   FD_TEST( state->metrics.transaction_published_cnt == FD_BAM_STEM_BURST + 1UL );
-  FD_TEST( state->metrics.ingress_batch_published_cnt == FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL );
+  FD_TEST( state->metrics.ingress_batch_published_cnt == FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST + 1UL );
 
   fd_frag_meta_t const * last_meta = &env->out_mcache[ FD_BAM_STEM_BURST ];
   fd_txn_m_t const * last = fd_chunk_to_laddr_const( state->verify_out.mem, last_meta->chunk );
@@ -1068,49 +1094,56 @@ test_bam_queue_full_rejects_whole_batch_without_partial_enqueue( fd_wksp_t * wks
 }
 
 static void
-test_bam_multiple_batches_accept_limit_counts( fd_wksp_t * wksp ) {
-  /* The transactional decoder should still accept packets exactly at both hard
-     limits: 5 txns per AtomicTxnBatch and the receive-window batch burst. */
+test_bam_multiple_batches_accept_full_txn_count( fd_wksp_t * wksp,
+                                                 ulong       batch_cnt,
+                                                 uint        seq_base,
+                                                 ulong       slot_base ) {
+  FD_TEST( batch_cnt <= FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE );
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  ulong const expected_txn_cnt = FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET * FD_BAM_MAX_TXN_PER_ATOMIC_BATCH;
+  ulong const expected_txn_cnt = batch_cnt * FD_BAM_MAX_TXN_PER_ATOMIC_BATCH;
   zero_meta_ts( env->out_mcache, expected_txn_cnt );
 
-  bam_types_Packet packets[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ][ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
-  test_bam_packet_encode_ctx_t packet_ctx[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ];
-  bam_types_AtomicTxnBatch batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET ];
-  test_bam_fill_max_atomic_batches( packets, packet_ctx, batches, 700U, 100UL );
+  static bam_types_Packet packets[ FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ][ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
+  static test_bam_packet_encode_ctx_t packet_ctx[ FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ];
+  static bam_types_AtomicTxnBatch batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ];
+  test_bam_fill_full_txn_batches( packets, packet_ctx, batches, batch_cnt, seq_base, slot_base );
 
   uchar protobuf[ TEST_BAM_PROTOBUF_BUF_SZ ];
   size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( batches,
-                                                                       FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET,
+                                                                       batch_cnt,
                                                                        protobuf,
                                                                        sizeof( protobuf ) );
-
   fd_bam_client_grpc_rx_msg( state,
                              protobuf,
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == expected_txn_cnt );
-  FD_TEST( test_bam_env_drain_pending_txns( env ) == expected_txn_cnt );
+  FD_TEST( test_bam_env_drain_all_pending_txns( env ) == expected_txn_cnt );
+  FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
 
   FD_TEST( state->metrics.transaction_published_cnt == expected_txn_cnt );
-  FD_TEST( state->metrics.atomic_batch_published_cnt == FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
+  FD_TEST( state->metrics.ingress_batch_published_cnt == batch_cnt );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == batch_cnt );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+  FD_TEST( state->metrics.transaction_rejected_backpressure_cnt == 0UL );
+  FD_TEST( state->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ] == 0UL );
 
   fd_frag_meta_t * meta = env->out_mcache;
-  FD_TEST( meta[0].seq == 0UL );
-  FD_TEST( meta[ expected_txn_cnt-1UL ].seq == expected_txn_cnt-1UL );
-
-  fd_txn_m_t * first = fd_chunk_to_laddr( state->verify_out.mem, meta[0].chunk );
-  fd_txn_m_t * last  = fd_chunk_to_laddr( state->verify_out.mem, meta[ expected_txn_cnt-1UL ].chunk );
-  FD_TEST( first->bam.seq_id == 700U );
-  FD_TEST( first->bam.revert_on_error == 1U );
-  FD_TEST( first->bam.txn_cnt == FD_BAM_MAX_TXN_PER_ATOMIC_BATCH );
-  FD_TEST( last->bam.seq_id == 700U + FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET - 1U );
-  FD_TEST( last->bam.revert_on_error == 1U );
-  FD_TEST( last->bam.txn_cnt == FD_BAM_MAX_TXN_PER_ATOMIC_BATCH );
+  for( ulong i=0UL; i<expected_txn_cnt; i++ ) {
+    ulong batch_idx = i / FD_BAM_MAX_TXN_PER_ATOMIC_BATCH;
+    ulong txn_idx   = i % FD_BAM_MAX_TXN_PER_ATOMIC_BATCH;
+    FD_TEST( meta[ i ].seq == i );
+    fd_txn_m_t * txnm = fd_chunk_to_laddr( state->verify_out.mem, meta[ i ].chunk );
+    FD_TEST( txnm->bam.seq_id == seq_base + (uint)batch_idx );
+    FD_TEST( txnm->bam.txn_cnt == FD_BAM_MAX_TXN_PER_ATOMIC_BATCH );
+    FD_TEST( txnm->bam.batch_idx == (uchar)txn_idx );
+    FD_TEST( txnm->bam.revert_on_error == 1U );
+    FD_TEST( txnm->block_engine.bundle_id == (ulong)( seq_base + (uint)batch_idx ) + 1UL );
+    FD_TEST( txnm->block_engine.bundle_txn_cnt == fd_ulong_if( txn_idx==0UL, FD_BAM_MAX_TXN_PER_ATOMIC_BATCH, 0UL ) );
+  }
 
   test_bam_env_destroy( env );
 }
@@ -1562,6 +1595,7 @@ test_bam_multiple_batches_do_not_partially_publish_on_corruption( fd_wksp_t * wk
   FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
   FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 1UL );
   FD_TEST( state->feedback_queue_depth == 1UL );
+  FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
 
   test_bam_prepare_scheduler_stream( state );
   g_clock = (long)15e9;
@@ -1584,77 +1618,100 @@ test_bam_multiple_batches_do_not_partially_publish_on_corruption( fd_wksp_t * wk
   test_bam_env_destroy( env );
 }
 
+#define TEST_BAM_MULTI_BATCH_WRAPPER_MAX (FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE + 2UL)
+
 static void
-test_bam_multiple_batches_reject_excess_batch_count( fd_wksp_t * wksp ) {
+test_bam_multiple_batches_accept_message_limit( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
-  zero_meta_ts( env->out_mcache, FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
 
-  bam_types_Packet packets[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL ];
-  test_bam_packet_encode_ctx_t packet_ctx[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL ];
-  bam_types_AtomicTxnBatch batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL ];
+  uint const  seq_base  = 900U;
+  ulong const batch_cnt = FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE;
+  zero_meta_ts( env->out_mcache, batch_cnt );
 
-  for( size_t i=0UL; i<FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL; i++ ) {
-    packets[ i ] = (bam_types_Packet)bam_types_Packet_init_default;
-    packets[ i ].data.size      = 1U;
-    packets[ i ].data.bytes[ 0 ] = (uchar)( 'a' + (int)( i % 26UL ) );
-
-    packet_ctx[ i ] = (test_bam_packet_encode_ctx_t){
-      .packets    = &packets[ i ],
-      .packet_cnt = 1UL
-    };
-
-    batches[ i ] = (bam_types_AtomicTxnBatch)bam_types_AtomicTxnBatch_init_default;
-    batches[ i ].seq_id            = (uint32_t)(800U + i);
-    batches[ i ].max_schedule_slot = 200UL + i;
-    batches[ i ].packets.funcs.encode = test_bam_encode_packets_cb;
-    batches[ i ].packets.arg          = &packet_ctx[ i ];
-  }
+  bam_types_Packet packets[ TEST_BAM_MULTI_BATCH_WRAPPER_MAX ];
+  test_bam_packet_encode_ctx_t packet_ctx[ TEST_BAM_MULTI_BATCH_WRAPPER_MAX ];
+  bam_types_AtomicTxnBatch batches[ TEST_BAM_MULTI_BATCH_WRAPPER_MAX ];
+  test_bam_fill_single_txn_batches( packets, packet_ctx, batches, batch_cnt, seq_base, 300UL );
 
   uchar protobuf[ TEST_BAM_PROTOBUF_BUF_SZ ];
   size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( batches,
-                                                                       FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET + 1UL,
+                                                                       batch_cnt,
                                                                        protobuf,
                                                                        sizeof( protobuf ) );
   fd_bam_client_grpc_rx_msg( state,
                              protobuf,
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-  FD_TEST( test_bam_env_drain_pending_txns( env ) == FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
+  FD_TEST( test_bam_env_drain_all_pending_txns( env ) == batch_cnt );
 
-  FD_TEST( state->metrics.transaction_published_cnt == FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
+  FD_TEST( state->metrics.transaction_published_cnt == batch_cnt );
+  FD_TEST( state->metrics.ingress_batch_published_cnt == batch_cnt );
   FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
-  FD_TEST( state->feedback_queue_depth == 1UL );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+  FD_TEST( state->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ] == 0UL );
+
+  fd_frag_meta_t * meta = env->out_mcache;
+  for( ulong i=0UL; i<batch_cnt; i++ ) {
+    FD_TEST( meta[ i ].seq == i );
+    fd_txn_m_t * txnm = fd_chunk_to_laddr( state->verify_out.mem, meta[ i ].chunk );
+    FD_TEST( txnm->bam.seq_id == seq_base + (uint)i );
+    FD_TEST( txnm->bam.txn_cnt == 1U );
+  }
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_multiple_batches_overflow_results_each_excess( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  uint const  seq_base   = 1200U;
+  ulong const excess_cnt = 2UL;
+  ulong const batch_cnt = FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE + excess_cnt;
+  zero_meta_ts( env->out_mcache, FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE );
+
+  bam_types_Packet packets[ TEST_BAM_MULTI_BATCH_WRAPPER_MAX ];
+  test_bam_packet_encode_ctx_t packet_ctx[ TEST_BAM_MULTI_BATCH_WRAPPER_MAX ];
+  bam_types_AtomicTxnBatch batches[ TEST_BAM_MULTI_BATCH_WRAPPER_MAX ];
+  test_bam_fill_single_txn_batches( packets, packet_ctx, batches, batch_cnt, seq_base, 400UL );
+
+  uchar protobuf[ TEST_BAM_PROTOBUF_BUF_SZ ];
+  size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( batches,
+                                                                       batch_cnt,
+                                                                       protobuf,
+                                                                       sizeof( protobuf ) );
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( test_bam_env_drain_all_pending_txns( env ) == FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE );
+
+  FD_TEST( state->metrics.transaction_published_cnt == FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE );
+  FD_TEST( state->metrics.ingress_batch_published_cnt == FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
+  FD_TEST( state->feedback_queue_depth == excess_cnt );
+  FD_TEST( state->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ] == 1UL );
 
   fd_frag_meta_t * meta = env->out_mcache;
   FD_TEST( meta[0].seq == 0UL );
-  FD_TEST( meta[FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET-1UL].seq == FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET-1UL );
+  FD_TEST( meta[FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE-1UL].seq == FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE-1UL );
   fd_txn_m_t * first = fd_chunk_to_laddr( state->verify_out.mem, meta[0].chunk );
-  fd_txn_m_t * last  = fd_chunk_to_laddr( state->verify_out.mem, meta[FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET-1UL].chunk );
-  FD_TEST( first->bam.seq_id == 800U );
-  FD_TEST( last->bam.seq_id == 800U + FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET - 1U );
+  fd_txn_m_t * last  = fd_chunk_to_laddr( state->verify_out.mem, meta[FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE-1UL].chunk );
+  FD_TEST( first->bam.seq_id == seq_base );
+  FD_TEST( last->bam.seq_id == seq_base + FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE - 1U );
 
-  test_bam_prepare_scheduler_stream( state );
-  g_clock = (long)22e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
-  FD_TEST( state->feedback_queue_depth == 0UL );
-
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-  FD_TEST( result->seq_id == 800U + FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET );
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason ==
-           bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 0U );
+  for( ulong i=0UL; i<excess_cnt; i++ ) {
+    fd_bam_bundle_result_t const * result =
+        &state->bam_results[ (ushort)(( state->bam_results_head + i ) % FD_BAM_MAX_PENDING_RESULTS) ];
+    FD_TEST( result->seq_id == seq_base + FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE + (uint)i );
+    FD_TEST( result->bundle_err == FD_BAM_BUNDLE_ERR_DESER );
+    FD_TEST( result->deser_reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
+    FD_TEST( result->deser_index == 0U );
+  }
 
   test_bam_env_destroy( env );
 }
@@ -5856,7 +5913,7 @@ main( int     argc,
   if( cpu_idx > fd_shmem_cpu_cnt() ) cpu_idx = 0UL;
 
   char const * _page_sz = fd_env_strip_cmdline_cstr ( &argc, &argv, "--page-sz",     NULL, "normal"                     );
-  ulong        page_cnt = fd_env_strip_cmdline_ulong( &argc, &argv, "--page-cnt",    NULL, 256UL                        );
+  ulong        page_cnt = fd_env_strip_cmdline_ulong( &argc, &argv, "--page-cnt",    NULL, 2048UL                       );
   ulong        numa_idx = fd_env_strip_cmdline_ulong( &argc, &argv, "--numa-idx",    NULL, fd_shmem_numa_idx( cpu_idx ) );
 
   fd_wksp_t * wksp = fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ), page_cnt, fd_shmem_cpu_idx( numa_idx ), "bam-test", 16UL );
@@ -5873,13 +5930,15 @@ main( int     argc,
   test_bam_independent_batches_queue_and_drain_in_order( wksp );
   test_bam_pending_over_stem_burst_drains_in_multiple_passes( wksp );
   test_bam_queue_full_rejects_whole_batch_without_partial_enqueue( wksp );
-  test_bam_multiple_batches_accept_limit_counts( wksp );
+  test_bam_multiple_batches_accept_full_txn_count( wksp, FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST, 700U, 100UL );
+  test_bam_multiple_batches_accept_full_txn_count( wksp, FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE, 1500U, 500UL );
   test_bam_scheduler_truncated_message_dropped( wksp );
   test_bam_scheduler_trailing_corruption_does_not_publish( wksp );
   test_bam_scheduler_rejects_invalid_custom_decode_fields( wksp );
   test_bam_scheduler_v0_oneof_uses_last_field( wksp );
   test_bam_multiple_batches_do_not_partially_publish_on_corruption( wksp );
-  test_bam_multiple_batches_reject_excess_batch_count( wksp );
+  test_bam_multiple_batches_accept_message_limit( wksp );
+  test_bam_multiple_batches_overflow_results_each_excess( wksp );
   test_bam_bundle_forwards_without_builder_info( wksp );
   test_bam_bundle_revert_flag_cases( wksp );
   test_bam_non_revert_multi_packet_rejected_by_current_packet_stream_contract( wksp );

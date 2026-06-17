@@ -150,6 +150,12 @@ typedef struct {
   uchar               deser_reason;                            /* bam_types_DeserializationErrorReason enum value */
 } fd_bam_batch_ctx_t;
 
+typedef struct {
+  bam_types_AtomicTxnBatch batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ];
+  fd_bam_batch_ctx_t       states [ FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ];
+  uint                   batch_cnt;
+} fd_bam_decoded_multi_batch_t;
+
 /* fd_bam_tpu_update_state_t tracks which TPU contact was last applied or still needs retry.
    Issue:
    - Two independent code paths can call fd_bam_gossip_update() around the same
@@ -317,6 +323,7 @@ struct fd_bam_tile {
   fd_bam_out_ctx_t    plugin_out;                    /* Output ring for plugin status updates */
   fd_bam_out_ctx_t    gossip_out;       /* Stem output buffer used for BAM gossip updates (Full firedancer, not Frankendncer) */
   fd_bam_out_ctx_t    shred_out;        /* Stem output buffer used for BAM shred receiver updates */
+  fd_bam_decoded_multi_batch_t * decoded_multi; /* Tile-owned staging buffer for MultipleAtomicTxnBatch decode */
   ulong *             bam_status_fseq; /* Shared latch written with BAM status bits (bit 0 = override active) */
   ulong *             bam_gossip_fseq; /* Gossip tile's bam_gossip consumer fseq, read-only for activation handoff. */
   ulong               bam_gossip_handoff_target; /* Consumer fseq value required before first activating bam_status. */

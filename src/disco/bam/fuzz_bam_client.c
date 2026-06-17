@@ -88,6 +88,7 @@ static struct {
   ulong            key_resp_depth;
   ulong            key_req_mtu; /* Max sign payload size; kept <= 512 */
 
+  fd_bam_decoded_multi_batch_t decoded_multi_storage[1];
   fd_bam_tile_t tile_storage[1]; /* Backing storage for tile pointer */
 } bam_fuzz_ctx;
 
@@ -278,6 +279,7 @@ bam_fuzz_env_init( int *    pargc,
 
   bam_fuzz_ctx.tile = bam_fuzz_ctx.tile_storage;
   fd_memset( bam_fuzz_ctx.tile, 0, sizeof( fd_bam_tile_t ) );
+  bam_fuzz_ctx.tile->decoded_multi = bam_fuzz_ctx.decoded_multi_storage;
   bam_fuzz_ctx.tile->bam_leader_state.slot = ULONG_MAX;
 
   /* Build two outputs: verify (0) and gossip (1) */
@@ -555,6 +557,7 @@ bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
   fd_memset( ctx, 0, sizeof( fd_bam_tile_t ) );
   bam_fuzz_reset_reusable_storage();
+  ctx->decoded_multi = bam_fuzz_ctx.decoded_multi_storage;
 
   fd_memset( bam_fuzz_ctx.keyswitch, 0, sizeof( bam_fuzz_ctx.keyswitch ) );
   bam_fuzz_ctx.keyswitch->magic = FD_KEYSWITCH_MAGIC;

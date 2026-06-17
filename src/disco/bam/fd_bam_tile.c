@@ -78,7 +78,11 @@ pending:
 
 static ulong
 scratch_align( void ) {
-  return fd_ulong_max( fd_ulong_max( fd_ulong_max( alignof(fd_bam_tile_t), fd_grpc_client_align() ), fd_alloc_align() ), bam_pending_txn_align() );
+  return fd_ulong_max( fd_ulong_max( fd_ulong_max( fd_ulong_max( alignof(fd_bam_tile_t),
+                                                                  fd_grpc_client_align() ),
+                                                     fd_alloc_align() ),
+                                      bam_pending_txn_align() ),
+                       alignof(fd_bam_decoded_multi_batch_t) );
 }
 
 static ulong
@@ -89,6 +93,7 @@ scratch_footprint( fd_topo_tile_t const * tile ) {
   l = FD_LAYOUT_APPEND( l, fd_grpc_client_align(),    fd_grpc_client_footprint( tile->bam.buf_sz ) );
   l = FD_LAYOUT_APPEND( l, fd_alloc_align(),          fd_alloc_footprint()                            );
   l = FD_LAYOUT_APPEND( l, bam_pending_txn_align(),   bam_pending_txn_footprint( pending_max )        );
+  l = FD_LAYOUT_APPEND( l, alignof(fd_bam_decoded_multi_batch_t), sizeof(fd_bam_decoded_multi_batch_t)       );
   return FD_LAYOUT_FINI( l, scratch_align() );
 }
 
@@ -1360,6 +1365,8 @@ privileged_init( fd_topo_t const *      topo,
   void *             alloc_mem   = FD_SCRATCH_ALLOC_APPEND( l, fd_alloc_align(),          fd_alloc_footprint()                            );
   ulong              pending_max = tile->bam.out_depth;
   void *             pending_mem = FD_SCRATCH_ALLOC_APPEND( l, bam_pending_txn_align(),    bam_pending_txn_footprint( pending_max )        );
+  void *             decoded_multi_mem =
+      FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_bam_decoded_multi_batch_t), sizeof(fd_bam_decoded_multi_batch_t) );
   ulong              scratch_end = FD_SCRATCH_ALLOC_FINI( l, scratch_align() );
   (void)alloc_mem; /* potentially unused */
 
@@ -1373,6 +1380,7 @@ privileged_init( fd_topo_t const *      topo,
   memset( ctx, 0, sizeof(fd_bam_tile_t) );
   ctx->grpc_client_mem = grpc_mem;
   ctx->pending_txns    = bam_pending_txn_join( bam_pending_txn_new( pending_mem, pending_max ) );
+  ctx->decoded_multi   = (fd_bam_decoded_multi_batch_t *)decoded_multi_mem;
   ctx->grpc_buf_max    = tile->bam.buf_sz;
   ctx->tcp_sock        = -1;
   ctx->admin_rpc_fd    = FD_BAM_ADMIN_RPC_FD_NONE;

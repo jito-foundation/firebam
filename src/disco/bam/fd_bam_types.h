@@ -12,9 +12,12 @@
 /* FD_BAM_MAX_PENDING_RESULTS is the bundle result queue depth, so long disconnects
  * don't drop SchedulerMessage payloads. */
 #define FD_BAM_MAX_PENDING_RESULTS 2048U
-#define FD_BAM_MAX_TXN_PER_ATOMIC_BATCH        5U
-#define FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET   8U
-#define FD_BAM_STEM_BURST                      ((ulong)FD_BAM_MAX_TXN_PER_ATOMIC_BATCH * (ulong)FD_BAM_MAX_ATOMIC_BATCHES_PER_PACKET)
+#define FD_BAM_MAX_TXN_PER_ATOMIC_BATCH             5U
+/* Stem burst sizing is independent from scheduler message decode capacity. */
+#define FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST   8U
+#define FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE       128U
+#define FD_BAM_MAX_TXN_PER_MESSAGE                  ((ulong)FD_BAM_MAX_TXN_PER_ATOMIC_BATCH * (ulong)FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE)
+#define FD_BAM_STEM_BURST                           ((ulong)FD_BAM_MAX_TXN_PER_ATOMIC_BATCH * (ulong)FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST)
 #define FD_BAM_BUNDLE_ERR_NONE            (0U)
 #define FD_BAM_BUNDLE_ERR_DESER           (1U)
 
