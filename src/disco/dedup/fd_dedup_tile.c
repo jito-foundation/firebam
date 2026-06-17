@@ -164,7 +164,11 @@ after_frag( fd_dedup_ctx_t *    ctx,
   }
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  /* BAM derives bundle_id from seq_id; a repeated seq_id is still a new
+     atomic-batch boundary when batch_idx returns to zero. */
+  if( FD_UNLIKELY( txnm->block_engine.bundle_id &&
+                   ( (txnm->block_engine.bundle_id!=ctx->bundle_id) ||
+                     (txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txnm->bam.batch_idx && ctx->bundle_idx) ) ) ) {
     ctx->bundle_failed = 0;
     ctx->bundle_id     = txnm->block_engine.bundle_id;
     ctx->bundle_idx    = 0UL;

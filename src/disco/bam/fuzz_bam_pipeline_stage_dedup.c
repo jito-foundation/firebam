@@ -161,17 +161,6 @@ bam_fuzz_dedup_frag( bam_fuzz_dedup_t * h,
     .dedup_after  = h->stem_seqs[ BAM_FUZZ_DEDUP_OUT_IDX ],
   };
 
-  fd_txn_m_t const * txnm =
-      (fd_txn_m_t const *)fd_chunk_to_laddr_const( h->ctx->in[ BAM_FUZZ_DEDUP_IN_VERIFY_IDX ].mem,
-                                                   meta->chunk );
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id &&
-                   !txnm->bam.batch_idx &&
-                   h->ctx->bundle_id==txnm->block_engine.bundle_id &&
-                   h->ctx->bundle_idx ) ) {
-    h->ctx->bundle_id  = 0UL;
-    h->ctx->bundle_idx = 0UL;
-  }
-
   during_frag( h->ctx, BAM_FUZZ_DEDUP_IN_VERIFY_IDX, seq, meta->sig, meta->chunk, meta->sz, meta->ctl );
   after_frag( h->ctx, BAM_FUZZ_DEDUP_IN_VERIFY_IDX, seq, meta->sig, meta->sz, meta->tsorig, meta->tspub, h->stem );
 

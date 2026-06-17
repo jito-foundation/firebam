@@ -1853,7 +1853,8 @@ during_frag( fd_pack_ctx_t * ctx,
 
       if( FD_LIKELY( !ctx->current_bundle->bundle ||
                      !ctx->current_bundle_bam->is_bam ||
-                     ctx->current_bundle->id!=bam_bundle_id ) ) {
+                     ctx->current_bundle->id!=bam_bundle_id ||
+                     ( !txnm->bam.batch_idx && ctx->current_bundle->txn_received ) ) ) {
         if( FD_UNLIKELY( ctx->current_bundle->bundle &&
                          ctx->current_bundle_bam->is_bam &&
                          ctx->current_bundle->txn_received!=ctx->current_bundle->txn_cnt ) ) {
@@ -2233,7 +2234,10 @@ after_frag( fd_pack_ctx_t *     ctx,
           /* Same-sequence resends may replace pending work. Cross-sequence
              duplicates must leave the old sequence tracked to preserve its
              eventual durable result. */
-          if( FD_LIKELY( duplicate->state==PACK_BAM_WORK_STATE_PENDING && duplicate->seq_id==seq_id ) ) {
+          if( FD_LIKELY( duplicate->state==PACK_BAM_WORK_STATE_PENDING &&
+                         duplicate->seq_id==seq_id &&
+                         duplicate->scheduler_gen==ctx->current_bundle_bam->scheduler_gen &&
+                         duplicate->max_schedule_slot==max_schedule_slot ) ) {
             (void)pack_tile_bam_work_swap_remove( ctx, duplicate_work_idx );
             ulong duplicate_deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)(void const *)bam_sig[ 0 ] );
             FD_MCNT_INC( PACK, TRANSACTION_DELETED, duplicate_deleted );

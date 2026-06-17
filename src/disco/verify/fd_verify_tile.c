@@ -118,7 +118,9 @@ after_frag( fd_verify_ctx_t *   ctx,
 
   int is_bundle = !!txnm->block_engine.bundle_id;
 
-  if( FD_UNLIKELY( is_bundle & (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  if( FD_UNLIKELY( is_bundle &&
+                   ( (txnm->block_engine.bundle_id!=ctx->bundle_id) ||
+                     (txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txnm->bam.batch_idx) ) ) ) {
     ctx->bundle_failed = 0;
     ctx->bundle_id     = txnm->block_engine.bundle_id;
   }

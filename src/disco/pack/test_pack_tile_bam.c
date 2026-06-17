@@ -624,7 +624,7 @@ test_pack_tile_bam_same_seq_pending_duplicate_replaces_before_insert( void ) {
   FD_TEST( h->ctx->bam_pending_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_ENTERED_IDX ] == 1UL );
 
-  test_pack_tile_complete_bam_bundle( h, new_txn, 1U, 10U, 101UL, 101UL );
+  test_pack_tile_complete_bam_bundle( h, new_txn, 1U, 10U, 100UL, 100UL );
 
   test_pack_tile_assert_deleted_sig( new_txn[ 0 ].txnp->payload + 1UL );
   FD_TEST( test_insert_fini_call_cnt == 1UL );
@@ -644,6 +644,56 @@ test_pack_tile_bam_same_seq_pending_duplicate_replaces_before_insert( void ) {
   FD_TEST( h->ctx->bam_work[ work_idx ].seq_id == 10U );
   FD_TEST( h->ctx->bam_work[ work_idx ].state == PACK_BAM_WORK_STATE_PENDING );
   FD_TEST( h->ctx->bam_work[ work_idx ].txn_cnt == 1U );
+
+  test_pack_tile_harness_delete( h );
+}
+
+static void
+test_pack_tile_bam_same_seq_different_slot_pending_duplicate_rejected_before_insert( void ) {
+  test_pack_tile_harness_t h[1];
+  uchar                    old_sigs[ 2UL * sizeof(fd_ed25519_sig_t) ];
+  fd_txn_e_t               new_txn[1];
+
+  test_pack_tile_harness_new( h );
+  fd_memset( new_txn, 0, sizeof(new_txn) );
+
+  test_pack_tile_fill_sig( old_sigs + 0UL, 21U );
+  test_pack_tile_fill_sig( old_sigs + sizeof(fd_ed25519_sig_t), 31U );
+  fd_memcpy( new_txn[ 0 ].txnp->payload + 1UL, old_sigs, sizeof(fd_ed25519_sig_t) );
+  new_txn[ 0 ].txnp->scheduler_arrival_time_nanos = 20L;
+
+  FD_TEST( pack_tile_track_bam_work( h->ctx, old_sigs, 10L, 10U, 0U, 100UL, 100UL, 100UL, 2U ) );
+  FD_TEST( h->ctx->bam_work_cnt == 1UL );
+  FD_TEST( h->ctx->bam_pending_work_cnt == 1UL );
+  FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_ENTERED_IDX ] == 1UL );
+
+  test_pack_tile_complete_bam_bundle( h, new_txn, 1U, 10U, 101UL, 101UL );
+
+  FD_TEST( test_delete_call_cnt == 0UL );
+  FD_TEST( test_insert_fini_call_cnt == 0UL );
+  FD_TEST( test_bundle_cancel_call_cnt == 1UL );
+  FD_TEST( test_bundle_cancel_last_txn_cnt == 1UL );
+  FD_TEST( h->ctx->current_bundle->bundle == NULL );
+  FD_TEST( h->ctx->current_bundle_bam->is_bam == 0 );
+
+  FD_TEST( h->ctx->bam_work_cnt == 1UL );
+  FD_TEST( h->ctx->bam_pending_work_cnt == 1UL );
+  FD_TEST( h->ctx->bam_scheduled_work_cnt == 0UL );
+  FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_REJECTED_PRE_PENDING_IDX ] == 1UL );
+
+  ulong work_idx = pack_tile_bam_work_find_by_sig0( h->ctx, old_sigs );
+  FD_TEST( work_idx<h->ctx->bam_work_cnt );
+  FD_TEST( h->ctx->bam_work[ work_idx ].seq_id == 10U );
+  FD_TEST( h->ctx->bam_work[ work_idx ].max_schedule_slot == 100UL );
+  FD_TEST( h->ctx->bam_work[ work_idx ].state == PACK_BAM_WORK_STATE_PENDING );
+  FD_TEST( h->ctx->bam_work[ work_idx ].txn_cnt == 2U );
+
+  FD_TEST( h->ctx->bam_pending_result_cnt == 1UL );
+  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+  fd_bam_bundle_result_t const * dup = test_pack_tile_assert_last_result( h, 10U, 101UL, 1U, FD_BAM_SCHED_ERR_NONE, 1U );
+  FD_TEST( dup->transaction_err[ 0 ] == bam_types_TransactionErrorReason_ALREADY_PROCESSED );
+  FD_TEST( dup->sanitize_success[ 0 ] == 1U );
+  FD_TEST( h->ctx->bam_pending_result_cnt == 0UL );
 
   test_pack_tile_harness_delete( h );
 }
@@ -1006,6 +1056,7 @@ main( int     argc,
   test_pack_tile_bam_stale_max_schedule_slot_rejected();
   test_pack_tile_bam_stale_results_drain_without_drop();
   test_pack_tile_bam_same_seq_pending_duplicate_replaces_before_insert();
+  test_pack_tile_bam_same_seq_different_slot_pending_duplicate_rejected_before_insert();
   test_pack_tile_bam_different_seq_pending_duplicate_rejected_before_insert();
   test_pack_tile_bam_scheduled_duplicate_rejected_before_insert();
   test_pack_tile_bam_pending_result_does_not_shadow_new_work();

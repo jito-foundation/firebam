@@ -396,7 +396,9 @@ after_frag( fd_resolh_tile_t *  ctx,
     buffer.  If we later see the blockhash come to exist, we forward any
     buffered transactions to back. */
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  if( FD_UNLIKELY( txnm->block_engine.bundle_id &&
+                   ( (txnm->block_engine.bundle_id!=ctx->bundle_id) ||
+                     (txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txnm->bam.batch_idx) ) ) ) {
     ctx->bundle_failed = 0;
     ctx->bundle_id     = txnm->block_engine.bundle_id;
   }
