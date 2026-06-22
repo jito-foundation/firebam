@@ -3,7 +3,6 @@ flowchart LR
   classDef external fill:#fff4e5,stroke:#ad6b00,color:#3b2400
   classDef control fill:#f4f4f4,stroke:#777,color:#222
   classDef bam fill:#f1ecff,stroke:#6b4bb8,color:#24124d
-  classDef gap fill:#ffecec,stroke:#b84b4b,color:#4a1111
 
   subgraph firedancer["Full Firedancer topology: src/app/firedancer/topology.c"]
     net["net/sock tiles"]:::external
@@ -19,11 +18,14 @@ flowchart LR
     poh["poh"]
     shred["shred tiles"]
     replay["replay"]
+    execrp["execrp tiles"]
     tower["tower"]
     txsend["txsend"]
     sign["sign/keyguard"]
+    full_bam_ext["BAM scheduler gRPC/TLS"]:::external
+    full_bam["bam tile"]:::bam
     bundle["bundle"]:::optional
-    gui["gui/plugin/capture taps"]:::optional
+    gui["gui/event taps"]:::optional
     snapshots["snapshot tiles"]:::optional
 
     net -- net_gossvf --> gossvf
@@ -42,17 +44,26 @@ flowchart LR
     bundle -- bundle_verif --> verify
     verify -- verify_dedup --> dedup
     dedup -- dedup_resolv --> resolv
+    dedup -- dedup_resolv --> tower
     resolv -- resolv_pack --> pack
     pack -- pack_execle --> execle
     execle -- execle_poh --> poh
     pack -- pack_poh --> poh
     poh -- poh_shred --> shred
 
-    replay -- replay_out/replay_epoch --> gossip
+    replay -- replay_epoch --> gossip
+    replay -- replay_epoch --> gossvf
     replay -- replay_out --> repair
-    replay -- replay_out/replay_epoch --> tower
-    replay -- replay_out/replay_epoch --> txsend
-    replay -- replay_out/replay_epoch --> shred
+    replay -- replay_out --> tower
+    replay -- replay_epoch --> tower
+    replay -- replay_epoch --> txsend
+    replay -- replay_epoch --> shred
+    replay -- replay_out --> dedup
+    replay -- replay_out --> resolv
+    replay -- replay_out --> pack
+    replay -- replay_out --> poh
+    replay -- replay_execrp --> execrp
+    execrp -- execrp_replay --> replay
     resolv -- resolv_replay --> replay
     poh -- poh_replay --> replay
     execle -- execle_pack --> pack
@@ -60,12 +71,21 @@ flowchart LR
     gossvf -- gossvf_gossip --> gossip
     gossip -- gossip_gossvf/gossip_out --> gossvf
     gossip -- gossip_out --> repair
+    gossip -- gossip_out --> replay
+    gossip -- gossip_out --> tower
+    gossip -- gossip_out --> txsend
     gossip -- gossip_out --> verify
     gossip -- gossip_out --> shred
+    gossip -- gossip_out snapshot source updates --> snapshots
+    repair -- repair_out --> replay
     tower -- tower_out --> repair
+    tower -- tower_out --> replay
+    tower -- tower_out --> gossip
+    tower -- tower_out --> txsend
     tower -- tower_out --> shred
     txsend -- txsend_out --> verify
     txsend -- txsend_out --> replay
+    txsend -- txsend_out --> gossip
 
     gossip -- gossip_sign --> sign
     sign -- sign_gossip --> gossip
@@ -80,6 +100,20 @@ flowchart LR
     pack -- pack_sign --> sign
     sign -- sign_pack --> pack
 
+    full_bam_ext --> full_bam
+    full_bam -- bam_verif --> verify
+    full_bam -- bam_gossip contact update --> gossip
+    pack -- pack_bam_ldr latest snapshots --> full_bam
+    pack -- pack_bam_res durable results --> full_bam
+    execle -- bank_bam durable results --> full_bam
+    verify -- bank_bam verify failures --> full_bam
+    resolv -- bank_bam resolv failures --> full_bam
+    replay -- replay_out schedule hints --> full_bam
+    full_bam -- scheduler feedback stream --> full_bam_ext
+    full_bam -- bam_shred --> shred
+    full_bam -- bam_sign --> sign
+    sign -- sign_bam --> full_bam
+
     bundle -- bundle_status --> gui
     snapshots -- snapshot links --> replay
     snapshots -- snapshot links --> gossip
@@ -88,13 +122,25 @@ flowchart LR
 
     execle_busy["execle_busy fseq"]:::control
     rnonce["rnonce_ss"]:::control
+    full_bam_status["bam_status fseq"]:::control
+    full_bam_ctrl["bam_ctrl shared object"]:::control
+    full_bam_fee_cfg["bam_fee_cfg shared object"]:::control
+    full_bam_gossip_fseq["bam_gossip consumer fseq"]:::control
     execle -- writes --> execle_busy
     pack -- reads --> execle_busy
     repair -- writes --> rnonce
     shred -- reads --> rnonce
+    full_bam -- writes --> full_bam_status
+    pack -- reads --> full_bam_status
+    bundle -- reads --> full_bam_status
+    full_bam -- reads/writes --> full_bam_ctrl
+    full_bam -- writes --> full_bam_fee_cfg
+    pack -- reads --> full_bam_fee_cfg
+    gossip -- advances --> full_bam_gossip_fseq
+    full_bam -- reads --> full_bam_gossip_fseq
   end
 
-  subgraph fdctl_bam["Current BAM overlay: src/app/fdctl/topology.c only"]
+  subgraph fdctl_bam["fdctl BAM overlay: src/app/fdctl/topology.c"]
     bam_ext["BAM scheduler gRPC/TLS"]:::external
     bam["bam tile"]:::bam
     fd_quic["quic"]
@@ -105,6 +151,7 @@ flowchart LR
     bank["bank tiles"]
     pohh["pohh"]
     fd_shred["shred tiles"]
+    store["store"]
     fd_sign["sign/keyguard"]
     plugin["plugin/gui"]:::optional
     be["Block Engine gRPC/TLS"]:::external
@@ -116,17 +163,28 @@ flowchart LR
     bam_ext --> bam
     bam -- bam_verif --> fd_verify
     fd_verify -- verify_dedup --> fd_dedup
+    pohh -- gossip_dedup --> fd_dedup
+    pohh -- executed_txn --> fd_dedup
     fd_dedup -- dedup_resolh --> resolh
+    pohh -- replay_resol --> resolh
     resolh -- resolh_pack --> fd_pack
+    pohh -- executed_txn --> fd_pack
     fd_pack -- pack_bank --> bank
     fd_pack -- pack_pohh --> pohh
     bank -- bank_pohh --> pohh
+    bank -- bank_pack --> fd_pack
+    pohh -- pohh_pack --> fd_pack
+    pohh -- stake_out/crds_shred/replay_resol --> fd_shred
+    pohh -- plugin updates --> plugin
     pohh -- pohh_shred --> fd_shred
+    fd_shred -- shred_store --> store
 
     fd_pack -- pack_bam_ldr latest snapshots --> bam
     fd_pack -- pack_bam_res durable results --> bam
     bank -- bank_bam durable results --> bam
     fd_verify -- bank_bam verify failures --> bam
+    resolh -- bank_bam resolv failures --> bam
+    pohh -- replay_out schedule hints --> bam
     bam -- scheduler feedback stream --> bam_ext
     bam -- bam_shred --> fd_shred
     bam -- bam_plugi --> plugin
@@ -153,7 +211,3 @@ flowchart LR
     pohh -- writes --> pohh_shred
     fd_shred -- reads --> pohh_shred
   end
-
-  missing["BAM overlay is not wired in src/app/firedancer/topology.c yet"]:::gap
-  bam -. port target .-> missing
-  missing -. future full Firedancer result path .-> execle
