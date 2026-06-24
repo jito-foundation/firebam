@@ -21,7 +21,11 @@ fn main() -> Result<(), std::io::Error> {
     let proto_base_path = PROTO_DIR_CANDIDATES
         .into_iter()
         .map(|dir| manifest_dir.join(dir))
-        .find(|candidate| PROTO_FILES.iter().all(|file| candidate.join(file).is_file()))
+        .find(|candidate| {
+            PROTO_FILES
+                .iter()
+                .all(|file| candidate.join(file).is_file())
+        })
         .ok_or(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!(
@@ -32,8 +36,8 @@ fn main() -> Result<(), std::io::Error> {
 
     let protos = PROTO_FILES.map(|file| {
         let proto = proto_base_path.join(file);
-            println!("cargo:rerun-if-changed={}", proto.display());
-            proto
+        println!("cargo:rerun-if-changed={}", proto.display());
+        proto
     });
 
     tonic_build::configure()
