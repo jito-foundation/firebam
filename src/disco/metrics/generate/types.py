@@ -38,6 +38,7 @@ class Tile(Enum):
     GUI = 37
     METRIC = 38
     RPC = 39
+    BAM = 40
 
     RESOLH = 100
     BANK = 101
@@ -182,7 +183,10 @@ def parse_metric(tile: Optional[Tile], metric: ET.Element, enums: Dict[str, Metr
         if 'enum' in metric.attrib:
             return GaugeEnumMetric(name, tile, description, enums[metric.attrib['enum']])
         else:
-            return GaugeMetric(name, tile, description)
+            parsed = GaugeMetric(name, tile, description)
+            if 'converter' in metric.attrib:
+                parsed.converter = HistogramConverter[metric.attrib['converter'].upper()]
+            return parsed
     elif metric.tag == 'histogram':
         converter = None
         if 'converter' in metric.attrib:
