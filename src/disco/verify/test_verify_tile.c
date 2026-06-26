@@ -218,6 +218,61 @@ test_bam_atomic_verify_failure_result_owner( void ) {
       FD_TEST( seqs[ 1 ]==bam_seq_before );
     }
   }
+
+  fd_memset( ctx,           0, sizeof(fd_verify_ctx_t) );
+  fd_memset( verify_dcache, 0, sizeof(verify_dcache) );
+  fd_memset( bam_dcache,    0, sizeof(bam_dcache) );
+  fd_memset( verify_mcache, 0, sizeof(verify_mcache) );
+  fd_memset( bam_mcache,    0, sizeof(bam_mcache) );
+  seqs[ 0 ] = 0UL;
+  seqs[ 1 ] = 0UL;
+
+  ctx->out_mem    = (fd_wksp_t *)verify_dcache;
+  ctx->out_chunk0 = 0UL;
+  ctx->out_wmark  = sizeof(verify_dcache)/FD_CHUNK_SZ - 1UL;
+  ctx->out_chunk  = 0UL;
+
+  ctx->bam_result_out_mem    = (fd_wksp_t *)bam_dcache;
+  ctx->bam_result_out_idx    = 1UL;
+  ctx->bam_result_out_chunk0 = 0UL;
+  ctx->bam_result_out_wmark  = sizeof(bam_dcache)/FD_CHUNK_SZ - 1UL;
+  ctx->bam_result_out_chunk  = 0UL;
+
+  fd_txn_m_t * txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
+  *txnm = (fd_txn_m_t) {
+    .payload_sz = 0U,
+    .source_tpu = FD_TXN_M_TPU_SOURCE_BAM,
+    .bam = {
+      .max_schedule_slot = 100UL,
+      .seq_id            = 88U,
+      .txn_cnt           = 2U,
+      .batch_idx         = 0U,
+      .revert_on_error   = 0U,
+    },
+  };
+
+  after_frag( ctx, IN_IDX_BAM, 0UL, 0UL, sizeof(fd_txn_m_t), 0UL, 0UL, &stem );
+
+  FD_TEST( seqs[ 0 ]==0UL );
+  FD_TEST( seqs[ 1 ]==1UL );
+  FD_TEST( ctx->bundle_failed );
+
+  *txnm = (fd_txn_m_t) {
+    .payload_sz = 0U,
+    .source_tpu = FD_TXN_M_TPU_SOURCE_BAM,
+    .bam = {
+      .max_schedule_slot = 100UL,
+      .seq_id            = 88U,
+      .txn_cnt           = 2U,
+      .batch_idx         = 1U,
+      .revert_on_error   = 0U,
+    },
+  };
+
+  after_frag( ctx, IN_IDX_BAM, 0UL, 0UL, sizeof(fd_txn_m_t), 0UL, 0UL, &stem );
+
+  FD_TEST( seqs[ 0 ]==0UL );
+  FD_TEST( seqs[ 1 ]==1UL );
 }
 
 int

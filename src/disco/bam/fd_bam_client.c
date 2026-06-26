@@ -294,7 +294,7 @@ fd_bam_encode_committed_cb( pb_ostream_t *          stream,
     txn_res.cus_consumed               = res->consumed_cus[ i ];
     txn_res.feepayer_balance_lamports  = res->feepayer_balance_lamports[ i ];
     txn_res.loaded_accounts_data_size  = res->loaded_accounts_data_size[ i ];
-    txn_res.execution_success          = ( res->sanitize_success[ i ] && !res->transaction_err_count );
+    txn_res.execution_success          = ( res->sanitize_success[ i ] && !res->transaction_err[ i ] );
     if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
     if( FD_UNLIKELY( !pb_encode_submessage( stream, bam_types_TransactionCommittedResult_fields, &txn_res ) ) ) return false;
   }

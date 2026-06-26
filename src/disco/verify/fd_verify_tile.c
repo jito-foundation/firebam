@@ -116,13 +116,16 @@ after_frag( fd_verify_ctx_t *   ctx,
   fd_txn_t *  txnt = fd_txn_m_txn_t( txnm );
   txnm->txn_t_sz = (ushort)fd_txn_parse( fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, NULL );
 
-  int is_bundle = !!txnm->block_engine.bundle_id;
+  int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  ulong failure_group_id = txnm->block_engine.bundle_id;
+  if( FD_UNLIKELY( is_bam && txnm->bam.txn_cnt>1U ) ) failure_group_id = (1UL<<63) | (((ulong)txnm->bam.seq_id)+1UL);
+  int is_bundle = !!failure_group_id;
 
   if( FD_UNLIKELY( is_bundle &&
-                   ( (txnm->block_engine.bundle_id!=ctx->bundle_id) ||
-                     (txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txnm->bam.batch_idx) ) ) ) {
+                   ( (failure_group_id!=ctx->bundle_id) ||
+                     (is_bam && !txnm->bam.batch_idx) ) ) ) {
     ctx->bundle_failed = 0;
-    ctx->bundle_id     = txnm->block_engine.bundle_id;
+    ctx->bundle_id     = failure_group_id;
   }
 
   if( FD_UNLIKELY( is_bundle & (!!ctx->bundle_failed) ) ) {
@@ -148,7 +151,7 @@ after_frag( fd_verify_ctx_t *   ctx,
     if( FD_UNLIKELY( is_bundle ) ) ctx->bundle_failed = 1;
     /* For BAM atomic batches, txn 0 owns immediate verify failures; later
        missing members are reported by pack if the batch prefix is incomplete. */
-    if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.batch_idx==0U ) ) {
+    if( FD_UNLIKELY( is_bam && txnm->bam.batch_idx==0U ) ) {
       fd_bam_bundle_result_t bam_res = {
         .seq_id           = txnm->bam.seq_id,
         .scheduler_gen    = txnm->bam.scheduler_gen,

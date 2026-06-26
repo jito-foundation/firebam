@@ -110,34 +110,30 @@ bank_tile_publish_bam_result( fd_bank_ctx_t *               ctx,
 }
 
 static inline void
-bank_tile_maybe_publish_bam_result( fd_bank_ctx_t *   ctx,
-                                    fd_stem_context_t * stem,
-                                    fd_txn_p_t const *  txn,
-                                    ulong               slot,
-                                    int                 transaction_err_idx,
-                                    _Bool               sanitize_success,
-                                    ulong               feepayer_balance_lamports,
-                                    uint                loaded_accounts_data_size ) {
-  if( FD_UNLIKELY( ctx->bam_out_idx==ULONG_MAX ) ) return;
-  if( FD_UNLIKELY( txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM || txn->bam.revert_on_error ) ) return;
-
+bank_tile_fill_bam_nonrevert_result( fd_bam_bundle_result_t * res,
+                                     fd_txn_p_t const *       txn,
+                                     ulong                    result_idx,
+                                     int                      transaction_err_idx,
+                                     _Bool                    sanitize_success,
+                                     ulong                    feepayer_balance_lamports,
+                                     uint                     loaded_accounts_data_size ) {
   _Bool committed = !!( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
-  fd_bam_bundle_result_t res = fd_bam_result_base( txn->bam.seq_id, txn->bam.scheduler_gen, slot, 1U );
-  res.execution_success = committed;
-  res.consumed_cus[ 0 ] = txn->execle_cu.actual_consumed_cus;
-  res.feepayer_balance_lamports[ 0 ] = feepayer_balance_lamports;
-  res.loaded_accounts_data_size[ 0 ] = loaded_accounts_data_size;
-  if( FD_LIKELY( sanitize_success ) ) fd_bam_result_mark_sanitize_success( &res, 0UL );
+  res->consumed_cus[ result_idx ] = txn->execle_cu.actual_consumed_cus;
+  res->feepayer_balance_lamports[ result_idx ] = feepayer_balance_lamports;
+  res->loaded_accounts_data_size[ result_idx ] = loaded_accounts_data_size;
+  if( FD_LIKELY( sanitize_success ) ) fd_bam_result_mark_sanitize_success( res, result_idx );
 
   if( FD_UNLIKELY( !sanitize_success ) ) {
-    fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_SANITIZE_FAILURE );
-  } else if( FD_UNLIKELY( transaction_err_idx!=FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ) ) {
-    fd_bam_result_add_txn_error( &res, 0UL, fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) );
+    fd_bam_result_mark_not_committed_txn_error( res, result_idx, bam_types_TransactionErrorReason_SANITIZE_FAILURE );
   } else if( FD_UNLIKELY( !committed ) ) {
-    fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+    fd_bam_result_mark_not_committed_txn_error( res,
+                                                result_idx,
+                                                transaction_err_idx!=FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ?
+                                                  fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) :
+                                                  bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+  } else if( FD_UNLIKELY( transaction_err_idx!=FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ) ) {
+    fd_bam_result_add_txn_error( res, result_idx, fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) );
   }
-
-  bank_tile_publish_bam_result( ctx, stem, &res );
 }
 
 static int
@@ -285,10 +281,28 @@ handle_microblock( fd_bank_ctx_t *     ctx,
                                                                       feepayer_balance_lamports,
                                                                       loaded_accounts_data_size );
 
+  fd_txn_p_t * txns = (fd_txn_p_t *)dst;
+  _Bool bam_nonrevert = !!( txn_cnt &&
+                            txns->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                            !txns->bam.revert_on_error &&
+                            !txns->bam.batch_idx );
+  fd_bam_bundle_result_t bam_res[1];
+  if( FD_UNLIKELY( bam_nonrevert ) ) {
+    *bam_res = fd_bam_result_base( txns->bam.seq_id, txns->bam.scheduler_gen, slot, (uchar)txn_cnt );
+    bam_res->execution_success = 1U;
+  }
+
   ulong sanitized_idx = 0UL;
   int skip_commit = 0;
   for( ulong i=0UL; i<txn_cnt; i++ ) {
-    fd_txn_p_t * txn = (fd_txn_p_t *)( dst + (i*sizeof(fd_txn_p_t)) );
+    fd_txn_p_t * txn = &txns[ i ];
+    ulong        bam_idx = (ulong)txn->bam.batch_idx;
+    _Bool        bam_result_member = bam_nonrevert &&
+                                     txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                                     !txn->bam.revert_on_error &&
+                                     txn->bam.seq_id==bam_res->seq_id &&
+                                     txn->bam.scheduler_gen==bam_res->scheduler_gen &&
+                                     bam_idx<bam_res->bundle_txn_cnt;
 
     uint requested_exec_plus_acct_data_cus = txn->pack_cu.requested_exec_plus_acct_data_cus;
     uint non_execution_cus                 = txn->pack_cu.non_execution_cus;
@@ -299,7 +313,8 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     txn->execle_cu.rebated_cus = requested_exec_plus_acct_data_cus + non_execution_cus;
     txn->flags               &= ~FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
     if( FD_UNLIKELY( !(txn->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS) ) ) {
-      bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, FD_METRICS_ENUM_TRANSACTION_ERROR_V_SANITIZE_FAILURE_IDX, 0, 0UL, 0U );
+      if( FD_UNLIKELY( bam_result_member ) )
+        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, FD_METRICS_ENUM_TRANSACTION_ERROR_V_SANITIZE_FAILURE_IDX, 0, 0UL, 0U );
       continue;
     }
 
@@ -314,7 +329,8 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     ctx->metrics.processing_failed += (ulong)(processing_results[ sanitized_idx-1UL ]==0                         );
 
     if( FD_UNLIKELY( !(processing_results[ sanitized_idx-1UL ] & FD_BANK_TRANSACTION_LANDED) ) ) {
-      bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, transaction_err_idx, 1, 0UL, 0U );
+      if( FD_UNLIKELY( bam_result_member ) )
+        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, transaction_err_idx, 1, 0UL, 0U );
       continue;
     }
 
@@ -330,7 +346,8 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     if( FD_UNLIKELY( !(processing_results[ sanitized_idx-1UL ] & FD_BANK_TRANSACTION_EXECUTED) && ( actual_execution_cus + actual_acct_data_cus > requested_exec_plus_acct_data_cus ) ) ) {
       FD_LOG_WARNING(( "FeesOnly txn actual CUs (%u+%u) exceed requested (%u), dropping",
                        actual_execution_cus, actual_acct_data_cus, requested_exec_plus_acct_data_cus ));
-      bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, transaction_err_idx, 1, 0UL, 0U );
+      if( FD_UNLIKELY( bam_result_member ) )
+        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, transaction_err_idx, 1, 0UL, 0U );
       skip_commit = 1;
       ctx->metrics.processing_failed++;
       continue;
@@ -366,13 +383,16 @@ handle_microblock( fd_bank_ctx_t *     ctx,
        transactions. */
     txn->flags                      |= FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
 
-    bank_tile_maybe_publish_bam_result( ctx, stem, txn, slot, transaction_err_idx, 1, feepayer_balance_lamports[ sanitized_idx-1UL ], loaded_accounts_data_size[ sanitized_idx-1UL ] );
+    if( FD_UNLIKELY( bam_result_member ) )
+      bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, transaction_err_idx, 1, feepayer_balance_lamports[ sanitized_idx-1UL ], loaded_accounts_data_size[ sanitized_idx-1UL ] );
 
     if( FD_UNLIKELY( !(processing_results[ sanitized_idx-1UL ] & FD_BANK_TRANSACTION_EXECUTED) ) ) continue;
 
     if( transaction_err_idx ) ctx->metrics.exec_failed++;
     else                                       ctx->metrics.success++;
   }
+
+  if( FD_UNLIKELY( bam_nonrevert && ctx->bam_out_idx!=ULONG_MAX ) ) bank_tile_publish_bam_result( ctx, stem, bam_res );
 
   if( FD_UNLIKELY( skip_commit ) ) {
     FD_TEST( txn_cnt==1UL ); /* see comment about FeesOnly nonce transactions above */
@@ -662,14 +682,8 @@ after_frag( fd_bank_ctx_t *     ctx,
     ctx->rebates_for_slot = slot;
   }
 
-  int is_bundle = ctx->_is_bundle;
-  if( FD_UNLIKELY( is_bundle ) ) {
-    ulong txn_cnt = (sz-sizeof(fd_microblock_execle_trailer_t))/sizeof(fd_txn_e_t);
-    fd_txn_p_t const * txns = (fd_txn_p_t const *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
-    is_bundle = !( txn_cnt && txns[0].source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txns[0].bam.revert_on_error );
-  }
-  if( FD_UNLIKELY( is_bundle ) ) handle_bundle( ctx, seq, sig, sz, tspub, stem );
-  else                           handle_microblock( ctx, seq, sig, sz, tspub, stem );
+  if( FD_UNLIKELY( ctx->_is_bundle ) ) handle_bundle( ctx, seq, sig, sz, tspub, stem );
+  else                                 handle_microblock( ctx, seq, sig, sz, tspub, stem );
 
   /* TODO: Use fancier logic to coalesce rebates e.g. and move this to
      after_credit */

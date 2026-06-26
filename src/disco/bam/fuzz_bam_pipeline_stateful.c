@@ -370,7 +370,6 @@ bam_fuzz_assert_bam_publish( test_bam_env_t const * env,
   } else {
     FD_TEST( txnm->block_engine.bundle_id==0UL );
     FD_TEST( txnm->block_engine.bundle_txn_cnt==0UL );
-    FD_TEST( txnm->bam.txn_cnt==1U );
   }
 
   uchar txn_buf[ FD_TXN_MAX_SZ ];
@@ -806,7 +805,7 @@ bam_fuzz_assert_decoded_result( fd_bam_bundle_result_t const * expected,
     FD_TEST( committed->txn_cnt==expected->bundle_txn_cnt );
     for( uchar i=0U; i<expected->bundle_txn_cnt; i++ ) {
       bam_types_TransactionCommittedResult const * txn = &committed->txns[ i ];
-      FD_TEST( txn->execution_success==( expected->sanitize_success[ i ] && !expected->transaction_err_count ) );
+      FD_TEST( txn->execution_success==( expected->sanitize_success[ i ] && !expected->transaction_err[ i ] ) );
       FD_TEST( txn->cus_consumed==expected->consumed_cus[ i ] );
       FD_TEST( txn->feepayer_balance_lamports==expected->feepayer_balance_lamports[ i ] );
       FD_TEST( txn->loaded_accounts_data_size==expected->loaded_accounts_data_size[ i ] );

@@ -237,6 +237,36 @@ test_no_bank_deser_result( uchar batch_idx,
   test_harness_delete( h );
 }
 
+static void
+test_non_revert_multi_peer_suppressed_after_failure( void ) {
+  test_harness_t h[1];
+  test_harness_new( h );
+
+  fd_txn_m_t * txnm = test_prepare_bam_txn( h, 21U, 0, 0U, 2U, 0 );
+  test_insert_blockhash( h, txnm, 10UL );
+  h->ctx->completed_slot = 200UL;
+
+  after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
+
+  FD_TEST( h->seqs[ 0 ]==0UL );
+  FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==1UL );
+  fd_bam_bundle_result_t const * res = test_last_bam_result( h );
+  FD_TEST( res->seq_id                == 123U );
+  FD_TEST( res->bundle_txn_cnt        == 2U );
+  FD_TEST( res->transaction_err_count == 1U );
+  FD_TEST( res->transaction_err[ 0 ]  == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+
+  txnm = test_prepare_bam_txn( h, 22U, 0, 1U, 2U, 0 );
+  test_insert_blockhash( h, txnm, 200UL );
+
+  after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
+
+  FD_TEST( h->seqs[ 0 ]==0UL );
+  FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==1UL );
+
+  test_harness_delete( h );
+}
+
 #if TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH
 static void
 test_unknown_blockhash_bam_bypasses_stash( void ) {
@@ -263,6 +293,7 @@ main( int     argc,
   fd_metrics_register( fd_metrics_join( fd_metrics_new( metrics_scratch, 0UL ) ) );
 
   test_expired_non_revert_bam_result();
+  test_non_revert_multi_peer_suppressed_after_failure();
   test_no_bank_deser_result( 0U, 1UL );
   test_no_bank_deser_result( 1U, 0UL );
 #if TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH

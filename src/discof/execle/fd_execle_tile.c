@@ -257,10 +257,22 @@ handle_microblock( fd_execle_tile_t *  ctx,
   fd_microblock_trailer_t * trailer = (fd_microblock_trailer_t *)( dst + txn_cnt*sizeof(fd_txn_p_t) );
   trailer->txn_ns_dt = (fd_txn_ns_dt_t){0};
 
+  fd_txn_p_t * txns = (fd_txn_p_t *)dst;
+  _Bool bam_nonrevert = !!( txn_cnt &&
+                            txns[0].source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                            !txns[0].bam.revert_on_error &&
+                            !txns[0].bam.batch_idx );
+  fd_bam_bundle_result_t bam_res[1];
+  if( FD_UNLIKELY( bam_nonrevert ) ) {
+    *bam_res = fd_bam_result_base( txns[0].bam.seq_id, txns[0].bam.scheduler_gen, slot, (uchar)txn_cnt );
+    bam_res->execution_success = 1U;
+  }
+
   for( ulong i=0UL; i<txn_cnt; i++ ) {
-    fd_txn_p_t *   txn     = (fd_txn_p_t *)( dst + (i*sizeof(fd_txn_p_t)) );
+    fd_txn_p_t *   txn     = &txns[ i ];
     fd_txn_in_t *  txn_in  = &ctx->txn_in[ 0 ];
     fd_txn_out_t * txn_out = &ctx->txn_out[ 0 ];
+    ulong          bam_idx = (ulong)txn->bam.batch_idx;
 
     uint const requested_exec_plus_acct_data_cus = txn->pack_cu.requested_exec_plus_acct_data_cus;
     uint const non_execution_cus                 = txn->pack_cu.non_execution_cus;
@@ -277,20 +289,22 @@ handle_microblock( fd_execle_tile_t *  ctx,
 
     fd_runtime_prepare_and_execute_txn( ctx->runtime, bank, txn_in, txn_out );
 
-    _Bool bam_independent = txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txn->bam.revert_on_error;
-    fd_bam_bundle_result_t bam_res[1];
-    if( FD_UNLIKELY( bam_independent ) ) *bam_res = fd_bam_result_base( txn->bam.seq_id, txn->bam.scheduler_gen, slot, 1U );
+    _Bool bam_result_member = bam_nonrevert &&
+                              txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                              !txn->bam.revert_on_error &&
+                              txn->bam.seq_id==bam_res->seq_id &&
+                              txn->bam.scheduler_gen==bam_res->scheduler_gen &&
+                              bam_idx<bam_res->bundle_txn_cnt;
 
     /* Stash the result in the flags value so that pack can inspect it. */
     txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-txn_out->err.txn_err)<<24);
 
     if( FD_UNLIKELY( !txn_out->err.is_committable ) ) {
       FD_TEST( !txn_out->err.is_fees_only );
-      if( FD_UNLIKELY( bam_independent ) ) {
+      if( FD_UNLIKELY( bam_result_member ) ) {
+        fd_bam_result_mark_not_committed_txn_error( bam_res, bam_idx, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
         bam_res->execution_success = 0U;
-        fd_bam_result_add_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
-        bam_fill_txn_result( bam_res, 0UL, txn_out );
-        publish_bam_result( ctx, stem, bam_res );
+        bam_fill_txn_result( bam_res, bam_idx, txn_out );
       }
       fd_runtime_cancel_txn( ctx->runtime, txn_out );
       /* Use pre-resolved ALT accounts for rebates even for unlanded transactions */
@@ -313,11 +327,10 @@ handle_microblock( fd_execle_tile_t *  ctx,
         FD_LOG_WARNING(( "FeesOnly txn actual CUs (%u+%u) exceed requested (%u), dropping",
                          fee_only_actual_exec_cus, fee_only_actual_data_cus, requested_exec_plus_acct_data_cus ));
         txn_out->err.is_committable = 0;
-        if( FD_UNLIKELY( bam_independent ) ) {
+        if( FD_UNLIKELY( bam_result_member ) ) {
+          fd_bam_result_mark_not_committed_txn_error( bam_res, bam_idx, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
           bam_res->execution_success = 0U;
-          fd_bam_result_add_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
-          bam_fill_txn_result( bam_res, 0UL, txn_out );
-          publish_bam_result( ctx, stem, bam_res );
+          bam_fill_txn_result( bam_res, bam_idx, txn_out );
         }
         fd_runtime_cancel_txn( ctx->runtime, txn_out );
         /* txn->execle_cu already initialized to full rebate at top of loop */
@@ -341,11 +354,10 @@ handle_microblock( fd_execle_tile_t *  ctx,
     txn->flags |= FD_TXN_P_FLAGS_EXECUTE_SUCCESS | FD_TXN_P_FLAGS_SANITIZE_SUCCESS;
     ctx->metrics.txn_result[ fd_execle_err_from_runtime_err( txn_out->err.txn_err ) ]++;
 
-    if( FD_UNLIKELY( bam_independent ) ) {
-      bam_res->execution_success = 1U;
+    if( FD_UNLIKELY( bam_result_member ) ) {
       if( FD_UNLIKELY( txn_out->err.txn_err!=FD_RUNTIME_EXECUTE_SUCCESS ) )
-        fd_bam_result_add_txn_error( bam_res, 0UL, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
-      bam_fill_txn_result( bam_res, 0UL, txn_out );
+        fd_bam_result_add_txn_error( bam_res, bam_idx, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
+      bam_fill_txn_result( bam_res, bam_idx, txn_out );
     }
 
     /* Commit must succeed so no failure path.  Once commit is called,
@@ -436,8 +448,9 @@ handle_microblock( fd_execle_tile_t *  ctx,
     fd_acct_addr_t const * writable_alt = ctx->_alt_accts[i];
     if( FD_LIKELY( ctx->enable_rebates ) ) fd_pack_rebate_sum_add_txn( ctx->rebater, txn, &writable_alt, 1UL );
 
-    if( FD_UNLIKELY( bam_independent ) ) publish_bam_result( ctx, stem, bam_res );
   }
+
+  if( FD_UNLIKELY( bam_nonrevert ) ) publish_bam_result( ctx, stem, bam_res );
 
   /* Indicate to pack tile we are done processing the transactions so
      it can pack new microblocks using these accounts. */
