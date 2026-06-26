@@ -1685,7 +1685,7 @@ after_credit( fd_pack_ctx_t *     ctx,
       for( ulong j=0UL; j<schedule_cnt; j++ ) {
         fd_txn_p_t const * txnp = microblock_dst[ j ].txnp;
         if( FD_UNLIKELY( txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
-        if( FD_UNLIKELY( txnp->bam.revert_on_error && txnp->bam.batch_idx ) ) continue;
+        if( FD_UNLIKELY( txnp->bam.batch_idx ) ) continue;
         if( FD_UNLIKELY( !ctx->bam_first_schedule_seen ) ) {
           ctx->bam_first_schedule_seen = 1U;
           ctx->bam_first_schedule_minus_slot_end_ns = now2_ns - ctx->slot_end_ns;
@@ -1844,8 +1844,6 @@ during_frag( fd_pack_ctx_t * ctx,
       FD_TEST( txnm->bam.txn_cnt>0UL && txnm->bam.txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
       FD_TEST( txnm->bam.batch_idx<txnm->bam.txn_cnt );
       ulong bam_bundle_id = ((ulong)txnm->bam.seq_id)+1UL;
-      FD_TEST( txnm->bam.revert_on_error || txnm->bam.txn_cnt==1UL );
-      FD_TEST( txnm->bam.revert_on_error || txnm->bam.batch_idx==0U );
       FD_TEST( txnm->block_engine.bundle_id==fd_ulong_if( txnm->bam.revert_on_error, bam_bundle_id, 0UL ) );
       FD_TEST( txnm->block_engine.bundle_txn_cnt==fd_ulong_if( txnm->bam.revert_on_error && !txnm->bam.batch_idx, (ulong)txnm->bam.txn_cnt, 0UL ) );
 

@@ -504,7 +504,6 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
 
   uchar protobuf[256];
-  /* revert_on_error=0 batches are currently restricted to a single packet. */
   size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 0U, 1, 0);
 
   FD_TEST( state->metrics.transaction_published_cnt == 0UL );
@@ -1866,12 +1865,9 @@ test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_non_revert_multi_packet_rejected_by_current_packet_stream_contract( fd_wksp_t * wksp ) {
-  /* Implementation regression: non-revert node traffic is still expected to
-     satisfy the current packet-stream contract of one packet per seq_id. */
+test_bam_non_revert_multi_packet_forwarded( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
   bam_types_Packet packets[ 2 ];
@@ -1895,25 +1891,33 @@ test_bam_non_revert_multi_packet_rejected_by_current_packet_stream_contract( fd_
 
   FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->metrics.transaction_published_cnt == 0UL );
-  FD_TEST( state->feedback_queue_depth == 1UL );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 2UL );
 
-  test_bam_prepare_scheduler_stream( state );
-  g_clock = (long)20e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( test_bam_env_drain_pending_txns( env ) == 2UL );
+  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
+  FD_TEST( state->metrics.transaction_published_cnt == 2UL );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 0U );
+  fd_txn_m_t * first  = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, env->out_mcache[0].chunk );
+  fd_txn_m_t * second = (fd_txn_m_t *)fd_chunk_to_laddr( state->verify_out.mem, env->out_mcache[1].chunk );
+
+  FD_TEST( first->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( second->source_tpu == FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( first->bam.seq_id == 47U );
+  FD_TEST( second->bam.seq_id == 47U );
+  FD_TEST( first->bam.txn_cnt == 2U );
+  FD_TEST( second->bam.txn_cnt == 2U );
+  FD_TEST( first->bam.batch_idx == 0U );
+  FD_TEST( second->bam.batch_idx == 1U );
+  FD_TEST( first->bam.revert_on_error == 0U );
+  FD_TEST( second->bam.revert_on_error == 0U );
+  FD_TEST( first->block_engine.bundle_id == 0UL );
+  FD_TEST( second->block_engine.bundle_id == 0UL );
+  FD_TEST( first->block_engine.bundle_txn_cnt == 0UL );
+  FD_TEST( second->block_engine.bundle_txn_cnt == 0UL );
+  FD_TEST( fd_txn_m_payload( first )[0] == (uchar)'p' );
+  FD_TEST( fd_txn_m_payload( second )[0] == (uchar)'q' );
 
   test_bam_env_destroy( env );
 }
@@ -3934,8 +3938,7 @@ test_bam_scheduler_result_committed_with_execution_error_publishes_message( fd_w
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 908, 1908, 1 );
   res.execution_success     = 1; /* committed */
-  res.transaction_err[ 0 ]  = bam_types_TransactionErrorReason_INSTRUCTION_ERROR;
-  res.transaction_err_count = 1U;
+  fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_INSTRUCTION_ERROR );
   test_enqueue_bundle_result( state, &res );
 
   FD_TEST( fd_bam_test_flush_results( state ) == 1 );
@@ -3949,6 +3952,23 @@ test_bam_scheduler_result_committed_with_execution_error_publishes_message( fd_w
   FD_TEST( decoded.multi.results[0].which_result == bam_types_AtomicTxnBatchResult_committed_tag );
   FD_TEST( decoded.multi.committed[0].txn_cnt == 1UL );
   FD_TEST( decoded.multi.committed[0].txns[0].execution_success == false );
+
+  res = test_make_bundle_result( 914, 1914, 3 );
+  res.execution_success = 1; /* committed */
+  fd_bam_result_add_txn_error( &res, 1UL, bam_types_TransactionErrorReason_INSTRUCTION_ERROR );
+  test_enqueue_bundle_result( state, &res );
+
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.multi.result_cnt == 1UL );
+  FD_TEST( decoded.multi.results[0].seq_id == 914U );
+  FD_TEST( decoded.multi.results[0].which_result == bam_types_AtomicTxnBatchResult_committed_tag );
+  FD_TEST( decoded.multi.committed[0].txn_cnt == 3UL );
+  FD_TEST( decoded.multi.committed[0].txns[0].execution_success == true  );
+  FD_TEST( decoded.multi.committed[0].txns[1].execution_success == false );
+  FD_TEST( decoded.multi.committed[0].txns[2].execution_success == true  );
 
   test_bam_env_destroy( env );
 }
@@ -4054,8 +4074,7 @@ test_bam_scheduler_result_not_committed_transaction_error_reason( fd_wksp_t * wk
 
   fd_bam_bundle_result_t res = test_make_bundle_result( 903, 1903, 2 );
   res.execution_success  = 0;
-  res.transaction_err[0] = bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
-  res.transaction_err_count = 1U;
+  fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
   test_enqueue_bundle_result( state, &res );
 
   FD_TEST( fd_bam_test_flush_results( state ) == 1 );
@@ -4070,6 +4089,23 @@ test_bam_scheduler_result_not_committed_transaction_error_reason( fd_wksp_t * wk
   FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_transaction_error_tag );
   FD_TEST( result->result.not_committed.reason.transaction_error.index == 0U );
   FD_TEST( result->result.not_committed.reason.transaction_error.reason == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+
+  res = test_make_bundle_result( 915, 1915, 3 );
+  fd_bam_result_mark_sanitize_success_all( &res );
+  fd_bam_result_mark_not_committed_txn_error( &res, 1UL, bam_types_TransactionErrorReason_ACCOUNT_IN_USE );
+  test_enqueue_bundle_result( state, &res );
+
+  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( state->feedback_queue_depth == 0UL );
+
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.multi.result_cnt == 1UL );
+  result = &decoded.multi.results[0];
+  FD_TEST( result->seq_id == 915U );
+  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_transaction_error_tag );
+  FD_TEST( result->result.not_committed.reason.transaction_error.index == 1U );
+  FD_TEST( result->result.not_committed.reason.transaction_error.reason == bam_types_TransactionErrorReason_ACCOUNT_IN_USE );
 
   test_bam_env_destroy( env );
 }
@@ -4090,10 +4126,9 @@ test_bam_scheduler_result_not_committed_transaction_error_prefers_non_cancelled(
   fd_bam_bundle_result_t res = test_make_bundle_result( 909, 1909, 3 );
   res.execution_success = 0;
   for( uint i=0U; i<res.bundle_txn_cnt; i++ ) res.sanitize_success[ i ] = 1;
-  res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
-  res.transaction_err[ 1 ] = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
-  res.transaction_err[ 2 ] = bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND;
-  res.transaction_err_count = (uchar)res.bundle_txn_cnt;
+  fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+  fd_bam_result_add_txn_error( &res, 1UL, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+  fd_bam_result_add_txn_error( &res, 2UL, bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
   test_enqueue_bundle_result( state, &res );
 
   FD_TEST( fd_bam_test_flush_results( state ) == 1 );
@@ -4130,9 +4165,8 @@ test_bam_scheduler_result_not_committed_all_cancelled_falls_back_to_poh_timeout(
   res.execution_success = 0;
   for( uint i=0U; i<res.bundle_txn_cnt; i++ ) {
     res.sanitize_success[ i ] = 1U;
-    res.transaction_err[ i ]  = bam_types_TransactionErrorReason_COMMIT_CANCELLED;
+    fd_bam_result_add_txn_error( &res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
   }
-  res.transaction_err_count = (uchar)res.bundle_txn_cnt;
   test_enqueue_bundle_result( state, &res );
 
   FD_TEST( fd_bam_test_flush_results( state ) == 1 );
@@ -5941,7 +5975,7 @@ main( int     argc,
   test_bam_multiple_batches_overflow_results_each_excess( wksp );
   test_bam_bundle_forwards_without_builder_info( wksp );
   test_bam_bundle_revert_flag_cases( wksp );
-  test_bam_non_revert_multi_packet_rejected_by_current_packet_stream_contract( wksp );
+  test_bam_non_revert_multi_packet_forwarded( wksp );
   test_bam_validation_orders_revert_consistency_before_vote_rejection( wksp );
   test_bam_bundle_rejects_real_vote_payload( wksp );
   test_bam_stale_slot_rejects_before_vote_error( wksp );

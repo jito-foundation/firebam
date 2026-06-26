@@ -136,6 +136,19 @@ fd_bam_result_add_txn_error( fd_bam_bundle_result_t *      res,
   res->transaction_err_count++;
 }
 
+static inline void
+fd_bam_result_mark_not_committed_txn_error( fd_bam_bundle_result_t *      res,
+                                            ulong                         idx,
+                                            bam_types_TransactionErrorReason reason ) {
+  res->execution_success = 0U;
+  if( FD_LIKELY( res->transaction_err_count!=res->bundle_txn_cnt ) ) {
+    for( uchar i=0U; i<res->bundle_txn_cnt; i++ )
+      fd_bam_result_set_txn_error( res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+    res->transaction_err_count = res->bundle_txn_cnt;
+  }
+  fd_bam_result_set_txn_error( res, idx, reason );
+}
+
 static inline bam_types_TransactionErrorReason
 fd_bam_txn_err_from_pack_insert( int pack_rc ) {
   switch( pack_rc ) {

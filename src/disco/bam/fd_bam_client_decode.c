@@ -371,24 +371,6 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
     return 0;
   }
 
-  if( FD_UNLIKELY( !state->revert_on_error && state->packet_cnt>1U ) ) {
-    ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_NON_REVERT_MULTI_PACKET_IDX ]++;
-    /* For now, revert_on_error=0 batches are assumed to contain exactly one
-       packet so we can return one result per seq_id without BAM-node changes. */
-    fd_bam_enqueue_result( ctx, &(fd_bam_bundle_result_t) {
-      .seq_id            = batch->seq_id,
-      .scheduler_gen     = ctx->scheduler_gen,
-      .slot              = batch->max_schedule_slot,
-      .bundle_txn_cnt    = state->packet_cnt,
-      .execution_success = 0,
-      .scheduling_error  = FD_BAM_SCHED_ERR_NONE,
-      .bundle_err        = FD_BAM_BUNDLE_ERR_DESER,
-      .deser_reason      = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE,
-      .deser_index       = 0
-    } );
-    return 0;
-  }
-
   int simple_vote_idx = -1;
   uchar txn_buf[ FD_TXN_MAX_SZ ];
   for( uchar i=0U; i<state->packet_cnt; i++ ) {

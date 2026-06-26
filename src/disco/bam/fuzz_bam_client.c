@@ -377,8 +377,7 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
     } else if( reason_sel==2U ) {
       res.sanitize_success[ 0 ] = 0U;
     } else {
-      res.transaction_err[ 0 ] = bam_types_TransactionErrorReason_ACCOUNT_NOT_FOUND;
-      res.transaction_err_count = 1U;
+      fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_ACCOUNT_NOT_FOUND );
       res.sanitize_success[ 0 ] = 1U;
     }
 

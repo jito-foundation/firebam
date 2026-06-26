@@ -382,7 +382,6 @@ metric introduced.
     <int value="0" name="InvalidBatch" label="Batch rejected because AtomicTxnBatch decode or structural validation failed" />
     <int value="1" name="EmptyBatch" label="Batch rejected because it contained zero packets" />
     <int value="2" name="VoteTransaction" label="Batch rejected because it contained a simple vote transaction" />
-    <int value="3" name="NonRevertMultiPacket" label="Batch rejected because a non-revert batch contained multiple packets" />
 </enum>
 
 <enum name="BamIngressMessageRejectReason">

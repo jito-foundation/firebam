@@ -1791,6 +1791,45 @@ test_bam_nonrevert_seq_conflict_order( void ) {
 }
 
 static void
+test_bam_nonrevert_multi_clears_bundle_flag( void ) {
+  pack_outcome_t outcome;
+  ulong _deleted;
+
+  fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, 64UL, &outcome );
+  fd_pack_set_initializer_bundles_ready( pack );
+
+  fd_txn_e_t * _bundle[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 2UL );
+  for( ulong i=0UL; i<2UL; i++ ) {
+    make_transaction1( bundle[i]->txnp, 400UL+i, 2000U, 32U, 10.0-(double)i, "x", "", NULL, NULL );
+    bundle[i]->txnp->source_tpu          = FD_TXN_M_TPU_SOURCE_BAM;
+    bundle[i]->txnp->bam.seq_id          = 40U;
+    bundle[i]->txnp->bam.batch_idx       = (uchar)i;
+    bundle[i]->txnp->bam.revert_on_error = 0U;
+  }
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 1000UL, 0, NULL, &_deleted )>=0 );
+
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_TXN, outcome.results )==0UL );
+
+  ulong txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results );
+  FD_TEST( txn_cnt==2UL );
+  for( ulong i=0UL; i<txn_cnt; i++ ) {
+    ulong txn_id = 0UL;
+    fd_memcpy( &txn_id, outcome.results[i].txnp->payload + 1UL, sizeof(ulong) );
+    FD_TEST( txn_id==400UL+i );
+    FD_TEST( !( outcome.results[i].txnp->flags & FD_TXN_P_FLAGS_BUNDLE ) );
+    FD_TEST( outcome.results[i].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+    FD_TEST( outcome.results[i].txnp->bam.seq_id==40U );
+    FD_TEST( outcome.results[i].txnp->bam.batch_idx==(uchar)i );
+    FD_TEST( outcome.results[i].txnp->bam.revert_on_error==0U );
+  }
+  fd_pack_microblock_complete( pack, 0UL );
+
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
+  fd_pack_delete( fd_pack_leave( pack ) );
+}
+
+static void
 test_bam_only_schedule_filters_non_bam_work( void ) {
   pack_outcome_t outcome;
   ulong _deleted;
@@ -2043,6 +2082,7 @@ main( int     argc,
   test_bundle_nonce();
 
   test_bam_nonrevert_seq_conflict_order();
+  test_bam_nonrevert_multi_clears_bundle_flag();
   test_bam_only_schedule_filters_non_bam_work();
 
   /* Generic bundle/initializer-pack regressions */

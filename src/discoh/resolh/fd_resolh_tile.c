@@ -396,14 +396,18 @@ after_frag( fd_resolh_tile_t *  ctx,
     buffer.  If we later see the blockhash come to exist, we forward any
     buffered transactions to back. */
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id &&
-                   ( (txnm->block_engine.bundle_id!=ctx->bundle_id) ||
-                     (txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txnm->bam.batch_idx) ) ) ) {
+  int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  ulong failure_group_id = txnm->block_engine.bundle_id;
+  if( FD_UNLIKELY( is_bam && txnm->bam.txn_cnt>1U ) ) failure_group_id = (1UL<<63) | (((ulong)txnm->bam.seq_id)+1UL);
+
+  if( FD_UNLIKELY( failure_group_id &&
+                   ( (failure_group_id!=ctx->bundle_id) ||
+                     (is_bam && !txnm->bam.batch_idx) ) ) ) {
     ctx->bundle_failed = 0;
-    ctx->bundle_id     = txnm->block_engine.bundle_id;
+    ctx->bundle_id     = failure_group_id;
   }
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && ctx->bundle_failed ) ) {
+  if( FD_UNLIKELY( failure_group_id && ctx->bundle_failed ) ) {
     ctx->metrics.bundle_peer_failure_cnt++;
     return;
   }
@@ -418,14 +422,14 @@ after_frag( fd_resolh_tile_t *  ctx,
   if( FD_LIKELY( blockhash ) ) {
     txnm->reference_slot = blockhash->slot;
     if( FD_UNLIKELY( txnm->reference_slot+151UL<ctx->completed_slot ) ) {
-      if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.batch_idx==0U ) ) {
+      if( FD_UNLIKELY( is_bam && txnm->bam.batch_idx==0U ) ) {
         fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.scheduler_gen, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
         fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
         fd_bam_result_mark_sanitize_success_all( &res );
         fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
                                ctx->out_bam->chunk0, ctx->out_bam->wmark, &res );
       }
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+      if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
       ctx->metrics.blockhash_expired++;
       return;
     }
@@ -477,7 +481,7 @@ after_frag( fd_resolh_tile_t *  ctx,
     }
 
     if( FD_UNLIKELY( failed ) ) {
-      if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.batch_idx==0U ) ) {
+      if( FD_UNLIKELY( is_bam && txnm->bam.batch_idx==0U ) ) {
         fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.scheduler_gen, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
         res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
         res.deser_index  = txnm->bam.batch_idx;
@@ -485,7 +489,7 @@ after_frag( fd_resolh_tile_t *  ctx,
         fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
                                ctx->out_bam->chunk0, ctx->out_bam->wmark, &res );
       }
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+      if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
       return;
     }
   }

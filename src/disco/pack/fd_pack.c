@@ -2515,7 +2515,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     out_txnp->source_ipv4                     = cur->txn->source_ipv4;
     out_txnp->flags                           = cur->txn->flags;
     out_txnp->bam                             = cur->txn->bam;
-    if( FD_UNLIKELY( txn_cnt==1UL && out_txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+    if( FD_UNLIKELY( out_txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
                      !out_txnp->bam.revert_on_error ) ) out_txnp->flags &= ~FD_TXN_P_FLAGS_BUNDLE;
     /* Copy the ALT accounts from the source fd_txn_e_t */
     ulong alt_acct_cnt = (ulong)txn->addr_table_adtl_cnt;
