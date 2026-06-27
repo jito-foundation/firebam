@@ -280,14 +280,14 @@ struct fd_bam_tile {
   fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for TPU advert updates */
   fd_bam_client_id_update_state_t client_id_update_state; /* Dedupe/retry state for ContactInfo client-id updates */
 
-  /* Bundle state */
+  /* BAM ingress/debug state */
   fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by max_schedule_slot for debug captures. */
   ulong dump_bam_last_slot;                       /* Most recent max_schedule_slot dumped under FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST. */
   uchar dump_bam_last_slot_valid;                 /* Whether dump_bam_last_slot has been initialized */
 
   /* BAM specific */
   fd_grpc_h2_stream_t * bam_stream;                      /* Current scheduler stream; NULL while unsubscribed or reconnecting */
-  long                  bam_last_builder_activity_ns;    /* fd_bam_now() timestamp of last scheduler-stream liveness refresh from stream start, BuilderHeartBeat, or bundle work; scheduler proto Ping is intentionally excluded (0 if none received) */
+  long                  bam_last_builder_activity_ns;    /* fd_bam_now() timestamp of last scheduler-stream liveness refresh from stream start, BuilderHeartBeat, or scheduler batch work; scheduler proto Ping is intentionally excluded (0 if none received) */
   long                  bam_last_validator_heartbeat_ns; /* fd_bam_now() timestamp of last validator heartbeat (0 if never sent) */
   long                  bam_last_config_poll_ns;         /* fd_bam_now() timestamp of last config poll attempt (0 if never polled) */
   ushort                feedback_queue_depth;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
@@ -336,7 +336,7 @@ struct fd_bam_tile {
   fd_plugin_bam_update_status_t bam_status_recent;  /* most recently observed BAM status */
   fd_plugin_bam_update_status_t bam_status_plugin;  /* last 'plugin' update written */
   fd_plugin_bam_update_status_t bam_status_counted; /* last status used for healthy-edge counters */
-  fd_plugin_bam_update_status_t bam_status_logged;  /* last logged bundle status */
+  fd_plugin_bam_update_status_t bam_status_logged;  /* last logged BAM status */
   long  last_bam_status_log_nanos;
   long  last_gui_publish_nanos;
   uchar               gui_dirty;       /* Forces a GUI/plugin update on next publish */
@@ -630,13 +630,13 @@ fd_bam_admin_rpc_connect( char const * admin_rpc_path );
 extern fd_grpc_client_callbacks_t fd_bam_client_grpc_callbacks;
 
 /* fd_bam_client_step is an all-in-one routine to drive client logic.
-   As long as the tile calls this periodically, the client will
-   reconnect to the bundle server, authenticate, and subscribe to
-   packets and bundles. */
+   As long as the tile calls this periodically, the client will connect
+   to the BAM node, authenticate, and maintain the scheduler stream,
+   config polling, feedback, and keepalives. */
 
 void
-fd_bam_client_step( fd_bam_tile_t * bundle,
-                       int *              charge_busy );
+fd_bam_client_step( fd_bam_tile_t * ctx,
+                    int *           charge_busy );
 
 /* fd_bam_client_step_reconnect drives the BAM protocol state machine
    once the HTTP/2 connection is established. It handles auth, stream

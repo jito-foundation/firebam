@@ -162,10 +162,10 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_last_builder_activity_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
   ctx->bam_last_config_poll_ns    = 0L;
-  /* Preserve any buffered bundle results so they flush once the next
+  /* Preserve any buffered BAM results so they flush once the next
      scheduler stream comes up.  The server expects every dispatched
-     bundle to eventually produce a result; dropping them here would lose
-     that guarantee. */
+     atomic batch to eventually produce a result; dropping them here
+     would lose that guarantee. */
   fd_bam_drop_pending_leader_state( ctx, FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_CLIENT_RESET_IDX );
 }
 
@@ -1250,6 +1250,11 @@ fd_bam_client_grpc_rx_end(
       ctx->bam_auth_ready         = 0;
       ctx->challenge_to_sign[ 0 ] = '\0';
     }
+    if( request_ctx==FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream ) {
+      ctx->defer_reset = 1;
+      FD_LOG_INFO(( "BAM scheduler stream failed (gRPC status %u-%s). Reconnecting ...",
+                    resp->grpc_status, fd_grpc_status_cstr( resp->grpc_status ) ));
+    }
     return;
   }
 
@@ -1262,6 +1267,9 @@ fd_bam_client_grpc_rx_end(
     break;
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream:
     fd_bam_clear_stream_state( ctx, FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_ENDED_IDX );
+    fd_bam_tile_backoff( ctx, fd_bam_now() );
+    ctx->defer_reset = 1;
+    FD_LOG_INFO(( "BAM scheduler stream ended cleanly. Reconnecting ..." ));
     break;
   }
 }
@@ -1318,7 +1326,7 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
 
   /* Treat the connection as "owned" only when every layer (TCP socket,
-     HTTP/2 session, bundle auth, scheduler stream, and keepalive) is
+     HTTP/2 session, BAM auth, scheduler stream, and keepalive) is
      healthy.  Downstream tiles key off this switch to stop ingesting
      QUIC/bundle traffic, so any premature CONNECTED state would cause a
      data gap. */
