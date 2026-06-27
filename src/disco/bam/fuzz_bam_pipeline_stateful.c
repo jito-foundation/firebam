@@ -177,10 +177,7 @@ bam_fuzz_ensure_scheduler_stream( test_bam_env_t * env ) {
 
 static uint
 bam_fuzz_next_seq( bam_fuzz_state_t * f ) {
-  if( FD_UNLIKELY( f->next_seq==UINT_MAX ) ) f->next_seq = 1U;
-  uint seq_id = f->next_seq++;
-  if( FD_UNLIKELY( f->next_seq==UINT_MAX ) ) f->next_seq = 1U;
-  return seq_id;
+  return f->next_seq++;
 }
 
 static void
@@ -1360,7 +1357,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
   bam_fuzz_state_t f[1];
   fd_memset( f, 0, sizeof(*f) );
   f->next_seq = ( seed << 1 ) | 1U;
-  if( FD_UNLIKELY( f->next_seq==UINT_MAX ) ) f->next_seq = 1U;
   f->current_slot = 100UL + (ulong)( seed & 31U );
 
   f->leader_state = (fd_bam_leader_state_t) {

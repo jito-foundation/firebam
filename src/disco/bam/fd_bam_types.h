@@ -29,7 +29,7 @@ FD_STATIC_ASSERT( FD_BAM_MAX_TXN_PER_ATOMIC_BATCH <= FD_PACK_MAX_TXN_PER_BUNDLE,
 FD_STATIC_ASSERT( _bam_types_TransactionErrorReason_MAX <= UCHAR_MAX, bam_transaction_error_reason_fits_uchar );
 
 typedef struct {
-  uint  seq_id;            /* Uniquely assigned for a single leader rotation. 0 is valid seq_id. UINT_MAX is never produced. */
+  uint  seq_id;            /* Node-generated identifier used for ordering and result correlation. All uint values are valid. */
   ushort scheduler_gen;    /* Internal BAM scheduler identity generation; not encoded on the protobuf wire. */
   ulong slot;              /* Slot associated with the batch. Executed bundles use the bank/Poh slot; not-committed results echo the scheduler max_schedule_slot. */
   uchar bundle_txn_cnt;    /* Declared transaction count from the scheduler, capped to FD_PACK_MAX_TXN_PER_BUNDLE. Also the number of per-transaction result entries populated below; consumers must only examine indices [0,bundle_txn_cnt). */

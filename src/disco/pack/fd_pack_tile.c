@@ -156,7 +156,7 @@ typedef struct {
 
 typedef struct {
   ulong slot;
-  uint  first_debug_seq_id; /* UINT_MAX means unset */
+  uint  first_debug_seq_id;
 } pack_bam_recent_slot_t;
 
 typedef struct {
@@ -513,16 +513,6 @@ pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
                                                       ctx->bam_leader_out.wmark );
 }
 
-static inline pack_bam_recent_slot_t *
-pack_tile_bam_recent_slot_prepare( fd_pack_ctx_t * ctx,
-                                   ulong           slot ) {
-  FD_TEST( slot!=ULONG_MAX );
-  pack_bam_recent_slot_t * entry = &ctx->bam_recent_slot[ slot & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
-  if( FD_LIKELY( entry->slot==slot ) ) return entry;
-  *entry = (pack_bam_recent_slot_t){ .slot = slot, .first_debug_seq_id = UINT_MAX };
-  return entry;
-}
-
 static inline void
 pack_tile_note_bam_first_outcome( fd_pack_ctx_t * ctx,
                                   ulong           outcome_idx,
@@ -669,8 +659,6 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
                         uint                  first_missing_idx,
                         void const *          sig0 ) {
   if( FD_UNLIKELY( ctx->dump_bam_mode!=FD_BAM_DEBUG_DUMP_MODE_ALL ) ) {
-    /* dump_bam_slot_first_txn should follow only the first BAM batch latched
-       for this slot; later batches in the same slot stay quiet. */
     if( FD_LIKELY( ctx->dump_bam_mode!=FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST || work_slot==ULONG_MAX ) ) return;
     pack_bam_recent_slot_t const * entry = &ctx->bam_recent_slot[ work_slot & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
     if( FD_UNLIKELY( entry->slot!=work_slot || entry->first_debug_seq_id!=seq_id ) ) return;
@@ -1874,9 +1862,12 @@ during_frag( fd_pack_ctx_t * ctx,
         ctx->current_bundle_bam->is_bam            = 1;
         ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_RECEIVED_IDX ]++;
         if( FD_LIKELY( txnm->bam.max_schedule_slot!=ULONG_MAX ) ) {
-          pack_bam_recent_slot_t * entry = pack_tile_bam_recent_slot_prepare( ctx, txnm->bam.max_schedule_slot );
+          pack_bam_recent_slot_t * entry = &ctx->bam_recent_slot[ txnm->bam.max_schedule_slot & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
           if( FD_UNLIKELY( ctx->dump_bam_mode==FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST &&
-                           entry->first_debug_seq_id==UINT_MAX ) ) entry->first_debug_seq_id = txnm->bam.seq_id;
+                           entry->slot!=txnm->bam.max_schedule_slot ) ) {
+            entry->slot               = txnm->bam.max_schedule_slot;
+            entry->first_debug_seq_id = txnm->bam.seq_id;
+          }
         }
       }
 
@@ -2042,7 +2033,6 @@ after_frag( fd_pack_ctx_t *     ctx,
     ctx->bam_first_schedule_seen = 0U;
     ctx->bam_first_insert_minus_slot_end_ns = 0L;
     ctx->bam_first_schedule_minus_slot_end_ns = 0L;
-    (void)pack_tile_bam_recent_slot_prepare( ctx, ctx->leader_slot );
     pack_tile_evict_invalid_pending_bam_work( ctx, ctx->leader_slot );
     for( ulong i=0UL; i<ctx->bam_work_cnt; ) {
       if( FD_UNLIKELY( ctx->bam_work[ i ].state==PACK_BAM_WORK_STATE_SCHEDULED &&
