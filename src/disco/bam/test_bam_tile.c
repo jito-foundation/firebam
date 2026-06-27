@@ -2397,8 +2397,8 @@ test_bam_tcp_connect_completion_uses_so_error( fd_wksp_t * wksp ) {
 
 static void
 test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
-  /* Stream closures (error or OK) should clear bam_stream state without forcing
-     a reset. */
+  /* Scheduler stream closures should clear bam_stream state and force a reset so
+     the next connection attempt re-resolves DNS/load-balances like bundle. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -2423,11 +2423,12 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_stream_connecting == 0U );
   FD_TEST( state->bam_stream == NULL );
   FD_TEST( state->bam_leader_pending == 0U );
-  FD_TEST( state->defer_reset == 0U );
+  FD_TEST( state->defer_reset == 1U );
   FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ] == 1UL );
   FD_TEST( state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_REQUEST_FAILED_IDX ] == 1UL );
   FD_TEST( state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_ENDED_IDX ] == 0UL );
 
+  state->defer_reset = 0U;
   stream = fd_grpc_client_stream_acquire( client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( stream );
   stream->hdrs.h2_status     = 200;
@@ -2446,7 +2447,7 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_stream_connecting == 0U );
   FD_TEST( state->bam_stream == NULL );
   FD_TEST( state->bam_leader_pending == 0U );
-  FD_TEST( state->defer_reset == 0U );
+  FD_TEST( state->defer_reset == 1U );
   FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_FAILED_IDX ] == 1UL );
   FD_TEST( state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_REQUEST_FAILED_IDX ] == 1UL );
   FD_TEST( state->metrics.leader_pending_dropped_cnt[ FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_STREAM_ENDED_IDX ] == 1UL );

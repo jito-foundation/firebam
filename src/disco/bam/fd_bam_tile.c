@@ -1371,10 +1371,10 @@ privileged_init( fd_topo_t const *      topo,
   (void)alloc_mem; /* potentially unused */
 
   if( FD_UNLIKELY( (ulong)ctx != (ulong)scratch ) ) {
-    FD_LOG_CRIT(( "Invalid bundle tile scratch alignment" )); /* unreachable */
+    FD_LOG_CRIT(( "Invalid BAM tile scratch alignment" )); /* unreachable */
   }
   if( FD_UNLIKELY( scratch_end - (ulong)scratch > scratch_footprint( tile ) ) ) {
-    FD_LOG_CRIT(( "Bundle tile scratch overflow" )); /* unreachable */
+    FD_LOG_CRIT(( "BAM tile scratch overflow" )); /* unreachable */
   }
 
   memset( ctx, 0, sizeof(fd_bam_tile_t) );
