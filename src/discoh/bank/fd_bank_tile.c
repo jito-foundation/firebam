@@ -113,12 +113,13 @@ static inline void
 bank_tile_fill_bam_nonrevert_result( fd_bam_bundle_result_t * res,
                                      fd_txn_p_t const *       txn,
                                      ulong                    result_idx,
+                                     uint                     consumed_cus,
                                      int                      transaction_err_idx,
                                      _Bool                    sanitize_success,
                                      ulong                    feepayer_balance_lamports,
                                      uint                     loaded_accounts_data_size ) {
   _Bool committed = !!( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
-  res->consumed_cus[ result_idx ] = txn->execle_cu.actual_consumed_cus;
+  res->consumed_cus[ result_idx ] = consumed_cus;
   res->feepayer_balance_lamports[ result_idx ] = feepayer_balance_lamports;
   res->loaded_accounts_data_size[ result_idx ] = loaded_accounts_data_size;
   if( FD_LIKELY( sanitize_success ) ) fd_bam_result_mark_sanitize_success( res, result_idx );
@@ -314,7 +315,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     txn->flags               &= ~FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
     if( FD_UNLIKELY( !(txn->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS) ) ) {
       if( FD_UNLIKELY( bam_result_member ) )
-        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, FD_METRICS_ENUM_TRANSACTION_ERROR_V_SANITIZE_FAILURE_IDX, 0, 0UL, 0U );
+        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, 0U, FD_METRICS_ENUM_TRANSACTION_ERROR_V_SANITIZE_FAILURE_IDX, 0, 0UL, 0U );
       continue;
     }
 
@@ -330,7 +331,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
 
     if( FD_UNLIKELY( !(processing_results[ sanitized_idx-1UL ] & FD_BANK_TRANSACTION_LANDED) ) ) {
       if( FD_UNLIKELY( bam_result_member ) )
-        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, transaction_err_idx, 1, 0UL, 0U );
+        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, 0U, transaction_err_idx, 1, 0UL, 0U );
       continue;
     }
 
@@ -347,7 +348,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
       FD_LOG_WARNING(( "FeesOnly txn actual CUs (%u+%u) exceed requested (%u), dropping",
                        actual_execution_cus, actual_acct_data_cus, requested_exec_plus_acct_data_cus ));
       if( FD_UNLIKELY( bam_result_member ) )
-        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, transaction_err_idx, 1, 0UL, 0U );
+        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, actual_execution_cus + actual_acct_data_cus, transaction_err_idx, 1, 0UL, 0U );
       skip_commit = 1;
       ctx->metrics.processing_failed++;
       continue;
@@ -384,7 +385,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     txn->flags                      |= FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
 
     if( FD_UNLIKELY( bam_result_member ) )
-      bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, transaction_err_idx, 1, feepayer_balance_lamports[ sanitized_idx-1UL ], loaded_accounts_data_size[ sanitized_idx-1UL ] );
+      bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, actual_execution_cus + actual_acct_data_cus, transaction_err_idx, 1, feepayer_balance_lamports[ sanitized_idx-1UL ], loaded_accounts_data_size[ sanitized_idx-1UL ] );
 
     if( FD_UNLIKELY( !(processing_results[ sanitized_idx-1UL ] & FD_BANK_TRANSACTION_EXECUTED) ) ) continue;
 
@@ -600,7 +601,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     for( ulong i=0UL; i<txn_cnt; i++ ) {
       _Bool sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
       if( FD_LIKELY( sanitize_success ) ) fd_bam_result_mark_sanitize_success( &res, i );
-      res.consumed_cus[ i ] = txns[ i ].execle_cu.actual_consumed_cus;
+      res.consumed_cus[ i ] = consumed_cus[ i ];
       if( FD_LIKELY( execution_success ) ) {
         res.feepayer_balance_lamports[ i ] = feepayer_balance_lamports[ i ];
         res.loaded_accounts_data_size[ i ] = loaded_accounts_data_size[ i ];
