@@ -280,7 +280,7 @@ fd_bam_client_drive_io( fd_bam_tile_t * ctx,
   }
 # endif /* FD_HAS_OPENSSL */
 
-  return fd_grpc_client_rxtx_socket( ctx->grpc_client, ctx->tcp_sock, charge_busy )>=0;
+  return fd_grpc_client_rxtx_socket( ctx->grpc_client, ctx->tcp_sock, charge_busy );
 }
 
 static bool
@@ -1013,7 +1013,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   }
 
   /* Drive I/O, SSL handshake, and any inflight requests */
-  if( FD_UNLIKELY( !fd_bam_client_drive_io( ctx, charge_busy ) ) ) {
+  if( FD_UNLIKELY( -1==fd_bam_client_drive_io( ctx, charge_busy ) ) ) {
     FD_LOG_WARNING(( "BAM client reset; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
                      ctx->server_fqdn,
                      FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
