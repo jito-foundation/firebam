@@ -289,6 +289,12 @@ handle_microblock( fd_bank_ctx_t *     ctx,
                             !txns->bam.batch_idx );
   fd_bam_bundle_result_t bam_res[1];
   if( FD_UNLIKELY( bam_nonrevert ) ) {
+    /* Pack schedules BAM batches through the bundle path, which emits the
+       batch as an isolated microblock.  For non-revert BAM, pack clears
+       FD_TXN_P_FLAGS_BUNDLE before publishing to bank/execle, so this path
+       sees the isolated BAM batch as a normal microblock.  fd_txn_p_t does
+       not carry bam.txn_cnt, so txn_cnt is the batch size here. */
+    FD_TEST( txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
     *bam_res = fd_bam_result_base( txns->bam.seq_id, txns->bam.scheduler_gen, slot, (uchar)txn_cnt );
     bam_res->execution_success = 1U;
   }
