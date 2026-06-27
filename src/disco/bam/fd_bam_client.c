@@ -8,6 +8,7 @@
 #include "../../waltz/http/fd_url.h" /* fd_url_unescape */
 #include "../../waltz/openssl/fd_openssl.h" /* fd_openssl_bio_new_socket */
 #include "../../ballet/base58/fd_base58.h"
+#include "../../ballet/ed25519/fd_ed25519.h"
 #include "../../ballet/nanopb/pb_decode.h"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../util/fd_util.h"
@@ -404,6 +405,22 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
   uchar signature[ 64 ];
   fd_keyguard_client_sign( ctx->keyguard_client, signature, sign_payload, sign_payload_sz,
                            FD_KEYGUARD_SIGN_TYPE_ED25519 );
+
+  fd_sha512_t _sha[1];
+  fd_sha512_t * sha = fd_sha512_join( fd_sha512_new( _sha ) );
+  if( FD_UNLIKELY( !sha ) ) FD_LOG_ERR(( "fd_sha512_join failed" ));
+
+  int verify_res = fd_ed25519_verify( sign_payload,
+                                      sign_payload_sz,
+                                      signature,
+                                      ctx->bam_identity_pubkey,
+                                      sha );
+  if( FD_UNLIKELY( verify_res != FD_ED25519_SUCCESS ) ) {
+    fd_bam_clear_auth_state( ctx );
+    FD_LOG_WARNING(( "AuthChallengeResponse signature does not verify against cached BAM identity (%s)",
+                     fd_ed25519_strerror( verify_res ) ));
+    return 1;
+  }
 
   fd_base58_encode_64( signature, NULL, ctx->bam_auth_signature );
   ctx->bam_auth_ready = 1;

@@ -2,6 +2,7 @@
 
 #include "fd_bam_tile.h"
 #include "test_bam_common.c"
+#include "../../ballet/ed25519/fd_ed25519.h"
 #include "../../ballet/nanopb/pb_encode.h"
 #include "../../ballet/nanopb/pb_decode.h"
 #include "../../discof/gossip/fd_gossip_tile.h"
@@ -2851,7 +2852,54 @@ test_bam_client_status( fd_wksp_t * wksp ) {
 /* --- Scheduler/auth messaging -------------------------------------------------------- */
 
 static void
-test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
+test_bam_make_ed25519_keypair( uchar public_key[ 32 ],
+                               uchar private_key[ 32 ],
+                               uchar seed ) {
+  for( ulong i=0UL; i<32UL; i++ ) private_key[ i ] = (uchar)( seed + i );
+
+  fd_sha512_t _sha[1];
+  fd_sha512_t * sha = fd_sha512_join( fd_sha512_new( _sha ) );
+  FD_TEST( sha );
+  fd_ed25519_public_from_private( public_key, private_key, sha );
+}
+
+static void
+test_bam_sign_auth_challenge( uchar        signature[ 64 ],
+                              uchar const  public_key[ 32 ],
+                              uchar const  private_key[ 32 ],
+                              char const * challenge,
+                              ulong        challenge_len ) {
+  uchar payload[ FD_BAM_AUTH_LABEL_LEN + sizeof(bam_api_AuthChallengeResponse) ];
+  fd_memcpy( payload, FD_BAM_AUTH_LABEL, FD_BAM_AUTH_LABEL_LEN );
+  fd_memcpy( payload + FD_BAM_AUTH_LABEL_LEN, challenge, challenge_len );
+  ulong payload_sz = FD_BAM_AUTH_LABEL_LEN + challenge_len;
+
+  fd_sha512_t _sha[1];
+  fd_sha512_t * sha = fd_sha512_join( fd_sha512_new( _sha ) );
+  FD_TEST( sha );
+  fd_ed25519_sign( signature, payload, payload_sz, public_key, private_key, sha );
+}
+
+static void
+test_bam_publish_keyguard_signature( fd_keyguard_client_t * client,
+                                     fd_frag_meta_t *       response_mcache,
+                                     uchar const            signature[ 64 ] ) {
+  ulong resp_chunk = client->response_chunk0;
+  fd_memcpy( fd_chunk_to_laddr( client->response_mem, resp_chunk ),
+             signature, 64UL );
+  fd_mcache_publish( response_mcache,
+                     client->response_depth,
+                     client->response_seq,
+                     0UL,
+                     resp_chunk,
+                     64UL,
+                     0UL,
+                     0UL,
+                     0UL );
+}
+
+static void
+test_bam_auth_challenge_response_verifies_cached_identity( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
@@ -2908,34 +2956,25 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
   FD_TEST( state->challenge_to_sign[ 0 ] == '\0' );
   FD_TEST( state->keyguard_client->request_seq == 0UL );
 
-  uchar signature[ 64 ];
-  for( uchar i=0; i<64; i++ ) signature[ i ] = (uchar)( i + 1 );
-  ulong resp_chunk = state->keyguard_client->response_chunk0;
-  fd_memcpy( fd_chunk_to_laddr( state->keyguard_client->response_mem, resp_chunk ),
-             signature, sizeof(signature) );
-  fd_mcache_publish( response_mcache,
-                     depth,
-                     state->keyguard_client->response_seq,
-                     0UL,
-                     resp_chunk,
-                     sizeof(signature),
-                     0UL,
-                     0UL,
-                     0UL );
-
   bam_api_AuthChallengeResponse resp = bam_api_AuthChallengeResponse_init_default;
   char const challenge[] = "unit-test-challenge";
-  const size_t challenge_len = strlen(challenge);
-  FD_TEST( challenge_len < sizeof( resp.challenge_to_sign ) );
+  size_t const challenge_len = strlen( challenge );
   fd_cstr_ncpy( resp.challenge_to_sign, challenge, sizeof( resp.challenge_to_sign ) );
+
+  uchar public_key[ 32 ];
+  uchar private_key[ 32 ];
+  test_bam_make_ed25519_keypair( public_key, private_key, 1U );
+  fd_memcpy( state->bam_identity_pubkey, public_key, sizeof( state->bam_identity_pubkey ) );
+
+  uchar signature[ 64 ];
+  test_bam_sign_auth_challenge( signature, public_key, private_key, challenge, (ulong)challenge_len );
+  test_bam_publish_keyguard_signature( state->keyguard_client, response_mcache, signature );
 
   uchar pb_buf[ 128 ];
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
   FD_TEST( pb_encode( &ostream, bam_api_AuthChallengeResponse_fields, &resp ) );
 
   state->bam_auth_inflight = 1U;
-  char const validator_key[] = "validator-pubkey-test";
-  fd_cstr_ncpy( state->bam_identity_pubkey_b58, validator_key, sizeof( state->bam_identity_pubkey_b58 ) );
 
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
@@ -2947,19 +2986,35 @@ test_bam_auth_challenge_response_sets_signature( fd_wksp_t * wksp ) {
   FD_TEST( 0 == strcmp( state->challenge_to_sign, challenge ) );
 
   char expected_sig[ FD_BASE58_ENCODED_64_SZ ];
-  FD_TEST( fd_base58_encode_64( signature, NULL, expected_sig ) );
+  fd_base58_encode_64( signature, NULL, expected_sig );
   FD_TEST( 0 == strcmp( state->bam_auth_signature, expected_sig ) );
   FD_TEST( state->keyguard_client->request_seq == 1UL );
 
-  uchar  expected_payload[ FD_BAM_AUTH_LABEL_LEN + sizeof(bam_api_AuthChallengeResponse) ];
-  FD_TEST( FD_BAM_AUTH_LABEL_LEN + challenge_len <= sizeof( expected_payload ) );
-  fd_memcpy( expected_payload, FD_BAM_AUTH_LABEL, FD_BAM_AUTH_LABEL_LEN );
-  fd_memcpy( expected_payload + FD_BAM_AUTH_LABEL_LEN, challenge, challenge_len );
-  FD_TEST( 0 == memcmp( request_data, expected_payload, FD_BAM_AUTH_LABEL_LEN + challenge_len ) );
+  bam_api_AuthChallengeResponse mismatch_resp = bam_api_AuthChallengeResponse_init_default;
+  char const mismatch_challenge[] = "unit-test-challenge-after-switch";
+  size_t const mismatch_challenge_len = strlen( mismatch_challenge );
+  fd_cstr_ncpy( mismatch_resp.challenge_to_sign, mismatch_challenge, sizeof( mismatch_resp.challenge_to_sign ) );
 
-  fd_frag_meta_t const * req_meta =
-      request_mcache + fd_mcache_line_idx( 0UL, depth );
-  FD_TEST( req_meta->sz == (ushort)( FD_BAM_AUTH_LABEL_LEN + challenge_len ) );
+  uchar other_public_key[ 32 ];
+  uchar other_private_key[ 32 ];
+  test_bam_make_ed25519_keypair( other_public_key, other_private_key, 97U );
+  test_bam_sign_auth_challenge( signature, other_public_key, other_private_key, mismatch_challenge, (ulong)mismatch_challenge_len );
+  test_bam_publish_keyguard_signature( state->keyguard_client, response_mcache, signature );
+
+  uchar mismatch_pb_buf[ 128 ];
+  pb_ostream_t mismatch_ostream = pb_ostream_from_buffer( mismatch_pb_buf, sizeof(mismatch_pb_buf) );
+  FD_TEST( pb_encode( &mismatch_ostream, bam_api_AuthChallengeResponse_fields, &mismatch_resp ) );
+
+  state->bam_auth_inflight = 1U;
+  fd_bam_client_grpc_rx_msg( state,
+                             mismatch_pb_buf,
+                             mismatch_ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge );
+
+  FD_TEST( state->bam_auth_inflight == 0U );
+  FD_TEST( state->bam_auth_ready == 0U );
+  FD_TEST( state->challenge_to_sign[ 0 ] == '\0' );
+  FD_TEST( state->keyguard_client->request_seq == 2UL );
 
   fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( request_data ) ) );
   fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( response_data ) ) );
@@ -5995,7 +6050,7 @@ main( int     argc,
   test_bam_client_status( wksp );
 
   /* Scheduler/auth messaging */
-  test_bam_auth_challenge_response_sets_signature( wksp );
+  test_bam_auth_challenge_response_verifies_cached_identity( wksp );
   test_bam_scheduler_auth_proof_publishes_message( wksp );
   test_bam_scheduler_stream_starts_without_builder_info( wksp );
   test_bam_missing_config_repolls_despite_valid_builder_info( wksp );
