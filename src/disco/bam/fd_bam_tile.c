@@ -31,6 +31,8 @@
 #define FD_BAM_ADMIN_RPC_RETRY_NS    ((long)100e6)
 #define FD_BAM_ADMIN_RPC_LOG_NS      ((long)5e9)
 #define FD_BAM_ADMIN_RPC_CONNECT_TIMEOUT_NS ((long)60e9)
+#define FD_BAM_HTTP_PORT             ((ushort)50055U)
+#define FD_BAM_HTTPS_PORT            ((ushort)50056U)
 #define STEM_BURST FD_BAM_STEM_BURST
 
 /* Provided by fdctl/firedancer version.c */
@@ -1142,6 +1144,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
       fd_cstr_printf( err, err_sz, NULL, "BAM host name too long" );
       return -1;
     }
+    if( FD_UNLIKELY( !runtime_url.port_len ) ) parse_port = parse_ssl ? FD_BAM_HTTPS_PORT : FD_BAM_HTTP_PORT;
 
     fd_memcpy( new_host, runtime_url.host, runtime_url.host_len );
     new_host[ runtime_url.host_len ] = '\0';
@@ -1269,6 +1272,7 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *     ctx,
   if( FD_UNLIKELY( res < 0 ) ) {
     FD_LOG_CRIT(( "Failed to parse BAM endpoint" ));
   }
+  if( FD_UNLIKELY( !url->port_len ) ) ctx->server_tcp_port = is_ssl ? FD_BAM_HTTPS_PORT : FD_BAM_HTTP_PORT;
   fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_fqdn ), url->host, url->host_len ) );
   ctx->server_fqdn_len = (ushort)url->host_len;
 

@@ -4367,6 +4367,69 @@ test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
 }
 
 FD_FN_UNUSED static void
+test_bam_ctrl_defaults_bam_ports( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * ctx = env->state;
+
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_defaults( ctx, &ctrl );
+
+  static fd_keyswitch_t keyswitch = {0};
+  keyswitch.magic = FD_KEYSWITCH_MAGIC;
+  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
+  keyswitch.param = 0UL;
+  ctx->keyswitch = &keyswitch;
+
+  ctrl.command = FD_BAM_CTRL_CMD_URL;
+  fd_cstr_ncpy( ctrl.url, "http://bam.example.com", sizeof( ctrl.url ) );
+  ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( !strcmp( ctrl.url, "http://bam.example.com:50055" ) );
+  FD_TEST( !strcmp( ctrl.sni, "bam.example.com" ) );
+  FD_TEST( !strcmp( ctx->server_fqdn, "bam.example.com" ) );
+  FD_TEST( ctx->server_tcp_port == 50055U );
+  FD_TEST( ctx->is_ssl == 0U );
+  FD_TEST( !strcmp( ctx->grpc_client->host, "bam.example.com" ) );
+  FD_TEST( ctx->grpc_client->port == 50055U );
+
+#if FD_HAS_OPENSSL
+  ctrl.command = FD_BAM_CTRL_CMD_URL;
+  fd_cstr_ncpy( ctrl.url, "https://bam.example.com", sizeof( ctrl.url ) );
+  ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( !strcmp( ctrl.url, "https://bam.example.com:50056" ) );
+  FD_TEST( !strcmp( ctrl.sni, "bam.example.com" ) );
+  FD_TEST( !strcmp( ctx->server_fqdn, "bam.example.com" ) );
+  FD_TEST( ctx->server_tcp_port == 50056U );
+  FD_TEST( ctx->is_ssl == 1U );
+  FD_TEST( !strcmp( ctx->grpc_client->host, "bam.example.com" ) );
+  FD_TEST( ctx->grpc_client->port == 50056U );
+
+  ctrl.command = FD_BAM_CTRL_CMD_URL;
+  fd_cstr_ncpy( ctrl.url, "https://bam.example.com:9443", sizeof( ctrl.url ) );
+  ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
+  FD_TEST( !strcmp( ctrl.url, "https://bam.example.com:9443" ) );
+  FD_TEST( ctx->server_tcp_port == 9443U );
+  FD_TEST( ctx->is_ssl == 1U );
+  FD_TEST( ctx->grpc_client->port == 9443U );
+#endif
+
+  ctx->keyswitch = NULL;
+  test_bam_env_destroy( env );
+}
+
+FD_FN_UNUSED static void
 test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   /* Validate that toggling enable pauses connectivity and clears the status latch. */
   test_bam_env_t env[1];
@@ -6081,6 +6144,7 @@ main( int     argc,
 
   /* Control surface */
   test_bam_ctrl_updates_url_and_sni( wksp );
+  test_bam_ctrl_defaults_bam_ports( wksp );
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_enable_from_disabled_start( wksp );
   test_bam_ctrl_enable_from_dormant_then_set_url( wksp );
