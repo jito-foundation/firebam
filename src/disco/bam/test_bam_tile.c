@@ -358,6 +358,17 @@ test_bam_encode_atomic_batch_raw( bam_types_Packet * packets,
 }
 
 static size_t
+test_bam_encode_one_packet_atomic_batch_raw( uint32_t seq_id,
+                                             uchar    byte,
+                                             uchar *  out,
+                                             size_t   out_sz ) {
+  bam_types_Packet packet = bam_types_Packet_init_default;
+  packet.data.size      = 1U;
+  packet.data.bytes[0]  = byte;
+  return test_bam_encode_atomic_batch_raw( &packet, 1UL, seq_id, out, out_sz );
+}
+
+static size_t
 test_bam_encode_multiple_atomic_batch_raw( uchar const * const * batches,
                                            size_t const *         batch_sz,
                                            size_t                 batch_cnt,
@@ -1552,36 +1563,39 @@ test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_multiple_batches_do_not_partially_publish_on_corruption( fd_wksp_t * wksp ) {
-  /* A malformed later batch must prevent publishing earlier valid batches from
-     the same MultipleAtomicTxnBatch payload. */
-  fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
+test_bam_multiple_batches_isolate_nested_decode_failures( fd_wksp_t * wksp ) {
+  /* MultipleAtomicTxnBatch is only a coalescing wrapper. Malformed siblings
+     should not suppress valid siblings, and unattributable failures should not
+     synthesize a default seq_id result. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
-  zero_meta_ts( env->out_mcache, 3UL );
-
-  bam_types_Packet first_packets[1];
-  fd_memset( first_packets, 0, sizeof( first_packets ) );
-  first_packets[0].data.size     = 1U;
-  first_packets[0].data.bytes[0] = (uchar)'q';
+  zero_meta_ts( env->out_mcache, 2UL );
 
   uchar first_batch[256];
-  size_t first_batch_sz = test_bam_encode_atomic_batch_raw( first_packets,
-                                                             1UL,
-                                                             61U,
-                                                             first_batch,
-                                                             sizeof( first_batch ) );
+  size_t first_batch_sz = test_bam_encode_one_packet_atomic_batch_raw( 71U,
+                                                                       (uchar)'a',
+                                                                       first_batch,
+                                                                       sizeof( first_batch ) );
+  uchar malformed_batch[64];
+  pb_ostream_t malformed_stream = pb_ostream_from_buffer( malformed_batch, sizeof( malformed_batch ) );
+  test_bam_encode_varint_field_raw( &malformed_stream, bam_types_AtomicTxnBatch_seq_id_tag, 72U );
+  test_bam_encode_varint_field_raw( &malformed_stream, bam_types_AtomicTxnBatch_max_schedule_slot_tag, 1UL );
+  FD_TEST( pb_encode_tag( &malformed_stream, PB_WT_STRING, bam_types_AtomicTxnBatch_packets_tag ) );
+  size_t malformed_batch_sz = malformed_stream.bytes_written;
+  uchar second_batch[256];
+  size_t second_batch_sz = test_bam_encode_one_packet_atomic_batch_raw( 73U,
+                                                                        (uchar)'b',
+                                                                        second_batch,
+                                                                        sizeof( second_batch ) );
 
-  uchar const malformed_batch[] = { 0x08U }; /* seq_id tag without varint value */
-  uchar const * batches[] = { first_batch, malformed_batch };
-  size_t const batch_sz[] = { first_batch_sz, sizeof( malformed_batch ) };
+  uchar const * batches[] = { first_batch, malformed_batch, second_batch };
+  size_t const batch_sz[] = { first_batch_sz, malformed_batch_sz, second_batch_sz };
 
-  uchar protobuf[512];
+  uchar protobuf[768];
   size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response_raw( batches,
                                                                            batch_sz,
-                                                                           2UL,
+                                                                           3UL,
                                                                            protobuf,
                                                                            sizeof( protobuf ) );
 
@@ -1589,31 +1603,70 @@ test_bam_multiple_batches_do_not_partially_publish_on_corruption( fd_wksp_t * wk
                              protobuf,
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 2UL );
+  FD_TEST( test_bam_env_drain_pending_txns( env ) == 2UL );
 
-  FD_TEST( state->metrics.transaction_published_cnt == 0UL );
-  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
-  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ] == 0UL );
+  FD_TEST( state->metrics.transaction_published_cnt == 2UL );
+  FD_TEST( state->metrics.ingress_batch_published_cnt == 2UL );
+  FD_TEST( state->metrics.ingress_batch_commit_attempt_cnt == 2UL );
   FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 1UL );
   FD_TEST( state->feedback_queue_depth == 1UL );
-  FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
 
-  test_bam_prepare_scheduler_stream( state );
-  g_clock = (long)15e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
+  fd_frag_meta_t * meta = env->out_mcache;
+  FD_TEST( meta[0].seq == 0UL );
+  FD_TEST( meta[1].seq == 1UL );
+  fd_txn_m_t * first  = fd_chunk_to_laddr( state->verify_out.mem, meta[0].chunk );
+  fd_txn_m_t * second = fd_chunk_to_laddr( state->verify_out.mem, meta[1].chunk );
+  FD_TEST( first->bam.seq_id == 71U );
+  FD_TEST( second->bam.seq_id == 73U );
 
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  fd_bam_bundle_result_t const * result = &state->bam_results[ state->bam_results_head ];
+  FD_TEST( result->seq_id == 72U );
+  FD_TEST( result->bundle_err == FD_BAM_BUNDLE_ERR_DESER );
+  FD_TEST( result->deser_reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
+  FD_TEST( result->deser_index == 0U );
+
+  test_bam_env_destroy( env );
+
+  test_bam_env_create( env, wksp );
+  state = env->state;
+  zero_meta_ts( env->out_mcache, 1UL );
+
+  uchar const malformed_before_seq[] = { 0x08U }; /* seq_id tag without varint value */
+  uchar oversized_seq_batch[16];
+  pb_ostream_t oversized_seq_stream = pb_ostream_from_buffer( oversized_seq_batch, sizeof( oversized_seq_batch ) );
+  test_bam_encode_varint_field_raw( &oversized_seq_stream, bam_types_AtomicTxnBatch_seq_id_tag, 1UL<<32 );
+  size_t oversized_seq_batch_sz = oversized_seq_stream.bytes_written;
+  uchar valid_batch[256];
+  size_t valid_batch_sz = test_bam_encode_one_packet_atomic_batch_raw( 81U,
+                                                                       (uchar)'v',
+                                                                       valid_batch,
+                                                                       sizeof( valid_batch ) );
+  uchar const * unknown_seq_batches[] = { malformed_before_seq, oversized_seq_batch, valid_batch };
+  size_t const unknown_seq_batch_sz[] = { sizeof( malformed_before_seq ), oversized_seq_batch_sz, valid_batch_sz };
+
+  protobuf_sz = test_bam_encode_scheduler_multi_batch_response_raw( unknown_seq_batches,
+                                                                    unknown_seq_batch_sz,
+                                                                    3UL,
+                                                                    protobuf,
+                                                                    sizeof( protobuf ) );
+
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+  FD_TEST( test_bam_env_drain_pending_txns( env ) == 1UL );
+
+  FD_TEST( state->metrics.transaction_published_cnt == 1UL );
+  FD_TEST( state->metrics.ingress_batch_published_cnt == 1UL );
+  FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 2UL );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason ==
-           bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
+  fd_frag_meta_t * unknown_seq_meta = env->out_mcache;
+  FD_TEST( unknown_seq_meta[0].seq == 0UL );
+  fd_txn_m_t * tx = fd_chunk_to_laddr( state->verify_out.mem, unknown_seq_meta[0].chunk );
+  FD_TEST( tx->bam.seq_id == 81U );
 
   test_bam_env_destroy( env );
 }
@@ -2235,64 +2288,10 @@ test_bam_bundle_rejects_empty_batch( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
-static void
-test_bam_bundle_decode_fail_before_packet_callback_reports_inconsistent_bundle( fd_wksp_t * wksp ) {
-  /* A malformed AtomicTxnBatch that fails before packet callbacks still
-     reports INCONSISTENT_BUNDLE instead of EMPTY. */
-  test_bam_env_t env[1];
-  test_bam_env_create( env, wksp );
-  test_bam_env_mock_conn( env );
-  fd_bam_tile_t * state = env->state;
-
-  uchar const malformed_batch[] = { 0x08U }; /* seq_id tag without varint value */
-  uchar const * batches[] = { malformed_batch };
-  size_t const batch_sz[] = { sizeof( malformed_batch ) };
-
-  uchar protobuf[256];
-  size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response_raw( batches,
-                                                                           batch_sz,
-                                                                           1UL,
-                                                                           protobuf,
-                                                                           sizeof( protobuf ) );
-
-  fd_bam_client_grpc_rx_msg( state,
-                             protobuf,
-                             protobuf_sz,
-                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-
-  FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
-  FD_TEST( state->metrics.transaction_published_cnt == 0UL );
-  FD_TEST( state->feedback_queue_depth == 1UL );
-
-  test_bam_prepare_scheduler_stream( state );
-  g_clock = (long)21e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
-  FD_TEST( state->feedback_queue_depth == 0UL );
-
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason ==
-           bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 0U );
-
-  test_bam_env_destroy( env );
-}
-
 /* Ensure an InitSchedulerStream response that omits the batches array entirely
-   is also treated as an EMPTY deserialization error and returns a not-committed
-   result back to the scheduler. */
+   is counted as an empty message without fabricating an AtomicTxnBatchResult. */
 static void
 test_bam_bundle_rejects_missing_batches( fd_wksp_t * wksp ) {
-  /* SchedulerResponse lacking any batches should translate to EMPTY
-     deserialization error with default seq_id. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -2324,26 +2323,9 @@ test_bam_bundle_rejects_missing_batches( fd_wksp_t * wksp ) {
 
   FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->metrics.transaction_published_cnt == 0UL );
-  FD_TEST( state->feedback_queue_depth == 1UL );
-
-  test_bam_prepare_scheduler_stream( state );
-  g_clock = (long)20e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
-
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-  FD_TEST( result->seq_id == 0U );
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_EMPTY );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 0U );
+  FD_TEST( state->metrics.ingress_multi_message_received_cnt == 1UL );
+  FD_TEST( state->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_EMPTY_MESSAGE_IDX ] == 1UL );
 
   test_bam_env_destroy( env );
 }
@@ -6089,7 +6071,7 @@ main( int     argc,
   test_bam_scheduler_trailing_corruption_does_not_publish( wksp );
   test_bam_scheduler_rejects_invalid_custom_decode_fields( wksp );
   test_bam_scheduler_v0_oneof_uses_last_field( wksp );
-  test_bam_multiple_batches_do_not_partially_publish_on_corruption( wksp );
+  test_bam_multiple_batches_isolate_nested_decode_failures( wksp );
   test_bam_multiple_batches_accept_message_limit( wksp );
   test_bam_multiple_batches_overflow_results_each_excess( wksp );
   test_bam_bundle_forwards_without_builder_info( wksp );
@@ -6101,7 +6083,6 @@ main( int     argc,
   test_bam_bundle_rejects_excess_packet_count( wksp );
   test_bam_bundle_rejects_oversized_packet( wksp );
   test_bam_bundle_rejects_empty_batch( wksp );
-  test_bam_bundle_decode_fail_before_packet_callback_reports_inconsistent_bundle( wksp );
   test_bam_bundle_rejects_missing_batches( wksp );
 
   /* Connection lifecycle and watchdog */
