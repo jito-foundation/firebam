@@ -2343,16 +2343,15 @@ test_bam_stream_end_with_pending_txn_reconnects( fd_wksp_t * wksp ) {
   fd_bam_tile_t * state = env->state;
 
   uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
-  void * fseq_shmem = fd_fseq_new( fseq_mem, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  void * fseq_shmem = fd_fseq_new( fseq_mem, 0UL );
   FD_TEST( fseq_shmem );
   ulong * fseq = fd_fseq_join( fseq_shmem );
   FD_TEST( fseq );
   state->bam_status_fseq = fseq;
 
   test_bam_env_mock_conn( env );
-  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
 
-  /* Model callbacks from one I/O pass: DATA followed by trailing HEADERS. */
+  /* Queue scheduler work before exercising connection handoff/reset paths. */
   uchar protobuf[ 256 ];
   size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 77U, 1U, 0 );
   fd_bam_client_grpc_rx_msg( state,
@@ -2365,6 +2364,25 @@ test_bam_stream_end_with_pending_txn_reconnects( fd_wksp_t * wksp ) {
   FD_TEST( pending->payload_sz == 1U );
   FD_TEST( pending->payload[0] == (uchar)'A' );
 
+  /* A healthy connection awaiting local activation must preserve receive
+     backpressure, while a deferred reset still takes precedence. */
+  FD_TEST( 0 == close( env->server_sock ) );
+  env->server_sock = -1;
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
+
+  int charge_busy = 0;
+  fd_bam_test_before_credit( state, env->stem, &charge_busy );
+  FD_TEST( state->tcp_sock >= 0 );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+
+  state->defer_reset = 1U;
+  fd_bam_test_before_credit( state, env->stem, &charge_busy );
+  FD_TEST( state->tcp_sock == -1 );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+
+  test_bam_env_mock_conn( env );
+  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+
   fd_grpc_resp_hdrs_t trailers = {
     .h2_status   = 200U,
     .grpc_status = FD_GRPC_STATUS_OK
@@ -2373,7 +2391,7 @@ test_bam_stream_end_with_pending_txn_reconnects( fd_wksp_t * wksp ) {
   FD_TEST( state->defer_reset == 1U );
   FD_TEST( state->bam_stream_live == 0U );
 
-  int charge_busy = 0;
+  charge_busy = 0;
   fd_bam_client_step( state, &charge_busy );
   FD_TEST( charge_busy == 1 );
   FD_TEST( state->defer_reset == 0U );

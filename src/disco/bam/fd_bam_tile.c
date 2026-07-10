@@ -939,8 +939,12 @@ before_credit( fd_bam_tile_t *    ctx,
                fd_stem_context_t * stem,
                int *               charge_busy ) {
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
+  /* Preserve receive backpressure during a healthy activation handoff, but
+     keep stepping an inactive client that needs transport recovery. */
   if( FD_LIKELY( bam_pending_txn_empty( ctx->pending_txns ) ) ||
-      FD_UNLIKELY( !fd_bam_tile_override_active( ctx ) ) ) {
+      FD_UNLIKELY( !fd_bam_tile_override_active( ctx ) &&
+                   ( ctx->defer_reset ||
+                     fd_bam_client_status( ctx )!=FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) ) {
     fd_bam_client_step( ctx, charge_busy );
   }
 }
