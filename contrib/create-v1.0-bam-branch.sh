@@ -66,3 +66,4 @@ git -C "$TARGET" apply --index --binary "$PATCH"
 git -C "$TARGET" commit -m "FireBAM commit"
 
 git -C "$TARGET" push --force-with-lease --porcelain origin "HEAD:refs/heads/$BRANCH"
+contrib/publish-bam-release.sh "$BRANCH" "$BRANCH"
