@@ -1,5 +1,6 @@
 
 #include "../fd_txn_m.h"
+#include "../pack/fd_microblock.h"
 #include "generated/fd_dedup_tile_seccomp.h"
 
 #include "../topo/fd_topo.h"
@@ -121,9 +122,10 @@ during_frag( fd_dedup_ctx_t * ctx,
       FD_TCACHE_INSERT( _is_dup, *ctx->tcache_sync, ctx->tcache_ring, ctx->tcache_depth, ctx->tcache_map, ctx->tcache_map_cnt, ha_dedup_tag );
       (void)_is_dup;
     }
-  } else if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EXECUTED_TXN ) ) { /* Frankendancer-only */
+  } else if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EXECUTED_TXN ) ) {
     if( FD_UNLIKELY( sz!=FD_TXN_SIGNATURE_SZ ) ) FD_LOG_ERR(( "received an executed transaction signature message with the wrong size %lu", sz ));
-    /* Executed txns just have their signature inserted into the tcache
+    if( FD_UNLIKELY( sig!=FD_EXECUTED_TXN_KIND_LANDED ) ) return;
+    /* Landed txns just have their signature inserted into the tcache
        so we can dedup them easily. */
     ulong ha_dedup_tag = fd_hash( ctx->hashmap_seed, src, FD_TXN_SIGNATURE_SZ );
     int _is_dup;

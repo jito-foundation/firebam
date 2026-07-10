@@ -1,6 +1,7 @@
 #include "fd_poh.h"
 #include "fd_poh_tile.h"
 #include "../replay/fd_replay_tile.h"
+#include "../../disco/fd_txn_m.h"
 #include "../../disco/tiles.h"
 #include "../../disco/fd_clock_tile.h"
 #include "../../discof/fd_startup.h"
@@ -47,6 +48,7 @@ struct fd_poh_tile {
 
   fd_poh_out_t shred_out[ 1 ];
   fd_poh_out_t replay_out[ 1 ];
+  fd_poh_out_t executed_txn_out[ 1 ];
 };
 
 typedef struct fd_poh_tile fd_poh_tile_t;
@@ -207,6 +209,18 @@ returnable_frag( fd_poh_tile_t *     ctx,
       fd_txn_p_t const * txns = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
       fd_microblock_trailer_t const * trailer = fd_type_pun_const( (uchar const*)txns+sz-sizeof(fd_microblock_trailer_t) );
       fd_poh1_mixin( ctx->poh, stem, target_slot, trailer->hash, txn_cnt, txns );
+      fd_poh_out_t * executed_txn_out = ctx->executed_txn_out;
+      for( ulong i=0UL; i<txn_cnt; i++ ) {
+        int landed = !!(txns[ i ].flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS);
+        if( FD_UNLIKELY( !landed && txns[ i ].source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
+        ulong event_kind = landed ? FD_EXECUTED_TXN_KIND_LANDED : FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED;
+
+        fd_memcpy( fd_chunk_to_laddr( executed_txn_out->mem, executed_txn_out->chunk ),
+                   fd_txn_get_signatures( TXN(txns+i), txns[ i ].payload ),
+                   FD_TXN_SIGNATURE_SZ );
+        fd_stem_publish( stem, executed_txn_out->idx, event_kind, executed_txn_out->chunk, FD_TXN_SIGNATURE_SZ, 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
+        executed_txn_out->chunk = fd_dcache_compact_next( executed_txn_out->chunk, FD_TXN_SIGNATURE_SZ, executed_txn_out->chunk0, executed_txn_out->wmark );
+      }
       break;
     }
     default: {
@@ -272,6 +286,7 @@ unprivileged_init( fd_topo_t const *      topo,
 
   *ctx->shred_out = out1( topo, tile, "poh_shred" );
   *ctx->replay_out = out1( topo, tile, "poh_replay" );
+  *ctx->executed_txn_out = out1( topo, tile, "executed_txn" );
 
   FD_TEST( fd_poh_join( fd_poh_new( ctx->poh ), ctx->shred_out, ctx->replay_out ) );
 
@@ -313,8 +328,8 @@ populate_allowed_fds( fd_topo_t const *      topo,
   return out_cnt;
 }
 
-/* One tick, one microblock */
-#define STEM_BURST (2UL)
+/* Up to one executed signature per transaction. */
+#define STEM_BURST (MAX_TXN_PER_MICROBLOCK)
 
 /* See explanation in fd_pack */
 #define STEM_LAZY  (128L*3000L)

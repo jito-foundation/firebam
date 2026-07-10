@@ -332,6 +332,95 @@ test_pack_tile_mark_bam_work_scheduled( test_pack_tile_harness_t * h,
   return item;
 }
 
+static void
+test_pack_tile_send_executed_txn( test_pack_tile_harness_t * h,
+                                  void const *                txn_sig,
+                                  ulong                       event_kind ) {
+  h->ctx->in_kind[ 0 ] = IN_KIND_EXECUTED_TXN;
+  fd_memcpy( h->ctx->executed_txn_sig, txn_sig, FD_TXN_SIGNATURE_SZ );
+  after_frag( h->ctx, 0UL, 0UL, event_kind, FD_TXN_SIGNATURE_SZ, 0UL, 0UL, &h->out->stem );
+}
+
+static void
+test_pack_tile_bam_completion_outcomes( void ) {
+  struct {
+    ulong event_kind[ 3 ];
+    ulong completed_stage;
+    ulong delete_call_cnt;
+    uchar txn_cnt;
+  } const cases[] = {
+    {
+      { FD_EXECUTED_TXN_KIND_LANDED, FD_EXECUTED_TXN_KIND_LANDED, 0UL },
+      FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_LANDED_IDX, 2UL, 2U
+    },
+    {
+      { FD_EXECUTED_TXN_KIND_LANDED, FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED, FD_EXECUTED_TXN_KIND_LANDED },
+      FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_COMPLETED_UNLANDED_IDX, 2UL, 3U
+    },
+    {
+      { FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED, FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED, FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED },
+      FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_COMPLETED_UNLANDED_IDX, 0UL, 3U
+    },
+  };
+
+  for( ulong case_idx=0UL; case_idx<sizeof(cases)/sizeof(*cases); case_idx++ ) {
+    test_pack_tile_harness_t h[1];
+    uchar                    sigs[ 3 ][ sizeof(fd_ed25519_sig_t) ];
+    uchar                    txn_cnt = cases[ case_idx ].txn_cnt;
+
+    test_pack_tile_harness_new( h );
+    for( uchar i=0U; i<txn_cnt; i++ ) test_pack_tile_fill_sig( sigs[ i ], (uchar)( 10UL*case_idx + i + 1U ) );
+    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs, 0L, (uint)( case_idx+1UL ), 0U, 100UL, 100UL, 100UL, txn_cnt ) );
+    (void)test_pack_tile_mark_bam_work_scheduled( h, sigs[ 0 ] );
+
+    for( uchar i=0U; i<txn_cnt; i++ ) {
+      test_pack_tile_send_executed_txn( h, sigs[ i ], cases[ case_idx ].event_kind[ i ] );
+      if( i+1U<txn_cnt ) FD_TEST( h->ctx->bam_work_cnt == 1UL );
+    }
+
+    ulong other_stage = cases[ case_idx ].completed_stage==FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_LANDED_IDX
+                      ? FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_COMPLETED_UNLANDED_IDX
+                      : FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_LANDED_IDX;
+    FD_TEST( h->ctx->bam_work_cnt == 0UL );
+    FD_TEST( test_delete_call_cnt == cases[ case_idx ].delete_call_cnt );
+    FD_TEST( h->ctx->bam_pending_result_cnt == 0UL );
+    FD_TEST( h->ctx->bam_work_item_stage_cnt[ cases[ case_idx ].completed_stage ] == 1UL );
+    FD_TEST( h->ctx->bam_work_item_stage_cnt[ other_stage ] == 0UL );
+    test_pack_tile_harness_delete( h );
+  }
+}
+
+static void
+test_pack_tile_bam_completion_tracking_reuses_capacity( void ) {
+  test_pack_tile_harness_t h[1];
+  uchar                    sigs[ 3 ][ sizeof(fd_ed25519_sig_t) ];
+
+  test_pack_tile_harness_new( h );
+  for( uchar i=0U; i<3U; i++ ) test_pack_tile_fill_sig( sigs[ i ], (uchar)( 70U + i ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, sigs, 0L, 5U, 0U, 100UL, 100UL, 100UL, 2U ) );
+  (void)test_pack_tile_mark_bam_work_scheduled( h, sigs[ 0 ] );
+
+  test_pack_tile_send_executed_txn( h, sigs[ 0 ], FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED );
+  test_pack_tile_send_executed_txn( h, sigs[ 0 ], FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED );
+  test_pack_tile_send_executed_txn( h, sigs[ 2 ], FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED );
+  FD_TEST( h->ctx->bam_work[ 0 ].remaining_txn_cnt == 1U );
+  test_pack_tile_send_executed_txn( h, sigs[ 1 ], FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED );
+  test_pack_tile_send_executed_txn( h, sigs[ 1 ], FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED );
+  FD_TEST( h->ctx->bam_work_cnt == 0UL );
+
+  for( ulong i=0UL; i<3UL*TEST_PACK_TILE_BAM_WORK_CAP; i++ ) {
+    test_pack_tile_fill_sig( sigs[ 0 ], (uchar)( 100UL + i ) );
+    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ 0 ], 0L, (uint)( 100UL + i ), 0U, 100UL, 100UL, 100UL, 1U ) );
+    (void)test_pack_tile_mark_bam_work_scheduled( h, sigs[ 0 ] );
+    test_pack_tile_send_executed_txn( h, sigs[ 0 ], FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED );
+    FD_TEST( h->ctx->bam_work_cnt == 0UL );
+  }
+
+  FD_TEST( h->ctx->bam_scheduled_work_cnt == 0UL );
+  FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_COMPLETED_UNLANDED_IDX ] == 1UL+3UL*TEST_PACK_TILE_BAM_WORK_CAP );
+  test_pack_tile_harness_delete( h );
+}
+
 static ulong
 test_pack_tile_prepare_resolv_frag( test_pack_tile_harness_t * h,
                                     uchar *                    resolved_buf,
@@ -1053,6 +1142,8 @@ main( int     argc,
   fd_boot( &argc, &argv );
   fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
 
+  test_pack_tile_bam_completion_outcomes();
+  test_pack_tile_bam_completion_tracking_reuses_capacity();
   test_pack_tile_bam_stale_max_schedule_slot_rejected();
   test_pack_tile_bam_stale_results_drain_without_drop();
   test_pack_tile_bam_same_seq_pending_duplicate_replaces_before_insert();

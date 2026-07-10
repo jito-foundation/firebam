@@ -679,6 +679,7 @@ metric introduced.
   <int value="4" name="PendingEvicted" label="BAM work was evicted from pack's pending-work tracker by later slot or blockhash revalidation" />
   <int value="5" name="Scheduled" label="BAM work was removed from the pending-work tracker and scheduled into a microblock" />
   <int value="6" name="Landed" label="BAM work was observed as landed via execution feedback" />
+  <int value="7" name="CompletedUnlanded" label="BAM work completed execution but at least one transaction did not land" />
 </enum>
 
 <enum name="PackBamWorkFirstOutcome">
