@@ -1009,7 +1009,7 @@ fd_topo_initialize( config_t * config ) {
     fd_topob_tile_uses( topo, pack_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
     if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
       fd_topo_tile_t * bundle_tile = &topo->tiles[ fd_topo_find_tile( topo, "bundle", 0UL ) ];
-      fd_topob_tile_uses( topo, bundle_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
+      fd_topob_tile_uses( topo, bundle_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
     }
     FD_TEST( fd_pod_insertf_ulong( topo->props, bam_status_obj->id, "bam_status" ) );
 

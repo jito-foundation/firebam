@@ -5185,6 +5185,47 @@ test_bam_activation_waits_for_gossip_fseq( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_activation_waits_for_bundle_publication( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  void * fseq_shmem = fd_fseq_new( fseq_mem, FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
+  FD_TEST( fseq_shmem );
+  ulong * fseq = fd_fseq_join( fseq_shmem );
+  FD_TEST( fseq );
+  state->bam_status_fseq      = fseq;
+  state->tpu_update_state     = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
+  state->client_id_update_state = FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM;
+
+  /* Bundle owns publication, so BAM must leave the word untouched and remain
+     unable to drain scheduler work. */
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( fd_fseq_query( fseq )==FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
+
+  /* Once bundle releases ownership, BAM wins the next activation attempt. */
+  FD_TEST( FD_ATOMIC_CAS( fseq, FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING, 0UL )==FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
+  state->tpu_update_state       = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
+  state->client_id_update_state = FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM;
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( fd_fseq_query( fseq )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+
+  fd_bam_publish_active_state( state, state->stem, 0 );
+  FD_TEST( fd_fseq_query( fseq )==0UL );
+
+  /* Deactivation must not erase a bundle publication claim. */
+  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
+  fd_bam_publish_active_state( state, state->stem, 0 );
+  FD_TEST( fd_fseq_query( fseq )==FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
+
+  state->bam_status_fseq = NULL;
+  FD_TEST( fd_fseq_leave( fseq )==fseq_shmem );
+  FD_TEST( fd_fseq_delete( fseq_shmem )==fseq_shmem );
+  test_bam_env_destroy( env );
+}
+
+static void
 test_bam_activation_ignores_stale_gossip_fseq_after_reenable( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -6238,6 +6279,7 @@ main( int     argc,
   test_bam_gossip_tile_applies_contact_update( wksp );
   test_bam_gossip_publishes_bam_config_contact( wksp );
   test_bam_activation_waits_for_gossip_fseq( wksp );
+  test_bam_activation_waits_for_bundle_publication( wksp );
   test_bam_activation_ignores_stale_gossip_fseq_after_reenable( wksp );
   test_bam_disable_clears_status_with_pending_gossip_handoff( wksp );
   test_bam_invalid_quic_base_port_does_not_activate( wksp );

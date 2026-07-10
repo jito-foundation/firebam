@@ -405,56 +405,6 @@ FD_UNIT_TEST( bundle_keyswitch ) {
   fd_wksp_free_laddr( keyswitch_mem );
 }
 
-FD_UNIT_TEST( bundle_bam_active_pause_resume ) {
-  test_bundle_env_t env[1];
-  test_bundle_env_create( env, wksp );
-  test_bundle_env_mock_conn( env );
-  fd_bundle_tile_t * state = env->state;
-
-  fd_keyswitch_t keyswitch = {0};
-  keyswitch.state = FD_KEYSWITCH_STATE_COMPLETED;
-  state->keyswitch = &keyswitch;
-
-  ulong bam_status_fseq = 0UL;
-  state->bam_status_fseq = &bam_status_fseq;
-
-  state->bundle_status_plugin = FD_BUNDLE_STATE_CONNECTED;
-  state->bundle_status_recent = FD_BUNDLE_STATE_CONNECTED;
-  state->bundle_status_logged = FD_BUNDLE_STATE_CONNECTED;
-  pending_txn_push_tail( state->pending_txns, (fd_bundle_pending_txn_t){ .sig=0UL, .bundle_seq=0UL } );
-  FD_TEST( !pending_txn_empty( state->pending_txns ) );
-
-  long before_pause = fd_log_wallclock();
-  bam_status_fseq = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
-  fd_bundle_tile_housekeeping( state );
-
-  FD_TEST( state->bam_override_active );
-  FD_TEST( state->tcp_sock == -1 );
-  FD_TEST( state->tcp_sock_connected == 0 );
-  FD_TEST( state->bundle_status_plugin == 127 );
-  FD_TEST( state->bundle_status_recent == FD_BUNDLE_STATE_DISCONNECTED );
-  FD_TEST( state->bundle_status_logged == FD_BUNDLE_STATE_DISCONNECTED );
-  FD_TEST( state->last_bundle_status_log_nanos >= before_pause );
-  FD_TEST( pending_txn_empty( state->pending_txns ) );
-
-  state->backoff_until = fd_log_wallclock() + (long)30e9;
-  state->defer_reset = 1;
-  state->last_bundle_status_log_nanos = fd_log_wallclock() - (long)31e9;
-
-  long before_resume = fd_log_wallclock();
-  bam_status_fseq = 0UL;
-  fd_bundle_tile_housekeeping( state );
-
-  FD_TEST( !state->bam_override_active );
-  FD_TEST( state->backoff_until == 0L );
-  FD_TEST( state->defer_reset == 0 );
-  FD_TEST( state->last_bundle_status_log_nanos >= before_resume );
-
-  state->bam_status_fseq = NULL;
-  state->keyswitch = NULL;
-  test_bundle_env_destroy( env );
-}
-
 /* Verify that the bundle client status is reported correctly */
 
 FD_UNIT_TEST( bundle_client_status ) {

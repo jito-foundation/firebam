@@ -610,12 +610,13 @@ void
 fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
                              fd_stem_context_t * stem,
                              _Bool               bam_active ) {
-  ulong prev_status = FD_LIKELY( ctx->bam_status_fseq ) ? fd_fseq_query( ctx->bam_status_fseq ) : 0UL;
-  _Bool prev_bam_active = !!( prev_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  _Bool prev_bam_active = ctx->bam_status_fseq &&
+                          fd_fseq_query( ctx->bam_status_fseq )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
 
   if( FD_UNLIKELY( !bam_active ) ) {
     ctx->bam_gossip_handoff_pending = 0U;
-    if( FD_LIKELY( ctx->bam_status_fseq ) ) fd_fseq_update( ctx->bam_status_fseq, 0UL );
+    if( FD_UNLIKELY( prev_bam_active ) )
+      (void)FD_ATOMIC_CAS( ctx->bam_status_fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE, 0UL );
   }
 
   fd_bam_tpu_update_state_t tpu_update_state = ctx->tpu_update_state;
@@ -640,13 +641,14 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
     _Bool waiting_for_gossip = !!( ctx->bam_gossip_handoff_pending &&
                                    ctx->bam_gossip_fseq &&
                                    !fd_seq_ge( fd_fseq_query( ctx->bam_gossip_fseq ), ctx->bam_gossip_handoff_target ) );
-    if( FD_UNLIKELY( !contact_applied || waiting_for_gossip ) ) {
-      if( FD_UNLIKELY( !( prev_status & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) ) ) fd_fseq_update( ctx->bam_status_fseq, 0UL );
-      return;
-    }
+    if( FD_UNLIKELY( !contact_applied || waiting_for_gossip ) ) return;
     ctx->bam_gossip_handoff_pending = 0U;
 
-    fd_fseq_update( ctx->bam_status_fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+    /* Serialize activation against a Block Engine drain already in progress.
+       If bundle owns the status word, leave it untouched and retry on the next
+       active-state refresh. */
+    if( FD_UNLIKELY( !prev_bam_active ) )
+      (void)FD_ATOMIC_CAS( ctx->bam_status_fseq, 0UL, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   }
 }
 
