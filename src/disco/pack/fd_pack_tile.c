@@ -152,6 +152,7 @@ typedef struct {
   uchar            txn_cnt;
   uchar            remaining_txn_cnt;
   uchar            state;
+  uchar            saw_unlanded_completion;
 } pack_bam_work_t;
 
 typedef struct {
@@ -2352,19 +2353,29 @@ after_frag( fd_pack_ctx_t *     ctx,
     break;
   }
   case IN_KIND_EXECUTED_TXN: {
-    ulong deleted = fd_pack_delete_transaction( ctx->pack, fd_type_pun( ctx->executed_txn_sig ) );
-    FD_MCNT_INC( PACK, TRANSACTION_ALREADY_EXECUTED, deleted );
+    if( FD_UNLIKELY( sig>FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED ) ) break;
+    int completed_unlanded = sig==FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED;
+
     uchar scheduled_matched_idx = UCHAR_MAX;
     ulong scheduled_work_idx = pack_tile_bam_work_find_by_any_sig( ctx, ctx->executed_txn_sig, PACK_BAM_WORK_STATE_SCHEDULED, &scheduled_matched_idx );
     if( FD_LIKELY( scheduled_work_idx<ctx->bam_work_cnt ) ) {
       pack_bam_work_t * item = &ctx->bam_work[ scheduled_work_idx ];
       fd_memset( item->sig[ scheduled_matched_idx ], 0, sizeof(fd_ed25519_sig_t) );
-      item->remaining_txn_cnt = (uchar)fd_ulong_sat_sub( item->remaining_txn_cnt, 1UL );
+      item->saw_unlanded_completion |= (uchar)completed_unlanded;
+      item->remaining_txn_cnt--;
       if( FD_UNLIKELY( !item->remaining_txn_cnt ) ) {
+        ulong completed_stage = item->saw_unlanded_completion
+                              ? FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_COMPLETED_UNLANDED_IDX
+                              : FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_LANDED_IDX;
         (void)pack_tile_bam_work_swap_remove( ctx, scheduled_work_idx );
-        ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_LANDED_IDX ]++;
+        ctx->bam_work_item_stage_cnt[ completed_stage ]++;
       }
     }
+
+    if( FD_UNLIKELY( completed_unlanded ) ) break;
+
+    ulong deleted = fd_pack_delete_transaction( ctx->pack, fd_type_pun( ctx->executed_txn_sig ) );
+    FD_MCNT_INC( PACK, TRANSACTION_ALREADY_EXECUTED, deleted );
     if( FD_LIKELY( !deleted ) ) break;
 
     uchar matched_idx = UCHAR_MAX;
