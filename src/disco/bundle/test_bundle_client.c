@@ -1,5 +1,7 @@
 #include "test_bundle_common.c"
+#include "fd_bundle_tile.h"
 #include "proto/block_engine.pb.h"
+#include "../bam/fd_bam_types.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../ballet/nanopb/pb_encode.h"
 

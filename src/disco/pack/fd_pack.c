@@ -5,6 +5,7 @@
 #include "fd_pack_unwritable.h"
 #include "fd_chkdup.h"
 #include "fd_pack_tip_prog_blacklist.h"
+#include "../fd_txn_m.h"
 #include <math.h> /* for sqrt */
 #include <stddef.h> /* for offsetof */
 #include "../metrics/fd_metrics.h"
@@ -763,6 +764,8 @@ fd_pack_new( void                   * mem,
   pack->expire_before               = 0UL;
   pack->outstanding_microblock_mask = 0UL;
   pack->cumulative_rebated_cus      = 0UL;
+  pack->initializer_bundle_state    = FD_PACK_IB_STATE_NOT_INITIALIZED;
+  pack->relative_bundle_idx         = 0UL;
 
 
   trp_pool_new(  _pool,        pack_depth+extra_depth );
@@ -1447,7 +1450,9 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
        bundles are coming in a pre-prioritized order, so it doesn't make
        sense to drop an earlier bundle for this one.  That means that
        really, the best thing to do is drop this one. */
-  if( FD_UNLIKELY( (!initializer_bundle)&(pending_b_txn_cnt+txn_cnt>pack->pack_depth/2UL) ) ) err = FD_PACK_INSERT_REJECT_PRIORITY;
+  if( FD_UNLIKELY( !initializer_bundle &&
+                   bundle[ 0 ]->txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM &&
+                   pending_b_txn_cnt+txn_cnt>pack->pack_depth/2UL ) ) err = FD_PACK_INSERT_REJECT_PRIORITY;
 
   if( FD_UNLIKELY( expires_at<pack->expire_before                                         ) ) err = FD_PACK_INSERT_REJECT_EXPIRED;
 
@@ -2012,6 +2017,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, pack_alloc     )+sizeof(((fd_txn_p_t*)NULL)->pack_alloc    )<=1280UL, nt_memcpy );
 
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, flags          )+sizeof(((fd_txn_p_t*)NULL)->flags         )<=1280UL, nt_memcpy );
+      FD_STATIC_ASSERT( offsetof(fd_txn_p_t, bam            )+sizeof(((fd_txn_p_t*)NULL)->bam           )<=1280UL, nt_memcpy );
       FD_STATIC_ASSERT( offsetof(fd_txn_p_t, _              )                                            <=1280UL, nt_memcpy );
       const ulong offset_into_txn = 1280UL - offsetof(fd_txn_p_t, _ );
       fd_memcpy( offset_into_txn+(uchar *)TXN(out_txnp), offset_into_txn+(uchar const *)txn,
@@ -2028,6 +2034,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
       out_txnp->source_tpu                      = cur->txn->source_tpu;
       out_txnp->source_ipv4                     = cur->txn->source_ipv4;
       out_txnp->flags                           = cur->txn->flags;
+      out_txnp->bam                             = cur->txn->bam;
     }
     /* Copy the ALT accounts from the source fd_txn_e_t */
     ulong alt_acct_cnt = (ulong)txn->addr_table_adtl_cnt;
@@ -2259,6 +2266,7 @@ fd_pack_microblock_complete( fd_pack_t * pack,
 static inline int
 fd_pack_try_schedule_bundle( fd_pack_t  * pack,
                              ulong        bank_tile,
+                             _Bool        bam_only,
                              fd_txn_e_t * out ) {
   int state = pack->initializer_bundle_state;
   if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_PENDING) | (state==FD_PACK_IB_STATE_FAILED ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
@@ -2280,6 +2288,20 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   }
 
   if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
+
+  if( FD_UNLIKELY( bam_only ) ) {
+    fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
+    while( !(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) && cur->txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) {
+      ulong skipped_bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+      do {
+        _cur = treap_rev_iter_next( _cur, pool );
+        if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
+        cur = treap_rev_iter_ele( _cur, pool );
+        if( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
+      } while( FD_UNLIKELY( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )==skipped_bundle_idx ||
+                            cur->skip==pack->compressed_slot_number ) );
+    }
+  }
 
   treap_rev_iter_t   _txn0 = _cur;
   fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
@@ -2492,6 +2514,9 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     out_txnp->source_tpu                      = cur->txn->source_tpu;
     out_txnp->source_ipv4                     = cur->txn->source_ipv4;
     out_txnp->flags                           = cur->txn->flags;
+    out_txnp->bam                             = cur->txn->bam;
+    if( FD_UNLIKELY( out_txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                     !out_txnp->bam.revert_on_error ) ) out_txnp->flags &= ~FD_TXN_P_FLAGS_BUNDLE;
     /* Copy the ALT accounts from the source fd_txn_e_t */
     ulong alt_acct_cnt = (ulong)txn->addr_table_adtl_cnt;
     fd_memcpy( out->alt_accts, cur->txn_e->alt_accts, alt_acct_cnt * sizeof(fd_acct_addr_t) );
@@ -2614,7 +2639,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
   /* Bundle can't mix with votes, so only try to schedule a bundle if we
      didn't get any votes. */
   if( FD_UNLIKELY( !!(schedule_flags & FD_PACK_SCHEDULE_BUNDLE) & (status1.txns_scheduled==0UL) ) ) {
-    int bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, out );
+    int bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY, out );
     if( FD_UNLIKELY( bundle_result>0                         ) ) return (ulong)bundle_result;
     if( FD_UNLIKELY( bundle_result==TRY_BUNDLE_HAS_CONFLICTS ) ) return 0UL;
     /* in the NO_READY_BUNDLES or DOES_NOT_FIT case, we schedule like
@@ -2626,7 +2651,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
 
 
   /* Fill any remaining space with non-vote transactions */
-  if( FD_LIKELY( schedule_flags & FD_PACK_SCHEDULE_TXN ) ) {
+  if( FD_LIKELY( (schedule_flags & FD_PACK_SCHEDULE_TXN) && !(schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY) ) ) {
     status = fd_pack_schedule_impl( pack, pack->pending,       cu_limit, txn_limit,          byte_limit, alloc_limit, bank_tile,
         pack->pending_smallest,       use_by_bank_txn, out+scheduled );
 

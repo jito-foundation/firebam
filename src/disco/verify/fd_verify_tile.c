@@ -1,5 +1,6 @@
 #include "fd_verify_tile.h"
 #include "../fd_txn_m.h"
+#include "../bam/fd_bam_publish.h"
 #include "../metrics/fd_metrics.h"
 #include "generated/fd_verify_tile_seccomp.h"
 #include "../../flamenco/gossip/fd_gossip_message.h"
@@ -8,6 +9,7 @@
 #define IN_KIND_BUNDLE (1UL)
 #define IN_KIND_GOSSIP (2UL)
 #define IN_KIND_TXSEND (3UL)
+#define IN_KIND_BAM    (4UL)
 
 FD_FN_CONST static inline ulong
 scratch_align( void ) {
@@ -44,7 +46,7 @@ before_frag( fd_verify_ctx_t * ctx,
 
   if( FD_LIKELY( is_bundle_packet || ctx->in_kind[ in_idx ]==IN_KIND_QUIC ) ) {
     return (seq % ctx->round_robin_cnt) != ctx->round_robin_idx;
-  } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE ) ) {
+  } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE || ctx->in_kind[ in_idx ]==IN_KIND_BAM ) ) {
     return ctx->round_robin_idx!=0UL;
   } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_GOSSIP ) ) {
       return (seq % ctx->round_robin_cnt) != ctx->round_robin_idx ||
@@ -68,7 +70,7 @@ during_frag( fd_verify_ctx_t * ctx,
              ulong             ctl FD_PARAM_UNUSED ) {
 
   ulong in_kind = ctx->in_kind[ in_idx ];
-  if( FD_UNLIKELY( in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_QUIC || in_kind==IN_KIND_TXSEND ) ) {
+  if( FD_UNLIKELY( in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_BAM || in_kind==IN_KIND_QUIC || in_kind==IN_KIND_TXSEND ) ) {
     if( FD_UNLIKELY( chunk<ctx->in[in_idx].chunk0 || chunk>ctx->in[in_idx].wmark || sz>FD_TPU_RAW_MTU ) )
       FD_LOG_ERR(( "chunk %lu %lu corrupt, not in range [%lu,%lu,%lu]", chunk, sz, ctx->in[in_idx].chunk0, ctx->in[in_idx].wmark, FD_TPU_RAW_MTU ));
 
@@ -114,11 +116,16 @@ after_frag( fd_verify_ctx_t *   ctx,
   fd_txn_t *  txnt = fd_txn_m_txn_t( txnm );
   txnm->txn_t_sz = (ushort)fd_txn_parse( fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, NULL );
 
-  int is_bundle = !!txnm->block_engine.bundle_id;
+  int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  ulong failure_group_id = txnm->block_engine.bundle_id;
+  if( FD_UNLIKELY( is_bam && txnm->bam.txn_cnt>1U ) ) failure_group_id = (1UL<<63) | (((ulong)txnm->bam.seq_id)+1UL);
+  int is_bundle = !!failure_group_id;
 
-  if( FD_UNLIKELY( is_bundle & (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  if( FD_UNLIKELY( is_bundle &&
+                   ( (failure_group_id!=ctx->bundle_id) ||
+                     (is_bam && !txnm->bam.batch_idx) ) ) ) {
     ctx->bundle_failed = 0;
-    ctx->bundle_id     = txnm->block_engine.bundle_id;
+    ctx->bundle_id     = failure_group_id;
   }
 
   if( FD_UNLIKELY( is_bundle & (!!ctx->bundle_failed) ) ) {
@@ -126,26 +133,44 @@ after_frag( fd_verify_ctx_t *   ctx,
     return;
   }
 
+  ulong failure_idx = ULONG_MAX;
   if( FD_UNLIKELY( !txnm->txn_t_sz ) ) {
-    if( FD_UNLIKELY( is_bundle ) ) ctx->bundle_failed = 1;
-    ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_PARSE_FAILURE_IDX ]++;
-    return;
+    failure_idx = FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_PARSE_FAILURE_IDX;
+  } else {
+    /* BAM can resend txns that did not land in previous leader slots, so
+       leave duplicate handling to the bundle-aware downstream stages. */
+    ulong _txn_sig;
+    int res = fd_txn_verify( ctx, fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, fd_txn_m_use_prepack_sig_dedup( txnm ), &_txn_sig );
+    if( FD_UNLIKELY( res!=FD_TXN_VERIFY_SUCCESS ) )
+      failure_idx = fd_ulong_if( res==FD_TXN_VERIFY_DEDUP,
+                                 FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_DEDUP_FAILURE_IDX,
+                                 FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_VERIFY_FAILURE_IDX );
   }
 
-  /* Users sometimes send transactions as part of a bundle (with a tip)
-     and via the normal path (without a tip).  Regardless of which
-     arrives first, we want to pack the one with the tip.  Thus, we
-     exempt bundles from the normal HA dedup checks.  The dedup tile
-     will still do a full-bundle dedup check to make sure to drop any
-     identical bundles. */
-  ulong _txn_sig;
-  int res = fd_txn_verify( ctx, fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, !is_bundle, &_txn_sig );
-  if( FD_UNLIKELY( res!=FD_TXN_VERIFY_SUCCESS ) ) {
+  if( FD_UNLIKELY( failure_idx!=ULONG_MAX ) ) {
     if( FD_UNLIKELY( is_bundle ) ) ctx->bundle_failed = 1;
-
-    if( FD_LIKELY( res==FD_TXN_VERIFY_DEDUP ) ) ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_DEDUP_FAILURE_IDX ]++;
-    else                                        ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_VERIFY_FAILURE_IDX ]++;
-
+    /* For BAM atomic batches, txn 0 owns immediate verify failures; later
+       missing members are reported by pack if the batch prefix is incomplete. */
+    if( FD_UNLIKELY( is_bam && txnm->bam.batch_idx==0U ) ) {
+      fd_bam_bundle_result_t bam_res = {
+        .seq_id           = txnm->bam.seq_id,
+        .scheduler_gen    = txnm->bam.scheduler_gen,
+        .slot             = txnm->bam.max_schedule_slot,
+        .bundle_txn_cnt   = txnm->bam.txn_cnt,
+        .scheduling_error = FD_BAM_SCHED_ERR_NONE,
+        .bundle_err       = FD_BAM_BUNDLE_ERR_DESER,
+        .deser_index      = txnm->bam.batch_idx,
+        .deser_reason     = bam_types_DeserializationErrorReason_SANITIZE_ERROR
+      };
+      fd_bam_publish_result( stem,
+                             ctx->bam_result_out_idx,
+                             ctx->bam_result_out_mem,
+                             &ctx->bam_result_out_chunk,
+                             ctx->bam_result_out_chunk0,
+                             ctx->bam_result_out_wmark,
+                             &bam_res );
+    }
+    ctx->metrics.verify_tile_result[ failure_idx ]++;
     return;
   }
 
@@ -208,6 +233,7 @@ unprivileged_init( fd_topo_t *      topo,
     if(      !strcmp( link->name, "quic_verify"  ) ) ctx->in_kind[ i ] = IN_KIND_QUIC;
     else if( !strcmp( link->name, "bundle_verif" ) ) ctx->in_kind[ i ] = IN_KIND_BUNDLE;
     else if( !strcmp( link->name, "txsend_out"   ) ) ctx->in_kind[ i ] = IN_KIND_TXSEND;
+    else if( !strcmp( link->name, "bam_verif"    ) ) ctx->in_kind[ i ] = IN_KIND_BAM;
     else if( !strcmp( link->name, "gossip_out"   ) ) ctx->in_kind[ i ] = IN_KIND_GOSSIP;
     else FD_LOG_ERR(( "unexpected link name %s", link->name ));
   }
@@ -216,6 +242,18 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->out_chunk0 = fd_dcache_compact_chunk0( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache );
   ctx->out_wmark  = fd_dcache_compact_wmark ( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache, topo->links[ tile->out_link_id[ 0 ] ].mtu );
   ctx->out_chunk  = ctx->out_chunk0;
+
+  ctx->bam_result_out_idx = ULONG_MAX;
+  for( ulong i=0UL; i<tile->out_cnt; i++ ) {
+    fd_topo_link_t const * bam_result_out = &topo->links[ tile->out_link_id[ i ] ];
+    if( strcmp( bam_result_out->name, "bank_bam" ) ) continue;
+    ctx->bam_result_out_idx    = i;
+    ctx->bam_result_out_mem    = topo->workspaces[ topo->objs[ bam_result_out->dcache_obj_id ].wksp_id ].wksp;
+    ctx->bam_result_out_chunk0 = fd_dcache_compact_chunk0( ctx->bam_result_out_mem, bam_result_out->dcache );
+    ctx->bam_result_out_wmark  = fd_dcache_compact_wmark ( ctx->bam_result_out_mem, bam_result_out->dcache, bam_result_out->mtu );
+    ctx->bam_result_out_chunk  = ctx->bam_result_out_chunk0;
+    break;
+  }
 
   ulong scratch_top = FD_SCRATCH_ALLOC_FINI( l, scratch_align() );
   if( FD_UNLIKELY( scratch_top > (ulong)scratch + scratch_footprint( tile ) ) )
