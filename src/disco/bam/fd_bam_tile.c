@@ -927,12 +927,20 @@ fd_bam_test_metrics_write( fd_bam_tile_t * ctx ) {
   metrics_write( ctx );
 }
 
+static inline _Bool
+fd_bam_tile_override_active( fd_bam_tile_t const * ctx ) {
+  return fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+}
+
 static void
 before_credit( fd_bam_tile_t *    ctx,
                fd_stem_context_t * stem,
                int *               charge_busy ) {
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
-  if( FD_LIKELY( bam_pending_txn_empty( ctx->pending_txns ) ) ) fd_bam_client_step( ctx, charge_busy );
+  if( FD_LIKELY( bam_pending_txn_empty( ctx->pending_txns ) ) ||
+      FD_UNLIKELY( !fd_bam_tile_override_active( ctx ) ) ) {
+    fd_bam_client_step( ctx, charge_busy );
+  }
 }
 
 static void
@@ -943,9 +951,7 @@ after_credit( fd_bam_tile_t *  ctx,
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
 
   ulong drain_cnt = 0UL;
-  _Bool drain_enabled = !!( FD_VOLATILE_CONST( ctx->enabled ) &&
-                            ctx->bam_status_fseq &&
-                            ( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) );
+  _Bool drain_enabled = fd_bam_tile_override_active( ctx );
   while( FD_LIKELY( drain_enabled ) &&
          FD_LIKELY( !bam_pending_txn_empty( ctx->pending_txns ) ) &&
          FD_LIKELY( drain_cnt<STEM_BURST ) ) {
@@ -1053,6 +1059,13 @@ after_credit( fd_bam_tile_t *  ctx,
   ctx->bam_status_plugin = ctx->bam_status_recent;
   ctx->gui_dirty = 0U;
   *charge_busy = 1;
+}
+
+void
+fd_bam_test_before_credit( fd_bam_tile_t *    ctx,
+                           fd_stem_context_t * stem,
+                           int *               charge_busy ) {
+  before_credit( ctx, stem, charge_busy );
 }
 
 void

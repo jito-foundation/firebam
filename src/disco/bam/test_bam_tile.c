@@ -29,6 +29,11 @@ fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
 extern void
 fd_bam_test_metrics_write( fd_bam_tile_t * ctx );
 
+extern void
+fd_bam_test_before_credit( fd_bam_tile_t *    ctx,
+                           fd_stem_context_t * stem,
+                           int *               charge_busy );
+
 /* Applies a BAM fee configuration to the pack crank state. Updates
    tip-receiver destinations stored in |crank3| and |crank2| and writes
    a clamped copy of commission_bps into |crank3| when a new version is
@@ -2313,25 +2318,135 @@ test_bam_bundle_rejects_missing_batches( fd_wksp_t * wksp ) {
 
 /* --- Connection lifecycle and watchdog ----------------------------------------------- */
 
+static int
+test_bam_loopback_listener( struct sockaddr_in * addr ) {
+  int listen_sock = socket( AF_INET, SOCK_STREAM|SOCK_CLOEXEC, 0 );
+  FD_TEST( listen_sock >= 0 );
+
+  *addr = (struct sockaddr_in) {
+    .sin_family      = AF_INET,
+    .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ),
+    .sin_port        = 0
+  };
+  FD_TEST( 0 == bind( listen_sock, fd_type_pun( addr ), sizeof(*addr) ) );
+  FD_TEST( 0 == listen( listen_sock, 1 ) );
+
+  socklen_t addr_len = sizeof(*addr);
+  FD_TEST( 0 == getsockname( listen_sock, fd_type_pun( addr ), &addr_len ) );
+  return listen_sock;
+}
+
+static void
+test_bam_stream_end_with_pending_txn_reconnects( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  void * fseq_shmem = fd_fseq_new( fseq_mem, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  FD_TEST( fseq_shmem );
+  ulong * fseq = fd_fseq_join( fseq_shmem );
+  FD_TEST( fseq );
+  state->bam_status_fseq = fseq;
+
+  test_bam_env_mock_conn( env );
+  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+
+  /* Model callbacks from one I/O pass: DATA followed by trailing HEADERS. */
+  uchar protobuf[ 256 ];
+  size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 77U, 1U, 0 );
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+  fd_bam_pending_txn_t const * pending = bam_pending_txn_peek_head_const( state->pending_txns );
+  FD_TEST( pending->seq_id == 77U );
+  FD_TEST( pending->payload_sz == 1U );
+  FD_TEST( pending->payload[0] == (uchar)'A' );
+
+  fd_grpc_resp_hdrs_t trailers = {
+    .h2_status   = 200U,
+    .grpc_status = FD_GRPC_STATUS_OK
+  };
+  fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &trailers );
+  FD_TEST( state->defer_reset == 1U );
+  FD_TEST( state->bam_stream_live == 0U );
+
+  int charge_busy = 0;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( charge_busy == 1 );
+  FD_TEST( state->defer_reset == 0U );
+  FD_TEST( state->tcp_sock == -1 );
+  FD_TEST( state->tcp_sock_connected == 0U );
+  FD_TEST( fd_fseq_query( fseq ) == 0UL );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+
+  FD_TEST( 0 == close( env->server_sock ) );
+  env->server_sock = -1;
+
+  /* The exact post-reset state must still start a new connection even though
+     scheduler work remains queued. */
+  struct sockaddr_in addr;
+  int listen_sock = test_bam_loopback_listener( &addr );
+  fd_cstr_ncpy( state->server_fqdn, "127.0.0.1", sizeof(state->server_fqdn) );
+  state->server_fqdn_len = sizeof("127.0.0.1")-1UL;
+  state->server_tcp_port = fd_ushort_bswap( addr.sin_port );
+  state->backoff_until   = 0L;
+
+  charge_busy = 0;
+  fd_bam_test_before_credit( state, env->stem, &charge_busy );
+  FD_TEST( charge_busy == 1 );
+  FD_TEST( state->tcp_sock >= 0 );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+
+  env->server_sock = accept4( listen_sock, NULL, NULL, SOCK_CLOEXEC );
+  FD_TEST( env->server_sock >= 0 );
+  FD_TEST( 0 == close( listen_sock ) );
+
+  /* Once the override is active, preserve backpressure: drain the queued work
+     before servicing a deferred connection reset. */
+  int reconnect_sock = state->tcp_sock;
+  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  state->defer_reset = 1U;
+  charge_busy = 0;
+  fd_bam_test_before_credit( state, env->stem, &charge_busy );
+  FD_TEST( charge_busy == 0 );
+  FD_TEST( state->defer_reset == 1U );
+  FD_TEST( state->tcp_sock == reconnect_sock );
+
+  int opt_poll_in = 1;
+  fd_bam_test_after_credit( state, env->stem, &opt_poll_in, &charge_busy );
+  FD_TEST( charge_busy == 1 );
+  FD_TEST( opt_poll_in == 0 );
+  FD_TEST( env->stem_seqs[0] == 1UL );
+  FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
+  fd_txn_m_t const * forwarded = fd_chunk_to_laddr_const( state->verify_out.mem, 0UL );
+  FD_TEST( forwarded->bam.seq_id == 77U );
+  FD_TEST( forwarded->payload_sz == 1U );
+  FD_TEST( fd_txn_m_payload_const( forwarded )[0] == (uchar)'A' );
+
+  charge_busy = 0;
+  fd_bam_test_before_credit( state, env->stem, &charge_busy );
+  FD_TEST( charge_busy == 1 );
+  FD_TEST( state->defer_reset == 0U );
+  FD_TEST( state->tcp_sock == -1 );
+  FD_TEST( fd_fseq_query( fseq ) == 0UL );
+
+  state->bam_status_fseq = NULL;
+  FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
+  FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
+  test_bam_env_destroy( env );
+}
+
 static void
 test_bam_tcp_connect_completion_uses_so_error( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  int listen_sock = socket( AF_INET, SOCK_STREAM|SOCK_CLOEXEC, 0 );
-  FD_TEST( listen_sock >= 0 );
-
-  struct sockaddr_in addr = {
-    .sin_family      = AF_INET,
-    .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ),
-    .sin_port        = 0
-  };
-  FD_TEST( 0 == bind( listen_sock, fd_type_pun( &addr ), sizeof(addr) ) );
-  FD_TEST( 0 == listen( listen_sock, 1 ) );
-
-  socklen_t addr_len = sizeof(addr);
-  FD_TEST( 0 == getsockname( listen_sock, fd_type_pun( &addr ), &addr_len ) );
+  struct sockaddr_in addr;
+  int listen_sock = test_bam_loopback_listener( &addr );
 
   int client_sock = socket( AF_INET, SOCK_STREAM|SOCK_CLOEXEC, 0 );
   FD_TEST( client_sock >= 0 );
@@ -6067,6 +6182,7 @@ main( int     argc,
   test_bam_bundle_rejects_missing_batches( wksp );
 
   /* Connection lifecycle and watchdog */
+  test_bam_stream_end_with_pending_txn_reconnects( wksp );
   test_bam_tcp_connect_completion_uses_so_error( wksp );
   test_bam_grpc_end_handling( wksp );
   test_bam_grpc_timeout( wksp );
