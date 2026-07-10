@@ -296,11 +296,11 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   }
   state->revert_on_error = packet_revert_on_error;
 
-  ulong declared_sz = fd_ulong_max( packet.data.size, packet.meta.size );
-  if( FD_UNLIKELY( declared_sz > FD_TXN_MTU ) ) {
+  ulong payload_sz = packet.data.size;
+  if( FD_UNLIKELY( payload_sz > FD_TXN_MTU ) ) {
     state->ctx->metrics.ingress_packet_oversize_cnt++;
     FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding MTU (%lu>%lu); dropping batch",
-                     declared_sz, FD_TXN_MTU ));
+                     payload_sz, FD_TXN_MTU ));
     state->has_deser_err = true;
     state->deser_reason = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
     state->deser_index  = state->packet_cnt;

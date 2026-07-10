@@ -2164,57 +2164,38 @@ test_bam_bundle_rejects_excess_packet_count( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_bundle_rejects_oversized_packet( fd_wksp_t * wksp ) {
-  /* Oversized packet payloads should drop and yield INCONSISTENT_BUNDLE at
-     index 0. */
+test_bam_bundle_uses_data_length_for_size_check( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
-  /* Build a single packet whose declared size exceeds FD_TXN_MTU to force
-     a drop at decode time and surface a deserialization error result. */
-  bam_types_Packet packets[1];
-  packets[0].data.size = FD_TXN_MTU; // can't do + 1 here for overflow, otherwise test will panic
-  packets[0].has_meta = 1U;
-  packets[0].meta.size = FD_TXN_MTU + 1;
-  for( pb_size_t i=0U; i<FD_TXN_MTU; i++ ) {
-    packets[0].data.bytes[ i ] = (uchar)i;
-  }
+  /* An oversized legacy metadata value must not veto a valid data payload. */
+  FD_TEST( bam_dump_txn_fixture_sz<=FD_TXN_MTU );
+  uchar txn_buf[ FD_TXN_MAX_SZ ];
+  FD_TEST( fd_txn_parse( bam_dump_txn_fixture, bam_dump_txn_fixture_sz, txn_buf, NULL ) );
+  FD_TEST( !fd_txn_is_simple_vote_transaction( (fd_txn_t const *)txn_buf, bam_dump_txn_fixture ) );
+
+  bam_types_Packet packet = bam_types_Packet_init_default;
+  packet.data.size = (pb_size_t)bam_dump_txn_fixture_sz;
+  fd_memcpy( packet.data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
+  packet.has_meta  = 1;
+  packet.meta.size = UINT64_MAX;
 
   uchar protobuf[ 4096 ];
-  size_t protobuf_sz = test_bam_encode_scheduler_response( packets, 1UL, 51U, protobuf, sizeof( protobuf ) );
-
-  FD_TEST( state->metrics.ingress_packet_oversize_cnt == 0UL );
+  size_t protobuf_sz = test_bam_encode_scheduler_response( &packet, 1UL, 51U, protobuf, sizeof( protobuf ) );
   fd_bam_client_grpc_rx_msg( state,
                              protobuf,
                              protobuf_sz,
                              FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
 
-  FD_TEST( state->metrics.ingress_packet_oversize_cnt == 1UL );
-  FD_TEST( state->metrics.transaction_published_cnt == 0UL );
-  FD_TEST( state->feedback_queue_depth == 1UL );
-
-  test_bam_prepare_scheduler_stream( state );
-  g_clock = (long)18e9;
-  test_bam_keepalive_sync( state, g_clock );
-  state->bam_last_config_poll_ns = g_clock;
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
-  FD_TEST( state->feedback_queue_depth == 0UL );
-
-  test_bam_decoded_message_t decoded;
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
-
-  /* Oversized packet returns INCONSISTENT_BUNDLE deserialization error at index 0. */
-  FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
-  FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.reason ==
-           bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
-  FD_TEST( result->result.not_committed.reason.deserialization_error.index == 0U );
+  FD_TEST( state->metrics.ingress_packet_oversize_cnt == 0UL );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+  fd_bam_pending_txn_t const * pending = bam_pending_txn_peek_head_const( state->pending_txns );
+  FD_TEST( pending->payload_sz == bam_dump_txn_fixture_sz );
+  FD_TEST( !memcmp( pending->payload, bam_dump_txn_fixture, bam_dump_txn_fixture_sz ) );
+  FD_TEST( test_bam_env_drain_pending_txns( env ) == 1UL );
+  FD_TEST( state->metrics.transaction_published_cnt == 1UL );
 
   test_bam_env_destroy( env );
 }
@@ -6081,7 +6062,7 @@ main( int     argc,
   test_bam_bundle_rejects_real_vote_payload( wksp );
   test_bam_stale_slot_rejects_before_vote_error( wksp );
   test_bam_bundle_rejects_excess_packet_count( wksp );
-  test_bam_bundle_rejects_oversized_packet( wksp );
+  test_bam_bundle_uses_data_length_for_size_check( wksp );
   test_bam_bundle_rejects_empty_batch( wksp );
   test_bam_bundle_rejects_missing_batches( wksp );
 
