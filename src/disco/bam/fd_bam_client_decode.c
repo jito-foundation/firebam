@@ -276,9 +276,10 @@ fd_bam_collect_packet( pb_istream_t *         stream,
 
   bam_types_Packet packet = bam_types_Packet_init_default;
   if( FD_UNLIKELY( !pb_decode( stream, &bam_types_Packet_msg, &packet ) ) ) {
-    state->has_deser_err   = true;
-    state->deser_reason    = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
-    state->deser_index     = state->packet_cnt;
+    state->has_deser_err        = true;
+    state->packet_decode_failed = true;
+    state->deser_reason         = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+    state->deser_index          = state->packet_cnt;
     return false;
   }
 
@@ -532,12 +533,6 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   }
 }
 
-typedef enum {
-  FD_BAM_BATCH_DECODE_OK = 0,
-  FD_BAM_BATCH_DECODE_ERR_ATTRIBUTED,
-  FD_BAM_BATCH_DECODE_ERR_UNATTRIBUTED
-} fd_bam_batch_decode_status_t;
-
 typedef struct {
   uint  seq_id;
   ulong max_schedule_slot;
@@ -570,9 +565,9 @@ fd_bam_deser_result_from_identity( fd_bam_tile_t *                    ctx,
 
 /* Decodes one bam_types.AtomicTxnBatch message into staged state only.
    This function never publishes transactions or enqueues terminal results.
-   Returns FD_BAM_BATCH_DECODE_OK when the batch was fully consumed, or an
-   explicit decode error when protobuf decoding failed. */
-static fd_bam_batch_decode_status_t
+   Returns 1 when the batch was fully consumed and 0 when protobuf decoding
+   failed. */
+static _Bool
 fd_bam_decode_batch( fd_bam_tile_t *          ctx,
                      pb_istream_t *           stream,
                      long                     rx_ts_ns,
@@ -603,7 +598,7 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
     err->packet_cnt   = state->packet_cnt;
     ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
     FD_LOG_WARNING(( "Protobuf decode of (bam_types.AtomicTxnBatch) failed (%s)", PB_GET_ERROR( stream ) ));
-    return FD_BAM_BATCH_DECODE_ERR_UNATTRIBUTED;
+    return 0;
   }
 
   state->ingress_rx_ts_ns    = rx_ts_ns;
@@ -613,7 +608,7 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
       ? leader_slot_end_ns_at_rx
       : 0L;
 
-  return FD_BAM_BATCH_DECODE_OK;
+  return 1;
 }
 
 /* Decodes a bam_types.MultipleAtomicTxnBatch wrapper into staged state.
@@ -747,7 +742,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
     }
 
     fd_bam_batch_decode_err_t decode_err;
-    fd_bam_batch_decode_status_t status =
+    _Bool const decode_ok =
         fd_bam_decode_batch( ctx,
                              &substream,
                              rx_ts_ns,
@@ -757,18 +752,22 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
                              &decoded_multi->batches[ batch_cnt ],
                              &decoded_multi->states [ batch_cnt ],
                              &decode_err );
-    if( FD_UNLIKELY( !pb_close_string_substream( stream, &substream ) ) ) FD_BAM_MULTI_DECODE_FAIL();
-    if( FD_UNLIKELY( status!=FD_BAM_BATCH_DECODE_OK ) ) {
-      status = identity.has_seq_id
-             ? FD_BAM_BATCH_DECODE_ERR_ATTRIBUTED
-             : FD_BAM_BATCH_DECODE_ERR_UNATTRIBUTED;
-      if( status==FD_BAM_BATCH_DECODE_ERR_ATTRIBUTED ) {
+    /* A nested Packet decode failure may leave substream unusable for
+       advancing the wrapper. identity_stream independently consumed the same
+       batch bytes, so close through it to preserve following siblings. */
+    if( FD_UNLIKELY( !pb_close_string_substream( stream, &identity_stream ) ) ) FD_BAM_MULTI_DECODE_FAIL();
+    if( FD_UNLIKELY( !decode_ok ) ) {
+      _Bool const packet_decode_failed = decoded_multi->states[ batch_cnt ].packet_decode_failed;
+      if( identity.has_seq_id &&
+          decoded_multi->states[ batch_cnt ].has_deser_err &&
+          !packet_decode_failed ) {
         fd_bam_bundle_result_t decode_result =
             fd_bam_deser_result_from_identity( ctx, &identity, &decode_err );
         fd_bam_enqueue_result( ctx, &decode_result );
       } else {
         FD_LOG_WARNING(( "Unable to attribute malformed AtomicTxnBatch (%s)",
-                         identity_err ? identity_err : "missing seq_id" ));
+                         packet_decode_failed ? "nested Packet decode failed"
+                                              : (identity_err ? identity_err : "missing seq_id") ));
       }
       seen_batch_count++;
       continue;

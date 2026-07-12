@@ -146,6 +146,7 @@ typedef struct {
   uchar               packet_cnt;                              /* number of packets collected; [0,FD_PACK_MAX_TXN_PER_BUNDLE) */
   _Bool               revert_on_error;                         /* value for the most recently collected packet; missing flags default to false */
   uchar               has_deser_err;                           /* 0/1 value if we have batch-level not-committed reason */
+  uchar               packet_decode_failed;                    /* 0/1 value if a nested Packet protobuf could not be decoded */
   uchar               deser_index;                             /* zero-based transaction index tied to deserialization error */
   uchar               deser_reason;                            /* bam_types_DeserializationErrorReason enum value */
 } fd_bam_batch_ctx_t;
