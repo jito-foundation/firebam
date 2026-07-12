@@ -1570,8 +1570,8 @@ test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
 static void
 test_bam_multiple_batches_isolate_nested_decode_failures( fd_wksp_t * wksp ) {
   /* MultipleAtomicTxnBatch is only a coalescing wrapper. Malformed siblings
-     should not suppress valid siblings, and unattributable failures should not
-     synthesize a default seq_id result. */
+     should not suppress valid siblings, and protobuf failures should not
+     produce a batch result regardless of field order. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
@@ -1615,7 +1615,7 @@ test_bam_multiple_batches_isolate_nested_decode_failures( fd_wksp_t * wksp ) {
   FD_TEST( state->metrics.ingress_batch_published_cnt == 2UL );
   FD_TEST( state->metrics.ingress_batch_commit_attempt_cnt == 2UL );
   FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 1UL );
-  FD_TEST( state->feedback_queue_depth == 1UL );
+  FD_TEST( state->feedback_queue_depth == 0UL );
 
   fd_frag_meta_t * meta = env->out_mcache;
   FD_TEST( meta[0].seq == 0UL );
@@ -1624,12 +1624,6 @@ test_bam_multiple_batches_isolate_nested_decode_failures( fd_wksp_t * wksp ) {
   fd_txn_m_t * second = fd_chunk_to_laddr( state->verify_out.mem, meta[1].chunk );
   FD_TEST( first->bam.seq_id == 71U );
   FD_TEST( second->bam.seq_id == 73U );
-
-  fd_bam_bundle_result_t const * result = &state->bam_results[ state->bam_results_head ];
-  FD_TEST( result->seq_id == 72U );
-  FD_TEST( result->bundle_err == FD_BAM_BUNDLE_ERR_DESER );
-  FD_TEST( result->deser_reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
-  FD_TEST( result->deser_index == 0U );
 
   test_bam_env_destroy( env );
 
@@ -1642,17 +1636,27 @@ test_bam_multiple_batches_isolate_nested_decode_failures( fd_wksp_t * wksp ) {
   pb_ostream_t oversized_seq_stream = pb_ostream_from_buffer( oversized_seq_batch, sizeof( oversized_seq_batch ) );
   test_bam_encode_varint_field_raw( &oversized_seq_stream, bam_types_AtomicTxnBatch_seq_id_tag, 1UL<<32 );
   size_t oversized_seq_batch_sz = oversized_seq_stream.bytes_written;
+  uchar const malformed_packet[] = { 0x08U, 0x01U }; /* Packet.data with wrong wire type */
+  uchar malformed_packet_batch[64];
+  pb_ostream_t malformed_packet_stream = pb_ostream_from_buffer( malformed_packet_batch, sizeof( malformed_packet_batch ) );
+  test_bam_encode_string_field_raw( &malformed_packet_stream,
+                                    bam_types_AtomicTxnBatch_packets_tag,
+                                    malformed_packet,
+                                    sizeof( malformed_packet ) );
+  test_bam_encode_varint_field_raw( &malformed_packet_stream, bam_types_AtomicTxnBatch_seq_id_tag, 82U );
+  test_bam_encode_varint_field_raw( &malformed_packet_stream, bam_types_AtomicTxnBatch_max_schedule_slot_tag, 1UL );
   uchar valid_batch[256];
-  size_t valid_batch_sz = test_bam_encode_one_packet_atomic_batch_raw( 81U,
+  size_t valid_batch_sz = test_bam_encode_one_packet_atomic_batch_raw( 0U,
                                                                        (uchar)'v',
                                                                        valid_batch,
                                                                        sizeof( valid_batch ) );
-  uchar const * unknown_seq_batches[] = { malformed_before_seq, oversized_seq_batch, valid_batch };
-  size_t const unknown_seq_batch_sz[] = { sizeof( malformed_before_seq ), oversized_seq_batch_sz, valid_batch_sz };
+  uchar const * unknown_seq_batches[] = { malformed_before_seq, oversized_seq_batch, malformed_packet_batch, valid_batch };
+  size_t const unknown_seq_batch_sz[] = { sizeof( malformed_before_seq ), oversized_seq_batch_sz,
+                                          malformed_packet_stream.bytes_written, valid_batch_sz };
 
   protobuf_sz = test_bam_encode_scheduler_multi_batch_response_raw( unknown_seq_batches,
                                                                     unknown_seq_batch_sz,
-                                                                    3UL,
+                                                                    4UL,
                                                                     protobuf,
                                                                     sizeof( protobuf ) );
 
@@ -1665,13 +1669,13 @@ test_bam_multiple_batches_isolate_nested_decode_failures( fd_wksp_t * wksp ) {
 
   FD_TEST( state->metrics.transaction_published_cnt == 1UL );
   FD_TEST( state->metrics.ingress_batch_published_cnt == 1UL );
-  FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 2UL );
+  FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ] == 3UL );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   fd_frag_meta_t * unknown_seq_meta = env->out_mcache;
   FD_TEST( unknown_seq_meta[0].seq == 0UL );
   fd_txn_m_t * tx = fd_chunk_to_laddr( state->verify_out.mem, unknown_seq_meta[0].chunk );
-  FD_TEST( tx->bam.seq_id == 81U );
+  FD_TEST( tx->bam.seq_id == 0U );
 
   test_bam_env_destroy( env );
 }
