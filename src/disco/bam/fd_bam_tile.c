@@ -743,6 +743,26 @@ fd_bam_note_replay_schedule_slot( fd_bam_tile_t * ctx,
   }
 }
 
+static _Bool
+fd_bam_tile_apply_pending_keyswitch( fd_bam_tile_t * ctx ) {
+  if( FD_LIKELY( !ctx->keyswitch ||
+                 fd_keyswitch_state_query( ctx->keyswitch )!=FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) return 0;
+
+  fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
+  fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_identity_pubkey_b58 );
+  fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
+  fd_bam_tile_begin_scheduler_generation( ctx );
+  fd_bam_client_reset( ctx );
+  ctx->next_leader_slot                 = ULONG_MAX;
+  ctx->leader_schedule_gate_start_ns    = 0L;
+  ctx->leader_schedule_recheck_slot     = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
+  ctx->bam_leader_state                 = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
+  ctx->bam_leader_pending               = 0U;
+  ctx->backoff_until                    = 0L;
+  FD_LOG_NOTICE(( "BAM identity pubkey updated to %s", ctx->bam_identity_pubkey_b58 ));
+  return 1;
+}
+
 void
 fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   fd_bam_tile_handle_ctrl( ctx );
@@ -794,20 +814,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   fd_bam_publish_active_state( ctx, ctx->stem, bam_active );
   ctx->bam_status_recent = status;
 
-  if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch ) == FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
-    fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
-    fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_identity_pubkey_b58 );
-    fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
-    fd_bam_tile_begin_scheduler_generation( ctx );
-    fd_bam_client_reset( ctx );
-    ctx->next_leader_slot                 = ULONG_MAX;
-    ctx->leader_schedule_gate_start_ns    = 0L;
-    ctx->leader_schedule_recheck_slot     = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
-    ctx->bam_leader_state                 = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
-    ctx->bam_leader_pending               = 0U;
-    ctx->backoff_until                    = 0L;
-    FD_LOG_NOTICE(( "BAM identity pubkey updated to %s", ctx->bam_identity_pubkey_b58 ));
-  }
+  fd_bam_tile_apply_pending_keyswitch( ctx );
 }
 
 static void
@@ -939,6 +946,7 @@ before_credit( fd_bam_tile_t *    ctx,
                fd_stem_context_t * stem,
                int *               charge_busy ) {
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
+  if( FD_UNLIKELY( fd_bam_tile_apply_pending_keyswitch( ctx ) ) ) return;
   /* Preserve receive backpressure during a healthy activation handoff, but
      keep stepping an inactive client that needs transport recovery. */
   if( FD_LIKELY( bam_pending_txn_empty( ctx->pending_txns ) ) ||

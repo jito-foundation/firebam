@@ -3115,6 +3115,26 @@ test_bam_auth_challenge_response_verifies_cached_identity( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_auth_ready == 0U );
   FD_TEST( state->challenge_to_sign[ 0 ] == '\0' );
   FD_TEST( state->keyguard_client->request_seq == 2UL );
+  FD_TEST( state->backoff_until >= g_clock );
+
+  fd_keyswitch_t keyswitch = {0};
+  keyswitch.state = FD_KEYSWITCH_STATE_SWITCH_PENDING;
+  fd_memcpy( keyswitch.bytes, other_public_key, 32UL );
+  state->keyswitch    = &keyswitch;
+  state->backoff_until = 0L;
+  test_bam_publish_keyguard_signature( state->keyguard_client, response_mcache, signature );
+
+  state->bam_auth_inflight = 1U;
+  fd_bam_client_grpc_rx_msg( state,
+                             mismatch_pb_buf,
+                             mismatch_ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge );
+
+  FD_TEST( state->backoff_until == 0L );
+  FD_TEST( state->bam_auth_inflight == 0U );
+  FD_TEST( state->bam_auth_ready == 0U );
+  FD_TEST( state->defer_reset == 1U );
+  state->keyswitch = NULL;
 
   fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( request_data ) ) );
   fd_wksp_free_laddr( fd_dcache_delete( fd_dcache_leave( response_data ) ) );
@@ -3760,7 +3780,8 @@ test_bam_identity_switch_invalidates_leader_schedule_state( fd_wksp_t * wksp ) {
   test_bam_seed_scheduler_work( state, 700U, 701U );
   ulong dropped_before = state->metrics.feedback_results_dropped_cnt;
 
-  fd_bam_tile_housekeeping( state );
+  int charge_busy = 0;
+  fd_bam_test_before_credit( state, env->stem, &charge_busy );
 
   FD_TEST( 0==memcmp( state->bam_identity_pubkey, keyswitch.bytes, 32UL ) );
   FD_TEST( 0==strcmp( state->bam_identity_pubkey_b58, expected_b58 ) );
@@ -3786,6 +3807,7 @@ test_bam_identity_switch_invalidates_leader_schedule_state( fd_wksp_t * wksp ) {
   FD_TEST( state->feedback_queue_depth == 0UL );
   FD_TEST( state->bam_results_head == state->bam_results_tail );
   FD_TEST( state->metrics.feedback_results_dropped_cnt == dropped_before+1UL );
+  FD_TEST( charge_busy == 0 );
 
   state->keyswitch = NULL;
   test_bam_env_destroy( env );
