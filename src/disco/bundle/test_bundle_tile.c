@@ -391,6 +391,19 @@ static void
 test_bam_override_sync_clears_pending( fd_wksp_t * wksp ) {
   FD_LOG_NOTICE(( "TEST BAM override sync clears pending transactions" ));
 
+  test_bundle_env_t env[1];
+  test_bundle_env_create( env, wksp );
+  fd_bundle_tile_t * ctx = env->state;
+  fd_keyswitch_t keyswitch = { .state = FD_KEYSWITCH_STATE_SWITCH_PENDING };
+  keyswitch.bytes[0] = 1U;
+  ctx->keyswitch = &keyswitch;
+  ctx->auther.state = FD_BUNDLE_AUTH_STATE_WAIT_TOKENS;
+  int charge_busy = 0;
+  before_credit( ctx, env->stem, &charge_busy );
+  FD_TEST( ctx->auther.pubkey[0]==1U && ctx->defer_reset && !charge_busy );
+  FD_TEST( ctx->auther.state==FD_BUNDLE_AUTH_STATE_WAIT_TOKENS );
+  test_bundle_env_destroy( env );
+
   uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
   void * fseq_shmem = fd_fseq_new( fseq_mem, 0UL );
   FD_TEST( fseq_shmem );
@@ -399,10 +412,9 @@ test_bam_override_sync_clears_pending( fd_wksp_t * wksp ) {
 
   /* after_credit must observe an activation that occurred since the last
      housekeeping pass and discard queued Block Engine work. */
-  test_bundle_env_t env[1];
   test_bundle_env_create( env, wksp );
   test_bundle_env_mock_conn( env );
-  fd_bundle_tile_t * ctx = env->state;
+  ctx = env->state;
   ctx->bam_status_fseq    = bam_status_fseq;
   ctx->bam_override_active = 0;
   pending_txn_push_tail( ctx->pending_txns, (fd_bundle_pending_txn_t){ .sig=1UL, .bundle_seq=1UL } );
@@ -410,7 +422,7 @@ test_bam_override_sync_clears_pending( fd_wksp_t * wksp ) {
   long before_pause = fd_log_wallclock();
   fd_fseq_update( bam_status_fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   int opt_poll_in = 1;
-  int charge_busy = 0;
+  charge_busy = 0;
   after_credit( ctx, env->stem, &opt_poll_in, &charge_busy );
 
   FD_TEST( env->stem_seqs[ 0 ]==0UL );
