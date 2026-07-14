@@ -1731,7 +1731,7 @@ test_bam_multiple_batches_overflow_results_each_excess( fd_wksp_t * wksp ) {
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
 
-  uint const  seq_base   = 1200U;
+  uint const  seq_base   = UINT_MAX - FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE + 1U;
   ulong const excess_cnt = 2UL;
   ulong const batch_cnt = FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE + excess_cnt;
   zero_meta_ts( env->out_mcache, FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE );
@@ -1831,7 +1831,7 @@ test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
   test_bam_revert_case_t const cases[] = {
     /* Case 0: Explicit true/false mismatch across two packets. */
     {
-      .seq_id = 42U,
+      .seq_id = 0U,
       .flush_clock_ns = (long)15e9,
       .expected_deser_index = 0,
       .packet = {
@@ -1917,6 +1917,7 @@ test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
     FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
     FD_TEST( decoded.multi.result_cnt == 1UL );
     bam_types_AtomicTxnBatchResult const * result = &decoded.multi.results[0];
+    FD_TEST( result->seq_id == tc->seq_id );
     FD_TEST( result->which_result == bam_types_AtomicTxnBatchResult_not_committed_tag );
     FD_TEST( result->result.not_committed.which_reason == bam_types_NotCommitted_deserialization_error_tag );
     FD_TEST( result->result.not_committed.reason.deserialization_error.reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
