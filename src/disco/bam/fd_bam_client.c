@@ -562,11 +562,6 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
                                cfg->prio_fee_recipient_pubkey,
                                strnlen( cfg->prio_fee_recipient_pubkey, sizeof( cfg->prio_fee_recipient_pubkey ) ) ));
     }
-  } else if( FD_UNLIKELY( ctx->prio_fee_recipient_set ) ) {
-    /* BAM sent no pubkey, so update the state to match. */
-    fd_memset( ctx->prio_fee_recipient, 0, sizeof( ctx->prio_fee_recipient ) );
-    ctx->prio_fee_recipient_set = 0U;
-    bam_config_fee_updated = true;
   }
 
   if( FD_UNLIKELY( bam_config_fee_updated ) ) {
