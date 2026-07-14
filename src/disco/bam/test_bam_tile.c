@@ -6016,6 +6016,25 @@ test_bam_impl_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
   FD_TEST( shared_cfg->commission_bps == 3500U );
   FD_TEST( 0 == memcmp( shared_cfg->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
 
+  /* An empty recipient is not a valid pubkey.  Preserve the last valid
+     recipient and do not publish a new fee config. */
+  fd_memset( resp.bam_config.prio_fee_recipient_pubkey,
+             0,
+             sizeof( resp.bam_config.prio_fee_recipient_pubkey ) );
+  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+  fd_bam_client_grpc_rx_msg( bam_state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+
+  FD_TEST( bam_state->prio_fee_recipient_set == 1U );
+  FD_TEST( 0 == memcmp( bam_state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
+  FD_TEST( shared_cfg->version == 1UL );
+  FD_TEST( shared_cfg->has_prio_fee_recipient == 1U );
+  FD_TEST( shared_cfg->commission_bps == 3500U );
+  FD_TEST( 0 == memcmp( shared_cfg->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
+
   fd_bundle_crank_gen_t crank_gen_mem[1];
   fd_memset( crank_gen_mem, 0, sizeof( crank_gen_mem ) );
   fd_bundle_crank_gen_t * crank_gen = crank_gen_mem;
