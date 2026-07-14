@@ -717,7 +717,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
                          FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ));
         ctx->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
       }
-      if( FD_UNLIKELY( !identity.has_seq_id ) ) {
+      if( FD_UNLIKELY( !identity.has_seq_id && !identity_ok ) ) {
         ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
         FD_LOG_WARNING(( "Unable to attribute overflow AtomicTxnBatch (%s)",
                          identity_err ? identity_err : "missing seq_id" ));
@@ -758,7 +758,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
     if( FD_UNLIKELY( !pb_close_string_substream( stream, &identity_stream ) ) ) FD_BAM_MULTI_DECODE_FAIL();
     if( FD_UNLIKELY( !decode_ok ) ) {
       _Bool const packet_decode_failed = decoded_multi->states[ batch_cnt ].packet_decode_failed;
-      if( identity.has_seq_id &&
+      if( (identity.has_seq_id || identity_ok) &&
           decoded_multi->states[ batch_cnt ].has_deser_err &&
           !packet_decode_failed ) {
         fd_bam_bundle_result_t decode_result =
