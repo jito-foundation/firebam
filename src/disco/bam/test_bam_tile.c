@@ -6137,7 +6137,7 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   FD_TEST( fd_base58_decode_32( resp.block_engine_config.builder_pubkey, decoded ) );
   FD_TEST( 0 == memcmp( state->builder_pubkey, decoded, 32UL ) );
 
-  /* Invalid block_engine_config values must not partially update builder state. */
+  /* Commission and pubkey validation follow jito-solana partial-update semantics. */
   uchar prev_builder_pubkey[ 32 ];
   fd_memcpy( prev_builder_pubkey, state->builder_pubkey, sizeof(prev_builder_pubkey) );
   uchar prev_builder_commission = state->builder_commission;
@@ -6156,8 +6156,9 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
   FD_TEST( 0 == memcmp( state->builder_pubkey, prev_builder_pubkey, sizeof(prev_builder_pubkey) ) );
-  FD_TEST( state->builder_commission == prev_builder_commission );
+  FD_TEST( state->builder_commission == 7U );
   FD_TEST( state->builder_info_valid_until == prev_builder_valid_until );
+  prev_builder_commission = state->builder_commission;
 
   bam_api_ConfigResponse bad_commission_resp = bam_api_ConfigResponse_init_default;
   bad_commission_resp.has_block_engine_config = true;
