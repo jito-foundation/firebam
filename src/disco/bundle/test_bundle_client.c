@@ -386,7 +386,8 @@ test_bundle_msg_oversized( fd_wksp_t * wksp ) {
   test_bundle_env_destroy( env );
 }
 
-FD_UNIT_TEST( bundle_auth_signature_verifies_cached_identity ) {
+static void
+test_bundle_auth_signature_verifies_cached_identity( fd_wksp_t * wksp ) {
   test_bundle_env_t env[1];
   test_bundle_env_create( env, wksp );
   test_bundle_env_mock_conn_empty( env );
@@ -1617,6 +1618,7 @@ main( int     argc,
   test_bundle_rx_end_timeout( wksp );
   test_bundle_ping( wksp );
   test_bundle_msg_oversized( wksp );
+  test_bundle_auth_signature_verifies_cached_identity( wksp );
   test_bundle_keyswitch( wksp );
   test_bundle_client_status( wksp );
   test_bundle_client_reset( wksp );
