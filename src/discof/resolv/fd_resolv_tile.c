@@ -1,5 +1,6 @@
 #include "fd_resolv_tile.h"
 #include "../../disco/fd_txn_m.h"
+#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/topo/fd_topo.h"
 #include "../replay/fd_replay_tile.h"
 #include "../../discof/fd_accdb_topo.h"
@@ -121,6 +122,7 @@ typedef struct {
 } fd_resolv_in_ctx_t;
 
 typedef struct {
+  ulong       idx;
   fd_wksp_t * mem;
   ulong       chunk0;
   ulong       wmark;
@@ -175,6 +177,7 @@ typedef struct {
 
   fd_resolv_out_ctx_t out_pack[ 1UL ];
   fd_resolv_out_ctx_t out_replay[ 1UL ];
+  fd_resolv_out_ctx_t out_bam[ 1UL ];
 } fd_resolv_ctx_t;
 
 FD_FN_CONST static inline ulong
@@ -493,12 +496,18 @@ after_frag( fd_resolv_ctx_t *   ctx,
     buffer.  If we later see the blockhash come to exist, we forward any
     buffered transactions to back. */
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  ulong failure_group_id = txnm->block_engine.bundle_id;
+  if( FD_UNLIKELY( is_bam && txnm->bam.txn_cnt>1U ) ) failure_group_id = (1UL<<63) | (((ulong)txnm->bam.seq_id)+1UL);
+
+  if( FD_UNLIKELY( failure_group_id &&
+                   ( (failure_group_id!=ctx->bundle_id) ||
+                     (is_bam && !txnm->bam.batch_idx) ) ) ) {
     ctx->bundle_failed = 0;
-    ctx->bundle_id     = txnm->block_engine.bundle_id;
+    ctx->bundle_id     = failure_group_id;
   }
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && ctx->bundle_failed ) ) {
+  if( FD_UNLIKELY( failure_group_id && ctx->bundle_failed ) ) {
     ctx->metrics.bundle_peer_failure++;
     return;
   }
@@ -513,7 +522,14 @@ after_frag( fd_resolv_ctx_t *   ctx,
   if( FD_LIKELY( blockhash ) ) {
     txnm->reference_slot = blockhash->slot;
     if( FD_UNLIKELY( txnm->reference_slot+151UL<ctx->completed_slot ) ) {
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+      if( FD_UNLIKELY( is_bam && txnm->bam.batch_idx==0U ) ) {
+        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.scheduler_gen, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
+        fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+        fd_bam_result_mark_sanitize_success_all( &res );
+        fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
+                               ctx->out_bam->chunk0, ctx->out_bam->wmark, &res );
+      }
+      if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
       ctx->metrics.blockhash_expired++;
       return;
     }
@@ -522,7 +538,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
   int is_bundle_member = !!txnm->block_engine.bundle_id;
   int is_durable_nonce = fd_resolv_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
 
-  if( FD_UNLIKELY( !is_bundle_member && !is_durable_nonce && !blockhash ) ) {
+  if( FD_UNLIKELY( !is_bundle_member && txnm->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM && !is_durable_nonce && !blockhash ) ) {
     ulong pool_idx;
     if( FD_UNLIKELY( !pool_free( ctx->pool ) ) ) {
       pool_idx = lru_list_idx_pop_tail( ctx->lru_list, ctx->pool );
@@ -553,15 +569,24 @@ after_frag( fd_resolv_ctx_t *   ctx,
   }
 
   if( FD_UNLIKELY( txnt->addr_table_adtl_cnt ) ) {
+    int failed = 0;
     if( FD_UNLIKELY( !ctx->bank ) ) {
       FD_MCNT_INC( RESOLV, NO_BANK_DROP, 1 );
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-      return;
+      failed = 1;
+    } else {
+      failed = !!peek_aluts( ctx, txnm );
     }
 
-    int result = peek_aluts( ctx, txnm );
-    if( FD_UNLIKELY( result ) ) {
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+    if( FD_UNLIKELY( failed ) ) {
+      if( FD_UNLIKELY( is_bam && txnm->bam.batch_idx==0U ) ) {
+        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.scheduler_gen, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
+        res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
+        res.deser_index  = txnm->bam.batch_idx;
+        res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+        fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
+                               ctx->out_bam->chunk0, ctx->out_bam->wmark, &res );
+      }
+      if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
       return;
     }
   }
@@ -629,6 +654,18 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->out_replay->chunk0 = fd_dcache_compact_chunk0( ctx->out_replay->mem, topo->links[ tile->out_link_id[ 1 ] ].dcache );
   ctx->out_replay->wmark  = fd_dcache_compact_wmark ( ctx->out_replay->mem, topo->links[ tile->out_link_id[ 1 ] ].dcache, topo->links[ tile->out_link_id[ 1 ] ].mtu );
   ctx->out_replay->chunk  = ctx->out_replay->chunk0;
+
+  *ctx->out_bam = (fd_resolv_out_ctx_t) { .idx = ULONG_MAX };
+  for( ulong i=0UL; i<tile->out_cnt; i++ ) {
+    fd_topo_link_t const * link = &topo->links[ tile->out_link_id[ i ] ];
+    if( FD_LIKELY( strcmp( link->name, "bank_bam" ) ) ) continue;
+    ctx->out_bam->idx    = i;
+    ctx->out_bam->mem    = topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ].wksp;
+    ctx->out_bam->chunk0 = fd_dcache_compact_chunk0( ctx->out_bam->mem, link->dcache );
+    ctx->out_bam->wmark  = fd_dcache_compact_wmark ( ctx->out_bam->mem, link->dcache, link->mtu );
+    ctx->out_bam->chunk  = ctx->out_bam->chunk0;
+    break;
+  }
 
   fd_accdb_init_from_topo( ctx->accdb, topo, tile->resolv.accdb_max_depth );
 
@@ -704,3 +741,20 @@ fd_topo_run_tile_t fd_tile_resolv = {
   .unprivileged_init        = unprivileged_init,
   .run                      = stem_run,
 };
+
+#ifdef FD_RESOLV_TILE_BAM_UNIT_TEST
+
+char const *
+fd_vinyl_strerror( int err ) {
+  (void)err;
+  return "test vinyl stub";
+}
+
+#define TEST_BAM_RESOLVE_CTX_T       fd_resolv_ctx_t
+#define TEST_BAM_RESOLVE_OUT_CNT     3UL
+#define TEST_BAM_RESOLVE_BAM_OUT_IDX 2UL
+#define TEST_BAM_RESOLVE_HAS_REPLAY  1
+#define TEST_BAM_RESOLVE_IN_KIND     IN_KIND_DEDUP
+#include "../../disco/bam/test_bam_resolve_common.c"
+
+#endif /* FD_RESOLV_TILE_BAM_UNIT_TEST */

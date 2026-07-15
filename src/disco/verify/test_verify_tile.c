@@ -67,17 +67,20 @@ mock_topo_create( void ) {
 
   mock_link_create( topo, "quic_verify"  );
   mock_link_create( topo, "bundle_verif" );
+  mock_link_create( topo, "bam_verif"    );
   mock_link_create( topo, "gossip_out"   );
   mock_link_create( topo, "txsend_out"   );
 
   /* Declare link ins in opposite order than IN_KIND_* to check for in
      idx confusion */
-#define IN_IDX_SEND   0
+#define IN_IDX_TXSEND 0
 #define IN_IDX_GOSSIP 1
-#define IN_IDX_BUNDLE 2
-#define IN_IDX_QUIC   3
+#define IN_IDX_BAM    2
+#define IN_IDX_BUNDLE 3
+#define IN_IDX_QUIC   4
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "txsend_out",   0UL, 0, 1 );
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "gossip_out",   0UL, 0, 1 );
+  fd_topob_tile_in( topo, "verify", 0UL, "wksp", "bam_verif",    0UL, 0, 1 );
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "bundle_verif", 0UL, 0, 1 );
   fd_topob_tile_in( topo, "verify", 0UL, "wksp", "quic_verify",  0UL, 0, 1 );
 
@@ -100,6 +103,10 @@ test_load_balance( void ) {
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 0UL, 1UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 1UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   0UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   1UL, 0UL )==0 );
 
@@ -108,14 +115,164 @@ test_load_balance( void ) {
   ctx->round_robin_cnt = 4UL;
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 0UL, 1UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 1UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 1UL )==0 );
 
   /* Tile 0 should load balance other traffic */
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 0UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 1UL, 0UL )==1 );
   FD_TEST( before_frag( ctx, IN_IDX_BUNDLE, 2UL, 0UL )==1 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    0UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    1UL, 0UL )==0 );
+  FD_TEST( before_frag( ctx, IN_IDX_BAM,    2UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   0UL, 0UL )==0 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   1UL, 0UL )==1 );
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   2UL, 0UL )==1 );
+}
+
+static void
+test_bam_atomic_verify_failure_result_owner( void ) {
+  fd_verify_ctx_t ctx[1];
+  uchar           verify_dcache[ FD_TPU_REASM_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
+  uchar           bam_dcache   [ FD_TPU_REASM_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
+  fd_frag_meta_t  verify_mcache[ 16UL ] __attribute__((aligned(alignof(fd_frag_meta_t))));
+  fd_frag_meta_t  bam_mcache   [ 16UL ] __attribute__((aligned(alignof(fd_frag_meta_t))));
+
+  fd_frag_meta_t * mcaches[ 2 ]      = { verify_mcache, bam_mcache };
+  ulong            seqs[ 2 ]         = { 0UL, 0UL };
+  ulong            depths[ 2 ]       = { 16UL, 16UL };
+  ulong            cr_avail[ 2 ]     = { ULONG_MAX, ULONG_MAX };
+  ulong            min_cr_avail      = ULONG_MAX;
+  int              out_reliable[ 2 ] = { 0, 0 };
+  fd_stem_context_t stem = {
+    .mcaches             = mcaches,
+    .seqs                = seqs,
+    .depths              = depths,
+    .cr_avail            = cr_avail,
+    .min_cr_avail        = &min_cr_avail,
+    .cr_decrement_amount = 0UL,
+    .out_reliable        = out_reliable,
+  };
+
+  struct {
+    _Bool revert_on_error;
+    uchar batch_idx;
+    uchar txn_cnt;
+  } cases[] = {
+    { 0, 0U, 1U },
+    { 1, 0U, 2U },
+    { 1, 1U, 2U },
+  };
+
+  for( ulong case_idx=0UL; case_idx<sizeof(cases)/sizeof(cases[0]); case_idx++ ) {
+    fd_memset( ctx,           0, sizeof(fd_verify_ctx_t) );
+    fd_memset( verify_dcache, 0, sizeof(verify_dcache) );
+    fd_memset( bam_dcache,    0, sizeof(bam_dcache) );
+    fd_memset( verify_mcache, 0, sizeof(verify_mcache) );
+    fd_memset( bam_mcache,    0, sizeof(bam_mcache) );
+    seqs[ 0 ] = 0UL;
+    seqs[ 1 ] = 0UL;
+
+    ctx->out_mem    = (fd_wksp_t *)verify_dcache;
+    ctx->out_chunk0 = 0UL;
+    ctx->out_wmark  = sizeof(verify_dcache)/FD_CHUNK_SZ - 1UL;
+    ctx->out_chunk  = 0UL;
+
+    ctx->bam_result_out_mem    = (fd_wksp_t *)bam_dcache;
+    ctx->bam_result_out_idx    = 1UL;
+    ctx->bam_result_out_chunk0 = 0UL;
+    ctx->bam_result_out_wmark  = sizeof(bam_dcache)/FD_CHUNK_SZ - 1UL;
+    ctx->bam_result_out_chunk  = 0UL;
+
+    fd_txn_m_t * txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
+    *txnm = (fd_txn_m_t) {
+      .payload_sz = 0U,
+      .source_tpu = FD_TXN_M_TPU_SOURCE_BAM,
+      .block_engine = {
+        .bundle_id      = cases[ case_idx ].revert_on_error ? 78UL : 0UL,
+        .bundle_txn_cnt = (cases[ case_idx ].revert_on_error && !cases[ case_idx ].batch_idx) ? cases[ case_idx ].txn_cnt : 0UL,
+      },
+      .bam = {
+        .max_schedule_slot = 100UL,
+        .seq_id            = 77U,
+        .txn_cnt           = cases[ case_idx ].txn_cnt,
+        .batch_idx         = cases[ case_idx ].batch_idx,
+        .revert_on_error   = cases[ case_idx ].revert_on_error,
+      },
+    };
+
+    ulong bam_seq_before = seqs[ 1 ];
+    after_frag( ctx, IN_IDX_BAM, 0UL, 0UL, sizeof(fd_txn_m_t), 0UL, 0UL, &stem );
+
+    int expect_result = cases[ case_idx ].batch_idx==0U;
+    if( expect_result ) {
+      FD_TEST( seqs[ 1 ]==bam_seq_before+1UL );
+      fd_bam_bundle_result_t const * res = (fd_bam_bundle_result_t const *)bam_dcache;
+      FD_TEST( res->seq_id           == 77U );
+      FD_TEST( res->slot             == 100UL );
+      FD_TEST( res->bundle_txn_cnt   == cases[ case_idx ].txn_cnt );
+      FD_TEST( res->bundle_err       == FD_BAM_BUNDLE_ERR_DESER );
+      FD_TEST( res->deser_index      == cases[ case_idx ].batch_idx );
+      FD_TEST( res->deser_reason     == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
+    } else {
+      FD_TEST( seqs[ 1 ]==bam_seq_before );
+    }
+  }
+
+  fd_memset( ctx,           0, sizeof(fd_verify_ctx_t) );
+  fd_memset( verify_dcache, 0, sizeof(verify_dcache) );
+  fd_memset( bam_dcache,    0, sizeof(bam_dcache) );
+  fd_memset( verify_mcache, 0, sizeof(verify_mcache) );
+  fd_memset( bam_mcache,    0, sizeof(bam_mcache) );
+  seqs[ 0 ] = 0UL;
+  seqs[ 1 ] = 0UL;
+
+  ctx->out_mem    = (fd_wksp_t *)verify_dcache;
+  ctx->out_chunk0 = 0UL;
+  ctx->out_wmark  = sizeof(verify_dcache)/FD_CHUNK_SZ - 1UL;
+  ctx->out_chunk  = 0UL;
+
+  ctx->bam_result_out_mem    = (fd_wksp_t *)bam_dcache;
+  ctx->bam_result_out_idx    = 1UL;
+  ctx->bam_result_out_chunk0 = 0UL;
+  ctx->bam_result_out_wmark  = sizeof(bam_dcache)/FD_CHUNK_SZ - 1UL;
+  ctx->bam_result_out_chunk  = 0UL;
+
+  fd_txn_m_t * txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
+  *txnm = (fd_txn_m_t) {
+    .payload_sz = 0U,
+    .source_tpu = FD_TXN_M_TPU_SOURCE_BAM,
+    .bam = {
+      .max_schedule_slot = 100UL,
+      .seq_id            = 88U,
+      .txn_cnt           = 2U,
+      .batch_idx         = 0U,
+      .revert_on_error   = 0U,
+    },
+  };
+
+  after_frag( ctx, IN_IDX_BAM, 0UL, 0UL, sizeof(fd_txn_m_t), 0UL, 0UL, &stem );
+
+  FD_TEST( seqs[ 0 ]==0UL );
+  FD_TEST( seqs[ 1 ]==1UL );
+  FD_TEST( ctx->bundle_failed );
+
+  *txnm = (fd_txn_m_t) {
+    .payload_sz = 0U,
+    .source_tpu = FD_TXN_M_TPU_SOURCE_BAM,
+    .bam = {
+      .max_schedule_slot = 100UL,
+      .seq_id            = 88U,
+      .txn_cnt           = 2U,
+      .batch_idx         = 1U,
+      .revert_on_error   = 0U,
+    },
+  };
+
+  after_frag( ctx, IN_IDX_BAM, 0UL, 0UL, sizeof(fd_txn_m_t), 0UL, 0UL, &stem );
+
+  FD_TEST( seqs[ 0 ]==0UL );
+  FD_TEST( seqs[ 1 ]==1UL );
 }
 
 int
@@ -125,6 +282,7 @@ main( int     argc,
 
   test_seccomp();
   test_load_balance();
+  test_bam_atomic_verify_failure_result_owner();
   test_free_all();
   /* further tests here ... */
 

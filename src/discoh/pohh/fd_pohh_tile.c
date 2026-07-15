@@ -317,6 +317,7 @@
 #include "../../disco/shred/fd_shredder.h"
 #include "../../disco/keyguard/fd_keyload.h"
 #include "../../disco/keyguard/fd_keyswitch.h"
+#include "../../discof/replay/fd_replay_tile.h"
 #include "../plugin/fd_plugin.h"
 #include "../../flamenco/leaders/fd_multi_epoch_leaders.h"
 
@@ -650,6 +651,7 @@ static poh_link_t stake_out;
 static poh_link_t crds_shred;
 static poh_link_t replay_resolh;
 static poh_link_t executed_txn;
+static poh_link_t replay_out;
 
 static poh_link_t replay_plugin;
 static poh_link_t gossip_plugin;
@@ -742,6 +744,34 @@ poh_link_init( poh_link_t *     link,
    functions outside this file are manually checked and marked as being
    safe at each call rather than annotated. */
 #define CALLED_FROM_RUST
+
+static inline CALLED_FROM_RUST ulong
+next_leader_slot( fd_pohh_tile_t * ctx );
+
+/* The fdctl BAM topology consumes pohh replay_out as a reduced hint
+   stream.  Only the fields BAM reads are populated by these publishers. */
+static CALLED_FROM_RUST void
+publish_replay_reset( fd_pohh_tile_t * ctx ) {
+  if( FD_UNLIKELY( !replay_out.mem ) ) return;
+
+  ulong completed_slot = fd_ulong_if( ctx->reset_slot!=ULONG_MAX && ctx->reset_slot>0UL, ctx->reset_slot-1UL, ULONG_MAX );
+
+  fd_poh_reset_t reset[1] = {{
+    .bank_idx                  = ULONG_MAX,
+    .timestamp                 = ctx->reset_slot_start_ns,
+    .completed_slot            = completed_slot,
+    .hashcnt_per_tick          = ctx->hashcnt_per_tick,
+    .ticks_per_slot            = ctx->ticks_per_slot,
+    .tick_duration_ns          = ctx->tick_duration_ns,
+    .next_leader_slot          = ctx->next_leader_slot,
+    .max_microblocks_in_slot   = ctx->max_microblocks_per_slot
+  }};
+  memcpy( reset->completed_blockhash, ctx->reset_hash, 32UL );
+  if( FD_LIKELY( ctx->parent_slot==reset->completed_slot ) )
+    memcpy( reset->completed_block_id, ctx->parent_block_id, 32UL );
+
+  poh_link_publish( &replay_out, REPLAY_SIG_RESET, (uchar const *)reset, sizeof(fd_poh_reset_t) );
+}
 
 static CALLED_FROM_RUST fd_pohh_tile_t *
 fd_ext_poh_write_lock( void ) {
@@ -839,6 +869,9 @@ fd_ext_poh_initialize( ulong         tick_duration_ns,    /* See clock comments 
     /* See the long comment in after_credit for this limit */
     ctx->max_microblocks_per_slot = fd_ulong_min( MAX_MICROBLOCKS_PER_SLOT, ctx->ticks_per_slot*(ctx->hashcnt_per_tick-1UL) );
   }
+
+  ctx->next_leader_slot = next_leader_slot( ctx );
+  publish_replay_reset( ctx );
 
   fd_ext_poh_write_unlock();
 }
@@ -1297,7 +1330,8 @@ maybe_change_identity( fd_pohh_tile_t * ctx,
 }
 
 static CALLED_FROM_RUST void
-no_longer_leader( fd_pohh_tile_t * ctx ) {
+no_longer_leader( fd_pohh_tile_t * ctx,
+                  _Bool           publish_reset ) {
   /* If we acquired a bank for the store tile and never produced its
      block_complete entry, the store tile never gets the chance to
      drop the refcount, so we drop it directly here. */
@@ -1315,6 +1349,7 @@ no_longer_leader( fd_pohh_tile_t * ctx ) {
   ctx->current_leader_bank = NULL;
   int identity_changed = maybe_change_identity( ctx, 1 );
   ctx->next_leader_slot = next_leader_slot( ctx );
+  if( FD_LIKELY( publish_reset ) ) publish_replay_reset( ctx );
   if( FD_UNLIKELY( identity_changed ) ) {
     FD_LOG_INFO(( "fd_poh_identity_changed(next_leader_slot=%lu)", ctx->next_leader_slot ));
   }
@@ -1405,9 +1440,24 @@ fd_ext_poh_reset( ulong         completed_bank_slot, /* The slot that successful
 
        The order is important here, ctx->hashcnt must be updated before
        calling no_longer_leader. */
-    no_longer_leader( ctx );
+    no_longer_leader( ctx, 0 );
   }
   ctx->next_leader_slot = next_leader_slot( ctx );
+  if( FD_LIKELY( replay_out.mem && completed_bank_slot!=ULONG_MAX ) ) {
+    fd_replay_slot_completed_t slot_completed[1] = {{
+      .slot          = completed_bank_slot,
+      .epoch         = ULONG_MAX,
+      .slot_in_epoch = ULONG_MAX
+    }};
+    fd_epoch_leaders_t const * lsched = fd_multi_epoch_leaders_get_lsched_for_slot( ctx->mleaders, completed_bank_slot );
+    if( FD_LIKELY( lsched ) ) {
+      slot_completed->epoch           = lsched->epoch;
+      slot_completed->slot_in_epoch   = completed_bank_slot - lsched->slot0;
+      slot_completed->slots_per_epoch = lsched->slot_cnt;
+    }
+    poh_link_publish( &replay_out, REPLAY_SIG_SLOT_COMPLETED, (uchar const *)slot_completed, sizeof(fd_replay_slot_completed_t) );
+  }
+  publish_replay_reset( ctx );
   FD_LOG_INFO(( "fd_ext_poh_reset(slot=%lu,next_leader_slot=%lu)", ctx->reset_slot, ctx->next_leader_slot ));
 
   if( FD_UNLIKELY( ctx->slot>=ctx->next_leader_slot ) ) {
@@ -1853,7 +1903,7 @@ after_credit( fd_pohh_tile_t *    ctx,
     publish_plugin_slot_end( ctx, ctx->next_leader_slot, ctx->cus_used );
     FD_LOG_INFO(( "fd_poh_ticked_outof_leader(slot=%lu)", ctx->next_leader_slot ));
 
-    no_longer_leader( ctx );
+    no_longer_leader( ctx, 1 );
     ctx->expect_sequential_leader_slot = ctx->slot;
 
     double tick_per_ns = fd_tempo_tick_per_ns( NULL );
@@ -1872,7 +1922,9 @@ after_credit( fd_pohh_tile_t *    ctx,
 static inline void
 during_housekeeping( fd_pohh_tile_t * ctx ) {
   if( FD_UNLIKELY( maybe_change_identity( ctx, 0 ) ) ) {
+    ulong old_next_leader_slot = ctx->next_leader_slot;
     ctx->next_leader_slot = next_leader_slot( ctx );
+    if( FD_UNLIKELY( ctx->next_leader_slot!=old_next_leader_slot ) ) publish_replay_reset( ctx );
     FD_LOG_INFO(( "fd_poh_identity_changed(next_leader_slot=%lu)", ctx->next_leader_slot ));
 
     /* Signal replay to check if we are leader again, in-case it's stuck
@@ -2091,7 +2143,9 @@ after_frag( fd_pohh_tile_t *    ctx,
                   ctx->next_leader_slot,
                   next_leader_slot_after_frag ));
 
+    int leader_slot_changed = ctx->next_leader_slot!=next_leader_slot_after_frag;
     ctx->next_leader_slot = next_leader_slot_after_frag;
+    if( FD_UNLIKELY( leader_slot_changed ) ) publish_replay_reset( ctx );
     if( FD_UNLIKELY( currently_leader && !leader_after_frag ) ) {
       /* Shouldn't ever happen, otherwise we need to do a state
          transition out of being leader. */
@@ -2181,7 +2235,7 @@ after_frag( fd_pohh_tile_t *    ctx,
          the state machine. */
       publish_plugin_slot_end( ctx, ctx->next_leader_slot, ctx->cus_used );
 
-      no_longer_leader( ctx );
+      no_longer_leader( ctx, 1 );
 
       if( FD_UNLIKELY( ctx->slot>=ctx->next_leader_slot ) ) {
         /* We finished a leader slot, and are immediately leader for the
@@ -2386,6 +2440,7 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->highwater_leader_slot = ULONG_MAX;
   ctx->next_leader_slot      = ULONG_MAX;
   ctx->reset_slot            = ULONG_MAX;
+  ctx->parent_slot           = ULONG_MAX;
 
   ctx->lagged_consecutive_leader_start = tile->pohh.lagged_consecutive_leader_start;
   ctx->expect_sequential_leader_slot = ULONG_MAX;
@@ -2416,6 +2471,16 @@ unprivileged_init( fd_topo_t *      topo,
   poh_link_init( &crds_shred,              topo, tile, out1( topo, tile, "crds_shred"   ).idx );
   poh_link_init( &replay_resolh,           topo, tile, out1( topo, tile, "replay_resol" ).idx );
   poh_link_init( &executed_txn,            topo, tile, out1( topo, tile, "executed_txn" ).idx );
+
+  ulong replay_out_idx = fd_topo_find_tile_out_link( topo, tile, "replay_out", 0UL );
+  if( FD_LIKELY( replay_out_idx!=ULONG_MAX ) )
+    poh_link_init( &replay_out, topo, tile, replay_out_idx );
+  else {
+    FD_COMPILER_MFENCE();
+    replay_out.mem    = NULL;
+    replay_out.mcache = (fd_frag_meta_t *)1;
+    FD_COMPILER_MFENCE();
+  }
 
   if( FD_LIKELY( tile->pohh.plugins_enabled ) ) {
     poh_link_init( &replay_plugin,         topo, tile, out1( topo, tile, "replay_plugi" ).idx );

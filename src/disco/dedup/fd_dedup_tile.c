@@ -1,5 +1,6 @@
 
 #include "../fd_txn_m.h"
+#include "../pack/fd_microblock.h"
 #include "generated/fd_dedup_tile_seccomp.h"
 
 #include "../topo/fd_topo.h"
@@ -121,9 +122,10 @@ during_frag( fd_dedup_ctx_t * ctx,
       FD_TCACHE_INSERT( _is_dup, *ctx->tcache_sync, ctx->tcache_ring, ctx->tcache_depth, ctx->tcache_map, ctx->tcache_map_cnt, ha_dedup_tag );
       (void)_is_dup;
     }
-  } else if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EXECUTED_TXN ) ) { /* Frankendancer-only */
+  } else if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EXECUTED_TXN ) ) {
     if( FD_UNLIKELY( sz!=FD_TXN_SIGNATURE_SZ ) ) FD_LOG_ERR(( "received an executed transaction signature message with the wrong size %lu", sz ));
-    /* Executed txns just have their signature inserted into the tcache
+    if( FD_UNLIKELY( sig!=FD_EXECUTED_TXN_KIND_LANDED ) ) return;
+    /* Landed txns just have their signature inserted into the tcache
        so we can dedup them easily. */
     ulong ha_dedup_tag = fd_hash( ctx->hashmap_seed, src, FD_TXN_SIGNATURE_SZ );
     int _is_dup;
@@ -164,7 +166,11 @@ after_frag( fd_dedup_ctx_t *    ctx,
   }
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  /* BAM derives bundle_id from seq_id; a repeated seq_id is still a new
+     atomic-batch boundary when batch_idx returns to zero. */
+  if( FD_UNLIKELY( txnm->block_engine.bundle_id &&
+                   ( (txnm->block_engine.bundle_id!=ctx->bundle_id) ||
+                     (txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txnm->bam.batch_idx && ctx->bundle_idx) ) ) ) {
     ctx->bundle_failed = 0;
     ctx->bundle_id     = txnm->block_engine.bundle_id;
     ctx->bundle_idx    = 0UL;
@@ -188,12 +194,12 @@ after_frag( fd_dedup_ctx_t *    ctx,
   }
 
   int is_dup = 0;
-  if( FD_LIKELY( !txnm->block_engine.bundle_id ) ) {
+  if( FD_LIKELY( fd_txn_m_use_prepack_sig_dedup( txnm ) ) ) {
     /* Compute fd_hash(signature) for dedup. */
     ulong ha_dedup_tag = fd_hash( ctx->hashmap_seed, fd_txn_m_payload( txnm )+txn->signature_off, 64UL );
 
     FD_TCACHE_INSERT( is_dup, *ctx->tcache_sync, ctx->tcache_ring, ctx->tcache_depth, ctx->tcache_map, ctx->tcache_map_cnt, ha_dedup_tag );
-  } else {
+  } else if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) {
     /* Make sure bundles don't contain a duplicate transaction inside
        the bundle, which would not be valid. */
 
@@ -332,6 +338,7 @@ populate_allowed_fds( fd_topo_t const *      topo,
 
 #include "../stem/fd_stem.c"
 
+#ifndef FD_TILE_TEST
 fd_topo_run_tile_t fd_tile_dedup = {
   .name                     = "dedup",
   .populate_allowed_seccomp = populate_allowed_seccomp,
@@ -342,3 +349,4 @@ fd_topo_run_tile_t fd_tile_dedup = {
   .unprivileged_init        = unprivileged_init,
   .run                      = stem_run,
 };
+#endif

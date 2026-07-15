@@ -13,6 +13,8 @@ extern fd_topo_obj_callbacks_t fd_obj_cb_metrics;
 extern fd_topo_obj_callbacks_t fd_obj_cb_netdev_tbl;
 extern fd_topo_obj_callbacks_t fd_obj_cb_neigh4_hmap;
 extern fd_topo_obj_callbacks_t fd_obj_cb_keyswitch;
+extern fd_topo_obj_callbacks_t fd_obj_cb_bam_ctrl;
+extern fd_topo_obj_callbacks_t fd_obj_cb_bam_fee_cfg;
 extern fd_topo_obj_callbacks_t fd_obj_cb_tile;
 extern fd_topo_obj_callbacks_t fd_obj_cb_store;
 extern fd_topo_obj_callbacks_t fd_obj_cb_fec_sets;
@@ -32,6 +34,8 @@ fd_topo_obj_callbacks_t * CALLBACKS[] = {
   &fd_obj_cb_netdev_tbl,
   &fd_obj_cb_neigh4_hmap,
   &fd_obj_cb_keyswitch,
+  &fd_obj_cb_bam_ctrl,
+  &fd_obj_cb_bam_fee_cfg,
   &fd_obj_cb_tile,
   &fd_obj_cb_store,
   &fd_obj_cb_fec_sets,
@@ -75,6 +79,7 @@ extern fd_topo_run_tile_t fd_tile_diag;
 extern fd_topo_run_tile_t fd_tile_gui;
 extern fd_topo_run_tile_t fd_tile_rpc;
 extern fd_topo_run_tile_t fd_tile_bundle;
+extern fd_topo_run_tile_t fd_tile_bam;
 extern fd_topo_run_tile_t fd_tile_genesi;
 extern fd_topo_run_tile_t fd_tile_ipecho;
 
@@ -110,6 +115,7 @@ fd_topo_run_tile_t * TILES[] = {
   &fd_tile_gui,
   &fd_tile_rpc,
   &fd_tile_bundle,
+  &fd_tile_bam,
   &fd_tile_gossvf,
   &fd_tile_gossip,
   &fd_tile_repair,
@@ -144,6 +150,8 @@ extern action_t fd_action_watch;
 extern action_t fd_action_add_authorized_voter;
 extern action_t fd_action_set_identity;
 extern action_t fd_action_monitor_gossip;
+extern action_t fd_action_set_bam;
+extern action_t fd_action_get_bam;
 
 action_t * ACTIONS[] = {
   &fd_action_run,
@@ -162,6 +170,8 @@ action_t * ACTIONS[] = {
   &fd_action_watch,
   &fd_action_monitor_gossip,
   &fd_action_set_identity,
+  &fd_action_set_bam,
+  &fd_action_get_bam,
   NULL,
 };
 

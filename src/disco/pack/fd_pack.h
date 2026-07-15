@@ -215,7 +215,7 @@ typedef struct fd_pack_private fd_pack_t;
 
    bank_tile_cnt sets the number of bank tiles to which this pack object
    can schedule transactions.  bank_tile_cnt must be in [1,
-   FD_PACK_MAX_BANK_TILES].
+   FD_PACK_MAX_EXECLE_TILES].
 
    limits sets various limits for the blocks and microblocks that pack
    can produce. */
@@ -283,7 +283,7 @@ FD_FN_PURE ulong fd_pack_current_block_cost( fd_pack_t const * pack );
 /* fd_pack_bank_tile_cnt: returns the value of bank_tile_cnt provided in
    pack when the pack object was initialized with fd_pack_new.  pack
    must be a valid local join.  The result will be in [1,
-   FD_PACK_MAX_BANK_TILES]. */
+   FD_PACK_MAX_EXECLE_TILES]. */
 FD_FN_PURE ulong fd_pack_bank_tile_cnt( fd_pack_t const * pack );
 
 /* fd_pack_set_block_limits: Updates the limits provided fd_pack_new to
@@ -647,10 +647,13 @@ void fd_pack_set_initializer_bundles_ready( fd_pack_t * pack );
 
 /* FD_PACK_SCHEDULE_{VOTE,BUNDLE,TXN} form a set of bitflags used in
    fd_pack_schedule_next_microblock below.  They control what types of
-   scheduling are allowed.  The names should be self-explanatory. */
+   scheduling are allowed.  The BAM_ONLY bit suppresses normal
+   transactions and filters bundles to BAM work, but does not suppress
+   votes. */
 #define FD_PACK_SCHEDULE_VOTE   1
 #define FD_PACK_SCHEDULE_BUNDLE 2
 #define FD_PACK_SCHEDULE_TXN    4
+#define FD_PACK_SCHEDULE_BAM_ONLY 8
 
 /* fd_pack_schedule_next_microblock schedules pending transactions.
    These transaction either form a microblock, which is a set of
