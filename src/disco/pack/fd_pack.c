@@ -1438,10 +1438,14 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
                             ulong                expires_at,
                             int                  initializer_bundle,
                             void         const * bundle_meta,
-                            ulong              * delete_cnt ) {
+                            ulong              * delete_cnt,
+                            ulong              * reject_txn_idx ) {
 
   int err = 0;
   *delete_cnt = 0UL;
+  ulong reject_txn_idx_scratch = ULONG_MAX;
+  if( FD_LIKELY( reject_txn_idx ) ) *reject_txn_idx = ULONG_MAX;
+  else                              reject_txn_idx = &reject_txn_idx_scratch;
 
   ulong pending_b_txn_cnt = treap_ele_cnt( pack->pending_bundles );
     /* We want to prevent bundles from consuming the whole treap, but in
@@ -1479,11 +1483,23 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     fd_acct_addr_t const * alt_adj = ord->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
 
     int est_result = fd_pack_estimate_rewards_and_compute( bundle[ i ], ord, pack->lim );
-    if( FD_UNLIKELY( est_result==0 ) ) { err = FD_PACK_INSERT_REJECT_ESTIMATION_FAIL;  break; }
+    if( FD_UNLIKELY( est_result==0 ) ) {
+      err = FD_PACK_INSERT_REJECT_ESTIMATION_FAIL;
+      *reject_txn_idx = i;
+      break;
+    }
     /* Votes not allowed in bundles */
-    if( FD_UNLIKELY( est_result==1 ) ) { err = FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST; break; }
+    if( FD_UNLIKELY( est_result==1 ) ) {
+      err = FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST;
+      *reject_txn_idx = i;
+      break;
+    }
     int nonce_result = fd_pack_validate_durable_nonce( ord->txn_e );
-    if( FD_UNLIKELY( !nonce_result ) ) { err = FD_PACK_INSERT_REJECT_INVALID_NONCE;    break; }
+    if( FD_UNLIKELY( !nonce_result ) ) {
+      err = FD_PACK_INSERT_REJECT_INVALID_NONCE;
+      *reject_txn_idx = i;
+      break;
+    }
     int is_durable_nonce = nonce_result==2;
     nonce_txn_cnt += !!is_durable_nonce;
 
@@ -1502,6 +1518,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
            take priority over later bundles. */
         if( FD_UNLIKELY( same_nonce->txn->flags & FD_TXN_P_FLAGS_BUNDLE ) ) {
           err = FD_PACK_INSERT_REJECT_NONCE_PRIORITY;
+          *reject_txn_idx = i;
           break;
         } else {
           ulong _delete_cnt = delete_transaction( pack, same_nonce, 0, 0 );
@@ -1512,7 +1529,11 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     }
 
     int validation_result = validate_transaction( pack, ord, txn, accts, alt_adj, !initializer_bundle );
-    if( FD_UNLIKELY( validation_result ) ) { err = validation_result; break; }
+    if( FD_UNLIKELY( validation_result ) ) {
+      err = validation_result;
+      *reject_txn_idx = i;
+      break;
+    }
   }
 
   if( FD_UNLIKELY( err ) ) {
@@ -1554,15 +1575,16 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
   if( FD_UNLIKELY( nonce_txn_cnt>1UL ) ) {
     /* Do a ILP-friendly duplicate detect, naive O(n^2) algo.  With max
        5 txns per bundle, this requires 10 comparisons.  ~ 25 cycle.  */
-    uint conflict_detected = 0u;
+    ulong conflict_txn_idx = ULONG_MAX;
     for( ulong i=0UL; i<FD_PACK_MAX_TXN_PER_BUNDLE-1; i++ ) {
       for( ulong j=i+1; j<FD_PACK_MAX_TXN_PER_BUNDLE; j++ ) {
         ulong const ele_i = nonce_hash63[ i ];
         ulong const ele_j = nonce_hash63[ j ];
-        conflict_detected |= (ele_i==ele_j);
+        conflict_txn_idx = fd_ulong_if( ele_i==ele_j, j, conflict_txn_idx );
       }
     }
-    if( FD_UNLIKELY( conflict_detected ) ) {
+    if( FD_UNLIKELY( conflict_txn_idx!=ULONG_MAX ) ) {
+      *reject_txn_idx = conflict_txn_idx;
       fd_pack_insert_bundle_cancel( pack, bundle, txn_cnt );
       return FD_PACK_INSERT_REJECT_NONCE_CONFLICT;
     }

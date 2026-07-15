@@ -526,14 +526,18 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
    or FD_PACK_INSERT_REJECT_* codes explained above.  If there are
    multiple reasons for rejecting a bundle, the which of the reasons it
    returns is unspecified.  delete_cnt is the number of existing
-   transactions that were deleted as a side effect of insertion.
+   transactions that were deleted as a side effect of insertion.  If
+   reject_txn_idx is non-NULL, it is set to the index of the transaction
+   that caused a per-transaction rejection, or ULONG_MAX if the bundle
+   was accepted or rejected for a bundle-level reason.
 
    These functions must not be called if the pack object was initialized
    with bundle_meta_sz==0. */
 
 fd_txn_e_t * const * fd_pack_insert_bundle_init  ( fd_pack_t * pack, fd_txn_e_t *       * bundle, ulong txn_cnt                                        );
 int                  fd_pack_insert_bundle_fini  ( fd_pack_t * pack, fd_txn_e_t * const * bundle, ulong txn_cnt,
-                                                   ulong expires_at, int initializer_bundle, void const * bundle_meta, ulong * delete_cnt );
+                                                   ulong expires_at, int initializer_bundle, void const * bundle_meta,
+                                                   ulong * delete_cnt, ulong * reject_txn_idx );
 void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t * const * bundle, ulong txn_cnt                                        );
 
 
