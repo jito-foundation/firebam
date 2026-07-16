@@ -215,7 +215,7 @@ typedef struct fd_pack_private fd_pack_t;
 
    bank_tile_cnt sets the number of bank tiles to which this pack object
    can schedule transactions.  bank_tile_cnt must be in [1,
-   FD_PACK_MAX_BANK_TILES].
+   FD_PACK_MAX_EXECLE_TILES].
 
    limits sets various limits for the blocks and microblocks that pack
    can produce. */
@@ -283,7 +283,7 @@ FD_FN_PURE ulong fd_pack_current_block_cost( fd_pack_t const * pack );
 /* fd_pack_bank_tile_cnt: returns the value of bank_tile_cnt provided in
    pack when the pack object was initialized with fd_pack_new.  pack
    must be a valid local join.  The result will be in [1,
-   FD_PACK_MAX_BANK_TILES]. */
+   FD_PACK_MAX_EXECLE_TILES]. */
 FD_FN_PURE ulong fd_pack_bank_tile_cnt( fd_pack_t const * pack );
 
 /* fd_pack_set_block_limits: Updates the limits provided fd_pack_new to
@@ -542,14 +542,18 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
    or FD_PACK_INSERT_REJECT_* codes explained above.  If there are
    multiple reasons for rejecting a bundle, the which of the reasons it
    returns is unspecified.  delete_cnt is the number of existing
-   transactions that were deleted as a side effect of insertion.
+   transactions that were deleted as a side effect of insertion.  If
+   reject_txn_idx is non-NULL, it is set to the index of the transaction
+   that caused a per-transaction rejection, or ULONG_MAX if the bundle
+   was accepted or rejected for a bundle-level reason.
 
    These functions must not be called if the pack object was initialized
    with bundle_meta_sz==0. */
 
 fd_txn_e_t * const * fd_pack_insert_bundle_init  ( fd_pack_t * pack, fd_txn_e_t *       * bundle, ulong txn_cnt                                        );
 int                  fd_pack_insert_bundle_fini  ( fd_pack_t * pack, fd_txn_e_t * const * bundle, ulong txn_cnt,
-                                                   ulong expires_at, int initializer_bundle, void const * bundle_meta, ulong * delete_cnt );
+                                                   ulong expires_at, int initializer_bundle, void const * bundle_meta,
+                                                   ulong * delete_cnt, ulong * reject_txn_idx );
 void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t * const * bundle, ulong txn_cnt                                        );
 
 
@@ -647,10 +651,13 @@ void fd_pack_set_initializer_bundles_ready( fd_pack_t * pack );
 
 /* FD_PACK_SCHEDULE_{VOTE,BUNDLE,TXN} form a set of bitflags used in
    fd_pack_schedule_next_microblock below.  They control what types of
-   scheduling are allowed.  The names should be self-explanatory. */
+   scheduling are allowed.  The BAM_ONLY bit suppresses normal
+   transactions and filters bundles to BAM work, but does not suppress
+   votes. */
 #define FD_PACK_SCHEDULE_VOTE   1
 #define FD_PACK_SCHEDULE_BUNDLE 2
 #define FD_PACK_SCHEDULE_TXN    4
+#define FD_PACK_SCHEDULE_BAM_ONLY 8
 
 /* fd_pack_schedule_next_microblock schedules pending transactions.
    These transaction either form a microblock, which is a set of
