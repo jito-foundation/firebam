@@ -139,6 +139,7 @@ typedef struct fd_pack_ctx fd_pack_ctx_t;
 typedef struct {
   fd_acct_addr_t commission_pubkey[1];
   ulong          commission;
+  _Bool          is_bam;
 } block_builder_info_t;
 
 typedef struct {
@@ -394,7 +395,7 @@ struct fd_pack_ctx {
 
   block_builder_info_t blk_engine_cfg[1];
 
-  /* Optional BAM fee config shared object and last consistent snapshot. */
+  /* Optional BAM block builder config shared object and last consistent snapshot. */
   fd_bam_fee_cfg_t const * bam_fee_cfg;
   uint                      bam_fee_cfg_version;
   block_builder_info_t      bam_fee_meta[1];
@@ -437,7 +438,7 @@ struct fd_pack_ctx {
 };
 
 /* Bundle metadata must fit both block engine and BAM uses. */
-#define BUNDLE_META_SZ 40UL
+#define BUNDLE_META_SZ 48UL
 FD_STATIC_ASSERT( sizeof(block_builder_info_t)==BUNDLE_META_SZ, blk_engine_cfg );
 
 #define PACK_TILE_BUNDLE_KIND_NONE         (0)
@@ -1018,24 +1019,19 @@ pack_tile_refresh_bam_fee_meta( fd_pack_ctx_t * ctx ) {
     if( FD_UNLIKELY( !v0 || fd_uint_extract_bit( v0, 31 ) ) ) continue;
     if( FD_LIKELY( v0==ctx->bam_fee_cfg_version ) ) return;
 
-    uchar recipient[ 32 ];
-    FD_COMPILER_MFENCE();
-    uint has            = FD_VOLATILE_CONST( cfg->has_prio_fee_recipient );
-    uint commission_bps = FD_VOLATILE_CONST( cfg->commission_bps );
-    fd_memcpy( recipient, cfg->prio_fee_recipient, sizeof(recipient) );
-    FD_COMPILER_MFENCE();
+    uchar builder_pubkey[ 32 ];
+    FD_HW_MFENCE_LD();
+    uint builder_commission = FD_VOLATILE_CONST( cfg->builder_commission );
+    fd_memcpy( builder_pubkey, cfg->builder_pubkey, sizeof(builder_pubkey) );
+    FD_HW_MFENCE_LD();
     if( FD_UNLIKELY( FD_VOLATILE_CONST( cfg->version )!=v0 ) ) continue;
 
-    fd_memset( ctx->bam_fee_meta, 0, sizeof(ctx->bam_fee_meta) );
-    if( FD_LIKELY( has ) ) {
-      fd_memcpy( ctx->bam_fee_meta->commission_pubkey->b, recipient, sizeof(recipient) );
-      ctx->bam_fee_meta->commission = (ulong)fd_uint_min( commission_bps/100U, 100U );
-    }
+    fd_memcpy( ctx->bam_fee_meta->commission_pubkey->b, builder_pubkey, sizeof(builder_pubkey) );
+    ctx->bam_fee_meta->commission = (ulong)builder_commission;
     ctx->bam_fee_cfg_version = v0;
     return;
   }
 }
-
 
 FD_FN_CONST static inline ulong
 scratch_align( void ) {
@@ -1551,17 +1547,31 @@ after_credit( fd_pack_ctx_t *     ctx,
     if( FD_UNLIKELY( top_meta ) ) {
       /* Have bundles, in a reasonable state to crank. */
 
+      if( FD_UNLIKELY( top_meta->is_bam ) ) {
+        /* Unlike Block Engine metadata, the BAM builder configuration is
+           global and may rotate while a bundle waits in pack.  Refresh it
+           at crank time so generate and apply use the current tuple. */
+        pack_tile_refresh_bam_fee_meta( ctx );
+        ctx->bam_fee_meta->is_bam = 1;
+        top_meta = ctx->bam_fee_meta;
+      }
+
       fd_txn_e_t * _bundle[ 1UL ];
       fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( ctx->pack, _bundle, 1UL );
 
-      ulong txn_sz = fd_bundle_crank_generate( ctx->crank->gen, ctx->crank->prev_config, top_meta->commission_pubkey,
-          ctx->crank->identity_pubkey, ctx->crank->tip_receiver_owner, ctx->crank->epoch, top_meta->commission,
-          bundle[0]->txnp->payload, TXN( bundle[0]->txnp ) );
+      ulong txn_sz = FD_UNLIKELY( top_meta->is_bam &&
+                                 fd_mem_iszero( top_meta->commission_pubkey->b, sizeof(top_meta->commission_pubkey->b) ) )
+                   ? 0UL
+                   : fd_bundle_crank_generate( ctx->crank->gen, ctx->crank->prev_config, top_meta->commission_pubkey,
+                         ctx->crank->identity_pubkey, ctx->crank->tip_receiver_owner, ctx->crank->epoch, top_meta->commission,
+                         bundle[0]->txnp->payload, TXN( bundle[0]->txnp ) );
 
-      if( FD_LIKELY( txn_sz==0UL ) ) { /* Everything in good shape! */
+      if( FD_LIKELY( txn_sz==0UL ) ) { /* No initializer bundle to insert. */
+        if( FD_LIKELY( !top_meta->is_bam ||
+                       !fd_mem_iszero( top_meta->commission_pubkey->b, sizeof(top_meta->commission_pubkey->b) ) ) )
+          ctx->crank->metrics[ 0 ]++; /* BUNDLE_CRANK_STATUS_NOT_NEEDED */
         fd_pack_insert_bundle_cancel( ctx->pack, bundle, 1UL );
         fd_pack_set_initializer_bundles_ready( ctx->pack );
-        ctx->crank->metrics[ 0 ]++; /* BUNDLE_CRANK_RESULT_NOT_NEEDED */
       }
       else if( FD_LIKELY( txn_sz<ULONG_MAX ) ) {
         bundle[0]->txnp->payload_sz  = (ushort)txn_sz;
@@ -1930,6 +1940,7 @@ during_frag( fd_pack_ctx_t * ctx,
           return;
         }
         ctx->blk_engine_cfg->commission = txnm->block_engine.commission;
+        ctx->blk_engine_cfg->is_bam     = 0;
         memcpy( ctx->blk_engine_cfg->commission_pubkey->b, txnm->block_engine.commission_pubkey, 32UL );
 
         ctx->current_bundle->bundle = fd_pack_insert_bundle_init( ctx->pack, ctx->current_bundle->_txn, ctx->current_bundle->txn_cnt );
@@ -2253,10 +2264,9 @@ after_frag( fd_pack_ctx_t *     ctx,
         }
 
         fd_memset( ctx->blk_engine_cfg, 0, sizeof(block_builder_info_t) );
-        if( FD_LIKELY( ctx->bam_fee_cfg ) ) {
-          pack_tile_refresh_bam_fee_meta( ctx );
-          *ctx->blk_engine_cfg = *ctx->bam_fee_meta;
-        }
+        pack_tile_refresh_bam_fee_meta( ctx );
+        *ctx->blk_engine_cfg = *ctx->bam_fee_meta;
+        ctx->blk_engine_cfg->is_bam = 1;
 
         fd_ed25519_sig_t bam_sig[ FD_PACK_MAX_TXN_PER_BUNDLE ];
         for( uchar i=0U; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {

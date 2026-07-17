@@ -509,7 +509,6 @@ test_bam_env_create( test_bam_env_t * env,
   FD_TEST( state->fee_cfg );
   fd_memset( state->fee_cfg, 0, sizeof(fd_bam_fee_cfg_t) );
   state->fee_cfg_version = 0U;
-  state->commission_bps = 0U;
   state->prio_fee_recipient_set = 0U;
   fd_memset( state->prio_fee_recipient, 0, sizeof( state->prio_fee_recipient ) );
 

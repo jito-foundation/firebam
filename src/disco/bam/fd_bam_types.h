@@ -85,10 +85,9 @@ typedef struct {
 } fd_bam_shred_update_t;
 
 typedef struct {
-  uchar prio_fee_recipient[ 32 ]; /* Decoded priority fee recipient pubkey */
-  uint  commission_bps;           /* Validator commission expressed in basis points */
-  uint  has_prio_fee_recipient;   /* Non-zero when prio_fee_recipient contains a valid pubkey */
-  uint  version;                  /* Seqlock version: bit 31 is write-in-progress; low 31 bits are a monotonic update counter. */
+  uchar builder_pubkey[ 32 ]; /* Decoded block builder pubkey */
+  uint  builder_commission;   /* Block builder commission in percentage points (0-100) */
+  uint  version;              /* Seqlock version; zero means no complete snapshot and bit 31 means write-in-progress. */
 } fd_bam_fee_cfg_t;
 
 #define FD_BAM_STEM_SIG_GOSSIP_UPDATE (0xAB) // randomly assigned

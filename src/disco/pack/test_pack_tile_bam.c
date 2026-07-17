@@ -163,6 +163,7 @@ FD_STATIC_ASSERT( offsetof( test_fake_pack_t, pending_txn_cnt )==FD_PACK_PENDING
 typedef struct {
   test_pack_tile_out_t out[1];
   test_fake_pack_t     fake_pack[1];
+  fd_bam_fee_cfg_t     fee_cfg[1];
   fd_pack_ctx_t        ctx[1];
 } test_pack_tile_harness_t;
 
@@ -273,6 +274,7 @@ test_pack_tile_harness_new( test_pack_tile_harness_t * h ) {
   h->ctx->leader_slot              = ULONG_MAX;
   h->ctx->highest_observed_slot    = 0UL;
   h->ctx->bam_result_out           = test_pack_tile_result_out( h->out );
+  h->ctx->bam_fee_cfg              = h->fee_cfg;
 }
 
 static void
@@ -289,46 +291,43 @@ test_pack_tile_bam_fee_meta_seqlock_keeps_last_snapshot( void ) {
   fd_bam_fee_cfg_t cfg[1];
   fd_memset( cfg, 0, sizeof(cfg) );
   h->ctx->bam_fee_cfg = cfg;
+  pack_tile_refresh_bam_fee_meta( h->ctx );
 
-  uchar recipient0[ 32 ];
-  uchar recipient1[ 32 ];
-  uchar zero[ 32 ] = {0};
-  for( ulong i=0UL; i<sizeof(recipient0); i++ ) {
-    recipient0[ i ] = (uchar)( 0x10U + i );
-    recipient1[ i ] = (uchar)( 0x80U + i );
+  uchar builder_pubkey0[ 32 ];
+  uchar builder_pubkey1[ 32 ];
+  for( ulong i=0UL; i<sizeof(builder_pubkey0); i++ ) {
+    builder_pubkey0[ i ] = (uchar)( 0x10U + i );
+    builder_pubkey1[ i ] = (uchar)( 0x80U + i );
   }
 
-  fd_memcpy( cfg->prio_fee_recipient, recipient0, sizeof(recipient0) );
-  cfg->commission_bps         = 3500U;
-  cfg->has_prio_fee_recipient = 1U;
-  cfg->version                = 1U;
+  fd_memcpy( cfg->builder_pubkey, builder_pubkey0, sizeof(builder_pubkey0) );
+  cfg->builder_commission = 35U;
+  cfg->version            = 1U;
   pack_tile_refresh_bam_fee_meta( h->ctx );
   FD_TEST( h->ctx->bam_fee_cfg_version == 1U );
   FD_TEST( h->ctx->bam_fee_meta->commission == 35UL );
-  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, recipient0, sizeof(recipient0) ) );
+  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, builder_pubkey0, sizeof(builder_pubkey0) ) );
 
-  fd_memcpy( cfg->prio_fee_recipient, recipient1, sizeof(recipient1) );
-  cfg->commission_bps         = 9900U;
-  cfg->has_prio_fee_recipient = 1U;
-  cfg->version                = fd_uint_set_bit( 1U, 31 );
+  fd_memcpy( cfg->builder_pubkey, builder_pubkey1, sizeof(builder_pubkey1) );
+  cfg->builder_commission = 99U;
+  cfg->version            = fd_uint_set_bit( 1U, 31 );
   pack_tile_refresh_bam_fee_meta( h->ctx );
   FD_TEST( h->ctx->bam_fee_cfg_version == 1U );
   FD_TEST( h->ctx->bam_fee_meta->commission == 35UL );
-  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, recipient0, sizeof(recipient0) ) );
+  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, builder_pubkey0, sizeof(builder_pubkey0) ) );
 
   cfg->version = 2U;
   pack_tile_refresh_bam_fee_meta( h->ctx );
   FD_TEST( h->ctx->bam_fee_cfg_version == 2U );
   FD_TEST( h->ctx->bam_fee_meta->commission == 99UL );
-  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, recipient1, sizeof(recipient1) ) );
+  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, builder_pubkey1, sizeof(builder_pubkey1) ) );
 
-  cfg->has_prio_fee_recipient = 0U;
-  cfg->commission_bps         = 0U;
-  cfg->version                = 3U;
+  fd_memset( cfg->builder_pubkey, 0, sizeof(cfg->builder_pubkey) );
+  cfg->version = 3U;
   pack_tile_refresh_bam_fee_meta( h->ctx );
   FD_TEST( h->ctx->bam_fee_cfg_version == 3U );
-  FD_TEST( h->ctx->bam_fee_meta->commission == 0UL );
-  FD_TEST( 0==memcmp( h->ctx->bam_fee_meta->commission_pubkey->b, zero, sizeof(zero) ) );
+  FD_TEST( h->ctx->bam_fee_meta->commission == 99UL );
+  FD_TEST( fd_mem_iszero( h->ctx->bam_fee_meta->commission_pubkey->b, sizeof(builder_pubkey1) ) );
 
   test_pack_tile_harness_delete( h );
 }
@@ -653,6 +652,26 @@ test_pack_tile_complete_bam_bundle( test_pack_tile_harness_t * h,
   h->ctx->cur_spot = txns[ txn_cnt-1U ];
 
   after_frag( h->ctx, 0UL, 0UL, min_blockhash_slot, 0UL, 0UL, 0UL, &h->out->stem );
+}
+
+static void
+test_pack_tile_bam_missing_builder_cfg_accepted( void ) {
+  test_pack_tile_harness_t h[1];
+  fd_txn_e_t               txn[1];
+
+  test_pack_tile_harness_new( h );
+  fd_memset( txn, 0, sizeof(txn) );
+  test_pack_tile_fill_sig( txn->txnp->payload + 1UL, 91U );
+  test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[1]){ txn }, 1U, 90U, 100UL, 0UL, 0U );
+
+  FD_TEST( test_insert_fini_call_cnt == 1UL );
+  FD_TEST( test_bundle_cancel_call_cnt == 0UL );
+  FD_TEST( h->ctx->current_bundle->bundle == NULL );
+  FD_TEST( h->ctx->bam_work_cnt == 1UL );
+  FD_TEST( h->ctx->bam_pending_result_cnt == 0UL );
+  FD_TEST( h->ctx->blk_engine_cfg->is_bam );
+  FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_ACCEPTED_IDX ] == 1UL );
+  test_pack_tile_harness_delete( h );
 }
 
 static void
@@ -1444,6 +1463,7 @@ main( int     argc,
   test_pack_tile_bam_override_drops_block_engine_bundles();
   test_pack_tile_bam_override_after_frag_cancels_block_engine_bundle();
   test_pack_tile_bam_fee_meta_seqlock_keeps_last_snapshot();
+  test_pack_tile_bam_missing_builder_cfg_accepted();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
