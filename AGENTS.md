@@ -79,7 +79,7 @@ Current Full Firedancer Tile Flow (src/app/firedancer/topology.c)
     bam_ctrl: Shared admin-control object used by CLI/RPC and BAM for set/get BAM URL,
       enable/disable state, and success/error/current-status handoff.
     bam_fee_cfg: Shared fee configuration written by BAM from scheduler config and read by
-      pack to apply BAM priority-fee recipient and commission metadata.
+      pack to apply BAM block-builder pubkey and percentage commission metadata.
     bam_sign/sign_bam: Synchronous keyguard request/response pair. BAM asks the sign tile
       to sign auth challenges with `FD_KEYGUARD_ROLE_BAM`; sign_bam returns the signature.
 ```
