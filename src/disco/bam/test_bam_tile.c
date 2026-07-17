@@ -5617,6 +5617,35 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
 }
 
 static void
+test_bam_config_accepts_max_shred_receivers( void ) {
+  bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_bam_config = true;
+  resp.bam_config.shred_sock_count = FD_BAM_SHRED_SOCK_MAX;
+  for( ulong i=0UL; i<FD_BAM_SHRED_SOCK_MAX; i++ ) {
+    FD_TEST( fd_cstr_printf( resp.bam_config.shred_sock[ i ].ip,
+                            sizeof(resp.bam_config.shred_sock[ i ].ip),
+                            NULL,
+                            "192.0.2.%lu",
+                            i+1UL ) );
+    resp.bam_config.shred_sock[ i ].port = (uint32_t)( 5000UL+i );
+  }
+
+  uchar pb_buf[ bam_api_ConfigResponse_size ];
+  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+
+  bam_api_ConfigResponse decoded = bam_api_ConfigResponse_init_default;
+  pb_istream_t istream = pb_istream_from_buffer( pb_buf, ostream.bytes_written );
+  FD_TEST( pb_decode( &istream, bam_api_ConfigResponse_fields, &decoded ) );
+  FD_TEST( decoded.has_bam_config );
+  FD_TEST( decoded.bam_config.shred_sock_count==FD_BAM_SHRED_SOCK_MAX );
+  for( ulong i=0UL; i<FD_BAM_SHRED_SOCK_MAX; i++ ) {
+    FD_TEST( !strcmp( decoded.bam_config.shred_sock[ i ].ip, resp.bam_config.shred_sock[ i ].ip ) );
+    FD_TEST( decoded.bam_config.shred_sock[ i ].port==resp.bam_config.shred_sock[ i ].port );
+  }
+}
+
+static void
 test_bam_shred_update_publishes_receiver_list( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
@@ -6351,6 +6380,7 @@ main( int     argc,
   test_bam_gossip_resets_when_contact_missing( wksp );
   test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( wksp );
   test_bam_runtime_toggle_updates_gossip( wksp );
+  test_bam_config_accepts_max_shred_receivers();
   test_bam_shred_update_publishes_receiver_list( wksp );
   test_bam_shred_update_disconnect_uses_empty_without_clearing_receivers( wksp );
   test_bam_config_reuses_cached_contact_for_incomplete_refresh( wksp );
