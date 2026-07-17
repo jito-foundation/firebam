@@ -24,7 +24,10 @@
 FD_STATIC_ASSERT( FD_BAM_MAX_TXN_PER_ATOMIC_BATCH <= FD_PACK_MAX_TXN_PER_BUNDLE,
                   bam_atomic_batch_limit_fits_pack_bundle );
 
-#define FD_BAM_SHRED_SOCK_MAX          8UL
+#define FD_BAM_SHRED_SOCK_MAX          32UL
+
+FD_STATIC_ASSERT( FD_BAM_SHRED_SOCK_MAX==sizeof(((bam_types_BamConfig *)0)->shred_sock)/sizeof(bam_types_Socket),
+                  bam_shred_sock_limit_matches_protobuf );
 
 FD_STATIC_ASSERT( _bam_types_TransactionErrorReason_MAX <= UCHAR_MAX, bam_transaction_error_reason_fits_uchar );
 
