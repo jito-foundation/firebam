@@ -1,4 +1,5 @@
 #include "../../ballet/fd_ballet.h"
+#include "../../ballet/txn/fd_compact_u16.h"
 #include "../metrics/fd_metrics.h"
 
 #include <stddef.h>
@@ -27,6 +28,13 @@ FD_IMPORT_BINARY( test_pack_tile_non_vote,    "src/ballet/txn/fixtures/transacti
 #undef fd_pack_insert_txn_init
 #undef fd_pack_delete_transaction
 
+int fd_pack_insert_bundle_fini( fd_pack_t *, fd_txn_e_t * const *, ulong, ulong,
+                                int, void const *, ulong *, ulong * );
+
+#include "../bam/test_bam_common.c"
+
+__attribute__((weak)) char const fdctl_version_string[] = "0.0.0";
+
 static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
 
 static ulong             test_delete_call_cnt;
@@ -35,6 +43,7 @@ static ulong             test_bundle_cancel_call_cnt;
 static ulong             test_bundle_cancel_last_txn_cnt;
 static ulong             test_insert_fini_call_cnt;
 static int               test_insert_fini_result;
+static int               test_insert_fini_use_real_pack;
 static int               test_delete_before_insert_fini;
 static ulong             test_insert_txn_init_call_cnt;
 static ulong             test_insert_txn_fini_call_cnt;
@@ -44,6 +53,7 @@ static fd_txn_e_t        test_insert_txn_slot[1];
 #define TEST_PACK_TILE_DCACHE_CHUNKS 16UL
 #define TEST_PACK_TILE_MCACHE_DEPTH  16UL
 #define TEST_PACK_TILE_BAM_WORK_CAP   8UL
+#define TEST_D18_INSTR_ACCT_CNT       (FD_PACK_MAX_ACCOUNTS_PER_INSTRUCTION+1UL)
 
 ulong
 test_fd_pack_delete_transaction( fd_pack_t *                 pack,
@@ -103,6 +113,16 @@ test_fd_pack_insert_bundle_fini( fd_pack_t          * pack,
   (void)bundle_meta;
   test_insert_fini_call_cnt++;
   test_delete_before_insert_fini = !!test_delete_call_cnt;
+  if( FD_UNLIKELY( test_insert_fini_use_real_pack ) ) {
+    return fd_pack_insert_bundle_fini( pack,
+                                       bundle,
+                                       txn_cnt,
+                                       expires_at,
+                                       initializer_bundle,
+                                       bundle_meta,
+                                       delete_cnt,
+                                       reject_txn_idx );
+  }
   *delete_cnt = 0UL;
   if( reject_txn_idx ) *reject_txn_idx = ULONG_MAX;
   return test_insert_fini_result;
@@ -234,6 +254,7 @@ test_pack_tile_harness_new( test_pack_tile_harness_t * h ) {
   test_bundle_cancel_last_txn_cnt = 0UL;
   test_insert_fini_call_cnt       = 0UL;
   test_insert_fini_result         = FD_PACK_INSERT_ACCEPT_NONVOTE_ADD;
+  test_insert_fini_use_real_pack  = 0;
   test_delete_before_insert_fini  = 0;
   test_insert_txn_init_call_cnt   = 0UL;
   test_insert_txn_fini_call_cnt   = 0UL;
@@ -606,7 +627,7 @@ test_pack_tile_bam_override_after_frag_cancels_block_engine_bundle( void ) {
 
 static void
 test_pack_tile_complete_bam_bundle( test_pack_tile_harness_t * h,
-                                    fd_txn_e_t *               txns,
+                                    fd_txn_e_t * const *       txns,
                                     uchar                      txn_cnt,
                                     uint                       seq_id,
                                     ulong                      max_schedule_slot,
@@ -625,13 +646,115 @@ test_pack_tile_complete_bam_bundle( test_pack_tile_harness_t * h,
   h->ctx->current_bundle_bam->min_blockhash_slot_txn_idx = min_blockhash_slot_txn_idx;
 
   for( uchar i=0U; i<txn_cnt; i++ ) {
-    txns[ i ].txnp->bam.batch_idx = i;
-    txns[ i ].txnp->source_tpu    = FD_TXN_M_TPU_SOURCE_BAM;
-    h->ctx->current_bundle->_txn[ i ] = &txns[ i ];
+    txns[ i ]->txnp->bam.batch_idx = i;
+    txns[ i ]->txnp->source_tpu    = FD_TXN_M_TPU_SOURCE_BAM;
+    h->ctx->current_bundle->_txn[ i ] = txns[ i ];
   }
-  h->ctx->cur_spot = &txns[ txn_cnt-1U ];
+  h->ctx->cur_spot = txns[ txn_cnt-1U ];
 
   after_frag( h->ctx, 0UL, 0UL, min_blockhash_slot, 0UL, 0UL, 0UL, &h->out->stem );
+}
+
+static void
+test_pack_tile_d18_sign_and_parse( fd_txn_p_t * txnp,
+                                   uchar *      payload_end,
+                                   uchar const  public_key[ 32 ],
+                                   uchar const  private_key[ 32 ],
+                                   fd_sha512_t * sha,
+                                   ulong         expected_payload_sz ) {
+  uchar * message    = txnp->payload + 1UL + FD_TXN_SIGNATURE_SZ;
+  ulong   message_sz = (ulong)( payload_end-message );
+  fd_ed25519_sign( txnp->payload+1UL, message, message_sz, public_key, private_key, sha );
+  FD_TEST( fd_ed25519_verify( message, message_sz, txnp->payload+1UL, public_key, sha )==FD_ED25519_SUCCESS );
+
+  txnp->payload_sz = (ulong)( payload_end-txnp->payload );
+  FD_TEST( txnp->payload_sz==expected_payload_sz );
+  FD_TEST( fd_txn_parse( txnp->payload, txnp->payload_sz, TXN( txnp ), NULL ) );
+}
+
+/* C port of D18_LIVE_VALIDATOR_POC.diff's build_d18_over_limit_packet
+   and valid control Transaction::new_signed_with_payer. */
+static void
+test_pack_tile_make_d18_poc_txns( fd_txn_p_t * bad_txnp,
+                                  fd_txn_p_t * control_txnp ) {
+  uchar private_key[ 32 ] = {1U};
+  uchar public_key [ 32 ];
+  uchar blockhash  [ FD_TXN_BLOCKHASH_SZ ] = {2U};
+
+  fd_sha512_t sha[1];
+  FD_TEST( fd_sha512_join( fd_sha512_new( sha ) ) );
+  fd_ed25519_public_from_private( public_key, private_key, sha );
+
+  uchar const system_transfer_one_lamport[ 12 ] = {
+    2U, 0U, 0U, 0U, /* SystemInstruction::Transfer */
+    1U, 0U, 0U, 0U, 0U, 0U, 0U, 0U,
+  };
+  uchar const set_compute_unit_limit[ 5 ] = { 2U, 0x40U, 0x42U, 0x0fU, 0U }; /* 1,000,000 CUs */
+
+  fd_memset( bad_txnp, 0, sizeof(*bad_txnp) );
+  uchar * p = bad_txnp->payload;
+  *p++ = 1U; /* signature count */
+  p += FD_TXN_SIGNATURE_SZ;
+  *p++ = 1U; /* num_required_signatures */
+  *p++ = 0U; /* num_readonly_signed_accounts */
+  *p++ = 1U; /* num_readonly_unsigned_accounts: system program */
+  p += fd_cu16_enc( 2U, p );
+  fd_memcpy( p, public_key, FD_TXN_ACCT_ADDR_SZ );
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memset( p, 0, FD_TXN_ACCT_ADDR_SZ ); /* System Program ID */
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memcpy( p, blockhash, sizeof(blockhash) );
+  p += sizeof(blockhash);
+  p += fd_cu16_enc( 1U, p ); /* instruction count */
+  *p++ = 1U; /* program_id_index: system program */
+  p += fd_cu16_enc( (ushort)TEST_D18_INSTR_ACCT_CNT, p );
+  fd_memset( p, 0, TEST_D18_INSTR_ACCT_CNT );
+  p += TEST_D18_INSTR_ACCT_CNT;
+  p += fd_cu16_enc( (ushort)sizeof(system_transfer_one_lamport), p );
+  fd_memcpy( p, system_transfer_one_lamport, sizeof(system_transfer_one_lamport) );
+  p += sizeof(system_transfer_one_lamport);
+  test_pack_tile_d18_sign_and_parse( bad_txnp, p, public_key, private_key, sha, 438UL );
+
+  fd_txn_t const * bad_txn = TXN( bad_txnp );
+  FD_TEST( bad_txn->signature_cnt==1U && bad_txn->acct_addr_cnt==2U && bad_txn->instr_cnt==1U );
+  FD_TEST( bad_txn->instr[ 0 ].program_id==1U && bad_txn->instr[ 0 ].acct_cnt==TEST_D18_INSTR_ACCT_CNT &&
+           bad_txn->instr[ 0 ].data_sz==sizeof(system_transfer_one_lamport) );
+
+  fd_memset( control_txnp, 0, sizeof(*control_txnp) );
+  p = control_txnp->payload;
+  *p++ = 1U; /* signature count */
+  p += FD_TXN_SIGNATURE_SZ;
+  *p++ = 1U; /* num_required_signatures */
+  *p++ = 0U; /* num_readonly_signed_accounts */
+  *p++ = 2U; /* num_readonly_unsigned_accounts: system and compute budget */
+  p += fd_cu16_enc( 3U, p );
+  fd_memcpy( p, public_key, FD_TXN_ACCT_ADDR_SZ );
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memset( p, 0, FD_TXN_ACCT_ADDR_SZ ); /* System Program ID sorts first */
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memcpy( p, FD_COMPUTE_BUDGET_PROGRAM_ID, FD_TXN_ACCT_ADDR_SZ );
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memcpy( p, blockhash, sizeof(blockhash) );
+  p += sizeof(blockhash);
+  p += fd_cu16_enc( 2U, p ); /* instruction count */
+  *p++ = 2U; /* Compute Budget Program */
+  p += fd_cu16_enc( 0U, p );
+  p += fd_cu16_enc( (ushort)sizeof(set_compute_unit_limit), p );
+  fd_memcpy( p, set_compute_unit_limit, sizeof(set_compute_unit_limit) );
+  p += sizeof(set_compute_unit_limit);
+  *p++ = 1U; /* System Program */
+  p += fd_cu16_enc( 2U, p );
+  *p++ = 0U; /* fee payer / transfer source */
+  *p++ = 0U; /* fee payer / transfer destination */
+  p += fd_cu16_enc( (ushort)sizeof(system_transfer_one_lamport), p );
+  fd_memcpy( p, system_transfer_one_lamport, sizeof(system_transfer_one_lamport) );
+  p += sizeof(system_transfer_one_lamport);
+  test_pack_tile_d18_sign_and_parse( control_txnp, p, public_key, private_key, sha, 223UL );
+
+  fd_txn_t const * control_txn = TXN( control_txnp );
+  FD_TEST( control_txn->signature_cnt==1U && control_txn->acct_addr_cnt==3U && control_txn->instr_cnt==2U );
+  FD_TEST( control_txn->instr[ 0 ].program_id==2U && control_txn->instr[ 0 ].acct_cnt==0U &&
+           control_txn->instr[ 0 ].data_sz==sizeof(set_compute_unit_limit) );
 }
 
 static void
@@ -695,7 +818,8 @@ test_pack_tile_bam_expired_blockhash_reports_member_idx( void ) {
       max_schedule_slot   = h->ctx->leader_slot + 1UL;
     }
 
-    test_pack_tile_complete_bam_bundle( h, txns, 2U, (uint)( 56UL+stage ), max_schedule_slot, min_blockhash_slot, 1U );
+    test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[2]){ txns, txns+1 }, 2U,
+                                        (uint)( 56UL+stage ), max_schedule_slot, min_blockhash_slot, 1U );
 
     if( FD_UNLIKELY( stage==2UL ) ) {
       pack_tile_evict_invalid_pending_bam_work( h->ctx, max_schedule_slot );
@@ -765,7 +889,7 @@ test_pack_tile_bam_same_seq_pending_duplicate_replaces_before_insert( void ) {
   FD_TEST( h->ctx->bam_pending_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_ENTERED_IDX ] == 1UL );
 
-  test_pack_tile_complete_bam_bundle( h, new_txn, 1U, 10U, 100UL, 100UL, 0U );
+  test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[1]){ new_txn }, 1U, 10U, 100UL, 100UL, 0U );
 
   test_pack_tile_assert_deleted_sig( new_txn[ 0 ].txnp->payload + 1UL );
   FD_TEST( test_insert_fini_call_cnt == 1UL );
@@ -808,7 +932,7 @@ test_pack_tile_bam_same_seq_different_slot_pending_duplicate_rejected_before_ins
   FD_TEST( h->ctx->bam_pending_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_ENTERED_IDX ] == 1UL );
 
-  test_pack_tile_complete_bam_bundle( h, new_txn, 1U, 10U, 101UL, 101UL, 0U );
+  test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[1]){ new_txn }, 1U, 10U, 101UL, 101UL, 0U );
 
   FD_TEST( test_delete_call_cnt == 0UL );
   FD_TEST( test_insert_fini_call_cnt == 0UL );
@@ -858,7 +982,7 @@ test_pack_tile_bam_different_seq_pending_duplicate_rejected_before_insert( void 
   FD_TEST( h->ctx->bam_pending_work_cnt == 1UL );
   FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_ENTERED_IDX ] == 1UL );
 
-  test_pack_tile_complete_bam_bundle( h, new_txn, 1U, 11U, 101UL, 101UL, 0U );
+  test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[1]){ new_txn }, 1U, 11U, 101UL, 101UL, 0U );
 
   FD_TEST( test_delete_call_cnt == 0UL );
   FD_TEST( test_insert_fini_call_cnt == 0UL );
@@ -908,7 +1032,8 @@ test_pack_tile_bam_scheduled_duplicate_rejected_before_insert( void ) {
   test_pack_tile_fill_sig( new_txns[ 1 ].txnp->payload + 1UL, 51U );
   new_txns[ 0 ].txnp->scheduler_arrival_time_nanos = 20L;
   new_txns[ 1 ].txnp->scheduler_arrival_time_nanos = 21L;
-  test_pack_tile_complete_bam_bundle( h, new_txns, 2U, 21U, 101UL, 101UL, 0U );
+  test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[2]){ new_txns, new_txns+1 },
+                                      2U, 21U, 101UL, 101UL, 0U );
 
   FD_TEST( test_delete_call_cnt == 0UL );
   FD_TEST( test_insert_fini_call_cnt == 0UL );
@@ -1062,6 +1187,91 @@ test_pack_tile_bam_scheduled_work_does_not_consume_result_headroom( void ) {
   FD_TEST( h->ctx->bam_scheduled_work_cnt == 4UL );
 
   test_pack_tile_harness_delete( h );
+}
+
+static void
+test_pack_tile_bam_instr_acct_reject_serializes_exact_member( void ) {
+  fd_pack_limits_t limits = {
+    .max_cost_per_block           = FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND,
+    .max_vote_cost_per_block      = FD_PACK_MAX_VOTE_COST_PER_BLOCK_LOWER_BOUND,
+    .max_write_cost_per_acct      = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND,
+    .max_data_bytes_per_block     = FD_PACK_MAX_DATA_PER_BLOCK,
+    .max_txn_per_microblock       = FD_PACK_MAX_TXN_PER_BUNDLE,
+    .max_microblocks_per_block    = 1UL,
+    .max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK,
+  };
+
+  fd_rng_t pack_rng[1];
+  FD_TEST( fd_rng_join( fd_rng_new( pack_rng, 0U, 0UL ) ) );
+
+  void * pack_mem = aligned_alloc( fd_pack_align(),
+                                   fd_ulong_align_up( fd_pack_footprint( FD_PACK_MAX_TXN_PER_BUNDLE, 1UL, 1UL, &limits ),
+                                                      fd_pack_align() ) );
+  FD_TEST( pack_mem );
+  fd_pack_t * pack = fd_pack_join( fd_pack_new( pack_mem, FD_PACK_MAX_TXN_PER_BUNDLE, 1UL, 1UL, &limits, NULL, 0UL, pack_rng ) );
+  FD_TEST( pack );
+
+  fd_txn_e_t * bundle[ 2 ];
+  FD_TEST( fd_pack_insert_bundle_init( pack, bundle, 2UL )==bundle );
+  test_pack_tile_make_d18_poc_txns( bundle[ 0 ]->txnp, bundle[ 1 ]->txnp );
+
+  test_pack_tile_harness_t h[1];
+  test_pack_tile_harness_new( h );
+  h->ctx->pack                   = pack;
+  test_insert_fini_use_real_pack = 1;
+
+  test_pack_tile_complete_bam_bundle( h, bundle, 2U, 0U, 0UL, 0UL, 0U );
+
+  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+  fd_bam_bundle_result_t pack_result = *test_pack_tile_last_result( h );
+  FD_TEST( pack_result.bundle_err   == FD_BAM_BUNDLE_ERR_DESER );
+  FD_TEST( pack_result.deser_index  == 0U );
+  FD_TEST( pack_result.deser_reason == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
+  test_pack_tile_harness_delete( h );
+
+  FD_TEST( fd_pack_delete( fd_pack_leave( pack ) )==pack_mem );
+  free( pack_mem );
+  FD_TEST( fd_rng_delete( fd_rng_leave( pack_rng ) )==pack_rng );
+
+  ulong wksp_footprint = 16UL<<20;
+  void * wksp_mem = aligned_alloc( FD_SHMEM_NORMAL_PAGE_SZ, wksp_footprint );
+  FD_TEST( wksp_mem );
+  ulong part_max = fd_wksp_part_max_est( wksp_footprint, 64UL<<10 );
+  fd_wksp_t * wksp = fd_wksp_join( fd_wksp_new( wksp_mem, "bam-wire-test", 1U, part_max,
+                                                fd_wksp_data_max_est( wksp_footprint, part_max ) ) );
+  FD_TEST( wksp );
+  FD_TEST( !fd_shmem_join_anonymous( "bam-wire-test",
+                                     FD_SHMEM_JOIN_MODE_READ_WRITE,
+                                     wksp,
+                                     wksp_mem,
+                                     FD_SHMEM_NORMAL_PAGE_SZ,
+                                     wksp_footprint>>FD_SHMEM_NORMAL_LG_PAGE_SZ ) );
+
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  test_bam_prepare_scheduler_stream( env->state );
+  test_bam_keepalive_sync( env->state, fd_bam_now() );
+  test_enqueue_bundle_result( env->state, &pack_result );
+
+  FD_TEST( fd_bam_test_flush_results( env->state )==1 );
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( env->state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==
+           bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  bam_types_AtomicTxnBatchResult const * wire_result = &decoded.multi.results[ 0 ];
+  FD_TEST( wire_result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( wire_result->result.not_committed.which_reason==
+           bam_types_NotCommitted_deserialization_error_tag );
+  FD_TEST( wire_result->result.not_committed.reason.deserialization_error.index==0U );
+  FD_TEST( wire_result->result.not_committed.reason.deserialization_error.reason==
+           bam_types_DeserializationErrorReason_SANITIZE_ERROR );
+
+  test_bam_env_destroy( env );
+  FD_TEST( !fd_shmem_leave_anonymous( wksp_mem, NULL ) );
+  FD_TEST( fd_wksp_delete( fd_wksp_leave( wksp ) )==wksp_mem );
+  free( wksp_mem );
 }
 
 static void
@@ -1225,6 +1435,7 @@ main( int     argc,
   test_pack_tile_bam_queued_results_preserve_fifo_before_direct_publish();
   test_pack_tile_bam_pending_results_reserve_direct_result_headroom();
   test_pack_tile_bam_scheduled_work_does_not_consume_result_headroom();
+  test_pack_tile_bam_instr_acct_reject_serializes_exact_member();
   test_pack_tile_bam_result_mapping_insert_reject();
   test_pack_tile_bam_result_mapping_tracking_reject();
   test_pack_tile_bam_atomic_abandon_reports_missing_deser();
