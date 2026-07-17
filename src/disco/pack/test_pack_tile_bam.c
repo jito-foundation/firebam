@@ -1087,7 +1087,7 @@ test_pack_tile_bam_result_mapping_insert_reject( void ) {
   FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
   fd_bam_bundle_result_t const * nonce = test_pack_tile_assert_last_result( h, 79U, 125UL, 2U, FD_BAM_SCHED_ERR_NONE, 2U );
   FD_TEST( nonce->transaction_err[ 0 ] == bam_types_TransactionErrorReason_COMMIT_CANCELLED );
-  FD_TEST( nonce->transaction_err[ 1 ] == bam_types_TransactionErrorReason_SIGNATURE_FAILURE );
+  FD_TEST( nonce->transaction_err[ 1 ] == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
 
   h->ctx->bam_result_publish_cnt = 0UL;
   pack_tile_publish_bam_insert_reject( h->ctx, 81U, 0U, 127UL, 2U, 1UL, FD_PACK_INSERT_REJECT_INSTR_ACCT_CNT );
