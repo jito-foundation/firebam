@@ -260,12 +260,12 @@ struct fd_bam_tile {
   uchar builder_pubkey[ 32 ];                     /* Builder identity fetched from BAM */
   uchar builder_commission;                       /* commission as a percentage (0-100) */
   long  builder_info_valid_until;                 /* Expiry timestamp for builder info */
-  uchar prio_fee_recipient[ 32 ];                 /* Recipient pubkey of the priority fee commission */
-  ushort commission_bps;                          /* commission basis points */
-  uchar prio_fee_recipient_set;                   /* Flag indicating prio_fee_recipient populated */
 
   /* ConfigResponse BamConfig values */
-  fd_bam_fee_cfg_t * fee_cfg;          /* Shared fee configuration exported to peers */
+  uchar prio_fee_recipient[ 32 ];                 /* Recipient pubkey of the priority fee commission */
+  uchar prio_fee_recipient_set;                   /* Flag indicating prio_fee_recipient populated */
+
+  fd_bam_fee_cfg_t * fee_cfg;          /* Shared block builder configuration exported to pack */
   uint               fee_cfg_version;  /* Last version published to fee_cfg */
   fd_ip4_port_t bam_tpu;               /* Latest TPU socket advertised by BAM */
   fd_ip4_port_t bam_tpu_fwd;           /* Latest TPU Forward socket advertised by BAM */

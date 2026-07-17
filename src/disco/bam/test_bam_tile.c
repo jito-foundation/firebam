@@ -7,7 +7,6 @@
 #include "../../ballet/nanopb/pb_decode.h"
 #include "../../discof/gossip/fd_gossip_tile.h"
 #include "../../discof/replay/fd_replay_tile.h"
-#include "../bundle/fd_bundle_crank.h"
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
@@ -33,40 +32,6 @@ extern void
 fd_bam_test_before_credit( fd_bam_tile_t *    ctx,
                            fd_stem_context_t * stem,
                            int *               charge_busy );
-
-/* Applies a BAM fee configuration to the pack crank state. Updates
-   tip-receiver destinations stored in |crank3| and |crank2| and writes
-   a clamped copy of commission_bps into |crank3| when a new version is
-   observed. |cfg_version| is updated to the applied version and is
-   used to detect duplicates. If |crank_enabled| is zero, the call is a
-   no-op. */
-static inline void
-fd_pack_apply_bam_fee_cfg_impl( fd_bam_fee_cfg_t *      cfg,
-                                ulong *                 cfg_version,
-                                int                     crank_enabled,
-                                fd_bundle_crank_3_t *   crank3,
-                                fd_bundle_crank_2_t *   crank2 ) {
-  if( FD_UNLIKELY( !cfg ) ) return;
-  if( FD_UNLIKELY( !crank_enabled ) ) return;
-
-  ulong version = FD_VOLATILE_CONST( cfg->version );
-  if( FD_UNLIKELY( !version || version==*cfg_version ) ) return;
-
-  *cfg_version = version;
-
-  if( FD_LIKELY( cfg->has_prio_fee_recipient ) ) {
-    fd_memcpy( crank3->new_tip_receiver,
-               cfg->prio_fee_recipient,
-               sizeof( cfg->prio_fee_recipient ) );
-    fd_memcpy( crank2->new_tip_receiver,
-               cfg->prio_fee_recipient,
-               sizeof( cfg->prio_fee_recipient ) );
-  }
-
-  crank3->init_tip_distribution_acct.commission_bps =
-      (ushort)fd_uint_min( cfg->commission_bps, 10000U );
-}
-
 
 __attribute__((weak)) char const fdctl_version_string[] = "0.0.0";
 __attribute__((weak)) ulong const firedancer_major_version = 0UL;
@@ -5959,7 +5924,6 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_tpu_fwd.addr == expected_tpu_fwd_addr );
   FD_TEST( fd_ushort_bswap( state->bam_tpu_fwd.port ) == 10001U );
   FD_TEST( state->prio_fee_recipient_set == 1U );
-  FD_TEST( state->commission_bps == 2750 );
   FD_TEST( 0 == memcmp( state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
 
   ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
@@ -6007,30 +5971,24 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_impl_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
-  /* Implementation-specific regression: BAM currently mirrors fee fields into
-     shared memory that the pack/crank path consumes. */
+test_bam_builder_fee_cfg_uses_block_engine_config( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * bam_state = env->state;
-
-  FD_TEST( bam_state->fee_cfg != NULL );
   fd_bam_fee_cfg_t * shared_cfg = bam_state->fee_cfg;
-  fd_memset( shared_cfg, 0, sizeof(fd_bam_fee_cfg_t) );
 
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
+  resp.has_block_engine_config = true;
+  uchar builder_pubkey[ 32 ] = {1U, 2U, 3U, 4U, 5U};
+  FD_TEST( fd_base58_encode_32( builder_pubkey, NULL, resp.block_engine_config.builder_pubkey ) );
+  resp.block_engine_config.builder_pubkey[ FD_BASE58_ENCODED_32_SZ-1 ] = '\0';
+  resp.block_engine_config.builder_commission = 10U;
+
   resp.has_bam_config = true;
-  resp.bam_config.has_tpu_sock = true;
-  fd_cstr_ncpy( resp.bam_config.tpu_sock.ip, "1.1.1.1", sizeof( resp.bam_config.tpu_sock.ip ) );
-  resp.bam_config.tpu_sock.port = 8000U;
-  resp.bam_config.has_tpu_fwd_sock = true;
-  fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "2.2.2.2", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
-  resp.bam_config.tpu_fwd_sock.port = 9000U;
-  uchar prio_fee_raw[ 32 ];
-  char const * prio_fee_b58 = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
-  FD_TEST( fd_base58_decode_32( prio_fee_b58, prio_fee_raw ) );
-  fd_cstr_ncpy( resp.bam_config.prio_fee_recipient_pubkey, prio_fee_b58, sizeof( resp.bam_config.prio_fee_recipient_pubkey ) );
-  resp.bam_config.commission_bps = 3500U;
+  fd_cstr_ncpy( resp.bam_config.prio_fee_recipient_pubkey,
+                "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
+                sizeof( resp.bam_config.prio_fee_recipient_pubkey ) );
+  resp.bam_config.commission_bps = 300U;
 
   uchar pb_buf[ 256 ];
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
@@ -6041,79 +5999,13 @@ test_bam_impl_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
   FD_TEST( shared_cfg->version == 1UL );
-  FD_TEST( shared_cfg->has_prio_fee_recipient == 1U );
-  FD_TEST( shared_cfg->commission_bps == 3500U );
-  FD_TEST( 0 == memcmp( shared_cfg->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
+  FD_TEST( shared_cfg->builder_commission == 10U );
+  FD_TEST( 0 == memcmp( shared_cfg->builder_pubkey, builder_pubkey, sizeof( builder_pubkey ) ) );
 
-  /* An empty recipient is not a valid pubkey.  Preserve the last valid
-     recipient and do not publish a new fee config. */
-  fd_memset( resp.bam_config.prio_fee_recipient_pubkey,
-             0,
-             sizeof( resp.bam_config.prio_fee_recipient_pubkey ) );
-  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
-  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
-  fd_bam_client_grpc_rx_msg( bam_state,
-                             pb_buf,
-                             ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
-
-  FD_TEST( bam_state->prio_fee_recipient_set == 1U );
-  FD_TEST( 0 == memcmp( bam_state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
-  FD_TEST( shared_cfg->version == 1UL );
-  FD_TEST( shared_cfg->has_prio_fee_recipient == 1U );
-  FD_TEST( shared_cfg->commission_bps == 3500U );
-  FD_TEST( 0 == memcmp( shared_cfg->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
-
-  fd_bundle_crank_gen_t crank_gen_mem[1];
-  fd_memset( crank_gen_mem, 0, sizeof( crank_gen_mem ) );
-  fd_bundle_crank_gen_t * crank_gen = crank_gen_mem;
-  ulong pack_cfg_version = 0UL;
-  int crank_enabled = 1;
-
-  fd_memset( crank_gen->crank3->new_tip_receiver, 0xAA, sizeof( crank_gen->crank3->new_tip_receiver ) );
-  fd_memset( crank_gen->crank2->new_tip_receiver, 0xBB, sizeof( crank_gen->crank2->new_tip_receiver ) );
-  crank_gen->crank3->init_tip_distribution_acct.commission_bps = (ushort)777U;
-
-  /* New BAM fee config should propagate into both cranks and bump version. */
-  fd_pack_apply_bam_fee_cfg_impl( shared_cfg,
-                                  &pack_cfg_version,
-                                  crank_enabled,
-                                  crank_gen->crank3,
-                                  crank_gen->crank2 );
-
-  FD_TEST( pack_cfg_version == shared_cfg->version );
-  FD_TEST( crank_gen->crank3->init_tip_distribution_acct.commission_bps == 3500U );
-  FD_TEST( 0 == memcmp( crank_gen->crank3->new_tip_receiver, prio_fee_raw, sizeof( prio_fee_raw ) ) );
-  FD_TEST( 0 == memcmp( crank_gen->crank2->new_tip_receiver, prio_fee_raw, sizeof( prio_fee_raw ) ) );
-
-  uchar sentinel3[32];
-  uchar sentinel2[32];
-  fd_memset( sentinel3, 0xCC, sizeof( sentinel3 ) );
-  fd_memset( sentinel2, 0xDD, sizeof( sentinel2 ) );
-  fd_memcpy( crank_gen->crank3->new_tip_receiver, sentinel3, sizeof( sentinel3 ) );
-  fd_memcpy( crank_gen->crank2->new_tip_receiver, sentinel2, sizeof( sentinel2 ) );
-  crank_gen->crank3->init_tip_distribution_acct.commission_bps = (ushort)1234U;
-
-  /* Without a version bump pack tile should ignore the shared config. */
-  shared_cfg->commission_bps = 9000U;
-  fd_pack_apply_bam_fee_cfg_impl( shared_cfg,
-                                  &pack_cfg_version,
-                                  crank_enabled,
-                                  crank_gen->crank3,
-                                  crank_gen->crank2 );
-  FD_TEST( pack_cfg_version == 1UL );
-  FD_TEST( crank_gen->crank3->init_tip_distribution_acct.commission_bps == 1234U );
-  FD_TEST( 0 == memcmp( crank_gen->crank3->new_tip_receiver, sentinel3, sizeof( sentinel3 ) ) );
-  FD_TEST( 0 == memcmp( crank_gen->crank2->new_tip_receiver, sentinel2, sizeof( sentinel2 ) ) );
-
-  /* Second config update bumps version and replaces fee settings everywhere. */
+  /* A later BamConfig commission still cannot change builder metadata. */
   bam_api_ConfigResponse resp_update = bam_api_ConfigResponse_init_default;
   resp_update.has_bam_config = true;
   resp_update.bam_config.commission_bps = 15000U;
-  uchar prio_fee_raw2[ 32 ];
-  char const * prio_fee_b58_2 = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
-  FD_TEST( fd_base58_decode_32( prio_fee_b58_2, prio_fee_raw2 ) );
-  fd_cstr_ncpy( resp_update.bam_config.prio_fee_recipient_pubkey, prio_fee_b58_2, sizeof( resp_update.bam_config.prio_fee_recipient_pubkey ) );
   ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp_update ) );
   fd_bam_client_grpc_rx_msg( bam_state,
@@ -6121,21 +6013,9 @@ test_bam_impl_fee_cfg_propagates_to_pack( fd_wksp_t * wksp ) {
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
-  FD_TEST( shared_cfg->version == 2UL );
-  FD_TEST( shared_cfg->commission_bps == 10000U );
-  FD_TEST( shared_cfg->has_prio_fee_recipient == 1U );
-  FD_TEST( 0 == memcmp( shared_cfg->prio_fee_recipient, prio_fee_raw2, sizeof( prio_fee_raw2 ) ) );
-
-  fd_pack_apply_bam_fee_cfg_impl( shared_cfg,
-                                  &pack_cfg_version,
-                                  crank_enabled,
-                                  crank_gen->crank3,
-                                  crank_gen->crank2 );
-
-  FD_TEST( pack_cfg_version == shared_cfg->version );
-  FD_TEST( crank_gen->crank3->init_tip_distribution_acct.commission_bps == 10000U );
-  FD_TEST( 0 == memcmp( crank_gen->crank3->new_tip_receiver, prio_fee_raw2, sizeof( prio_fee_raw2 ) ) );
-  FD_TEST( 0 == memcmp( crank_gen->crank2->new_tip_receiver, prio_fee_raw2, sizeof( prio_fee_raw2 ) ) );
+  FD_TEST( shared_cfg->version == 1UL );
+  FD_TEST( shared_cfg->builder_commission == 10U );
+  FD_TEST( 0 == memcmp( shared_cfg->builder_pubkey, builder_pubkey, sizeof( builder_pubkey ) ) );
 
   test_bam_env_destroy( env );
 }
@@ -6145,31 +6025,39 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
+  fd_bam_fee_cfg_t * shared_cfg = state->fee_cfg;
 
   uchar pb_buf[ 256 ];
+
+  /* A valid commission without an initial valid pubkey is not a complete
+     builder snapshot. */
+  bam_api_ConfigResponse initial_bad_pubkey_resp = bam_api_ConfigResponse_init_default;
+  initial_bad_pubkey_resp.has_block_engine_config = true;
+  fd_memset( initial_bad_pubkey_resp.block_engine_config.builder_pubkey, '1', FD_BASE58_ENCODED_32_LEN );
+  initial_bad_pubkey_resp.block_engine_config.builder_pubkey[ FD_BASE58_ENCODED_32_LEN ] = '\0';
+  initial_bad_pubkey_resp.block_engine_config.builder_commission = 4U;
+  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &initial_bad_pubkey_resp ) );
+  fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+  FD_TEST( shared_cfg->version == 0U );
+
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_block_engine_config = true;
   uchar pubkey[32] = {1,2,3,4,5};
   FD_TEST( fd_base58_encode_32( pubkey, NULL, resp.block_engine_config.builder_pubkey ) );
   resp.block_engine_config.builder_pubkey[ FD_BASE58_ENCODED_32_SZ-1 ] = '\0';
   resp.block_engine_config.builder_commission = 5U;
-  pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
-  if( FD_UNLIKELY( !pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) ) ) {
-    FD_LOG_ERR(( "pb_encode fee info failed: %s", PB_GET_ERROR( &ostream ) ));
-  }
+  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
 
   FD_TEST( state->builder_info_valid_until == 0L );
   fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
   FD_TEST( state->builder_info_valid_until != 0L );
-  FD_TEST( state->builder_commission == 5U );
-  uchar decoded[32];
-  FD_TEST( fd_base58_decode_32( resp.block_engine_config.builder_pubkey, decoded ) );
-  FD_TEST( 0 == memcmp( state->builder_pubkey, decoded, 32UL ) );
+  FD_TEST( shared_cfg->version == 1U );
+  FD_TEST( shared_cfg->builder_commission == 5U );
+  FD_TEST( 0 == memcmp( shared_cfg->builder_pubkey, pubkey, sizeof( pubkey ) ) );
 
   /* Commission and pubkey validation follow jito-solana partial-update semantics. */
-  uchar prev_builder_pubkey[ 32 ];
-  fd_memcpy( prev_builder_pubkey, state->builder_pubkey, sizeof(prev_builder_pubkey) );
-  uchar prev_builder_commission = state->builder_commission;
   long prev_builder_valid_until = state->builder_info_valid_until;
 
   bam_api_ConfigResponse bad_pubkey_resp = bam_api_ConfigResponse_init_default;
@@ -6179,15 +6067,13 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   bad_pubkey_resp.block_engine_config.builder_commission = 7U;
 
   ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
-  if( FD_UNLIKELY( !pb_encode( &ostream, bam_api_ConfigResponse_fields, &bad_pubkey_resp ) ) ) {
-    FD_LOG_ERR(( "pb_encode bad fee info failed: %s", PB_GET_ERROR( &ostream ) ));
-  }
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &bad_pubkey_resp ) );
   fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
-  FD_TEST( 0 == memcmp( state->builder_pubkey, prev_builder_pubkey, sizeof(prev_builder_pubkey) ) );
-  FD_TEST( state->builder_commission == 7U );
   FD_TEST( state->builder_info_valid_until == prev_builder_valid_until );
-  prev_builder_commission = state->builder_commission;
+  FD_TEST( shared_cfg->version == 2U );
+  FD_TEST( shared_cfg->builder_commission == 7U );
+  FD_TEST( 0 == memcmp( shared_cfg->builder_pubkey, pubkey, sizeof( pubkey ) ) );
 
   bam_api_ConfigResponse bad_commission_resp = bam_api_ConfigResponse_init_default;
   bad_commission_resp.has_block_engine_config = true;
@@ -6197,14 +6083,26 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   bad_commission_resp.block_engine_config.builder_commission = 101U;
 
   ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
-  if( FD_UNLIKELY( !pb_encode( &ostream, bam_api_ConfigResponse_fields, &bad_commission_resp ) ) ) {
-    FD_LOG_ERR(( "pb_encode bad commission fee info failed: %s", PB_GET_ERROR( &ostream ) ));
-  }
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &bad_commission_resp ) );
   fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
-  FD_TEST( 0 == memcmp( state->builder_pubkey, prev_builder_pubkey, sizeof(prev_builder_pubkey) ) );
-  FD_TEST( state->builder_commission == prev_builder_commission );
-  FD_TEST( state->builder_info_valid_until == prev_builder_valid_until );
+  FD_TEST( shared_cfg->version == 2U );
+  FD_TEST( state->builder_commission == 7U );
+  FD_TEST( 0 == memcmp( state->builder_pubkey, pubkey, sizeof( pubkey ) ) );
+
+  /* A subsequent complete valid update replaces both exported values. */
+  bam_api_ConfigResponse replacement_resp = bam_api_ConfigResponse_init_default;
+  replacement_resp.has_block_engine_config = true;
+  uchar replacement_pubkey[ 32 ] = {9U, 8U, 7U, 6U, 5U};
+  FD_TEST( fd_base58_encode_32( replacement_pubkey, NULL, replacement_resp.block_engine_config.builder_pubkey ) );
+  replacement_resp.block_engine_config.builder_pubkey[ FD_BASE58_ENCODED_32_SZ-1 ] = '\0';
+  replacement_resp.block_engine_config.builder_commission = 9U;
+  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &replacement_resp ) );
+  fd_bam_client_grpc_rx_msg( state, pb_buf, ostream.bytes_written, FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+  FD_TEST( shared_cfg->version == 3U );
+  FD_TEST( shared_cfg->builder_commission == 9U );
+  FD_TEST( 0 == memcmp( shared_cfg->builder_pubkey, replacement_pubkey, sizeof(replacement_pubkey) ) );
 
   test_bam_env_destroy( env );
 }
@@ -6388,7 +6286,7 @@ main( int     argc,
 
   /* Config and fees */
   test_bam_config_updates_contact_info( wksp );
-  test_bam_impl_fee_cfg_propagates_to_pack( wksp );
+  test_bam_builder_fee_cfg_uses_block_engine_config( wksp );
   test_bam_builder_fee_info( wksp );
 
   /* Bundle result durability */

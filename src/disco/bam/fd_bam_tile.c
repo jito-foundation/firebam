@@ -1494,7 +1494,6 @@ privileged_init( fd_topo_t const *      topo,
   }
   ctx->configured_default_tpu = tile->bam.configured_default_tpu;
   ctx->fee_cfg_version = 0U;
-  ctx->commission_bps = 0U;
   ctx->prio_fee_recipient_set   = 0U;
   fd_memset( ctx->prio_fee_recipient, 0, sizeof( ctx->prio_fee_recipient ) );
 

@@ -221,7 +221,10 @@ test_crank_cnt( void ) {
   uchar _txn[ FD_TXN_MAX_SZ ];
   fd_txn_t * txn = (fd_txn_t *)_txn;
 
+  fd_acct_addr_t no_builder[1] = {{{ 0 }}};
   fd_acct_addr_t uncreated[1] = {{{ 0 }}};
+  FD_TEST( 0UL!=fd_bundle_crank_generate( g, tip_payment_config, no_builder,
+      _GwHH8ciFhR8vejWCqmg8FWZUCNtubPY2esALvy5tBvji, uncreated, 740UL, 5UL, payload, txn ) );
   FD_TEST( sizeof(fd_bundle_crank_3_t)==fd_bundle_crank_generate( g, tip_payment_config, _feeywn2ffX8DivmRvBJ9i9YZnss7WBouTmujfQcEdeY,
       _GwHH8ciFhR8vejWCqmg8FWZUCNtubPY2esALvy5tBvji, uncreated, 740UL, 5UL, payload, txn ) );
   FD_TEST( 0UL==fd_bundle_crank_generate( g, tip_payment_config, _feeywn2ffX8DivmRvBJ9i9YZnss7WBouTmujfQcEdeY,

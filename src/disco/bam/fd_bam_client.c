@@ -428,7 +428,8 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
 
 /* Decodes bam_api.ConfigResponse. On protobuf failure it increments the
    config-decode failure metric and returns early; otherwise it updates cached
-   BAM config in place and validates builder commission and pubkey independently. */
+   BAM config in place. Block builder commission and pubkey follow
+   jito-solana's partial-update semantics. */
 static void
 fd_bam_handle_config( fd_bam_tile_t * ctx,
                       void const *    protobuf,
@@ -455,6 +456,18 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
       } else {
         fd_memcpy( ctx->builder_pubkey, decoded_builder_pubkey, sizeof(ctx->builder_pubkey) );
         ctx->builder_info_valid_until = fd_bam_now() + (long)( 60e9 * 5. );
+      }
+
+      if( FD_LIKELY( ctx->builder_info_valid_until || ctx->fee_cfg_version ) ) {
+        fd_bam_fee_cfg_t * fee_cfg = ctx->fee_cfg;
+        FD_VOLATILE( fee_cfg->version ) = fd_uint_set_bit( ctx->fee_cfg_version, 31 );
+        FD_HW_MFENCE_ST();
+        fd_memcpy( fee_cfg->builder_pubkey, ctx->builder_pubkey, sizeof( fee_cfg->builder_pubkey ) );
+        fee_cfg->builder_commission = ctx->builder_commission;
+        FD_HW_MFENCE_ST();
+        ctx->fee_cfg_version = fd_uint_clear_bit( ctx->fee_cfg_version + 1U, 31 );
+        if( FD_UNLIKELY( !ctx->fee_cfg_version ) ) ctx->fee_cfg_version = 1U;
+        FD_VOLATILE( fee_cfg->version ) = ctx->fee_cfg_version;
       }
     }
   }
@@ -536,13 +549,6 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
                                ctx->stem,
                                status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
-  _Bool bam_config_fee_updated = false;
-  ushort new_commission_bps = (ushort)fd_uint_min( cfg->commission_bps, 10000U );
-  if( FD_UNLIKELY( ctx->commission_bps != new_commission_bps ) ) {
-    ctx->commission_bps = new_commission_bps;
-    bam_config_fee_updated = true;
-  }
-
   if( cfg->prio_fee_recipient_pubkey[0] ) {
     uchar decoded[ 32 ];
     if( FD_LIKELY( fd_base58_decode_32( cfg->prio_fee_recipient_pubkey, decoded ) ) ) {
@@ -550,32 +556,11 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
       if( FD_UNLIKELY( !ctx->prio_fee_recipient_set || !!memcmp( ctx->prio_fee_recipient, decoded, sizeof( decoded ) ) ) ) {
         fd_memcpy( ctx->prio_fee_recipient, decoded, sizeof( decoded ) );
         ctx->prio_fee_recipient_set = 1U;
-        bam_config_fee_updated = true;
       }
     } else {
       FD_LOG_HEXDUMP_WARNING(( "Invalid priority fee recipient pubkey in ConfigResponse",
                                cfg->prio_fee_recipient_pubkey,
                                strnlen( cfg->prio_fee_recipient_pubkey, sizeof( cfg->prio_fee_recipient_pubkey ) ) ));
-    }
-  }
-
-  if( FD_UNLIKELY( bam_config_fee_updated ) ) {
-    fd_bam_fee_cfg_t * fee_cfg = ctx->fee_cfg;
-    if( FD_LIKELY( fee_cfg ) ) {
-      /* Publish to the pack tile via a seqlock: set the version's
-         write-in-progress marker, store the fields, then commit the next
-         counter value. A reader therefore never sees a torn
-         prio_fee_recipient. x86-64/TSO, so compiler fences suffice. */
-      FD_VOLATILE( fee_cfg->version ) = fd_uint_set_bit( ctx->fee_cfg_version, 31 );
-      FD_COMPILER_MFENCE();
-      fd_memcpy( fee_cfg->prio_fee_recipient, ctx->prio_fee_recipient, sizeof( fee_cfg->prio_fee_recipient ) );
-      fee_cfg->commission_bps         = ctx->commission_bps;
-      fee_cfg->has_prio_fee_recipient = ctx->prio_fee_recipient_set;
-      FD_COMPILER_MFENCE();
-
-      ctx->fee_cfg_version = fd_uint_clear_bit( ctx->fee_cfg_version + 1U, 31 );
-      if( FD_UNLIKELY( !ctx->fee_cfg_version ) ) ctx->fee_cfg_version = 1U;
-      FD_VOLATILE( fee_cfg->version ) = ctx->fee_cfg_version;
     }
   }
 }
