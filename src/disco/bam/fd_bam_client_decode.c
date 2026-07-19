@@ -890,6 +890,7 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
       goto fail;
     }
     ctx->bam_last_builder_activity_ns = rx_ts_ns;
+    ctx->bam_builder_heartbeat_received = 1U;
     if( FD_LIKELY( hb.time_sent_microseconds ) ) {
       ulong tsorig_ns = hb.time_sent_microseconds * 1000UL;
       ulong rx_ts_u   = fd_ulong_if( rx_ts_ns >= 0L, (ulong)rx_ts_ns, 0UL );
@@ -923,7 +924,6 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
                             &decoded_multi->states [ i ],
                             &decoded_multi->batches[ i ] );
     }
-    ctx->bam_last_builder_activity_ns = rx_ts_ns;
     break;
   }
   case bam_api_SchedulerResponseV0_ping_tag: {
