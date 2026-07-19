@@ -1372,9 +1372,10 @@ test_pack_tile_bam_result_mapping_tracking_reject( void ) {
 }
 
 static void
-test_pack_tile_bam_atomic_abandon_reports_missing_deser( void ) {
-  pack_tile_bam_bundle_assembly_abandon_reason_t reasons[] = {
+test_pack_tile_bam_atomic_abandon_result_mapping( void ) {
+  pack_tile_bam_bundle_assembly_abandon_reason_t const reasons[] = {
     PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE,
+    PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_LEADER_SLOT_END,
     PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT,
   };
 
@@ -1384,13 +1385,15 @@ test_pack_tile_bam_atomic_abandon_reports_missing_deser( void ) {
 
     test_pack_tile_harness_new( h );
     fd_memset( old_txns, 0, sizeof(old_txns) );
+    uint  seq_id             = 321U + (uint)reason_idx;
+    _Bool is_new_seq_abandon = reasons[ reason_idx ]==PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE;
 
     test_pack_tile_fill_sig( old_txns[ 0 ].txnp->payload + 1UL, 1U );
     test_pack_tile_fill_sig( old_txns[ 1 ].txnp->payload + 1UL, 2U );
     old_txns[ 0 ].txnp->scheduler_arrival_time_nanos = 0L;
     old_txns[ 1 ].txnp->scheduler_arrival_time_nanos = 0L;
 
-    h->ctx->current_bundle->id                 = 321UL + reason_idx + 1UL;
+    h->ctx->current_bundle->id                 = (ulong)seq_id + 1UL;
     h->ctx->current_bundle->txn_cnt            = 3UL;
     h->ctx->current_bundle->txn_received       = 2UL;
     h->ctx->current_bundle->min_blockhash_slot = 500UL;
@@ -1406,30 +1409,37 @@ test_pack_tile_bam_atomic_abandon_reports_missing_deser( void ) {
     FD_TEST( test_bundle_cancel_last_txn_cnt == 3UL );
     FD_TEST( h->ctx->current_bundle->bundle == NULL );
     FD_TEST( h->ctx->current_bundle_bam->is_bam == 0 );
-    FD_TEST( h->ctx->bam_pending_result_cnt == 1UL );
 
-    fd_bam_bundle_result_t const * queued = &h->ctx->bam_result_queue[ h->ctx->bam_result_queue_head ];
-    FD_TEST( queued->seq_id                == 321U + reason_idx );
-    FD_TEST( queued->slot                  == 600UL );
-    FD_TEST( queued->bundle_txn_cnt        == 3U );
-    FD_TEST( queued->scheduling_error      == FD_BAM_SCHED_ERR_NONE );
-    FD_TEST( queued->bundle_err            == FD_BAM_BUNDLE_ERR_DESER );
-    FD_TEST( queued->deser_index           == 2U );
-    FD_TEST( queued->deser_reason          == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
-    FD_TEST( queued->transaction_err_count == 0U );
+    if( FD_UNLIKELY( !is_new_seq_abandon ) ) {
+      uchar resolved_buf[ FD_TPU_RESOLVED_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
+      ulong sz = test_pack_tile_prepare_resolv_frag( h, resolved_buf, test_pack_tile_non_vote, test_pack_tile_non_vote_sz, FD_TXN_M_TPU_SOURCE_BAM, 500UL );
+      fd_txn_m_t * txnm = (fd_txn_m_t *)resolved_buf;
+      txnm->bam.max_schedule_slot          = 600UL;
+      txnm->bam.seq_id                     = seq_id;
+      txnm->bam.txn_cnt                    = 3U;
+      txnm->bam.batch_idx                  = 2U;
+      txnm->bam.revert_on_error            = 1;
+      txnm->block_engine.bundle_id         = (ulong)txnm->bam.seq_id + 1UL;
+
+      during_frag( h->ctx, 0UL, 0UL, 500UL, 0UL, sz, 0UL );
+      FD_TEST( h->ctx->bundle_kind == PACK_TILE_BUNDLE_KIND_NONE );
+      after_frag( h->ctx, 0UL, 0UL, 500UL, sz, 0UL, 0UL, &h->out->stem );
+
+      FD_TEST( h->ctx->current_bundle->bundle == NULL );
+      FD_TEST( test_bundle_cancel_call_cnt == 1UL );
+      FD_TEST( h->ctx->bam_pending_result_cnt == 1UL );
+    }
 
     FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
-    fd_bam_bundle_result_t const * published = test_pack_tile_last_result( h );
-    FD_TEST( published->seq_id                == 321U + reason_idx );
-    FD_TEST( published->bundle_err            == FD_BAM_BUNDLE_ERR_DESER );
-    FD_TEST( published->deser_index           == 2U );
-    FD_TEST( published->transaction_err_count == 0U );
-    FD_TEST( h->ctx->bam_pending_result_cnt   == 0UL );
-    FD_TEST( h->out->seqs[ 0 ]                == 1UL );
-
-    h->ctx->bam_result_publish_cnt = 0UL;
-    FD_TEST( !pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
-    FD_TEST( h->out->seqs[ 0 ] == 1UL );
+    fd_bam_bundle_result_t const * published = test_pack_tile_assert_last_result( h, seq_id, 600UL, 3U,
+                                                                                 is_new_seq_abandon ? FD_BAM_SCHED_ERR_NONE : FD_BAM_SCHED_ERR_OUTSIDE_SLOT, 0U );
+    if( FD_LIKELY( is_new_seq_abandon ) ) {
+      FD_TEST( published->bundle_err   == FD_BAM_BUNDLE_ERR_DESER );
+      FD_TEST( published->deser_index  == 2U );
+      FD_TEST( published->deser_reason == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
+    } else {
+      FD_TEST( published->bundle_err == FD_BAM_BUNDLE_ERR_NONE );
+    }
 
     test_pack_tile_harness_delete( h );
   }
@@ -1457,7 +1467,7 @@ main( int     argc,
   test_pack_tile_bam_instr_acct_reject_serializes_exact_member();
   test_pack_tile_bam_result_mapping_insert_reject();
   test_pack_tile_bam_result_mapping_tracking_reject();
-  test_pack_tile_bam_atomic_abandon_reports_missing_deser();
+  test_pack_tile_bam_atomic_abandon_result_mapping();
   test_pack_tile_bam_override_allows_votes_only_from_normal_ingress();
   test_pack_tile_bam_override_after_frag_preserves_votes_only();
   test_pack_tile_bam_override_drops_block_engine_bundles();
