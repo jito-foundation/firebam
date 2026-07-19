@@ -1162,13 +1162,15 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
                                                    ctx->current_bundle_bam->scheduler_gen,
                                                    ctx->current_bundle_bam->max_schedule_slot,
                                                    (uchar)ctx->current_bundle->txn_cnt );
-  /* Atomic BAM verify failures after batch_idx 0 are intentionally
-     suppressed by verify once a prefix can be owned by pack.  Any abandon
-     of that incomplete prefix reports the first missing member as the
-     terminal deserialization failure. */
-  res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
-  res.deser_index  = (uchar)first_missing_idx;
-  res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+  if( FD_LIKELY( is_new_seq_abandon ) ) {
+    /* Atomic BAM verify failures after batch_idx 0 are intentionally
+       suppressed by verify once a prefix can be owned by pack. */
+    res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
+    res.deser_index  = (uchar)first_missing_idx;
+    res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+  } else {
+    res.scheduling_error = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
+  }
   pack_tile_enqueue_bam_result( ctx, &res );
 
   fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
@@ -1863,6 +1865,16 @@ during_frag( fd_pack_ctx_t * ctx,
       FD_TEST( txnm->block_engine.bundle_id==fd_ulong_if( txnm->bam.revert_on_error, bam_bundle_id, 0UL ) );
       FD_TEST( txnm->block_engine.bundle_txn_cnt==fd_ulong_if( txnm->bam.revert_on_error && !txnm->bam.batch_idx, (ulong)txnm->bam.txn_cnt, 0UL ) );
 
+      if( FD_UNLIKELY( txnm->bam.batch_idx &&
+                       ( !ctx->current_bundle->bundle ||
+                         !ctx->current_bundle_bam->is_bam ||
+                         ctx->current_bundle->id!=bam_bundle_id ||
+                         ctx->current_bundle_bam->scheduler_gen!=txnm->bam.scheduler_gen ||
+                         txnm->bam.batch_idx!=ctx->current_bundle->txn_received ) ) ) {
+        ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
+        return;
+      }
+
       ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_BAM;
 
       if( FD_LIKELY( !ctx->current_bundle->bundle ||
@@ -1901,7 +1913,6 @@ during_frag( fd_pack_ctx_t * ctx,
       }
 
       FD_TEST( txnm->bam.txn_cnt==ctx->current_bundle->txn_cnt );
-      FD_TEST( txnm->bam.batch_idx==ctx->current_bundle->txn_received );
       ctx->cur_spot = ctx->current_bundle->bundle[ txnm->bam.batch_idx ];
       if( FD_UNLIKELY( sig<ctx->current_bundle->min_blockhash_slot ) ) {
         ctx->current_bundle->min_blockhash_slot = sig;
