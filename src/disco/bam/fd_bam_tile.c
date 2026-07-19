@@ -610,6 +610,7 @@ void
 fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
                              fd_stem_context_t * stem,
                              _Bool               bam_active ) {
+  _Bool use_bam_contact = bam_active && fd_bam_has_effective_contact( ctx );
   _Bool prev_bam_active = ctx->bam_status_fseq &&
                           fd_fseq_query( ctx->bam_status_fseq )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
 
@@ -622,23 +623,25 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
   fd_bam_tpu_update_state_t tpu_update_state = ctx->tpu_update_state;
   fd_bam_client_id_update_state_t client_id_update_state = ctx->client_id_update_state;
   _Bool suppress_activation_edge_update =
-      bam_active && !prev_bam_active && ctx->bam_gossip_handoff_pending;
+      use_bam_contact && !prev_bam_active && ctx->bam_gossip_handoff_pending;
   _Bool update_needed =
       ( !suppress_activation_edge_update && prev_bam_active != bam_active ) ||
       tpu_update_state >= FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT ||
-      tpu_update_state == ( bam_active ? FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT : FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM ) ||
-      ( bam_active && tpu_update_state == FD_BAM_TPU_UPDATE_STATE_UNKNOWN ) ||
+      tpu_update_state == ( use_bam_contact ? FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT : FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM ) ||
+      ( use_bam_contact && tpu_update_state == FD_BAM_TPU_UPDATE_STATE_UNKNOWN ) ||
       client_id_update_state >= FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT ||
-      client_id_update_state == ( bam_active ? FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT : FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM ) ||
-      ( bam_active && client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN );
-  if( FD_UNLIKELY( update_needed ) ) (void)fd_bam_gossip_update( ctx, stem, bam_active );
+      client_id_update_state == ( use_bam_contact ? FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT : FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM ) ||
+      ( use_bam_contact && client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN );
+  if( FD_UNLIKELY( update_needed ) ) (void)fd_bam_gossip_update( ctx, stem, use_bam_contact );
 
   fd_bam_shred_update( ctx, stem, bam_active );
 
   if( FD_LIKELY( bam_active && ctx->bam_status_fseq ) ) {
-    _Bool contact_applied = !!( ctx->tpu_update_state       == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM &&
+    _Bool contact_applied = !use_bam_contact ||
+                            !!( ctx->tpu_update_state       == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM &&
                                 ctx->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM );
-    _Bool waiting_for_gossip = !!( ctx->bam_gossip_handoff_pending &&
+    _Bool waiting_for_gossip = !!( use_bam_contact &&
+                                   ctx->bam_gossip_handoff_pending &&
                                    ctx->bam_gossip_fseq &&
                                    !fd_seq_ge( fd_fseq_query( ctx->bam_gossip_fseq ), ctx->bam_gossip_handoff_target ) );
     if( FD_UNLIKELY( !contact_applied || waiting_for_gossip ) ) return;

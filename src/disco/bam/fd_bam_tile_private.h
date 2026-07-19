@@ -288,7 +288,7 @@ struct fd_bam_tile {
 
   /* BAM specific */
   fd_grpc_h2_stream_t * bam_stream;                      /* Current scheduler stream; NULL while unsubscribed or reconnecting */
-  long                  bam_last_builder_activity_ns;    /* fd_bam_now() timestamp of last scheduler-stream liveness refresh from stream start, BuilderHeartBeat, or scheduler batch work; scheduler proto Ping is intentionally excluded (0 if none received) */
+  long                  bam_last_builder_activity_ns;    /* fd_bam_now() timestamp used by the BuilderHeartBeat watchdog; initialized at stream start (0 if no stream) */
   long                  bam_last_validator_heartbeat_ns; /* fd_bam_now() timestamp of last validator heartbeat (0 if never sent) */
   long                  bam_last_config_poll_ns;         /* fd_bam_now() timestamp of last config poll attempt (0 if never polled) */
   ushort                feedback_queue_depth;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
@@ -310,7 +310,8 @@ struct fd_bam_tile {
   uint                  bam_auth_ready         : 1;      /* set when challenge_to_sign contains a fresh, NUL-terminated challenge to sign */
   uint                  bam_auth_inflight      : 1;      /* true while GetAuthChallenge GRPC call is pending */
   uint                  bam_config_inflight    : 1;      /* true while GetBuilderConfig GRPC call is pending */
-  uint                  bam_config_received    : 1;      /* set after a valid ConfigResponse lands on the current connection */
+  uint                  bam_config_received    : 1;      /* set after a successfully decoded ConfigResponse lands on the current connection */
+  uint                  bam_builder_heartbeat_received : 1; /* set after a BuilderHeartBeat lands on the current scheduler stream */
   uint                  bam_leader_pending     : 1;      /* set when a coalesced leader snapshot awaits send; not durable like bam_results */
 
   /* Error backoff */

@@ -160,6 +160,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   fd_bam_clear_auth_state( ctx );
   ctx->bam_config_inflight        = 0;
   ctx->bam_config_received        = 0;
+  ctx->bam_builder_heartbeat_received = 0;
   ctx->bam_last_builder_activity_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
   ctx->bam_last_config_poll_ns    = 0L;
@@ -441,6 +442,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     FD_LOG_WARNING(( "Protobuf decode of (bam_api.ConfigResponse) failed" ));
     return;
   }
+  ctx->bam_config_received = 1U;
 
   if( FD_LIKELY( resp.has_block_engine_config ) ) {
     bam_types_BlockEngineBuilderConfig const * cfg = &resp.block_engine_config;
@@ -474,9 +476,13 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
 
   if( FD_UNLIKELY( !resp.has_bam_config ) ) {
     FD_LOG_WARNING(( "Missing BAM config in ConfigResponse" ));
+    ctx->bam_shred_sock_cnt = 0U;
+    ctx->gui_dirty = 1U;
+    fd_bam_publish_active_state( ctx,
+                                 ctx->stem,
+                                 fd_bam_client_status( ctx ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
     return;
   }
-  ctx->bam_config_received = 1U;
 
   bam_types_BamConfig const * cfg = &resp.bam_config;
   fd_ip4_port_t new_tpu     = {0};
@@ -515,7 +521,10 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     uint ip4;
     if( FD_LIKELY( fd_cstr_to_ip4_addr( sock->ip, &ip4 ) ) &&
         FD_LIKELY( sock->port > 0 && sock->port <= USHORT_MAX ) ) {
-      new_shred_sock[ new_shred_sock_cnt++ ] = (fd_ip4_port_t){ .addr = ip4, .port = fd_ushort_bswap( (ushort)sock->port ) };
+      fd_ip4_port_t new_sock = { .addr = ip4, .port = fd_ushort_bswap( (ushort)sock->port ) };
+      _Bool duplicate = 0;
+      for( ulong j=0UL; j<(ulong)new_shred_sock_cnt; j++ ) duplicate |= new_shred_sock[ j ].l==new_sock.l;
+      if( FD_LIKELY( !duplicate ) ) new_shred_sock[ new_shred_sock_cnt++ ] = new_sock;
     } else {
       FD_LOG_WARNING(( "Dropping invalid BAM shred receiver socket in ConfigResponse: %s:%u", sock->ip, sock->port ));
     }
@@ -540,10 +549,9 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   }
 
   ctx->gui_dirty = 1U;
-  /* Only publish BAM active when the client is actually healthy and has
-     complete effective contact data. Config responses can arrive while
-     connecting or after an admin disable, and incomplete refreshes should
-     not force a BAM TPU override unless a prior valid contact is cached. */
+  /* Connection health owns scheduler work independently of whether a usable
+     BAM TPU contact is cached.  Active-state publication selects the BAM TPU
+     override only when that contact is complete. */
   fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
   fd_bam_publish_active_state( ctx,
                                ctx->stem,
@@ -813,16 +821,16 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
   }
 
   /* Poll config on a throttle to keep stream settings fresh.  The
-     builder-info TTL only covers block-engine builder metadata; missing BAM
-     config must force polling independently because it gates healthy status. */
-  _Bool const missing_bam_config    = !ctx->bam_config_received;
+     builder-info TTL only covers block-engine builder metadata; a missing
+     ConfigResponse must force polling independently because it gates health. */
+  _Bool const missing_config_response = !ctx->bam_config_received;
   _Bool const missing_builder_info  = !ctx->builder_info_valid_until;
   _Bool const builder_info_expiring = ctx->builder_info_valid_until &&
                                       now + (long)5e9 >= ctx->builder_info_valid_until;
-  _Bool const refresh_needed = missing_bam_config ||
+  _Bool const refresh_needed = missing_config_response ||
                                missing_builder_info ||
                                builder_info_expiring;
-  long const throttle_ns = ( missing_bam_config || missing_builder_info ) ? (long)1e9 : (long)5e9;
+  long const throttle_ns = ( missing_config_response || missing_builder_info ) ? (long)1e9 : (long)5e9;
   _Bool const poll_due = !ctx->bam_last_config_poll_ns ||
                          now - ctx->bam_last_config_poll_ns >= throttle_ns;
   if( FD_UNLIKELY( !ctx->bam_config_inflight && refresh_needed && poll_due ) ) {
@@ -986,11 +994,11 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     return;
   }
 
-  /* Did scheduler-stream builder activity time out */
+  /* Did the scheduler-stream BuilderHeartBeat time out */
   if( FD_UNLIKELY( ctx->bam_stream_live &&
                    ctx->bam_last_builder_activity_ns != 0L &&
                    check_ts - ctx->bam_last_builder_activity_ns >= FD_BAM_ACTIVITY_TIMEOUT_NS ) ) {
-    FD_LOG_WARNING(( "BAM builder activity timed out (no scheduler activity for %.2f seconds); retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
+    FD_LOG_WARNING(( "BAM node heartbeat timed out (no BuilderHeartBeat for %.2f seconds); retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
       (double)( check_ts - ctx->bam_last_builder_activity_ns )/1e9,
       ctx->server_fqdn,
       FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
@@ -1124,6 +1132,7 @@ fd_bam_client_grpc_rx_start(
     ctx->bam_stream_connecting  = 0;
     ctx->bam_last_validator_heartbeat_ns = now;
     ctx->bam_last_builder_activity_ns    = now;
+    ctx->bam_builder_heartbeat_received  = 0U;
     fd_bam_leader_state_suppress_reason_t reason;
     if( ctx->bam_leader_state.slot != ULONG_MAX &&
         fd_bam_leader_state_suppress_reason( ctx, &ctx->bam_leader_state, now, 0, &reason ) ) {
@@ -1369,12 +1378,9 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
   if( FD_UNLIKELY( !ctx->bam_config_received ) ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
   }
-  if( FD_UNLIKELY( !fd_bam_has_effective_contact( ctx ) ) ) {
-    return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
-  }
 
   if( FD_UNLIKELY(
-    ( ctx->bam_last_builder_activity_ns<=0L ) ||
+    !ctx->bam_builder_heartbeat_received ||
     ( now - ctx->bam_last_builder_activity_ns >= FD_BAM_ACTIVITY_TIMEOUT_NS ) ) ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY;
   }
