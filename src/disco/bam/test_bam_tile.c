@@ -696,6 +696,7 @@ test_bam_current_slot_work_status_bits( fd_wksp_t * wksp ) {
 
   long now = fd_bam_now();
   state->bam_last_builder_activity_ns    = now;
+  state->bam_builder_heartbeat_received  = 1U;
   state->bam_stream_live                 = 1U;
   state->bam_status_recent               = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
 
@@ -1426,7 +1427,7 @@ test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
   FD_TEST( state->metrics.transaction_published_cnt == 1UL );
   FD_TEST( state->metrics.atomic_batch_published_cnt == 0UL );
   FD_TEST( state->feedback_queue_depth == 0UL );
-  FD_TEST( state->bam_last_builder_activity_ns == g_clock );
+  FD_TEST( state->bam_last_builder_activity_ns == 0L );
 
   test_bam_env_destroy( env );
 
@@ -2758,17 +2759,18 @@ test_bam_heartbeat_timeout_forces_disconnect( fd_wksp_t * wksp ) {
 
 static void
 test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
-  /* Uses helper-generated scheduler responses to drive activity timestamping
-     and ensure batches refresh the watchdog deadline. */
+  /* Uses helper-generated scheduler responses to verify that only
+     BuilderHeartBeat refreshes the watchdog deadline. */
 
   /* Heartbeat message updates timestamp and produces one heartbeat-latency sample. */
   {
-    /* Subtest: direct heartbeat bumps the builder-activity timestamp. */
+    /* Subtest: direct heartbeat bumps the watchdog timestamp. */
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
     test_bam_send_scheduler_heartbeat( state, 1UL );
     long expected_ts = g_clock;
     FD_TEST( state->bam_last_builder_activity_ns == expected_ts );
+    FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
     FD_TEST( state->metrics.builder_heartbeats_decoded_cnt == 1UL );
     FD_TEST( test_hist_total_cnt( state->metrics.builder_heartbeat_arrival_delta_nanos ) == 1UL );
     test_bam_env_destroy( env );
@@ -2788,14 +2790,15 @@ test_bam_heartbeat_reset_extends_timeout( fd_wksp_t * wksp ) {
     test_bam_env_destroy( env );
   }
 
-  /* Bundle batches update timestamp because executing work should also count as liveness. */
+  /* Bundle batches do not refresh the BuilderHeartBeat deadline. */
   {
-    /* Subtest: executing a bundle refreshes watchdog like a heartbeat. */
     test_bam_env_t env[1];
     fd_bam_tile_t * state = test_bam_heartbeat_env_start( env, wksp );
+    long expected_ts = state->bam_last_builder_activity_ns;
+    g_clock += (long)1e8;
     test_bam_send_scheduler_bundle( state, 0U, 0 );
-    long expected_ts = g_clock;
     FD_TEST( state->bam_last_builder_activity_ns == expected_ts );
+    FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
     test_bam_env_destroy( env );
   }
 }
@@ -2829,8 +2832,11 @@ test_bam_client_status( fd_wksp_t * wksp ) {
                                ostream.bytes_written,
                                FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
   }
-  FD_TEST( state->bam_config_received == 0U );
+  FD_TEST( state->bam_config_received == 1U );
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
+
+  test_bam_send_scheduler_heartbeat( state, 1UL );
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
   test_bam_env_inject_config_response( state );
   FD_TEST( state->bam_config_received == 1U );
@@ -2839,11 +2845,7 @@ test_bam_client_status( fd_wksp_t * wksp ) {
   fd_bam_tile_t state_backup = *state;
   fd_grpc_client_t client_backup = *state->grpc_client;
 
-  /* Connections should start unhealthy until builder activity arrives. */
-  state->bam_last_builder_activity_ns = 0L;
-  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
-
-  /* Stale builder activity should not report healthy. */
+  /* A stale BuilderHeartBeat should not report healthy. */
   state->bam_last_builder_activity_ns = fd_bam_now() - FD_BAM_ACTIVITY_TIMEOUT_NS;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
 
@@ -2862,12 +2864,6 @@ test_bam_client_status( fd_wksp_t * wksp ) {
   state->keepalive->inflight   = 1U;
   state->keepalive->ts_deadline = fd_bam_now() + state->keepalive->timeout + (long)1e6;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
-  *state = state_backup;
-  *state->grpc_client = client_backup;
-
-  /* Negative/garbled builder-activity timestamp is treated as UNHEALTHY. */
-  state->bam_last_builder_activity_ns = -1L;
-  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
   *state = state_backup;
   *state->grpc_client = client_backup;
 
@@ -5338,9 +5334,9 @@ test_bam_invalid_quic_base_port_does_not_activate( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
+test_bam_gossip_uses_defaults_when_contact_missing( fd_wksp_t * wksp ) {
   /* An incomplete BamConfig without a cached BAM contact should force gossip
-     back to defaults even if the previous applied state was BAM. */
+     back to defaults without blocking scheduler activation. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn_empty( env );
@@ -5358,11 +5354,12 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
   state->bam_stream_live        = 1U;
   state->bam_config_received    = 1U;
   state->bam_last_builder_activity_ns = fd_bam_now();
+  state->bam_builder_heartbeat_received = 1U;
   state->bam_last_validator_heartbeat_ns = fd_bam_now();
 
   uchar fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
   fd_memset( fseq_mem, 0, sizeof(fseq_mem) );
-  void * fseq_shmem = fd_fseq_new( fseq_mem, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  void * fseq_shmem = fd_fseq_new( fseq_mem, 0UL );
   FD_TEST( fseq_shmem );
   ulong * fseq = fd_fseq_join( fseq_shmem );
   FD_TEST( fseq );
@@ -5387,7 +5384,7 @@ test_bam_gossip_resets_when_contact_missing( fd_wksp_t * wksp ) {
 
   FD_TEST( state->bam_tpu.l == 0UL );
   FD_TEST( state->bam_tpu_fwd.l == 0UL );
-  FD_TEST( fd_fseq_query( fseq ) == 0UL );
+  FD_TEST( fd_fseq_query( fseq ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
 
   fd_bam_contact_update_t update = test_bam_read_gossip_update( gossip_mem, publish_chunk );
   FD_TEST( update.tpu.addr     == state->default_tpu.addr );
@@ -5655,15 +5652,13 @@ test_bam_shred_update_publishes_receiver_list( fd_wksp_t * wksp ) {
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
   fd_bam_shred_update_t update = test_bam_read_shred_update( shred_mem, publish_chunk );
-  FD_TEST( update.shred_sock_cnt == 3UL );
-  FD_TEST( state->bam_shred_sock_cnt == 3UL );
+  FD_TEST( update.shred_sock_cnt == 2UL );
+  FD_TEST( state->bam_shred_sock_cnt == 2UL );
 
   uint ip4 = 0U;
   FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &ip4 ) );
   FD_TEST( update.shred_sock[ 0 ].addr == ip4 );
   FD_TEST( fd_ushort_bswap( update.shred_sock[ 0 ].port ) == 5001U );
-  FD_TEST( update.shred_sock[ 2 ].addr == ip4 );
-  FD_TEST( fd_ushort_bswap( update.shred_sock[ 2 ].port ) == 5001U );
 
   FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &ip4 ) );
   FD_TEST( update.shred_sock[ 1 ].addr == ip4 );
@@ -5712,7 +5707,7 @@ test_bam_shred_update_disconnect_uses_empty_without_clearing_receivers( fd_wksp_
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
 
-  fd_bam_shred_update_t updates[ 3 ] = {0};
+  fd_bam_shred_update_t updates[ 4 ] = {0};
   updates[ 0 ] = test_bam_read_shred_update( shred_mem, publish_chunk );
   FD_TEST( updates[ 0 ].shred_sock_cnt == 2UL );
 
@@ -5728,6 +5723,22 @@ test_bam_shred_update_disconnect_uses_empty_without_clearing_receivers( fd_wksp_
   FD_TEST( updates[ 2 ].shred_sock_cnt == 2UL );
   FD_TEST( updates[ 2 ].shred_sock[ 0 ].l == updates[ 0 ].shred_sock[ 0 ].l );
   FD_TEST( updates[ 2 ].shred_sock[ 1 ].l == updates[ 0 ].shred_sock[ 1 ].l );
+
+  fd_ip4_port_t expected_tpu     = state->bam_tpu;
+  fd_ip4_port_t expected_tpu_fwd = state->bam_tpu_fwd;
+  resp = (bam_api_ConfigResponse)bam_api_ConfigResponse_init_default;
+  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
+  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
+  publish_chunk = state->shred_out.chunk;
+  fd_bam_client_grpc_rx_msg( state,
+                             pb_buf,
+                             ostream.bytes_written,
+                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+  updates[ 3 ] = test_bam_read_shred_update( shred_mem, publish_chunk );
+  FD_TEST( updates[ 3 ].shred_sock_cnt == 0UL );
+  FD_TEST( state->bam_shred_sock_cnt == 0UL );
+  FD_TEST( state->bam_tpu.l == expected_tpu.l );
+  FD_TEST( state->bam_tpu_fwd.l == expected_tpu_fwd.l );
 
   test_bam_env_destroy( env );
 }
@@ -5849,6 +5860,7 @@ test_bam_endpoint_change_forgets_cached_contact_before_incomplete_refresh( fd_wk
   test_bam_env_mock_h2_hs( state );
   state->bam_stream_live = 1U;
   state->bam_last_builder_activity_ns = fd_bam_now();
+  state->bam_builder_heartbeat_received = 1U;
   state->bam_last_validator_heartbeat_ns = fd_bam_now();
 
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
@@ -5870,7 +5882,7 @@ test_bam_endpoint_change_forgets_cached_contact_before_incomplete_refresh( fd_wk
   FD_TEST( state->bam_config_received == 1U );
   FD_TEST( state->bam_tpu.l == 0UL );
   FD_TEST( state->bam_tpu_fwd.l == 0UL );
-  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY );
+  FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
   state->keyswitch = NULL;
   test_bam_env_destroy( env );
@@ -6275,7 +6287,7 @@ main( int     argc,
   test_bam_activation_ignores_stale_gossip_fseq_after_reenable( wksp );
   test_bam_disable_clears_status_with_pending_gossip_handoff( wksp );
   test_bam_invalid_quic_base_port_does_not_activate( wksp );
-  test_bam_gossip_resets_when_contact_missing( wksp );
+  test_bam_gossip_uses_defaults_when_contact_missing( wksp );
   test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( wksp );
   test_bam_runtime_toggle_updates_gossip( wksp );
   test_bam_config_accepts_max_shred_receivers();
