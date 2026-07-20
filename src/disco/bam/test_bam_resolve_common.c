@@ -291,7 +291,7 @@ main( int     argc,
   test_expired_bam_forwarded_to_pack();
   test_later_expired_bam_member_and_siblings_forwarded();
   test_no_bank_deser_result( 0U, 1UL );
-  test_no_bank_deser_result( 1U, 0UL );
+  test_no_bank_deser_result( 1U, 1UL );
 #if TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH
   test_unknown_blockhash_bam_bypasses_stash();
 #endif
