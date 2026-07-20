@@ -391,6 +391,7 @@ struct fd_pack_ctx {
     ushort scheduler_gen;
     _Bool is_bam;
     uchar min_blockhash_slot_txn_idx;
+    uchar resolver_blockhash_expired_txn_idx;
   } current_bundle_bam[1];
 
   block_builder_info_t blk_engine_cfg[1];
@@ -1901,6 +1902,7 @@ during_frag( fd_pack_ctx_t * ctx,
         ctx->current_bundle_bam->scheduler_gen     = txnm->bam.scheduler_gen;
         ctx->current_bundle_bam->is_bam            = 1;
         ctx->current_bundle_bam->min_blockhash_slot_txn_idx = 0U;
+        ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = FD_PACK_MAX_TXN_PER_BUNDLE;
         ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_RECEIVED_IDX ]++;
         if( FD_LIKELY( txnm->bam.max_schedule_slot!=ULONG_MAX ) ) {
           pack_bam_recent_slot_t * entry = &ctx->bam_recent_slot[ txnm->bam.max_schedule_slot & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
@@ -1917,6 +1919,10 @@ during_frag( fd_pack_ctx_t * ctx,
       if( FD_UNLIKELY( sig<ctx->current_bundle->min_blockhash_slot ) ) {
         ctx->current_bundle->min_blockhash_slot = sig;
         ctx->current_bundle_bam->min_blockhash_slot_txn_idx = txnm->bam.batch_idx;
+      }
+      if( FD_UNLIKELY( txnm->bam.blockhash_expired &&
+                       ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx==FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
+        ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = txnm->bam.batch_idx;
       }
     } else if( FD_UNLIKELY( bundle_id ) ) {
       if( FD_UNLIKELY( pack_tile_bam_override_active( ctx ) ) ) {
@@ -2223,11 +2229,18 @@ after_frag( fd_pack_ctx_t *     ctx,
         ulong bam_slot          = max_schedule_slot;
         ulong min_blockhash_slot = ctx->current_bundle->min_blockhash_slot;
         uchar min_blockhash_slot_txn_idx = ctx->current_bundle_bam->min_blockhash_slot_txn_idx;
+        uchar resolver_blockhash_expired_txn_idx = ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx;
+        _Bool resolver_blockhash_expired = resolver_blockhash_expired_txn_idx<txn_cnt;
         long first_rx_ts_ns = pack_tile_current_bam_bundle_first_rx_ts_ns( ctx );
         pack_tile_bam_invalid_reason_t invalid_reason =
-            pack_tile_bam_invalid_reason( pack_tile_bam_best_known_slot( ctx ),
-                                          max_schedule_slot,
-                                          min_blockhash_slot );
+            resolver_blockhash_expired
+            ? PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED
+            : pack_tile_bam_invalid_reason( pack_tile_bam_best_known_slot( ctx ),
+                                            max_schedule_slot,
+                                            min_blockhash_slot );
+        uchar blockhash_txn_idx = fd_uchar_if( resolver_blockhash_expired,
+                                               resolver_blockhash_expired_txn_idx,
+                                               min_blockhash_slot_txn_idx );
 
         if( FD_UNLIKELY( invalid_reason!=PACK_TILE_BAM_INVALID_NONE ) ) {
           pack_tile_log_bam_drop( ctx,
@@ -2265,7 +2278,7 @@ after_frag( fd_pack_ctx_t *     ctx,
                                                                           ctx->current_bundle_bam->scheduler_gen,
                                                                           max_schedule_slot,
                                                                           txn_cnt,
-                                                                          min_blockhash_slot_txn_idx,
+                                                                          blockhash_txn_idx,
                                                                           invalid_reason );
           pack_tile_enqueue_bam_result( ctx, &res );
           fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
