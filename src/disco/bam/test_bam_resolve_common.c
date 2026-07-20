@@ -144,7 +144,7 @@ test_prepare_bam_txn( test_harness_t * h,
                       uchar            batch_idx,
                       uchar            txn_cnt,
                       int              has_alt ) {
-  fd_txn_m_t * txnm = (fd_txn_m_t *)h->pack_dcache;
+  fd_txn_m_t * txnm = fd_chunk_to_laddr( h->ctx->out_pack->mem, h->ctx->out_pack->chunk );
   fd_memset( txnm, 0, FD_TPU_PARSED_MTU );
 
   txnm->payload_sz = 32U;
@@ -186,7 +186,7 @@ test_last_bam_result( test_harness_t const * h ) {
 }
 
 static void
-test_expired_non_revert_bam_result( void ) {
+test_expired_bam_forwarded_to_pack( void ) {
   test_harness_t h[1];
   test_harness_new( h );
 
@@ -196,16 +196,11 @@ test_expired_non_revert_bam_result( void ) {
 
   after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
 
-  FD_TEST( h->seqs[ 0 ]==0UL );
-  FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==1UL );
-  fd_bam_bundle_result_t const * res = test_last_bam_result( h );
-  FD_TEST( res->seq_id                == 123U );
-  FD_TEST( res->slot                  == 500UL );
-  FD_TEST( res->bundle_txn_cnt        == 1U );
-  FD_TEST( res->bundle_err            == FD_BAM_BUNDLE_ERR_NONE );
-  FD_TEST( res->transaction_err_count == 1U );
-  FD_TEST( res->transaction_err[ 0 ]  == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
-  FD_TEST( res->sanitize_success[ 0 ] );
+  FD_TEST( h->seqs[ 0 ]==1UL );
+  FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==0UL );
+  FD_TEST( txnm->reference_slot==10UL );
+  FD_TEST( txnm->bam.blockhash_expired );
+  FD_TEST( h->ctx->metrics.blockhash_expired==0UL );
 
   test_harness_delete( h );
 }
@@ -238,33 +233,34 @@ test_no_bank_deser_result( uchar batch_idx,
 }
 
 static void
-test_non_revert_multi_peer_suppressed_after_failure( void ) {
-  test_harness_t h[1];
-  test_harness_new( h );
+test_later_expired_bam_member_and_siblings_forwarded( void ) {
+  for( ulong revert_on_error=0UL; revert_on_error<2UL; revert_on_error++ ) {
+    test_harness_t h[1];
+    test_harness_new( h );
+    h->ctx->completed_slot = 200UL;
 
-  fd_txn_m_t * txnm = test_prepare_bam_txn( h, 21U, 0, 0U, 2U, 0 );
-  test_insert_blockhash( h, txnm, 10UL );
-  h->ctx->completed_slot = 200UL;
+    for( uchar batch_idx=0U; batch_idx<3U; batch_idx++ ) {
+      fd_txn_m_t * txnm = test_prepare_bam_txn( h,
+                                                (uchar)(21U+batch_idx),
+                                                (_Bool)revert_on_error,
+                                                batch_idx,
+                                                3U,
+                                                0 );
+      ulong blockhash_slot = batch_idx==1U ? 10UL : 200UL;
+      test_insert_blockhash( h, txnm, blockhash_slot );
 
-  after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
+      after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
 
-  FD_TEST( h->seqs[ 0 ]==0UL );
-  FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==1UL );
-  fd_bam_bundle_result_t const * res = test_last_bam_result( h );
-  FD_TEST( res->seq_id                == 123U );
-  FD_TEST( res->bundle_txn_cnt        == 2U );
-  FD_TEST( res->transaction_err_count == 1U );
-  FD_TEST( res->transaction_err[ 0 ]  == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+      FD_TEST( h->seqs[ 0 ]==(ulong)batch_idx+1UL );
+      FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==0UL );
+      FD_TEST( txnm->reference_slot==blockhash_slot );
+      FD_TEST( txnm->bam.blockhash_expired==(batch_idx==1U) );
+      FD_TEST( !h->ctx->bundle_failed );
+    }
+    FD_TEST( h->ctx->metrics.blockhash_expired==0UL );
 
-  txnm = test_prepare_bam_txn( h, 22U, 0, 1U, 2U, 0 );
-  test_insert_blockhash( h, txnm, 200UL );
-
-  after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
-
-  FD_TEST( h->seqs[ 0 ]==0UL );
-  FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==1UL );
-
-  test_harness_delete( h );
+    test_harness_delete( h );
+  }
 }
 
 #if TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH
@@ -292,8 +288,8 @@ main( int     argc,
   fd_boot( &argc, &argv );
   fd_metrics_register( fd_metrics_join( fd_metrics_new( metrics_scratch, 0UL ) ) );
 
-  test_expired_non_revert_bam_result();
-  test_non_revert_multi_peer_suppressed_after_failure();
+  test_expired_bam_forwarded_to_pack();
+  test_later_expired_bam_member_and_siblings_forwarded();
   test_no_bank_deser_result( 0U, 1UL );
   test_no_bank_deser_result( 1U, 0UL );
 #if TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH

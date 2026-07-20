@@ -475,6 +475,40 @@ test_pack_tile_prepare_resolv_frag( test_pack_tile_harness_t * h,
 }
 
 static void
+test_pack_tile_send_bam_resolv_frag( test_pack_tile_harness_t * h,
+                                     uint                       seq_id,
+                                     ushort                     scheduler_gen,
+                                     ulong                      max_schedule_slot,
+                                     uchar                      batch_idx,
+                                     uchar                      txn_cnt,
+                                     _Bool                      revert_on_error,
+                                     _Bool                      blockhash_expired,
+                                     ulong                      blockhash_slot,
+                                     uchar                      signature_seed ) {
+  uchar resolved_buf[ FD_TPU_RESOLVED_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
+  ulong sz = test_pack_tile_prepare_resolv_frag( h,
+                                                 resolved_buf,
+                                                 test_pack_tile_non_vote,
+                                                 test_pack_tile_non_vote_sz,
+                                                 FD_TXN_M_TPU_SOURCE_BAM,
+                                                 blockhash_slot );
+  fd_txn_m_t * txnm = (fd_txn_m_t *)resolved_buf;
+  txnm->bam.max_schedule_slot = max_schedule_slot;
+  txnm->bam.seq_id            = seq_id;
+  txnm->bam.scheduler_gen      = scheduler_gen;
+  txnm->bam.txn_cnt            = txn_cnt;
+  txnm->bam.batch_idx          = batch_idx;
+  txnm->bam.revert_on_error    = revert_on_error;
+  txnm->bam.blockhash_expired  = blockhash_expired;
+  txnm->block_engine.bundle_id = fd_ulong_if( revert_on_error, (ulong)seq_id+1UL, 0UL );
+  txnm->block_engine.bundle_txn_cnt = fd_ulong_if( revert_on_error && !batch_idx, (ulong)txn_cnt, 0UL );
+  test_pack_tile_fill_sig( fd_txn_m_payload( txnm )+1UL, signature_seed );
+
+  during_frag( h->ctx, 0UL, 0UL, blockhash_slot, 0UL, sz, 0UL );
+  after_frag( h->ctx, 0UL, 0UL, blockhash_slot, sz, 0UL, 0UL, &h->out->stem );
+}
+
+static void
 test_pack_tile_bam_override_allows_votes_only_from_normal_ingress( void ) {
   test_pack_tile_harness_t h[1];
   uchar                    resolved_buf[ FD_TPU_RESOLVED_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
@@ -643,6 +677,7 @@ test_pack_tile_complete_bam_bundle( test_pack_tile_harness_t * h,
   h->ctx->current_bundle_bam->max_schedule_slot = max_schedule_slot;
   h->ctx->current_bundle_bam->is_bam            = 1;
   h->ctx->current_bundle_bam->min_blockhash_slot_txn_idx = min_blockhash_slot_txn_idx;
+  h->ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = FD_PACK_MAX_TXN_PER_BUNDLE;
 
   for( uchar i=0U; i<txn_cnt; i++ ) {
     txns[ i ]->txnp->bam.batch_idx = i;
@@ -852,6 +887,83 @@ test_pack_tile_bam_expired_blockhash_reports_member_idx( void ) {
                                                                                 2U );
     FD_TEST( expired->transaction_err[ 0 ] == bam_types_TransactionErrorReason_COMMIT_CANCELLED );
     FD_TEST( expired->transaction_err[ 1 ] == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+    test_pack_tile_harness_delete( h );
+  }
+}
+
+static void
+test_pack_tile_bam_resolver_expired_member_reports_exact_idx( void ) {
+  for( ulong revert_on_error=0UL; revert_on_error<2UL; revert_on_error++ ) {
+    test_pack_tile_harness_t h[1];
+    fd_txn_e_t               txns[ 3 ];
+    test_pack_tile_harness_new( h );
+    fd_memset( txns, 0, sizeof(txns) );
+
+    uint   seq_id             = (uint)( 600UL+revert_on_error );
+    ushort scheduler_gen      = 7U;
+    ulong  blockhash_slot     = 500UL;
+    ulong  max_schedule_slot  = 600UL;
+
+    test_pack_tile_fill_sig( txns[ 0 ].txnp->payload+1UL, (uchar)( 140U+revert_on_error ) );
+    txns[ 0 ].txnp->source_tpu                         = FD_TXN_M_TPU_SOURCE_BAM;
+    txns[ 0 ].txnp->bam.batch_idx                      = 0U;
+    h->ctx->current_bundle->id                         = (ulong)seq_id+1UL;
+    h->ctx->current_bundle->txn_cnt                    = 3UL;
+    h->ctx->current_bundle->txn_received               = 1UL;
+    h->ctx->current_bundle->min_blockhash_slot         = blockhash_slot;
+    h->ctx->current_bundle->bundle                     = h->ctx->current_bundle->_txn;
+    h->ctx->current_bundle_bam->max_schedule_slot      = max_schedule_slot;
+    h->ctx->current_bundle_bam->scheduler_gen          = scheduler_gen;
+    h->ctx->current_bundle_bam->is_bam                 = 1;
+    h->ctx->current_bundle_bam->min_blockhash_slot_txn_idx = 0U;
+    h->ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = FD_PACK_MAX_TXN_PER_BUNDLE;
+    for( uchar batch_idx=0U; batch_idx<3U; batch_idx++ ) h->ctx->current_bundle->_txn[ batch_idx ] = &txns[ batch_idx ];
+
+    for( uchar batch_idx=1U; batch_idx<3U; batch_idx++ ) {
+      test_pack_tile_send_bam_resolv_frag( h,
+                                           seq_id,
+                                           scheduler_gen,
+                                           max_schedule_slot,
+                                           batch_idx,
+                                           3U,
+                                           (_Bool)revert_on_error,
+                                           batch_idx==1U || ( revert_on_error && batch_idx==2U ),
+                                           blockhash_slot,
+                                           (uchar)( 150U+10U*revert_on_error+batch_idx ) );
+      if( FD_LIKELY( batch_idx==1U ) ) {
+        FD_TEST( h->ctx->current_bundle->txn_received==(ulong)batch_idx+1UL );
+        FD_TEST( h->ctx->bam_pending_result_cnt==0UL );
+      }
+    }
+
+    FD_TEST( test_insert_fini_call_cnt==0UL );
+    FD_TEST( test_bundle_cancel_call_cnt==1UL );
+    FD_TEST( test_bundle_cancel_last_txn_cnt==3UL );
+    FD_TEST( h->ctx->current_bundle->bundle==NULL );
+    FD_TEST( !h->ctx->current_bundle_bam->is_bam );
+    FD_TEST( h->ctx->bam_pending_result_cnt==1UL );
+
+    FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+    fd_bam_bundle_result_t const * expired = test_pack_tile_assert_last_result( h,
+                                                                                seq_id,
+                                                                                max_schedule_slot,
+                                                                                3U,
+                                                                                FD_BAM_SCHED_ERR_NONE,
+                                                                                3U );
+    FD_TEST( expired->transaction_err[ 0 ]==bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+    FD_TEST( expired->transaction_err[ 1 ]==bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+    FD_TEST( expired->transaction_err[ 2 ]==bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+    FD_TEST( expired->sanitize_success[ 0 ] );
+    FD_TEST( expired->sanitize_success[ 1 ] );
+    FD_TEST( expired->sanitize_success[ 2 ] );
+    FD_TEST( h->ctx->bam_pending_result_cnt==0UL );
+
+    ulong published_result_cnt = h->out->seqs[ 0 ];
+    pack_tile_abandon_current_bam_bundle( h->ctx, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE );
+    pack_tile_abandon_current_bam_bundle( h->ctx, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_LEADER_SLOT_END );
+    FD_TEST( h->ctx->bam_pending_result_cnt==0UL );
+    FD_TEST( h->out->seqs[ 0 ]==published_result_cnt );
+
     test_pack_tile_harness_delete( h );
   }
 }
@@ -1402,6 +1514,7 @@ test_pack_tile_bam_atomic_abandon_result_mapping( void ) {
     h->ctx->current_bundle->bundle             = h->ctx->current_bundle->_txn;
     h->ctx->current_bundle_bam->max_schedule_slot = 600UL;
     h->ctx->current_bundle_bam->is_bam            = 1;
+    h->ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = FD_PACK_MAX_TXN_PER_BUNDLE;
 
     pack_tile_abandon_current_bam_bundle( h->ctx, reasons[ reason_idx ] );
 
@@ -1455,6 +1568,7 @@ main( int     argc,
   test_pack_tile_bam_completion_tracking_reuses_capacity();
   test_pack_tile_bam_stale_max_schedule_slot_rejected();
   test_pack_tile_bam_expired_blockhash_reports_member_idx();
+  test_pack_tile_bam_resolver_expired_member_reports_exact_idx();
   test_pack_tile_bam_stale_results_drain_without_drop();
   test_pack_tile_bam_same_seq_pending_duplicate_replaces_before_insert();
   test_pack_tile_bam_same_seq_different_slot_pending_duplicate_rejected_before_insert();
