@@ -497,6 +497,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
     buffered transactions to back. */
 
   int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  if( FD_UNLIKELY( is_bam ) ) txnm->bam.blockhash_expired = 0;
   ulong failure_group_id = txnm->block_engine.bundle_id;
   if( FD_UNLIKELY( is_bam && txnm->bam.txn_cnt>1U ) ) failure_group_id = (1UL<<63) | (((ulong)txnm->bam.seq_id)+1UL);
 
@@ -522,16 +523,13 @@ after_frag( fd_resolv_ctx_t *   ctx,
   if( FD_LIKELY( blockhash ) ) {
     txnm->reference_slot = blockhash->slot;
     if( FD_UNLIKELY( txnm->reference_slot+151UL<ctx->completed_slot ) ) {
-      if( FD_UNLIKELY( is_bam && txnm->bam.batch_idx==0U ) ) {
-        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.scheduler_gen, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
-        fd_bam_result_add_txn_error( &res, 0UL, bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
-        fd_bam_result_mark_sanitize_success_all( &res );
-        fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
-                               ctx->out_bam->chunk0, ctx->out_bam->wmark, &res );
+      if( FD_UNLIKELY( is_bam ) ) {
+        txnm->bam.blockhash_expired = 1;
+      } else {
+        if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+        ctx->metrics.blockhash_expired++;
+        return;
       }
-      if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
-      ctx->metrics.blockhash_expired++;
-      return;
     }
   }
 
