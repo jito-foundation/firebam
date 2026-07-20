@@ -23,7 +23,9 @@ spawn_agave( config_t const * config ) {
 
 void
 fddev_dev_cmd_fn( args_t *   args,
-                           config_t * config ) {
+                   config_t * config ) {
+  /* Shared watch requires the full Firedancer replay/node_info topology. */
+  args->dev.no_watch = 1;
   dev_cmd_fn( args, config, spawn_agave );
 }
 
