@@ -204,19 +204,14 @@ test_bam_atomic_verify_failure_result_owner( void ) {
     ulong bam_seq_before = seqs[ 1 ];
     after_frag( ctx, IN_IDX_BAM, 0UL, 0UL, sizeof(fd_txn_m_t), 0UL, 0UL, &stem );
 
-    int expect_result = cases[ case_idx ].batch_idx==0U;
-    if( expect_result ) {
-      FD_TEST( seqs[ 1 ]==bam_seq_before+1UL );
-      fd_bam_bundle_result_t const * res = (fd_bam_bundle_result_t const *)bam_dcache;
-      FD_TEST( res->seq_id           == 77U );
-      FD_TEST( res->slot             == 100UL );
-      FD_TEST( res->bundle_txn_cnt   == cases[ case_idx ].txn_cnt );
-      FD_TEST( res->bundle_err       == FD_BAM_BUNDLE_ERR_DESER );
-      FD_TEST( res->deser_index      == cases[ case_idx ].batch_idx );
-      FD_TEST( res->deser_reason     == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
-    } else {
-      FD_TEST( seqs[ 1 ]==bam_seq_before );
-    }
+    FD_TEST( seqs[ 1 ]==bam_seq_before+1UL );
+    fd_bam_bundle_result_t const * res = (fd_bam_bundle_result_t const *)bam_dcache;
+    FD_TEST( res->seq_id           == 77U );
+    FD_TEST( res->slot             == 100UL );
+    FD_TEST( res->bundle_txn_cnt   == cases[ case_idx ].txn_cnt );
+    FD_TEST( res->bundle_err       == FD_BAM_BUNDLE_ERR_DESER );
+    FD_TEST( res->deser_index      == cases[ case_idx ].batch_idx );
+    FD_TEST( res->deser_reason     == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
   }
 
   fd_memset( ctx,           0, sizeof(fd_verify_ctx_t) );

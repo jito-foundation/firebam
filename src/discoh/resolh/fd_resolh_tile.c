@@ -479,7 +479,7 @@ after_frag( fd_resolh_tile_t *  ctx,
     }
 
     if( FD_UNLIKELY( failed ) ) {
-      if( FD_UNLIKELY( is_bam && txnm->bam.batch_idx==0U ) ) {
+      if( FD_UNLIKELY( is_bam ) ) {
         fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.scheduler_gen, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
         res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
         res.deser_index  = txnm->bam.batch_idx;
