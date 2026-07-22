@@ -89,7 +89,9 @@ detect_firedancer_from_proc() {
     [[ "$parent_exe" != "$exe_path" ]] || continue
     cwd_path="$(readlink -f -- "$proc_dir/cwd" 2>/dev/null)" || continue
     resolved_path="$raw_config"
-    [[ "$resolved_path" != /* ]] && resolved_path="$cwd_path/$resolved_path"
+    if [[ "$resolved_path" != /* && ! -f "$resolved_path" ]]; then
+      resolved_path="$cwd_path/$resolved_path"
+    fi
     resolved_config="$(readlink -f -- "$resolved_path" 2>/dev/null || printf '%s\n' "$resolved_path")"
     key="$exe_path|$resolved_config"
 
