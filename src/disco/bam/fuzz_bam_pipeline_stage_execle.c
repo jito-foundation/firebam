@@ -105,7 +105,8 @@ bam_fuzz_execle_new( fd_wksp_t * wksp,
   l = FD_LAYOUT_APPEND( l, FD_BLAKE3_ALIGN,           FD_BLAKE3_FOOTPRINT );
   l = FD_LAYOUT_APPEND( l, FD_BMTREE_COMMIT_ALIGN,    FD_BMTREE_COMMIT_FOOTPRINT(0) );
   l = FD_LAYOUT_APPEND( l, fd_txncache_shmem_align(), fd_txncache_shmem_footprint( BAM_FUZZ_EXECLE_TXNCACHE_LIVE_SLOTS,
-                                                                                    BAM_FUZZ_EXECLE_TXNCACHE_TXN_PER_SLOT ) );
+                                                                                    BAM_FUZZ_EXECLE_TXNCACHE_TXN_PER_SLOT,
+                                                                                    0 ) );
   l = FD_LAYOUT_APPEND( l, fd_txncache_align(),       fd_txncache_footprint( BAM_FUZZ_EXECLE_TXNCACHE_LIVE_SLOTS ) );
   l = FD_LAYOUT_APPEND( l, fd_mcache_align(),         fd_mcache_footprint( BAM_FUZZ_EXECLE_MCACHE_DEPTH, 0UL ) );
   l = FD_LAYOUT_APPEND( l, fd_dcache_align(),         fd_dcache_footprint( fd_dcache_req_data_sz( MAX_MICROBLOCK_SZ, BAM_FUZZ_EXECLE_MCACHE_DEPTH, 1UL, 1 ), 0UL ) );
@@ -133,10 +134,12 @@ bam_fuzz_execle_new( fd_wksp_t * wksp,
   h->txncache_shmem_mem = FD_SCRATCH_ALLOC_APPEND( alloc,
                                                    fd_txncache_shmem_align(),
                                                    fd_txncache_shmem_footprint( BAM_FUZZ_EXECLE_TXNCACHE_LIVE_SLOTS,
-                                                                                BAM_FUZZ_EXECLE_TXNCACHE_TXN_PER_SLOT ) );
+                                                                                BAM_FUZZ_EXECLE_TXNCACHE_TXN_PER_SLOT,
+                                                                                0 ) );
   h->txncache_shmem = fd_txncache_shmem_join( fd_txncache_shmem_new( h->txncache_shmem_mem,
                                                                      BAM_FUZZ_EXECLE_TXNCACHE_LIVE_SLOTS,
                                                                      BAM_FUZZ_EXECLE_TXNCACHE_TXN_PER_SLOT,
+                                                                     0,
                                                                      0UL ) );
   FD_TEST( h->txncache_shmem );
 
