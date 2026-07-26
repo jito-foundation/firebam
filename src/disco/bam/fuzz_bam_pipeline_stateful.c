@@ -73,9 +73,7 @@ typedef enum {
 #define BAM_FUZZ_PB_BUF_SZ  (64UL*1024UL)
 #define BAM_FUZZ_WKSP_FOOTPRINT (8UL<<30)
 
-#define BAM_FUZZ_BANK_IN_VERIFY_IDX (0UL)
-#define BAM_FUZZ_BANK_IN_RESOLV_IDX (1UL)
-#define BAM_FUZZ_BANK_IN_EXECLE_IDX (2UL)
+#define BAM_FUZZ_BANK_IN_EXECLE_IDX (0UL)
 #define BAM_FUZZ_BANK_IN_BASE_IDX   (3UL)
 static fd_wksp_t * g_bam_fuzz_wksp;
 static long        g_bam_fuzz_now = 1L;
@@ -143,10 +141,8 @@ typedef struct {
 
 typedef struct {
   bam_fuzz_link_t verify_out;
-  bam_fuzz_link_t verify_bank_bam;
   bam_fuzz_link_t dedup_out;
   bam_fuzz_link_t resolv_pack;
-  bam_fuzz_link_t resolv_bank_bam;
   bam_fuzz_link_t pack_execle;
   bam_fuzz_link_t pack_bam_leader;
   bam_fuzz_link_t pack_bam_result;
@@ -184,6 +180,7 @@ static void
 bam_fuzz_assert_result_summary_eq( fd_bam_bundle_result_t const * actual,
                                    fd_bam_bundle_result_t const * expected ) {
   FD_TEST( actual->seq_id                == expected->seq_id );
+  FD_TEST( actual->scheduler_gen         == expected->scheduler_gen );
   FD_TEST( actual->slot                  == expected->slot );
   FD_TEST( actual->bundle_txn_cnt        == expected->bundle_txn_cnt );
   FD_TEST( actual->execution_success     == expected->execution_success );
@@ -205,6 +202,11 @@ static void
 bam_fuzz_shadow_push_result( bam_fuzz_state_t *              f,
                              fd_bam_bundle_result_t const * res ) {
   FD_TEST( f->durable_results_depth < FD_BAM_MAX_PENDING_RESULTS );
+  for( ushort i=0U; i<f->durable_results_depth; i++ ) {
+    ushort idx = (ushort)(((uint)f->durable_results_head + (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
+    fd_bam_bundle_result_t const * pending = &f->durable_results[ idx ];
+    FD_TEST( pending->scheduler_gen!=res->scheduler_gen || pending->seq_id!=res->seq_id );
+  }
 
   if( FD_UNLIKELY( res->scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT ) ) f->observed_outside_slot = 1U;
   if( FD_UNLIKELY( res->transaction_err_count ) ) {
@@ -504,13 +506,6 @@ bam_fuzz_pump_resolv( test_bam_env_t *    env,
                       ulong               max_iter ) {
   for( ulong i=0UL; i<max_iter; i++ ) {
     bam_fuzz_resolv_result_t res = bam_fuzz_resolv_credit( resolv );
-    for( ulong bank_seq=res.bank_bam_before; bank_seq<res.bank_bam_after; bank_seq++ ) {
-      bam_fuzz_ingest_result_link( env,
-                                   f,
-                                   env->state->bank_bam_in_idx + BAM_FUZZ_BANK_IN_RESOLV_IDX,
-                                   &links->resolv_bank_bam,
-                                   bank_seq );
-    }
     for( ulong pack_seq=res.pack_before; pack_seq<res.pack_after; pack_seq++ ) {
       fd_frag_meta_t const * pack_meta = links->resolv_pack.mcache +
                                          fd_mcache_line_idx( pack_seq, links->resolv_pack.depth );
@@ -522,8 +517,7 @@ bam_fuzz_pump_resolv( test_bam_env_t *    env,
       bam_fuzz_pack_result_t pack_res = bam_fuzz_pack_frag( pack, pack_meta, pack_seq );
       bam_fuzz_ingest_pack_outputs( env, f, links, execle, &pack_res );
     }
-    if( FD_UNLIKELY( res.pack_after==res.pack_before &&
-                     res.bank_bam_after==res.bank_bam_before ) ) break;
+    if( FD_UNLIKELY( res.pack_after==res.pack_before ) ) break;
   }
 }
 
@@ -540,13 +534,6 @@ bam_fuzz_run_pipeline( test_bam_env_t *       env,
                        fd_txn_m_t const *     bam_txnm,
                        ulong                  bam_seq ) {
   bam_fuzz_verify_result_t verify_res = bam_fuzz_verify_frag( verify, bam_meta, bam_seq );
-  for( ulong bank_seq=verify_res.bank_bam_before; bank_seq<verify_res.bank_bam_after; bank_seq++ ) {
-    bam_fuzz_ingest_result_link( env,
-                                 f,
-                                 env->state->bank_bam_in_idx + BAM_FUZZ_BANK_IN_VERIFY_IDX,
-                                 &links->verify_bank_bam,
-                                 bank_seq );
-  }
 
   for( ulong verify_seq=verify_res.verify_before; verify_seq<verify_res.verify_after; verify_seq++ ) {
     fd_frag_meta_t const * verify_meta = NULL;
@@ -562,13 +549,6 @@ bam_fuzz_run_pipeline( test_bam_env_t *       env,
       bam_fuzz_assert_txnm_preserved( dedup_txnm, bam_txnm );
 
       bam_fuzz_resolv_result_t resolv_res = bam_fuzz_resolv_frag( resolv, dedup_meta, dedup_seq );
-      for( ulong bank_seq=resolv_res.bank_bam_before; bank_seq<resolv_res.bank_bam_after; bank_seq++ ) {
-        bam_fuzz_ingest_result_link( env,
-                                     f,
-                                     env->state->bank_bam_in_idx + BAM_FUZZ_BANK_IN_RESOLV_IDX,
-                                     &links->resolv_bank_bam,
-                                     bank_seq );
-      }
       for( ulong pack_seq=resolv_res.pack_before; pack_seq<resolv_res.pack_after; pack_seq++ ) {
         fd_frag_meta_t const * pack_meta = NULL;
         fd_txn_m_t const * pack_txnm =
@@ -1297,8 +1277,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
                                                     env->state->verify_out.mem,
                                                     env->state->verify_out.chunk0,
                                                     env->state->verify_out.wmark,
-                                                    &links->verify_out,
-                                                    &links->verify_bank_bam );
+                                                    &links->verify_out );
   bam_fuzz_dedup_t * dedup = bam_fuzz_dedup_new( g_bam_fuzz_wksp,
                                                  links->verify_out.mem,
                                                  links->verify_out.chunk0,
@@ -1308,8 +1287,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
                                                     links->dedup_out.mem,
                                                     links->dedup_out.chunk0,
                                                     links->dedup_out.wmark,
-                                                    &links->resolv_pack,
-                                                    &links->resolv_bank_bam );
+                                                    &links->resolv_pack );
   bam_fuzz_pack_t * pack = bam_fuzz_pack_new( g_bam_fuzz_wksp,
                                               links->resolv_pack.mem,
                                               links->resolv_pack.chunk0,
@@ -1325,17 +1303,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
                                                     links->pack_execle_busy_fseq,
                                                     &links->execle_bank_bam );
   env->state->bank_bam_in_idx = BAM_FUZZ_BANK_IN_BASE_IDX;
-  env->state->bank_bam_in_cnt = 3UL;
-  env->state->bank_in[ BAM_FUZZ_BANK_IN_VERIFY_IDX ] = (fd_bam_in_ctx_t) {
-    .mem    = links->verify_bank_bam.mem,
-    .chunk0 = links->verify_bank_bam.chunk0,
-    .wmark  = links->verify_bank_bam.wmark,
-  };
-  env->state->bank_in[ BAM_FUZZ_BANK_IN_RESOLV_IDX ] = (fd_bam_in_ctx_t) {
-    .mem    = links->resolv_bank_bam.mem,
-    .chunk0 = links->resolv_bank_bam.chunk0,
-    .wmark  = links->resolv_bank_bam.wmark,
-  };
+  env->state->bank_bam_in_cnt = 1UL;
   env->state->bank_in[ BAM_FUZZ_BANK_IN_EXECLE_IDX ] = (fd_bam_in_ctx_t) {
     .mem    = links->execle_bank_bam.mem,
     .chunk0 = links->execle_bank_bam.chunk0,

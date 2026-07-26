@@ -6,9 +6,6 @@
 #ifndef TEST_BAM_RESOLVE_OUT_CNT
 #error "TEST_BAM_RESOLVE_OUT_CNT must be defined"
 #endif
-#ifndef TEST_BAM_RESOLVE_BAM_OUT_IDX
-#error "TEST_BAM_RESOLVE_BAM_OUT_IDX must be defined"
-#endif
 #ifndef TEST_BAM_RESOLVE_IN_KIND
 #error "TEST_BAM_RESOLVE_IN_KIND must be defined"
 #endif
@@ -22,9 +19,6 @@
 #define TEST_MCACHE_DEPTH 16UL
 #define TEST_DCACHE_CHUNKS 64UL
 
-FD_STATIC_ASSERT( TEST_BAM_RESOLVE_BAM_OUT_IDX < TEST_BAM_RESOLVE_OUT_CNT,
-                  test_bam_resolve_bam_out_idx );
-
 typedef struct {
   TEST_BAM_RESOLVE_CTX_T * ctx;
 
@@ -32,13 +26,10 @@ typedef struct {
 #if TEST_BAM_RESOLVE_HAS_REPLAY
   uchar replay_dcache[ TEST_DCACHE_CHUNKS*FD_CHUNK_SZ ] __attribute__((aligned(FD_CHUNK_ALIGN)));
 #endif
-  uchar bam_dcache [ TEST_DCACHE_CHUNKS*FD_CHUNK_SZ ] __attribute__((aligned(FD_CHUNK_ALIGN)));
-
   fd_frag_meta_t pack_mcache[ TEST_MCACHE_DEPTH ] __attribute__((aligned(alignof(fd_frag_meta_t))));
 #if TEST_BAM_RESOLVE_HAS_REPLAY
   fd_frag_meta_t replay_mcache[ TEST_MCACHE_DEPTH ] __attribute__((aligned(alignof(fd_frag_meta_t))));
 #endif
-  fd_frag_meta_t bam_mcache [ TEST_MCACHE_DEPTH ] __attribute__((aligned(alignof(fd_frag_meta_t))));
 
   fd_frag_meta_t * mcaches[ TEST_BAM_RESOLVE_OUT_CNT ];
   ulong            seqs[ TEST_BAM_RESOLVE_OUT_CNT ];
@@ -108,17 +99,10 @@ test_harness_new( test_harness_t * h ) {
   h->ctx->out_replay->chunk  = 0UL;
 #endif
 
-  h->ctx->out_bam->idx    = TEST_BAM_RESOLVE_BAM_OUT_IDX;
-  h->ctx->out_bam->mem    = (fd_wksp_t *)h->bam_dcache;
-  h->ctx->out_bam->chunk0 = 0UL;
-  h->ctx->out_bam->wmark  = TEST_DCACHE_CHUNKS-1UL;
-  h->ctx->out_bam->chunk  = 0UL;
-
   h->mcaches[ 0 ] = h->pack_mcache;
 #if TEST_BAM_RESOLVE_HAS_REPLAY
   h->mcaches[ 1 ] = h->replay_mcache;
 #endif
-  h->mcaches[ TEST_BAM_RESOLVE_BAM_OUT_IDX ] = h->bam_mcache;
   for( ulong i=0UL; i<TEST_BAM_RESOLVE_OUT_CNT; i++ ) {
     h->depths[ i ]       = TEST_MCACHE_DEPTH;
     h->cr_avail[ i ]     = ULONG_MAX;
@@ -179,12 +163,6 @@ test_insert_blockhash( test_harness_t * h,
   entry->slot = slot;
 }
 
-static fd_bam_bundle_result_t const *
-test_last_bam_result( test_harness_t const * h ) {
-  FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]>0UL );
-  return (fd_bam_bundle_result_t const *)h->bam_dcache;
-}
-
 static void
 test_expired_bam_forwarded_to_pack( void ) {
   test_harness_t h[1];
@@ -197,7 +175,6 @@ test_expired_bam_forwarded_to_pack( void ) {
   after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
 
   FD_TEST( h->seqs[ 0 ]==1UL );
-  FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==0UL );
   FD_TEST( txnm->reference_slot==10UL );
   FD_TEST( txnm->bam.blockhash_expired );
   FD_TEST( h->ctx->metrics.blockhash_expired==0UL );
@@ -206,8 +183,7 @@ test_expired_bam_forwarded_to_pack( void ) {
 }
 
 static void
-test_no_bank_deser_result( uchar batch_idx,
-                           ulong expected_bam_publishes ) {
+test_no_bank_deser_marker( uchar batch_idx ) {
   test_harness_t h[1];
   test_harness_new( h );
 
@@ -217,17 +193,10 @@ test_no_bank_deser_result( uchar batch_idx,
 
   after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
 
-  FD_TEST( h->seqs[ 0 ]==0UL );
-  FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==expected_bam_publishes );
-  if( FD_LIKELY( expected_bam_publishes ) ) {
-    fd_bam_bundle_result_t const * res = test_last_bam_result( h );
-    FD_TEST( res->seq_id         == 123U );
-    FD_TEST( res->slot           == 500UL );
-    FD_TEST( res->bundle_txn_cnt == 2U );
-    FD_TEST( res->bundle_err     == FD_BAM_BUNDLE_ERR_DESER );
-    FD_TEST( res->deser_index    == batch_idx );
-    FD_TEST( res->deser_reason   == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
-  }
+  FD_TEST( h->seqs[ 0 ]==1UL );
+  FD_TEST( txnm->bam.preprocess_failed );
+  FD_TEST( txnm->bam.seq_id    ==123U );
+  FD_TEST( txnm->bam.batch_idx ==batch_idx );
 
   test_harness_delete( h );
 }
@@ -252,7 +221,6 @@ test_later_expired_bam_member_and_siblings_forwarded( void ) {
       after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
 
       FD_TEST( h->seqs[ 0 ]==(ulong)batch_idx+1UL );
-      FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==0UL );
       FD_TEST( txnm->reference_slot==blockhash_slot );
       FD_TEST( txnm->bam.blockhash_expired==(batch_idx==1U) );
       FD_TEST( !h->ctx->bundle_failed );
@@ -275,7 +243,6 @@ test_unknown_blockhash_bam_bypasses_stash( void ) {
   after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
 
   FD_TEST( h->seqs[ 0 ]==1UL );
-  FD_TEST( h->seqs[ TEST_BAM_RESOLVE_BAM_OUT_IDX ]==0UL );
   FD_TEST( h->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_INSERTED_IDX ]==0UL );
 
   test_harness_delete( h );
@@ -290,8 +257,8 @@ main( int     argc,
 
   test_expired_bam_forwarded_to_pack();
   test_later_expired_bam_member_and_siblings_forwarded();
-  test_no_bank_deser_result( 0U, 1UL );
-  test_no_bank_deser_result( 1U, 1UL );
+  test_no_bank_deser_marker( 0U );
+  test_no_bank_deser_marker( 1U );
 #if TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH
   test_unknown_blockhash_bam_bypasses_stash();
 #endif

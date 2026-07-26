@@ -165,20 +165,28 @@ after_frag( fd_dedup_ctx_t *    ctx,
     FD_LOG_ERR(( "dedup: txn payload size %hu exceeds max %lu", txnm->payload_sz, FD_TPU_MTU ));
   }
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
+  int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  ulong failure_group_id = txnm->block_engine.bundle_id;
+  if( FD_UNLIKELY( is_bam && txnm->bam.txn_cnt>1U ) ) failure_group_id = (1UL<<63) | (((ulong)txnm->bam.seq_id)+1UL);
 
   /* BAM derives bundle_id from seq_id; a repeated seq_id is still a new
-     atomic-batch boundary when batch_idx returns to zero. */
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id &&
-                   ( (txnm->block_engine.bundle_id!=ctx->bundle_id) ||
-                     (txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txnm->bam.batch_idx && ctx->bundle_idx) ) ) ) {
+     BAM-batch boundary when batch_idx returns to zero. */
+  if( FD_UNLIKELY( failure_group_id &&
+                   ( (failure_group_id!=ctx->bundle_id) ||
+                     (is_bam && !txnm->bam.batch_idx) ) ) ) {
     ctx->bundle_failed = 0;
-    ctx->bundle_id     = txnm->block_engine.bundle_id;
+    ctx->bundle_id     = failure_group_id;
     ctx->bundle_idx    = 0UL;
   }
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && ctx->bundle_failed ) ) {
+  if( FD_UNLIKELY( failure_group_id && ctx->bundle_failed ) ) {
     ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_BUNDLE_PEER_FAILURE_IDX ]++;
     return;
+  }
+
+  if( FD_UNLIKELY( is_bam && txnm->bam.preprocess_failed ) ) {
+    if( FD_LIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+    goto publish;
   }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_GOSSIP ) ) {
@@ -217,20 +225,22 @@ after_frag( fd_dedup_ctx_t *    ctx,
   }
 
   if( FD_LIKELY( is_dup ) ) {
-    if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-
+    if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
     ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_DEDUP_FAILURE_IDX ]++;
+    if( FD_LIKELY( !is_bam ) ) return;
+    txnm->bam.preprocess_failed = 1U;
   } else {
-    ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 0 );
-    ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
-    /* Mark bundle transactions with sig==1 so that downstream resolv
-       tiles can route all bundle traffic to resolv:0. */
-    ulong out_sig = !!txnm->block_engine.bundle_id;
-    fd_stem_publish( stem, 0UL, out_sig, ctx->out_chunk, realized_sz, 0UL, tsorig, tspub );
-    ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, realized_sz, ctx->out_chunk0, ctx->out_wmark );
-
     ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_SUCCESS_IDX ]++;
   }
+
+publish:;
+  ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 0 );
+  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
+  /* Route every multi-transaction BAM batch through resolv:0 so valid
+     prefixes and preprocessing failures remain ordered. */
+  ulong out_sig = !!failure_group_id;
+  fd_stem_publish( stem, 0UL, out_sig, ctx->out_chunk, realized_sz, 0UL, tsorig, tspub );
+  ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, realized_sz, ctx->out_chunk0, ctx->out_wmark );
 }
 
 static void

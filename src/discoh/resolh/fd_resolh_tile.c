@@ -2,8 +2,6 @@
 
 #include "../../disco/tiles.h"
 #include "../../disco/fd_txn_m.h"
-#include "../../disco/bam/fd_bam_types.h"
-#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/metrics/fd_metrics.h"
 #include "../../flamenco/runtime/fd_system_ids_pp.h"
 
@@ -162,7 +160,6 @@ struct fd_resolh_tile {
   fd_resolh_in_t in[ 64UL ];
 
   fd_resolh_out_t out_pack[ 1UL ];
-  fd_resolh_out_t out_bam[ 1UL ];
 };
 
 typedef struct fd_resolh_tile fd_resolh_tile_t;
@@ -414,6 +411,10 @@ after_frag( fd_resolh_tile_t *  ctx,
   }
 
   txnm->reference_slot = ctx->completed_slot;
+  if( FD_UNLIKELY( is_bam && txnm->bam.preprocess_failed ) ) {
+    if( FD_LIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+    goto publish;
+  }
 
   blockhash_t const * recent_blockhash = (blockhash_t const *)( fd_txn_m_payload( txnm )+txnt->recent_blockhash_off );
   blockhash_map_t const * blockhash = NULL;
@@ -480,18 +481,16 @@ after_frag( fd_resolh_tile_t *  ctx,
 
     if( FD_UNLIKELY( failed ) ) {
       if( FD_UNLIKELY( is_bam ) ) {
-        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.scheduler_gen, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
-        res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
-        res.deser_index  = txnm->bam.batch_idx;
-        res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
-        fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
-                               ctx->out_bam->chunk0, ctx->out_bam->wmark, &res );
+        txnm->bam.preprocess_failed = 1U;
+        if( FD_LIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+        goto publish;
       }
       if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
       return;
     }
   }
 
+publish:;
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
   fd_stem_publish( stem, ctx->out_pack->idx, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, tsorig, tspub );
@@ -556,18 +555,6 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->out_pack->wmark  = fd_dcache_compact_wmark ( ctx->out_pack->mem, pack_out->dcache, pack_out->mtu );
   ctx->out_pack->chunk  = ctx->out_pack->chunk0;
 
-  *ctx->out_bam = (fd_resolh_out_t) { .idx = ULONG_MAX };
-  for( ulong i=0UL; i<tile->out_cnt; i++ ) {
-    fd_topo_link_t const * link = &topo->links[ tile->out_link_id[ i ] ];
-    if( FD_LIKELY( strcmp( link->name, "bank_bam" ) ) ) continue;
-    ctx->out_bam->idx    = i;
-    ctx->out_bam->mem    = topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ].wksp;
-    ctx->out_bam->chunk0 = fd_dcache_compact_chunk0( ctx->out_bam->mem, link->dcache );
-    ctx->out_bam->wmark  = fd_dcache_compact_wmark ( ctx->out_bam->mem, link->dcache, link->mtu );
-    ctx->out_bam->chunk  = ctx->out_bam->chunk0;
-    break;
-  }
-
   ulong scratch_top = FD_SCRATCH_ALLOC_FINI( l, scratch_align() );
   if( FD_UNLIKELY( scratch_top > (ulong)scratch + scratch_footprint( tile ) ) )
     FD_LOG_ERR(( "scratch overflow %lu %lu %lu", scratch_top - (ulong)scratch - scratch_footprint( tile ), scratch_top, (ulong)scratch + scratch_footprint( tile ) ));
@@ -620,8 +607,7 @@ fd_ext_bank_load_account( void const *  bank,
 }
 
 #define TEST_BAM_RESOLVE_CTX_T                    fd_resolh_tile_t
-#define TEST_BAM_RESOLVE_OUT_CNT                  2UL
-#define TEST_BAM_RESOLVE_BAM_OUT_IDX              1UL
+#define TEST_BAM_RESOLVE_OUT_CNT                  1UL
 #define TEST_BAM_RESOLVE_IN_KIND                  FD_RESOLH_IN_KIND_FRAGMENT
 #define TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH    1
 #include "../../disco/bam/test_bam_resolve_common.c"

@@ -134,16 +134,14 @@ static void
 test_bam_atomic_verify_failure_result_owner( void ) {
   fd_verify_ctx_t ctx[1];
   uchar           verify_dcache[ FD_TPU_REASM_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
-  uchar           bam_dcache   [ FD_TPU_REASM_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
   fd_frag_meta_t  verify_mcache[ 16UL ] __attribute__((aligned(alignof(fd_frag_meta_t))));
-  fd_frag_meta_t  bam_mcache   [ 16UL ] __attribute__((aligned(alignof(fd_frag_meta_t))));
 
-  fd_frag_meta_t * mcaches[ 2 ]      = { verify_mcache, bam_mcache };
-  ulong            seqs[ 2 ]         = { 0UL, 0UL };
-  ulong            depths[ 2 ]       = { 16UL, 16UL };
-  ulong            cr_avail[ 2 ]     = { ULONG_MAX, ULONG_MAX };
+  fd_frag_meta_t * mcaches[ 1 ]      = { verify_mcache };
+  ulong            seqs[ 1 ]         = { 0UL };
+  ulong            depths[ 1 ]       = { 16UL };
+  ulong            cr_avail[ 1 ]     = { ULONG_MAX };
   ulong            min_cr_avail      = ULONG_MAX;
-  int              out_reliable[ 2 ] = { 0, 0 };
+  int              out_reliable[ 1 ] = { 0 };
   fd_stem_context_t stem = {
     .mcaches             = mcaches,
     .seqs                = seqs,
@@ -167,22 +165,13 @@ test_bam_atomic_verify_failure_result_owner( void ) {
   for( ulong case_idx=0UL; case_idx<sizeof(cases)/sizeof(cases[0]); case_idx++ ) {
     fd_memset( ctx,           0, sizeof(fd_verify_ctx_t) );
     fd_memset( verify_dcache, 0, sizeof(verify_dcache) );
-    fd_memset( bam_dcache,    0, sizeof(bam_dcache) );
     fd_memset( verify_mcache, 0, sizeof(verify_mcache) );
-    fd_memset( bam_mcache,    0, sizeof(bam_mcache) );
     seqs[ 0 ] = 0UL;
-    seqs[ 1 ] = 0UL;
 
     ctx->out_mem    = (fd_wksp_t *)verify_dcache;
     ctx->out_chunk0 = 0UL;
     ctx->out_wmark  = sizeof(verify_dcache)/FD_CHUNK_SZ - 1UL;
     ctx->out_chunk  = 0UL;
-
-    ctx->bam_result_out_mem    = (fd_wksp_t *)bam_dcache;
-    ctx->bam_result_out_idx    = 1UL;
-    ctx->bam_result_out_chunk0 = 0UL;
-    ctx->bam_result_out_wmark  = sizeof(bam_dcache)/FD_CHUNK_SZ - 1UL;
-    ctx->bam_result_out_chunk  = 0UL;
 
     fd_txn_m_t * txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
     *txnm = (fd_txn_m_t) {
@@ -201,37 +190,24 @@ test_bam_atomic_verify_failure_result_owner( void ) {
       },
     };
 
-    ulong bam_seq_before = seqs[ 1 ];
     after_frag( ctx, IN_IDX_BAM, 0UL, 0UL, sizeof(fd_txn_m_t), 0UL, 0UL, &stem );
 
-    FD_TEST( seqs[ 1 ]==bam_seq_before+1UL );
-    fd_bam_bundle_result_t const * res = (fd_bam_bundle_result_t const *)bam_dcache;
-    FD_TEST( res->seq_id           == 77U );
-    FD_TEST( res->slot             == 100UL );
-    FD_TEST( res->bundle_txn_cnt   == cases[ case_idx ].txn_cnt );
-    FD_TEST( res->bundle_err       == FD_BAM_BUNDLE_ERR_DESER );
-    FD_TEST( res->deser_index      == cases[ case_idx ].batch_idx );
-    FD_TEST( res->deser_reason     == bam_types_DeserializationErrorReason_SANITIZE_ERROR );
+    FD_TEST( seqs[ 0 ]==1UL );
+    FD_TEST( txnm->bam.preprocess_failed );
+    FD_TEST( txnm->bam.seq_id    ==77U );
+    FD_TEST( txnm->bam.batch_idx ==cases[ case_idx ].batch_idx );
+    FD_TEST( txnm->txn_t_sz      ==fd_txn_footprint( 0UL, 0UL ) );
   }
 
   fd_memset( ctx,           0, sizeof(fd_verify_ctx_t) );
   fd_memset( verify_dcache, 0, sizeof(verify_dcache) );
-  fd_memset( bam_dcache,    0, sizeof(bam_dcache) );
   fd_memset( verify_mcache, 0, sizeof(verify_mcache) );
-  fd_memset( bam_mcache,    0, sizeof(bam_mcache) );
   seqs[ 0 ] = 0UL;
-  seqs[ 1 ] = 0UL;
 
   ctx->out_mem    = (fd_wksp_t *)verify_dcache;
   ctx->out_chunk0 = 0UL;
   ctx->out_wmark  = sizeof(verify_dcache)/FD_CHUNK_SZ - 1UL;
   ctx->out_chunk  = 0UL;
-
-  ctx->bam_result_out_mem    = (fd_wksp_t *)bam_dcache;
-  ctx->bam_result_out_idx    = 1UL;
-  ctx->bam_result_out_chunk0 = 0UL;
-  ctx->bam_result_out_wmark  = sizeof(bam_dcache)/FD_CHUNK_SZ - 1UL;
-  ctx->bam_result_out_chunk  = 0UL;
 
   fd_txn_m_t * txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
   *txnm = (fd_txn_m_t) {
@@ -248,8 +224,7 @@ test_bam_atomic_verify_failure_result_owner( void ) {
 
   after_frag( ctx, IN_IDX_BAM, 0UL, 0UL, sizeof(fd_txn_m_t), 0UL, 0UL, &stem );
 
-  FD_TEST( seqs[ 0 ]==0UL );
-  FD_TEST( seqs[ 1 ]==1UL );
+  FD_TEST( seqs[ 0 ]==1UL );
   FD_TEST( ctx->bundle_failed );
 
   *txnm = (fd_txn_m_t) {
@@ -266,8 +241,7 @@ test_bam_atomic_verify_failure_result_owner( void ) {
 
   after_frag( ctx, IN_IDX_BAM, 0UL, 0UL, sizeof(fd_txn_m_t), 0UL, 0UL, &stem );
 
-  FD_TEST( seqs[ 0 ]==0UL );
-  FD_TEST( seqs[ 1 ]==1UL );
+  FD_TEST( seqs[ 0 ]==1UL );
 }
 
 int
