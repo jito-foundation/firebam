@@ -67,8 +67,9 @@ struct fd_txn_m {
     ushort scheduler_gen;     /* BAM scheduler identity generation, propagated to discard stale in-flight results after endpoint/key changes */
     uchar  txn_cnt;           /* How many transactions are expected in the atomic transaction batch */
     uchar  batch_idx;         /* Index of this transaction inside the atomic transaction batch */
-    _Bool  revert_on_error;   /* If true and any transaction in the batch fails, revert everything. otherwise commit errors */
-    _Bool  blockhash_expired; /* Set by resolv when a known blockhash is expired so pack can reject the complete batch with the correct index */
+    uchar  revert_on_error   : 1; /* If true and any transaction in the batch fails, revert everything. otherwise commit errors */
+    uchar  blockhash_expired : 1; /* Set by resolv when a known blockhash is expired so pack can reject the complete batch with the correct index */
+    uchar  preprocess_failed : 1; /* Set when preprocessing failed so pack can terminate the complete batch */
   } bam;
 
   /* There are three additional fields at the end here, which are

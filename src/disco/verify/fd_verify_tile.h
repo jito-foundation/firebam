@@ -47,12 +47,6 @@ typedef struct {
   ulong       out_wmark;
   ulong       out_chunk;
 
-  fd_wksp_t * bam_result_out_mem;
-  ulong       bam_result_out_idx;
-  ulong       bam_result_out_chunk0;
-  ulong       bam_result_out_wmark;
-  ulong       bam_result_out_chunk;
-
   ulong       hashmap_seed;
 
   struct {

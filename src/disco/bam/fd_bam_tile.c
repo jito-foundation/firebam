@@ -996,7 +996,7 @@ after_credit( fd_bam_tile_t *  ctx,
           .scheduler_gen     = ctx->scheduler_gen,
           .txn_cnt           = pending->batch_cnt,
           .batch_idx         = pending->batch_idx,
-          .revert_on_error   = pending->revert_on_error,
+          .revert_on_error   = !!pending->revert_on_error,
         },
       };
       fd_memcpy( fd_txn_m_payload( txnm ), pending->payload, pending->payload_sz );

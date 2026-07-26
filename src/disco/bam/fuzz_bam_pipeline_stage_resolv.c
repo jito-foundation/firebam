@@ -18,8 +18,7 @@ static ulong (* const bam_fuzz_resolv_fds_refs[])( fd_topo_t const *, fd_topo_ti
 
 #define BAM_FUZZ_RESOLV_IN_DEDUP_IDX     (0UL)
 #define BAM_FUZZ_RESOLV_OUT_PACK_IDX     (0UL)
-#define BAM_FUZZ_RESOLV_OUT_BANK_BAM_IDX (1UL)
-#define BAM_FUZZ_RESOLV_OUT_CNT          (2UL)
+#define BAM_FUZZ_RESOLV_OUT_CNT          (1UL)
 #define BAM_FUZZ_RESOLV_MCACHE_DEPTH     (256UL)
 #define BAM_FUZZ_RESOLV_POOL_CNT         (256UL)
 #define BAM_FUZZ_RESOLV_MAP_CHAIN_CNT    (512UL)
@@ -40,11 +39,6 @@ struct bam_fuzz_resolv {
   void *           pack_dcache_mem;
   uchar *          pack_dcache;
 
-  void *           bank_bam_mcache_mem;
-  fd_frag_meta_t * bank_bam_mcache;
-  void *           bank_bam_dcache_mem;
-  uchar *          bank_bam_dcache;
-
   fd_stem_context_t stem[1];
   fd_frag_meta_t *  stem_mcaches[ BAM_FUZZ_RESOLV_OUT_CNT ];
   ulong             stem_seqs[ BAM_FUZZ_RESOLV_OUT_CNT ];
@@ -59,8 +53,7 @@ bam_fuzz_resolv_new( fd_wksp_t * wksp,
                      fd_wksp_t * in_mem,
                      ulong       in_chunk0,
                      ulong       in_wmark,
-                     bam_fuzz_link_t * pack_out,
-                     bam_fuzz_link_t * bank_bam_out ) {
+                     bam_fuzz_link_t * pack_out ) {
   bam_fuzz_resolv_t * h = fd_wksp_alloc_laddr( wksp, alignof(bam_fuzz_resolv_t), sizeof(bam_fuzz_resolv_t), 1UL );
   FD_TEST( h );
   fd_memset( h, 0, sizeof(*h) );
@@ -73,15 +66,12 @@ bam_fuzz_resolv_new( fd_wksp_t * wksp,
   l = FD_LAYOUT_APPEND( l, map_align(),              map_footprint() );
   l = FD_LAYOUT_APPEND( l, fd_mcache_align(),        fd_mcache_footprint( BAM_FUZZ_RESOLV_MCACHE_DEPTH, 0UL ) );
   l = FD_LAYOUT_APPEND( l, fd_dcache_align(),        fd_dcache_footprint( fd_dcache_req_data_sz( FD_TPU_RESOLVED_MTU, BAM_FUZZ_RESOLV_MCACHE_DEPTH, 1UL, 1 ), 0UL ) );
-  l = FD_LAYOUT_APPEND( l, fd_mcache_align(),        fd_mcache_footprint( BAM_FUZZ_RESOLV_MCACHE_DEPTH, 0UL ) );
-  l = FD_LAYOUT_APPEND( l, fd_dcache_align(),        fd_dcache_footprint( fd_dcache_req_data_sz( sizeof(fd_bam_bundle_result_t), BAM_FUZZ_RESOLV_MCACHE_DEPTH, 1UL, 1 ), 0UL ) );
   ulong storage_footprint = FD_LAYOUT_FINI( l, fd_dcache_align() );
   h->storage_mem = fd_wksp_alloc_laddr( wksp, fd_dcache_align(), storage_footprint, 1UL );
   FD_TEST( h->storage_mem );
 
   FD_SCRATCH_ALLOC_INIT( alloc, h->storage_mem );
-  ulong pack_data_sz     = fd_dcache_req_data_sz( FD_TPU_RESOLVED_MTU, BAM_FUZZ_RESOLV_MCACHE_DEPTH, 1UL, 1 );
-  ulong bank_bam_data_sz = fd_dcache_req_data_sz( sizeof(fd_bam_bundle_result_t), BAM_FUZZ_RESOLV_MCACHE_DEPTH, 1UL, 1 );
+  ulong pack_data_sz = fd_dcache_req_data_sz( FD_TPU_RESOLVED_MTU, BAM_FUZZ_RESOLV_MCACHE_DEPTH, 1UL, 1 );
 
   h->ctx = FD_SCRATCH_ALLOC_APPEND( alloc, alignof(fd_resolv_ctx_t), sizeof(fd_resolv_ctx_t) );
   FD_TEST( h->ctx );
@@ -108,18 +98,10 @@ bam_fuzz_resolv_new( fd_wksp_t * wksp,
   h->pack_dcache = fd_dcache_join( fd_dcache_new( h->pack_dcache_mem, pack_data_sz, 0UL ) );
   FD_TEST( h->pack_dcache );
 
-  h->bank_bam_mcache_mem = FD_SCRATCH_ALLOC_APPEND( alloc, fd_mcache_align(), fd_mcache_footprint( BAM_FUZZ_RESOLV_MCACHE_DEPTH, 0UL ) );
-  h->bank_bam_mcache = fd_mcache_join( fd_mcache_new( h->bank_bam_mcache_mem, BAM_FUZZ_RESOLV_MCACHE_DEPTH, 0UL, 0UL ) );
-  FD_TEST( h->bank_bam_mcache );
-  h->bank_bam_dcache_mem = FD_SCRATCH_ALLOC_APPEND( alloc, fd_dcache_align(), fd_dcache_footprint( bank_bam_data_sz, 0UL ) );
-  h->bank_bam_dcache = fd_dcache_join( fd_dcache_new( h->bank_bam_dcache_mem, bank_bam_data_sz, 0UL ) );
-  FD_TEST( h->bank_bam_dcache );
-
   ulong storage_top = FD_SCRATCH_ALLOC_FINI( alloc, fd_dcache_align() );
   FD_TEST( storage_top <= (ulong)h->storage_mem + storage_footprint );
 
-  h->stem_mcaches[ BAM_FUZZ_RESOLV_OUT_PACK_IDX     ] = h->pack_mcache;
-  h->stem_mcaches[ BAM_FUZZ_RESOLV_OUT_BANK_BAM_IDX ] = h->bank_bam_mcache;
+  h->stem_mcaches[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ] = h->pack_mcache;
   for( ulong i=0UL; i<BAM_FUZZ_RESOLV_OUT_CNT; i++ ) {
     h->stem_depths[ i ] = BAM_FUZZ_RESOLV_MCACHE_DEPTH;
     h->stem_cr_avail[ i ] = ULONG_MAX;
@@ -155,12 +137,6 @@ bam_fuzz_resolv_new( fd_wksp_t * wksp,
 
   *h->ctx->out_replay = (fd_resolv_out_ctx_t){ .idx = ULONG_MAX };
 
-  h->ctx->out_bam->idx    = BAM_FUZZ_RESOLV_OUT_BANK_BAM_IDX;
-  h->ctx->out_bam->mem    = (fd_wksp_t *)h->bank_bam_dcache;
-  h->ctx->out_bam->chunk0 = fd_dcache_compact_chunk0( h->bank_bam_dcache, h->bank_bam_dcache );
-  h->ctx->out_bam->wmark  = fd_dcache_compact_wmark ( h->bank_bam_dcache, h->bank_bam_dcache, sizeof(fd_bam_bundle_result_t) );
-  h->ctx->out_bam->chunk  = h->ctx->out_bam->chunk0;
-
   if( FD_LIKELY( pack_out ) ) {
     *pack_out = (bam_fuzz_link_t) {
       .mem    = (fd_wksp_t *)h->pack_dcache,
@@ -170,16 +146,6 @@ bam_fuzz_resolv_new( fd_wksp_t * wksp,
       .depth  = BAM_FUZZ_RESOLV_MCACHE_DEPTH,
     };
   }
-  if( FD_LIKELY( bank_bam_out ) ) {
-    *bank_bam_out = (bam_fuzz_link_t) {
-      .mem    = (fd_wksp_t *)h->bank_bam_dcache,
-      .mcache = h->bank_bam_mcache,
-      .chunk0 = h->ctx->out_bam->chunk0,
-      .wmark  = h->ctx->out_bam->wmark,
-      .depth  = BAM_FUZZ_RESOLV_MCACHE_DEPTH,
-    };
-  }
-
   return h;
 }
 
@@ -187,10 +153,8 @@ void
 bam_fuzz_resolv_delete( bam_fuzz_resolv_t * h ) {
   if( FD_UNLIKELY( !h ) ) return;
 
-  bam_fuzz_delete_mcache( &h->pack_mcache,     h->pack_mcache_mem     );
-  bam_fuzz_delete_dcache( &h->pack_dcache,     h->pack_dcache_mem     );
-  bam_fuzz_delete_mcache( &h->bank_bam_mcache, h->bank_bam_mcache_mem );
-  bam_fuzz_delete_dcache( &h->bank_bam_dcache, h->bank_bam_dcache_mem );
+  bam_fuzz_delete_mcache( &h->pack_mcache, h->pack_mcache_mem );
+  bam_fuzz_delete_dcache( &h->pack_dcache, h->pack_dcache_mem );
 
   if( h->storage_mem ) {
     fd_wksp_free_laddr( h->storage_mem );
@@ -215,7 +179,7 @@ static void
 bam_fuzz_resolv_seed_blockhash( bam_fuzz_resolv_t * h,
                                 fd_frag_meta_t const * meta ) {
   fd_txn_m_t const * txnm = (fd_txn_m_t const *)fd_chunk_to_laddr_const( h->ctx->in[ BAM_FUZZ_RESOLV_IN_DEDUP_IDX ].mem, meta->chunk );
-  if( FD_UNLIKELY( txnm->txn_t_sz==0U ) ) return;
+  if( FD_UNLIKELY( txnm->txn_t_sz==0U || txnm->bam.preprocess_failed ) ) return;
 
   fd_txn_t const * txnt = fd_txn_m_txn_t_const( txnm );
   blockhash_t const * hash = (blockhash_t const *)( fd_txn_m_payload_const( txnm ) + txnt->recent_blockhash_off );
@@ -231,10 +195,8 @@ bam_fuzz_resolv_frag( bam_fuzz_resolv_t * h,
                       fd_frag_meta_t const * meta,
                       ulong seq ) {
   bam_fuzz_resolv_result_t res = {
-    .pack_before     = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ],
-    .pack_after      = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ],
-    .bank_bam_before = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_BANK_BAM_IDX ],
-    .bank_bam_after  = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_BANK_BAM_IDX ],
+    .pack_before = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ],
+    .pack_after  = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ],
   };
 
   int filtered = before_frag( h->ctx, BAM_FUZZ_RESOLV_IN_DEDUP_IDX, seq, meta->sig );
@@ -243,23 +205,19 @@ bam_fuzz_resolv_frag( bam_fuzz_resolv_t * h,
   during_frag( h->ctx, BAM_FUZZ_RESOLV_IN_DEDUP_IDX, seq, meta->sig, meta->chunk, meta->sz, meta->ctl );
   after_frag( h->ctx, BAM_FUZZ_RESOLV_IN_DEDUP_IDX, seq, meta->sig, meta->sz, meta->tsorig, meta->tspub, h->stem );
 
-  res.pack_after     = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ];
-  res.bank_bam_after = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_BANK_BAM_IDX ];
+  res.pack_after = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ];
   return res;
 }
 
 bam_fuzz_resolv_result_t
 bam_fuzz_resolv_credit( bam_fuzz_resolv_t * h ) {
   bam_fuzz_resolv_result_t res = {
-    .pack_before     = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ],
-    .pack_after      = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ],
-    .bank_bam_before = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_BANK_BAM_IDX ],
-    .bank_bam_after  = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_BANK_BAM_IDX ],
+    .pack_before = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ],
+    .pack_after  = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ],
   };
   int opt_poll_in = 1;
   int charge_busy = 0;
   after_credit( h->ctx, h->stem, &opt_poll_in, &charge_busy );
-  res.pack_after     = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ];
-  res.bank_bam_after = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_BANK_BAM_IDX ];
+  res.pack_after = h->stem_seqs[ BAM_FUZZ_RESOLV_OUT_PACK_IDX ];
   return res;
 }

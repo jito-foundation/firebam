@@ -1117,14 +1117,19 @@ get_done_packing( fd_pack_ctx_t * ctx, fd_done_packing_t * done_packing, int rea
 static inline void
 pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
                                       pack_tile_bam_bundle_assembly_abandon_reason_t reason ) {
-  if( FD_UNLIKELY( !ctx->current_bundle->bundle || !ctx->current_bundle_bam->is_bam ) ) return;
+  if( FD_UNLIKELY( !ctx->current_bundle_bam->is_bam ||
+                   ( !ctx->current_bundle->bundle &&
+                     reason!=PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE ) ) ) return;
   ctx->bam_bundle_assembly_abandon_cnt[ (ulong)reason ]++;
+  long first_rx_ts_ns = ctx->current_bundle->bundle
+                         ? pack_tile_current_bam_bundle_first_rx_ts_ns( ctx )
+                         : 0L;
   pack_tile_note_bam_first_outcome( ctx,
                                     FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_BUNDLE_ASSEMBLY_ABANDONED_IDX,
-                                    pack_tile_current_bam_bundle_first_rx_ts_ns( ctx ),
+                                    first_rx_ts_ns,
                                     pack_tile_wallclock_from_ticks( ctx, fd_tickcount() ) );
   fd_ed25519_sig_t sig0[1] = {{0}};
-  _Bool have_sig0 = !!ctx->current_bundle->txn_received;
+  _Bool have_sig0 = !!ctx->current_bundle->bundle && !!ctx->current_bundle->txn_received;
   if( FD_LIKELY( have_sig0 ) ) {
     fd_memcpy( sig0, ctx->current_bundle->_txn[ 0 ]->txnp->payload + 1UL, sizeof(fd_ed25519_sig_t) );
   }
@@ -1148,7 +1153,7 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
                              bam_slot,
                              ctx->current_bundle_bam->max_schedule_slot,
                              ctx->current_bundle->min_blockhash_slot,
-                             pack_tile_current_bam_bundle_first_rx_ts_ns( ctx ),
+                             first_rx_ts_ns,
                              1U,
                              1U,
                              0U,
@@ -1159,24 +1164,23 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
                              first_missing_idx,
                              have_sig0 ? sig0 : NULL );
 
-  fd_bam_bundle_result_t res = fd_bam_result_base( seq_id,
-                                                   ctx->current_bundle_bam->scheduler_gen,
-                                                   ctx->current_bundle_bam->max_schedule_slot,
-                                                   (uchar)ctx->current_bundle->txn_cnt );
   if( FD_LIKELY( is_new_seq_abandon ) ) {
-    /* Atomic BAM verify failures after batch_idx 0 are intentionally
-       suppressed by verify once a prefix can be owned by pack. */
+    fd_bam_bundle_result_t res = fd_bam_result_base( seq_id,
+                                                     ctx->current_bundle_bam->scheduler_gen,
+                                                     ctx->current_bundle_bam->max_schedule_slot,
+                                                     (uchar)ctx->current_bundle->txn_cnt );
     res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
     res.deser_index  = (uchar)first_missing_idx;
     res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
-  } else {
-    res.scheduling_error = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
+    pack_tile_enqueue_bam_result( ctx, &res );
   }
-  pack_tile_enqueue_bam_result( ctx, &res );
 
-  fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
+  if( FD_LIKELY( ctx->current_bundle->bundle ) )
+    fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
   ctx->current_bundle->bundle = NULL;
-  ctx->current_bundle_bam->is_bam = 0;
+  /* At slot end, retain only the batch identity and received count.
+     The remaining ordered members decide SANITIZE versus OUTSIDE. */
+  ctx->current_bundle_bam->is_bam = (uchar)!is_new_seq_abandon;
 }
 
 static inline void
@@ -1838,6 +1842,37 @@ during_frag( fd_pack_ctx_t * ctx,
     long  scheduler_arrival_time_nanos = pack_tile_wallclock_from_ticks( ctx, arrival_ticks );
     FD_TEST( payload_sz<=FD_TPU_MTU    );
     FD_TEST( txn_t_sz  <=FD_TXN_MAX_SZ );
+
+    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txnm->bam.preprocess_failed ) ) {
+      FD_TEST( txnm->bam.txn_cnt>0U && txnm->bam.txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
+      FD_TEST( txnm->bam.batch_idx<txnm->bam.txn_cnt );
+      ulong bam_bundle_id = ((ulong)txnm->bam.seq_id)+1UL;
+
+      if( FD_UNLIKELY( ctx->current_bundle_bam->is_bam ) ) {
+        if( FD_UNLIKELY( ctx->current_bundle->id!=bam_bundle_id ||
+                         ctx->current_bundle_bam->scheduler_gen!=txnm->bam.scheduler_gen ) ) {
+          pack_tile_abandon_current_bam_bundle( ctx, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE );
+        } else {
+          FD_TEST( ctx->current_bundle->txn_received==txnm->bam.batch_idx );
+          if( FD_LIKELY( ctx->current_bundle->bundle ) )
+            fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
+          ctx->current_bundle->bundle = NULL;
+          ctx->current_bundle_bam->is_bam = 0;
+        }
+      }
+
+      fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id,
+                                                       txnm->bam.scheduler_gen,
+                                                       txnm->bam.max_schedule_slot,
+                                                       txnm->bam.txn_cnt );
+      res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
+      res.deser_index  = txnm->bam.batch_idx;
+      res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+      pack_tile_enqueue_bam_result( ctx, &res );
+      ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
+      return;
+    }
+
     fd_txn_t * txn  = fd_txn_m_txn_t( txnm );
 
     ulong addr_table_sz = 32UL*txn->addr_table_adtl_cnt;
@@ -1867,6 +1902,19 @@ during_frag( fd_pack_ctx_t * ctx,
       FD_TEST( txnm->block_engine.bundle_txn_cnt==fd_ulong_if( txnm->bam.revert_on_error && !txnm->bam.batch_idx, (ulong)txnm->bam.txn_cnt, 0UL ) );
 
       if( FD_UNLIKELY( txnm->bam.batch_idx &&
+                       !ctx->current_bundle->bundle &&
+                       ctx->current_bundle_bam->is_bam &&
+                       ctx->current_bundle->id==bam_bundle_id &&
+                       ctx->current_bundle_bam->scheduler_gen==txnm->bam.scheduler_gen &&
+                       txnm->bam.batch_idx==ctx->current_bundle->txn_received ) ) {
+        ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_BAM;
+        if( FD_UNLIKELY( txnm->bam.blockhash_expired &&
+                         ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx==FD_PACK_MAX_TXN_PER_BUNDLE ) )
+          ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = txnm->bam.batch_idx;
+        return;
+      }
+
+      if( FD_UNLIKELY( txnm->bam.batch_idx &&
                        ( !ctx->current_bundle->bundle ||
                          !ctx->current_bundle_bam->is_bam ||
                          ctx->current_bundle->id!=bam_bundle_id ||
@@ -1882,8 +1930,7 @@ during_frag( fd_pack_ctx_t * ctx,
                      !ctx->current_bundle_bam->is_bam ||
                      ctx->current_bundle->id!=bam_bundle_id ||
                      ( !txnm->bam.batch_idx && ctx->current_bundle->txn_received ) ) ) {
-        if( FD_UNLIKELY( ctx->current_bundle->bundle &&
-                         ctx->current_bundle_bam->is_bam &&
+        if( FD_UNLIKELY( ctx->current_bundle_bam->is_bam &&
                          ctx->current_bundle->txn_received!=ctx->current_bundle->txn_cnt ) ) {
           pack_tile_abandon_current_bam_bundle( ctx, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE );
         } else if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
@@ -2218,6 +2265,25 @@ after_frag( fd_pack_ctx_t *     ctx,
       break;
     }
     case PACK_TILE_BUNDLE_KIND_BAM: {
+        if( FD_UNLIKELY( !ctx->cur_spot ) ) {
+          ctx->current_bundle->txn_received++;
+          if( FD_LIKELY( ctx->current_bundle->txn_received==ctx->current_bundle->txn_cnt ) ) {
+            uchar expired_idx = ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx;
+            pack_tile_bam_invalid_reason_t reason = expired_idx<ctx->current_bundle->txn_cnt
+                                                     ? PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED
+                                                     : PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
+            fd_bam_bundle_result_t res = pack_tile_make_bam_invalid_result( (uint)(ctx->current_bundle->id-1UL),
+                                                                            ctx->current_bundle_bam->scheduler_gen,
+                                                                            ctx->current_bundle_bam->max_schedule_slot,
+                                                                            (uchar)ctx->current_bundle->txn_cnt,
+                                                                            expired_idx,
+                                                                            reason );
+            pack_tile_enqueue_bam_result( ctx, &res );
+            ctx->current_bundle_bam->is_bam = 0;
+          }
+          break;
+        }
+
         FD_TEST( ctx->cur_spot->txnp->bam.batch_idx==ctx->current_bundle->txn_received );
         ctx->current_bundle->txn_received++;
 

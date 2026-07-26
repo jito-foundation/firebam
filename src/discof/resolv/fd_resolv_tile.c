@@ -1,6 +1,5 @@
 #include "fd_resolv_tile.h"
 #include "../../disco/fd_txn_m.h"
-#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/topo/fd_topo.h"
 #include "../replay/fd_replay_tile.h"
 #include "../../discof/fd_startup.h"
@@ -188,7 +187,6 @@ typedef struct {
      bytes synchronously inside fd_alut_interp_next. */
   uchar alut_owner[ 32UL ];
   uchar alut_data[ FD_RUNTIME_ACC_SZ_MAX ];
-  fd_resolv_out_ctx_t out_bam[ 1UL ];
 } fd_resolv_ctx_t;
 
 FD_FN_CONST static inline ulong
@@ -518,6 +516,10 @@ after_frag( fd_resolv_ctx_t *   ctx,
   }
 
   txnm->reference_slot = ctx->completed_slot;
+  if( FD_UNLIKELY( is_bam && txnm->bam.preprocess_failed ) ) {
+    if( FD_LIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+    goto publish;
+  }
 
   blockhash_t const * recent_blockhash = (blockhash_t const *)( fd_txn_m_payload( txnm )+txnt->recent_blockhash_off );
   blockhash_map_t const * blockhash = NULL;
@@ -581,18 +583,16 @@ after_frag( fd_resolv_ctx_t *   ctx,
 
     if( FD_UNLIKELY( failed ) ) {
       if( FD_UNLIKELY( is_bam ) ) {
-        fd_bam_bundle_result_t res = fd_bam_result_base( txnm->bam.seq_id, txnm->bam.scheduler_gen, txnm->bam.max_schedule_slot, txnm->bam.txn_cnt );
-        res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
-        res.deser_index  = txnm->bam.batch_idx;
-        res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
-        fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
-                               ctx->out_bam->chunk0, ctx->out_bam->wmark, &res );
+        txnm->bam.preprocess_failed = 1U;
+        if( FD_LIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+        goto publish;
       }
       if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
       return;
     }
   }
 
+publish:;
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
   fd_stem_publish( stem, 0UL, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, tsorig, tspub );
@@ -656,18 +656,6 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->out_replay->chunk0 = fd_dcache_compact_chunk0( ctx->out_replay->mem, topo->links[ tile->out_link_id[ 1 ] ].dcache );
   ctx->out_replay->wmark  = fd_dcache_compact_wmark ( ctx->out_replay->mem, topo->links[ tile->out_link_id[ 1 ] ].dcache, topo->links[ tile->out_link_id[ 1 ] ].mtu );
   ctx->out_replay->chunk  = ctx->out_replay->chunk0;
-
-  *ctx->out_bam = (fd_resolv_out_ctx_t) { .idx = ULONG_MAX };
-  for( ulong i=0UL; i<tile->out_cnt; i++ ) {
-    fd_topo_link_t const * link = &topo->links[ tile->out_link_id[ i ] ];
-    if( FD_LIKELY( strcmp( link->name, "bank_bam" ) ) ) continue;
-    ctx->out_bam->idx    = i;
-    ctx->out_bam->mem    = topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ].wksp;
-    ctx->out_bam->chunk0 = fd_dcache_compact_chunk0( ctx->out_bam->mem, link->dcache );
-    ctx->out_bam->wmark  = fd_dcache_compact_wmark ( ctx->out_bam->mem, link->dcache, link->mtu );
-    ctx->out_bam->chunk  = ctx->out_bam->chunk0;
-    break;
-  }
 
   ulong banks_obj_id = fd_pod_queryf_ulong( topo->props, ULONG_MAX, "banks" );
   FD_TEST( banks_obj_id!=ULONG_MAX );
@@ -765,8 +753,7 @@ fd_vinyl_strerror( int err ) {
 }
 
 #define TEST_BAM_RESOLVE_CTX_T       fd_resolv_ctx_t
-#define TEST_BAM_RESOLVE_OUT_CNT     3UL
-#define TEST_BAM_RESOLVE_BAM_OUT_IDX 2UL
+#define TEST_BAM_RESOLVE_OUT_CNT     2UL
 #define TEST_BAM_RESOLVE_HAS_REPLAY  1
 #define TEST_BAM_RESOLVE_IN_KIND     IN_KIND_DEDUP
 #include "../../disco/bam/test_bam_resolve_common.c"

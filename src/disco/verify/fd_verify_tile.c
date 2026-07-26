@@ -1,6 +1,5 @@
 #include "fd_verify_tile.h"
 #include "../fd_txn_m.h"
-#include "../bam/fd_bam_publish.h"
 #include "../metrics/fd_metrics.h"
 #include "generated/fd_verify_tile_seccomp.h"
 #include "../../flamenco/gossip/fd_gossip_message.h"
@@ -117,6 +116,7 @@ after_frag( fd_verify_ctx_t *   ctx,
   txnm->txn_t_sz = (ushort)fd_txn_parse( fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, NULL );
 
   int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  if( FD_UNLIKELY( is_bam ) ) txnm->bam.preprocess_failed = 0U;
   ulong failure_group_id = txnm->block_engine.bundle_id;
   if( FD_UNLIKELY( is_bam && txnm->bam.txn_cnt>1U ) ) failure_group_id = (1UL<<63) | (((ulong)txnm->bam.seq_id)+1UL);
   int is_bundle = !!failure_group_id;
@@ -149,35 +149,21 @@ after_frag( fd_verify_ctx_t *   ctx,
 
   if( FD_UNLIKELY( failure_idx!=ULONG_MAX ) ) {
     if( FD_UNLIKELY( is_bundle ) ) ctx->bundle_failed = 1;
-    if( FD_UNLIKELY( is_bam ) ) {
-      fd_bam_bundle_result_t bam_res = {
-        .seq_id           = txnm->bam.seq_id,
-        .scheduler_gen    = txnm->bam.scheduler_gen,
-        .slot             = txnm->bam.max_schedule_slot,
-        .bundle_txn_cnt   = txnm->bam.txn_cnt,
-        .scheduling_error = FD_BAM_SCHED_ERR_NONE,
-        .bundle_err       = FD_BAM_BUNDLE_ERR_DESER,
-        .deser_index      = txnm->bam.batch_idx,
-        .deser_reason     = bam_types_DeserializationErrorReason_SANITIZE_ERROR
-      };
-      fd_bam_publish_result( stem,
-                             ctx->bam_result_out_idx,
-                             ctx->bam_result_out_mem,
-                             &ctx->bam_result_out_chunk,
-                             ctx->bam_result_out_chunk0,
-                             ctx->bam_result_out_wmark,
-                             &bam_res );
-    }
     ctx->metrics.verify_tile_result[ failure_idx ]++;
-    return;
+    if( FD_LIKELY( !is_bam ) ) return;
+    txnm->bam.preprocess_failed = 1U;
+    if( FD_UNLIKELY( !txnm->txn_t_sz ) ) {
+      txnm->txn_t_sz = (ushort)fd_txn_footprint( 0UL, 0UL );
+      fd_memset( txnt, 0, txnm->txn_t_sz );
+    }
+  } else {
+    ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_SUCCESS_IDX ]++;
   }
 
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 0 );
   ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
   fd_stem_publish( stem, 0UL, 0UL, ctx->out_chunk, realized_sz, 0UL, tsorig, tspub );
   ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, realized_sz, ctx->out_chunk0, ctx->out_wmark );
-
-  ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_SUCCESS_IDX ]++;
 }
 
 static void
@@ -240,18 +226,6 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->out_chunk0 = fd_dcache_compact_chunk0( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache );
   ctx->out_wmark  = fd_dcache_compact_wmark ( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache, topo->links[ tile->out_link_id[ 0 ] ].mtu );
   ctx->out_chunk  = ctx->out_chunk0;
-
-  ctx->bam_result_out_idx = ULONG_MAX;
-  for( ulong i=0UL; i<tile->out_cnt; i++ ) {
-    fd_topo_link_t const * bam_result_out = &topo->links[ tile->out_link_id[ i ] ];
-    if( strcmp( bam_result_out->name, "bank_bam" ) ) continue;
-    ctx->bam_result_out_idx    = i;
-    ctx->bam_result_out_mem    = topo->workspaces[ topo->objs[ bam_result_out->dcache_obj_id ].wksp_id ].wksp;
-    ctx->bam_result_out_chunk0 = fd_dcache_compact_chunk0( ctx->bam_result_out_mem, bam_result_out->dcache );
-    ctx->bam_result_out_wmark  = fd_dcache_compact_wmark ( ctx->bam_result_out_mem, bam_result_out->dcache, bam_result_out->mtu );
-    ctx->bam_result_out_chunk  = ctx->bam_result_out_chunk0;
-    break;
-  }
 
   ulong scratch_top = FD_SCRATCH_ALLOC_FINI( l, scratch_align() );
   if( FD_UNLIKELY( scratch_top > (ulong)scratch + scratch_footprint( tile ) ) )

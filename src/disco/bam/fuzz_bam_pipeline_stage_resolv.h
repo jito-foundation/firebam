@@ -12,8 +12,6 @@ typedef struct bam_fuzz_resolv bam_fuzz_resolv_t;
 typedef struct {
   ulong pack_before;
   ulong pack_after;
-  ulong bank_bam_before;
-  ulong bank_bam_after;
 } bam_fuzz_resolv_result_t;
 
 bam_fuzz_resolv_t *
@@ -21,8 +19,7 @@ bam_fuzz_resolv_new( fd_wksp_t * wksp,
                      fd_wksp_t * in_mem,
                      ulong       in_chunk0,
                      ulong       in_wmark,
-                     bam_fuzz_link_t * pack_out,
-                     bam_fuzz_link_t * bank_bam_out );
+                     bam_fuzz_link_t * pack_out );
 
 void
 bam_fuzz_resolv_delete( bam_fuzz_resolv_t * h );
