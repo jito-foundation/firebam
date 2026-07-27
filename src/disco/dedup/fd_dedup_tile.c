@@ -236,9 +236,8 @@ after_frag( fd_dedup_ctx_t *    ctx,
 publish:;
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 0 );
   ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
-  /* Route every multi-transaction BAM batch through resolv:0 so valid
-     prefixes and preprocessing failures remain ordered. */
-  ulong out_sig = !!failure_group_id;
+  /* Route all BAM transactions through resolv:0 so batches remain ordered. */
+  ulong out_sig = is_bam || !!failure_group_id;
   fd_stem_publish( stem, 0UL, out_sig, ctx->out_chunk, realized_sz, 0UL, tsorig, tspub );
   ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, realized_sz, ctx->out_chunk0, ctx->out_wmark );
 }

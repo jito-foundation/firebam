@@ -3975,9 +3975,21 @@ test_bam_pack_result_channel_contract( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_results[ 0 ].bundle_txn_cnt == ingress.result.bundle_txn_cnt );
   FD_TEST( state->bam_leader_pending == 0U );
 
-  fd_bam_test_receive_ingress_frag( state, state->pack_bam_result_in_idx, 0UL, 0UL, sizeof(fd_bam_leader_state_t) );
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_result_in_idx, 0UL, 0UL, sizeof(fd_bam_bundle_result_t) );
 
   FD_TEST( state->feedback_queue_depth == 1U );
+  FD_TEST( state->bam_results_tail == 1U );
+
+  ingress.result.slot++;
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_result_in_idx, 0UL, 0UL, sizeof(fd_bam_bundle_result_t) );
+
+  FD_TEST( state->feedback_queue_depth == 2U );
+  FD_TEST( state->bam_results_tail == 2U );
+  FD_TEST( state->bam_results[ 1 ].slot == ingress.result.slot );
+
+  fd_bam_test_receive_ingress_frag( state, state->pack_bam_result_in_idx, 0UL, 0UL, sizeof(fd_bam_leader_state_t) );
+
+  FD_TEST( state->feedback_queue_depth == 2U );
   FD_TEST( state->bam_results[ 0 ].seq_id == ingress.result.seq_id );
   FD_TEST( state->bam_leader_pending == 0U );
 

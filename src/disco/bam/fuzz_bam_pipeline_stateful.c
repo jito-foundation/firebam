@@ -205,7 +205,9 @@ bam_fuzz_shadow_push_result( bam_fuzz_state_t *              f,
   for( ushort i=0U; i<f->durable_results_depth; i++ ) {
     ushort idx = (ushort)(((uint)f->durable_results_head + (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
     fd_bam_bundle_result_t const * pending = &f->durable_results[ idx ];
-    FD_TEST( pending->scheduler_gen!=res->scheduler_gen || pending->seq_id!=res->seq_id );
+    FD_TEST( pending->scheduler_gen!=res->scheduler_gen ||
+             pending->slot         !=res->slot          ||
+             pending->seq_id       !=res->seq_id );
   }
 
   if( FD_UNLIKELY( res->scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT ) ) f->observed_outside_slot = 1U;
@@ -319,6 +321,13 @@ bam_fuzz_ingest_result_link( test_bam_env_t *       env,
   ushort tail_before  = state->bam_results_tail;
   ulong drops_before  = state->metrics.feedback_results_dropped_cnt;
   fd_bam_test_receive_ingress_frag( state, in_idx, meta->sig, meta->chunk, meta->sz );
+
+  if( FD_UNLIKELY( state->feedback_queue_depth==depth_before &&
+                   state->metrics.feedback_results_dropped_cnt==drops_before ) ) {
+    FD_TEST( state->bam_results_tail==tail_before );
+    bam_fuzz_assert_shadow_queue( f, state );
+    return;
+  }
 
   if( FD_UNLIKELY( depth_before>=FD_BAM_MAX_PENDING_RESULTS ) ) {
     FD_TEST( state->feedback_queue_depth==depth_before );
@@ -547,6 +556,7 @@ bam_fuzz_run_pipeline( test_bam_env_t *       env,
       fd_txn_m_t const * dedup_txnm =
           bam_fuzz_txnm_from_link( &links->dedup_out, dedup_seq, FD_TPU_PARSED_MTU, &dedup_meta );
       bam_fuzz_assert_txnm_preserved( dedup_txnm, bam_txnm );
+      FD_TEST( dedup_meta->sig==1UL );
 
       bam_fuzz_resolv_result_t resolv_res = bam_fuzz_resolv_frag( resolv, dedup_meta, dedup_seq );
       for( ulong pack_seq=resolv_res.pack_before; pack_seq<resolv_res.pack_after; pack_seq++ ) {

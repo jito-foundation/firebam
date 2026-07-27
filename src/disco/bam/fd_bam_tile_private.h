@@ -363,6 +363,13 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
     ctx->metrics.feedback_results_dropped_cnt++;
     return;
   }
+  for( ushort i=0U; i<ctx->feedback_queue_depth; i++ ) {
+    ushort idx = (ushort)(((uint)ctx->bam_results_head + (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
+    fd_bam_bundle_result_t const * pending = &ctx->bam_results[ idx ];
+    if( FD_UNLIKELY( pending->scheduler_gen==res->scheduler_gen &&
+                     pending->slot         ==res->slot          &&
+                     pending->seq_id       ==res->seq_id ) ) return;
+  }
   if( FD_UNLIKELY( ctx->feedback_queue_depth>=FD_BAM_MAX_PENDING_RESULTS ) ) {
     FD_LOG_WARNING(( "Dropping BAM bundle result (bam tile queue full): seq_id=%u slot=%lu bundle_txn_cnt=%u exec_success=%u sched_err=%u",
                      res->seq_id, res->slot, res->bundle_txn_cnt, (uint)res->execution_success, res->scheduling_error ));
