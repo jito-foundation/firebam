@@ -5038,6 +5038,10 @@ test_bam_gossip_tile_applies_contact_update( fd_wksp_t * wksp ) {
   FD_TEST( fd_cstr_to_ip4_addr( "127.0.0.1", &default_gossip.addr ) );
   base_ci.sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_GOSSIP ] =
       (fd_gossip_socket_t){ .is_ipv6 = 0, .ip4 = default_gossip.addr, .port = default_gossip.port };
+  base_ci.sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ] =
+      (fd_gossip_socket_t){ .is_ipv6 = 0, .ip4 = default_gossip.addr, .port = fd_ushort_bswap( 9000 ) };
+  base_ci.sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ] =
+      (fd_gossip_socket_t){ .is_ipv6 = 0, .ip4 = default_gossip.addr, .port = fd_ushort_bswap( 9006 ) };
   *ctx.my_contact_info = base_ci;
 
   ulong max_values = 128UL;
@@ -5087,14 +5091,14 @@ test_bam_gossip_tile_applies_contact_update( fd_wksp_t * wksp ) {
 
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].ip4                == bam_tpu );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].port               == fd_ushort_bswap( 5000 ) );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].ip4           == bam_tpu );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].port          == fd_ushort_bswap( 5000 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].ip4           == default_gossip.addr );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].port          == fd_ushort_bswap( 9000 ) );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ].ip4       == bam_tpu_fwd );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS ].port      == fd_ushort_bswap( 6000 ) );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].ip4           == bam_tpu );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].port          == fd_ushort_bswap( 5006 ) );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].ip4      == bam_tpu );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].port     == fd_ushort_bswap( 5006 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].ip4      == default_gossip.addr );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].port     == fd_ushort_bswap( 9006 ) );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].ip4  == bam_tpu_fwd );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].port == fd_ushort_bswap( 6006 ) );
   FD_TEST( ctx.my_contact_info->version.client == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
@@ -5113,12 +5117,12 @@ test_bam_gossip_tile_applies_contact_update( fd_wksp_t * wksp ) {
 
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].ip4            == default_tpu );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU ].port           == fd_ushort_bswap( 7000 ) );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].ip4       == default_tpu );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].port      == fd_ushort_bswap( 7000 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].ip4       == default_gossip.addr );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE ].port      == fd_ushort_bswap( 9000 ) );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].ip4       == default_tpu );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_QUIC ].port      == fd_ushort_bswap( 7006 ) );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].ip4  == default_tpu );
-  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].port == fd_ushort_bswap( 7006 ) );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].ip4  == default_gossip.addr );
+  FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].port == fd_ushort_bswap( 9006 ) );
   FD_TEST( ctx.my_contact_info->version.client == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
 
   free( gossip_mem );
