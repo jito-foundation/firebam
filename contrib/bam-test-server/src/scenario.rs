@@ -357,6 +357,7 @@ enum ScriptedEventDef {
         packets_base64_file: Option<PathBuf>,
         max_schedule_slot: Option<ScheduleSlotDef>,
         simple_vote_tx: Option<bool>,
+        simple_vote_tx_sequence: Option<Vec<bool>>,
         revert_on_error: Option<bool>,
         revert_on_error_sequence: Option<Vec<bool>>,
         packet_meta_sequence: Option<Vec<PacketMetaModeDef>>,
@@ -371,6 +372,7 @@ enum ScriptedEventDef {
         packets_base64_file: Option<PathBuf>,
         max_schedule_slot: Option<ScheduleSlotDef>,
         simple_vote_tx: Option<bool>,
+        simple_vote_tx_sequence: Option<Vec<bool>>,
         revert_on_error: Option<bool>,
         revert_on_error_sequence: Option<Vec<bool>>,
         packet_meta_sequence: Option<Vec<PacketMetaModeDef>>,
@@ -388,6 +390,7 @@ enum ScriptedEventDef {
         packets_base64_file: Option<PathBuf>,
         max_schedule_slot: Option<ScheduleSlotDef>,
         simple_vote_tx: Option<bool>,
+        simple_vote_tx_sequence: Option<Vec<bool>>,
         revert_on_error: Option<bool>,
         revert_on_error_sequence: Option<Vec<bool>>,
         packet_meta_sequence: Option<Vec<PacketMetaModeDef>>,
@@ -478,6 +481,7 @@ struct BatchEventDef {
     packets_base64_file: Option<PathBuf>,
     max_schedule_slot: Option<ScheduleSlotDef>,
     simple_vote_tx: Option<bool>,
+    simple_vote_tx_sequence: Option<Vec<bool>>,
     revert_on_error: Option<bool>,
     revert_on_error_sequence: Option<Vec<bool>>,
     packet_meta_sequence: Option<Vec<PacketMetaModeDef>>,
@@ -2353,6 +2357,7 @@ fn build_scripted_event(event: ScriptedEventDef, default_cu_per_tx: u32) -> Resu
             packets_base64_file,
             max_schedule_slot,
             simple_vote_tx,
+            simple_vote_tx_sequence,
             revert_on_error,
             revert_on_error_sequence,
             packet_meta_sequence,
@@ -2367,6 +2372,7 @@ fn build_scripted_event(event: ScriptedEventDef, default_cu_per_tx: u32) -> Resu
                 packets_base64_file,
                 cu_per_tx.unwrap_or(default_cu_per_tx),
                 simple_vote_tx.unwrap_or(false),
+                simple_vote_tx_sequence,
                 revert_on_error.unwrap_or(true),
                 revert_on_error_sequence,
                 packet_meta_sequence,
@@ -2382,6 +2388,7 @@ fn build_scripted_event(event: ScriptedEventDef, default_cu_per_tx: u32) -> Resu
             packets_base64_file,
             max_schedule_slot,
             simple_vote_tx,
+            simple_vote_tx_sequence,
             revert_on_error,
             revert_on_error_sequence,
             packet_meta_sequence,
@@ -2403,6 +2410,7 @@ fn build_scripted_event(event: ScriptedEventDef, default_cu_per_tx: u32) -> Resu
                         packets_base64_file,
                         cu_per_tx.unwrap_or(default_cu_per_tx),
                         simple_vote_tx.unwrap_or(false),
+                        simple_vote_tx_sequence,
                         revert_on_error.unwrap_or(true),
                         revert_on_error_sequence,
                         packet_meta_sequence,
@@ -2426,6 +2434,7 @@ fn build_scripted_event(event: ScriptedEventDef, default_cu_per_tx: u32) -> Resu
             packets_base64_file,
             max_schedule_slot,
             simple_vote_tx,
+            simple_vote_tx_sequence,
             revert_on_error,
             revert_on_error_sequence,
             packet_meta_sequence,
@@ -2438,6 +2447,7 @@ fn build_scripted_event(event: ScriptedEventDef, default_cu_per_tx: u32) -> Resu
                 packets_base64_file,
                 cu_per_tx.unwrap_or(default_cu_per_tx),
                 simple_vote_tx.unwrap_or(false),
+                simple_vote_tx_sequence,
                 revert_on_error.unwrap_or(true),
                 revert_on_error_sequence,
                 packet_meta_sequence,
@@ -2629,6 +2639,7 @@ fn build_batch_spec(batch: BatchEventDef, default_cu_per_tx: u32) -> Result<Batc
             batch.packets_base64_file,
             batch.cu_per_tx.unwrap_or(default_cu_per_tx),
             batch.simple_vote_tx.unwrap_or(false),
+            batch.simple_vote_tx_sequence,
             batch.revert_on_error.unwrap_or(true),
             batch.revert_on_error_sequence,
             batch.packet_meta_sequence,
@@ -2678,6 +2689,7 @@ fn build_script_packets(
     packets_base64_file: Option<PathBuf>,
     cu_per_tx: u32,
     simple_vote_tx: bool,
+    simple_vote_tx_sequence: Option<Vec<bool>>,
     revert_on_error: bool,
     revert_on_error_sequence: Option<Vec<bool>>,
     packet_meta_sequence: Option<Vec<PacketMetaModeDef>>,
@@ -2722,6 +2734,22 @@ fn build_script_packets(
             meta.flags
                 .get_or_insert_with(PacketFlags::default)
                 .revert_on_error = revert_on_error;
+        }
+    }
+
+    if let Some(sequence) = simple_vote_tx_sequence {
+        if sequence.len() != packets.len() {
+            bail!(
+                "simple_vote_tx_sequence has {} entries for {} packets",
+                sequence.len(),
+                packets.len()
+            );
+        }
+        for (packet, simple_vote_tx) in packets.iter_mut().zip(sequence) {
+            let meta = packet.meta.get_or_insert_with(Meta::default);
+            meta.flags
+                .get_or_insert_with(PacketFlags::default)
+                .simple_vote_tx = simple_vote_tx;
         }
     }
 

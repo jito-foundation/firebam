@@ -46,6 +46,8 @@ KUNORPUS_COUNT=64
 KUNORPUS_SEED_WINDOW=16
 KUNORPUS_MAX_TRANSFER_LAMPORTS=50000000000000
 KUNORPUS_SYSTEM_KIND="any"
+GENERATED_BUNDLE_MAX_BATCHES=8
+GENERATED_BUNDLE_MAX_PACKETS=5
 TIMEOUT_SECS=90
 RPC_READY_TIMEOUT_SECS="${RPC_READY_TIMEOUT_SECS:-60}"
 RPC_CURL_CONNECT_TIMEOUT_SECS="${RPC_CURL_CONNECT_TIMEOUT_SECS:-2}"
@@ -144,7 +146,8 @@ Options:
                                     mixed_stale_multi_batch,
                                     mixed_stale_reconnect,
                                     mixed_terminal_producers_reconnect,
-                                    random_mixed_multi_batch, vote_reject_once,
+                                    random_mixed_multi_batch, generated_bundle,
+                                    vote_reject_once,
                                     vote_reject_reconnect,
                                     raw_kunorpus_once, raw_kunorpus_reconnect,
                                     stale_slot_reject, stale_slot_reject_reconnect,
@@ -216,7 +219,7 @@ Options:
                                     alongside the selected live scenario
   --input-family NAME               One of: synthetic, external_scenario,
                                     kunorpus_system, kunorpus_vote,
-                                    kunorpus_raw_txn, random
+                                    kunorpus_raw_txn, kunorpus_bundle, random
                                     (default: synthetic)
   --kunorpus-count N                kunorpus generate instr count when
                                     using a kunorpus-backed family (default: 64)
@@ -230,6 +233,10 @@ Options:
                                     transfer, assign, allocate, create_account,
                                     transfer_with_seed, create_account_with_seed
                                     (default: any)
+  --generated-bundle-max-batches N Maximum batches in one generated scheduler
+                                    message (default: 8, maximum: 128)
+  --generated-bundle-max-packets N Maximum independently generated packets per
+                                    batch (default: 5, protocol maximum: 5)
   --timeout-secs N                  Per-iteration timeout (default: 90)
   --allow-operator-perturbations    Include low-frequency operator churn in random mode
   --allow-self-check-failures       Preserve invalid normalized outcomes and continue;
@@ -271,6 +278,29 @@ run_logged() {
   fi
 
   echo "error: ${label} failed; tail of ${log_file}:" >&2
+  tail -n 200 "${log_file}" >&2 || true
+  return 1
+}
+
+run_logged_retry() {
+  local label="$1"
+  local log_file="$2"
+  local attempts="$3"
+  local delay_secs="$4"
+  shift 4
+
+  local attempt
+  for ((attempt=1; attempt<=attempts; attempt++)); do
+    if "$@" >>"${log_file}" 2>&1; then
+      return 0
+    fi
+    if (( attempt < attempts )); then
+      printf 'retrying %s after attempt %d/%d\n' "${label}" "${attempt}" "${attempts}" >>"${log_file}"
+      sleep "${delay_secs}"
+    fi
+  done
+
+  echo "error: ${label} failed after ${attempts} attempts; tail of ${log_file}:" >&2
   tail -n 200 "${log_file}" >&2 || true
   return 1
 }
@@ -375,6 +405,14 @@ while (($#)); do
       ;;
     --kunorpus-system-kind)
       KUNORPUS_SYSTEM_KIND="$2"
+      shift 2
+      ;;
+    --generated-bundle-max-batches)
+      GENERATED_BUNDLE_MAX_BATCHES="$2"
+      shift 2
+      ;;
+    --generated-bundle-max-packets)
+      GENERATED_BUNDLE_MAX_PACKETS="$2"
       shift 2
       ;;
     --timeout-secs)
@@ -485,7 +523,7 @@ ATOMIC_REVERT_RUNNER="${ROOT}/contrib/validate-local-bam-atomic-revert.sh"
 FD_PAUSE_RESUME_RUNNER="${ROOT}/contrib/validate-local-bam-fd-pause-resume.sh"
 BAM_PAUSE_RESUME_RUNNER="${ROOT}/contrib/validate-local-bam-controller-pause-resume.sh"
 URL_SNI_CHURN_RUNNER="${ROOT}/contrib/validate-local-bam-url-sni-churn.sh"
-KUNORPUS="${HOME}/solfuzz/kunorpus/target/release/kunorpus"
+KUNORPUS="${KUNORPUS:-${HOME}/solfuzz/kunorpus/target/release/kunorpus}"
 
 [[ -x "${FDDEV}" ]] || die "missing validator binary ${FDDEV}"
 if [[ ! -x "${FDCTL_BIN}" ]]; then
@@ -553,12 +591,18 @@ if [[ "${RUNNER_KIND}" == "fullfd" ]]; then
 fi
 
 (( ITERATIONS >= 1 )) || die "--iterations must be at least 1"
+[[ "${GENERATED_BUNDLE_MAX_BATCHES}" =~ ^[0-9]+$ ]] \
+  && (( GENERATED_BUNDLE_MAX_BATCHES >= 1 && GENERATED_BUNDLE_MAX_BATCHES <= 128 )) \
+  || die "--generated-bundle-max-batches must be an integer from 1 through 128"
+[[ "${GENERATED_BUNDLE_MAX_PACKETS}" =~ ^[0-9]+$ ]] \
+  && (( GENERATED_BUNDLE_MAX_PACKETS >= 0 && GENERATED_BUNDLE_MAX_PACKETS <= 5 )) \
+  || die "--generated-bundle-max-packets must be an integer from 0 through 5"
 (( FROM_GENESIS_ACCOUNT != TO_GENESIS_ACCOUNT_ONE )) || die "payer and first recipient must differ"
 (( FROM_GENESIS_ACCOUNT != TO_GENESIS_ACCOUNT_TWO )) || die "payer and second recipient must differ"
 (( TO_GENESIS_ACCOUNT_ONE != TO_GENESIS_ACCOUNT_TWO )) || die "recipient indices must differ"
 
 case "${MODE}" in
-random|commit_once|replay_same_conn|replay_after_reconnect|unique_after_reconnect|seq_id_wrap_sequence|seq_id_out_of_order_multi_batch|seq_id_wrap_out_of_order_multi_batch|seq_id_wrap_conflicting_spend_multi_batch|partial_drain_reconnect|queue_burst_reconnect|queue_burst64_reconnect|queue_burst64_leader_plus1_reconnect|schedule_boundary_jitter|queue_reconnect_timing_jitter|queue_burst_multi_reconnect|queue_burst128_reconnect|queue_burst256_reconnect|queue_burst512_reconnect|queue_burst_leader_reconnect|queue_burst64_leader_reconnect|bam_fee_queue_burst_reconnect|bam_fee_source_mix_queue_burst_reconnect|bam_fee_config_refresh_queue_burst|bam_fee_config_refresh_source_mix_queue_burst|bam_fee_config_midqueue_refresh|bam_fee_config_midqueue_source_mix_queue_burst|bam_fee_config_midqueue_source_mix_multi_reconnect|source_mix_bam_tpu|source_mix_precommit|source_mix_atomic_revert_precommit|source_mix_duplicate_tpu_after_bam|disable_enable_tpu_release|source_mix_queue_burst_reconnect|source_mix_queue_burst_multi_reconnect|disable_enable_queue_burst_reconnect|quarantine_disable_enable_queue_inflight|quarantine_url_churn_queue_inflight|external_scenario|seq_id_max_once|seq_id_max_replay_after_reconnect|duplicate_seq_split|duplicate_seq_split_reconnect|seq_collision_same_conn|seq_collision_reconnect|mixed_multi_batch|mixed_empty_multi_batch|mixed_malformed_multi_batch|mixed_bad_signature_multi_batch|mixed_bad_signature_reconnect|mixed_stale_multi_batch|mixed_stale_reconnect|mixed_terminal_producers_reconnect|random_mixed_multi_batch|vote_reject_once|vote_reject_reconnect|raw_kunorpus_once|raw_kunorpus_reconnect|stale_slot_reject|stale_slot_reject_reconnect|empty_batch_reject|empty_batch_reject_reconnect|malformed_first_atomic|malformed_first_atomic_reconnect|malformed_tail_atomic|malformed_tail_atomic_reconnect|bad_signature_first_atomic|bad_signature_first_atomic_reconnect|bad_signature_tail_atomic|bad_signature_tail_atomic_reconnect|non_atomic_single_packet|valid_alt_commit|invalid_alt_missing_table|invalid_alt_missing_table_reconnect|bam_fee_priority_commit|bam_fee_priority_replay_after_reconnect|bam_fee_url_churn_priority_commit|bam_fee_url_churn_same_slot_priority_commit|bam_fee_config_refresh_priority_commit|bam_fee_config_commission_refresh_priority_commit|fee_only_commit|fee_only_reconnect|durable_nonce_commit|durable_nonce_reconnect|durable_nonce_replay_after_reconnect|durable_nonce_wrong_authority|durable_nonce_wrong_authority_reconnect|bam_cu_limit_fail|bam_cu_limit_fail_reconnect|atomic_revert|atomic_revert_reconnect|atomic_first_overdraft|atomic_first_overdraft_reconnect|atomic_mid_fail|atomic_mid_fail_reconnect|atomic_blockhash_mid_fail|atomic_blockhash_mid_fail_reconnect|atomic_resolver_mid_fail|atomic_resolver_mid_fail_reconnect|atomic_duplicate_sig_mid_fail|atomic_duplicate_sig_mid_fail_reconnect|non_atomic_inconsistent_bundle|non_atomic_first_overdraft|non_atomic_mid_overdraft|non_atomic_partial_overdraft|non_atomic_partial_overdraft_reconnect|non_atomic_partial_resolver_fail|non_atomic_partial_blockhash_fail|non_atomic_partial_duplicate_sig|non_atomic_partial_cu_fail|non_atomic_valid_multi_packet|disable_enable_unique_after_reconnect|url_churn_unique_after_reconnect|fd_pause_resume_churn|bam_pause_resume_churn|fd_restart_churn|bam_restart_churn|url_sni_churn)
+random|commit_once|replay_same_conn|replay_after_reconnect|unique_after_reconnect|seq_id_wrap_sequence|seq_id_out_of_order_multi_batch|seq_id_wrap_out_of_order_multi_batch|seq_id_wrap_conflicting_spend_multi_batch|partial_drain_reconnect|queue_burst_reconnect|queue_burst64_reconnect|queue_burst64_leader_plus1_reconnect|schedule_boundary_jitter|queue_reconnect_timing_jitter|queue_burst_multi_reconnect|queue_burst128_reconnect|queue_burst256_reconnect|queue_burst512_reconnect|queue_burst_leader_reconnect|queue_burst64_leader_reconnect|bam_fee_queue_burst_reconnect|bam_fee_source_mix_queue_burst_reconnect|bam_fee_config_refresh_queue_burst|bam_fee_config_refresh_source_mix_queue_burst|bam_fee_config_midqueue_refresh|bam_fee_config_midqueue_source_mix_queue_burst|bam_fee_config_midqueue_source_mix_multi_reconnect|source_mix_bam_tpu|source_mix_precommit|source_mix_atomic_revert_precommit|source_mix_duplicate_tpu_after_bam|disable_enable_tpu_release|source_mix_queue_burst_reconnect|source_mix_queue_burst_multi_reconnect|disable_enable_queue_burst_reconnect|quarantine_disable_enable_queue_inflight|quarantine_url_churn_queue_inflight|external_scenario|seq_id_max_once|seq_id_max_replay_after_reconnect|duplicate_seq_split|duplicate_seq_split_reconnect|seq_collision_same_conn|seq_collision_reconnect|mixed_multi_batch|mixed_empty_multi_batch|mixed_malformed_multi_batch|mixed_bad_signature_multi_batch|mixed_bad_signature_reconnect|mixed_stale_multi_batch|mixed_stale_reconnect|mixed_terminal_producers_reconnect|random_mixed_multi_batch|generated_bundle|vote_reject_once|vote_reject_reconnect|raw_kunorpus_once|raw_kunorpus_reconnect|stale_slot_reject|stale_slot_reject_reconnect|empty_batch_reject|empty_batch_reject_reconnect|malformed_first_atomic|malformed_first_atomic_reconnect|malformed_tail_atomic|malformed_tail_atomic_reconnect|bad_signature_first_atomic|bad_signature_first_atomic_reconnect|bad_signature_tail_atomic|bad_signature_tail_atomic_reconnect|non_atomic_single_packet|valid_alt_commit|invalid_alt_missing_table|invalid_alt_missing_table_reconnect|bam_fee_priority_commit|bam_fee_priority_replay_after_reconnect|bam_fee_url_churn_priority_commit|bam_fee_url_churn_same_slot_priority_commit|bam_fee_config_refresh_priority_commit|bam_fee_config_commission_refresh_priority_commit|fee_only_commit|fee_only_reconnect|durable_nonce_commit|durable_nonce_reconnect|durable_nonce_replay_after_reconnect|durable_nonce_wrong_authority|durable_nonce_wrong_authority_reconnect|bam_cu_limit_fail|bam_cu_limit_fail_reconnect|atomic_revert|atomic_revert_reconnect|atomic_first_overdraft|atomic_first_overdraft_reconnect|atomic_mid_fail|atomic_mid_fail_reconnect|atomic_blockhash_mid_fail|atomic_blockhash_mid_fail_reconnect|atomic_resolver_mid_fail|atomic_resolver_mid_fail_reconnect|atomic_duplicate_sig_mid_fail|atomic_duplicate_sig_mid_fail_reconnect|non_atomic_inconsistent_bundle|non_atomic_first_overdraft|non_atomic_mid_overdraft|non_atomic_partial_overdraft|non_atomic_partial_overdraft_reconnect|non_atomic_partial_resolver_fail|non_atomic_partial_blockhash_fail|non_atomic_partial_duplicate_sig|non_atomic_partial_cu_fail|non_atomic_valid_multi_packet|disable_enable_unique_after_reconnect|url_churn_unique_after_reconnect|fd_pause_resume_churn|bam_pause_resume_churn|fd_restart_churn|bam_restart_churn|url_sni_churn)
     ;;
   *)
     die "unsupported --mode ${MODE}"
@@ -566,7 +610,7 @@ random|commit_once|replay_same_conn|replay_after_reconnect|unique_after_reconnec
 esac
 
 case "${INPUT_FAMILY}" in
-  synthetic|external_scenario|kunorpus_system|kunorpus_vote|kunorpus_raw_txn|random)
+  synthetic|external_scenario|kunorpus_system|kunorpus_vote|kunorpus_raw_txn|kunorpus_bundle|random)
     ;;
   *)
     die "unsupported --input-family ${INPUT_FAMILY}"
@@ -592,7 +636,7 @@ if [[ -n "${BAM_DISABLED_WORKLOAD_SCRIPT}" ]]; then
 fi
 
 case "${INPUT_FAMILY}" in
-  kunorpus_system|kunorpus_vote|kunorpus_raw_txn|random)
+  kunorpus_system|kunorpus_vote|kunorpus_raw_txn|kunorpus_bundle|random)
     [[ -x "${KUNORPUS}" ]] || die "missing ${KUNORPUS}; build kunorpus first"
     ;;
 esac
@@ -603,6 +647,10 @@ fi
 
 if [[ "${INPUT_FAMILY}" == "kunorpus_raw_txn" && "${MODE}" != "random" && "${MODE}" != "raw_kunorpus_once" && "${MODE}" != "raw_kunorpus_reconnect" ]]; then
   die "--input-family kunorpus_raw_txn requires --mode raw_kunorpus_once, --mode raw_kunorpus_reconnect, or --mode random"
+fi
+
+if [[ "${INPUT_FAMILY}" == "kunorpus_bundle" && "${MODE}" != "random" && "${MODE}" != "generated_bundle" ]]; then
+  die "--input-family kunorpus_bundle requires --mode generated_bundle or --mode random"
 fi
 
 case "${KUNORPUS_SYSTEM_KIND}" in
@@ -1047,9 +1095,41 @@ materialize_external_scenario() {
     --gen-simple-system-txnctx "${GEN_SIMPLE_SYSTEM_TXNCTX_BIN}" \
     --gen-program-invocation "${GEN_PROGRAM_INVOCATION_BIN}" \
     --bridge "${BRIDGE_BIN}" \
+    --kunorpus "${KUNORPUS}" \
+    --kunorpus-count "${KUNORPUS_COUNT}" \
+    --kunorpus-seed-window "${KUNORPUS_SEED_WINDOW}" \
+    --kunorpus-max-transfer-lamports "${KUNORPUS_MAX_TRANSFER_LAMPORTS}" \
     --recent-blockhash "${blockhash}" \
     --from-seed-index "${FROM_GENESIS_ACCOUNT}" \
     --to-seed-start "${TO_GENESIS_ACCOUNT_ONE}"
+}
+
+materialize_generated_bundle_scenario() {
+  local seed="$1"
+  local recipe="$2"
+  local output="$3"
+  local packet_dir="$4"
+  local metadata="$5"
+  local blockhash="$6"
+  "${MATERIALIZE_SCENARIO}" \
+    --shape-seed "${seed}" \
+    --shape-max-batches "${GENERATED_BUNDLE_MAX_BATCHES}" \
+    --shape-max-packets "${GENERATED_BUNDLE_MAX_PACKETS}" \
+    --recipe-output "${recipe}" \
+    --output "${output}" \
+    --packet-dir "${packet_dir}" \
+    --metadata-output "${metadata}" \
+    --gen-simple-system-txnctx "${GEN_SIMPLE_SYSTEM_TXNCTX_BIN}" \
+    --gen-program-invocation "${GEN_PROGRAM_INVOCATION_BIN}" \
+    --bridge "${BRIDGE_BIN}" \
+    --kunorpus "${KUNORPUS}" \
+    --kunorpus-count "${KUNORPUS_COUNT}" \
+    --kunorpus-seed-window "${KUNORPUS_SEED_WINDOW}" \
+    --kunorpus-max-transfer-lamports "${KUNORPUS_MAX_TRANSFER_LAMPORTS}" \
+    --recent-blockhash "${blockhash}" \
+    --from-seed-index "${FROM_GENESIS_ACCOUNT}" \
+    --to-seed-start "${TO_GENESIS_ACCOUNT_ONE}" \
+    --vary-recipient
 }
 
 require_pattern() {
@@ -1312,6 +1392,10 @@ choose_mode() {
       printf '%s\n' raw_kunorpus_once
       return 0
       ;;
+    kunorpus_bundle)
+      printf '%s\n' generated_bundle
+      return 0
+      ;;
   esac
 
   local modes=(
@@ -1355,6 +1439,7 @@ choose_mode() {
     mixed_stale_reconnect
     mixed_terminal_producers_reconnect
     random_mixed_multi_batch
+    generated_bundle
     stale_slot_reject
     stale_slot_reject_reconnect
     empty_batch_reject
@@ -1439,6 +1524,10 @@ choose_input_family() {
     printf '%s\n' external_scenario
     return 0
   fi
+  if [[ "${iter_mode}" == "generated_bundle" ]]; then
+    printf '%s\n' kunorpus_bundle
+    return 0
+  fi
   if [[ "${iter_mode}" == "non_atomic_inconsistent_bundle" || "${iter_mode}" == "non_atomic_first_overdraft" || "${iter_mode}" == "non_atomic_mid_overdraft" || "${iter_mode}" == "non_atomic_partial_overdraft" || "${iter_mode}" == "non_atomic_partial_overdraft_reconnect" || "${iter_mode}" == "non_atomic_partial_resolver_fail" || "${iter_mode}" == "non_atomic_partial_blockhash_fail" || "${iter_mode}" == "non_atomic_partial_duplicate_sig" || "${iter_mode}" == "non_atomic_partial_cu_fail" || "${iter_mode}" == "seq_id_wrap_conflicting_spend_multi_batch" || "${iter_mode}" == "atomic_revert" || "${iter_mode}" == "atomic_revert_reconnect" || "${iter_mode}" == "atomic_first_overdraft" || "${iter_mode}" == "atomic_first_overdraft_reconnect" || "${iter_mode}" == "source_mix_atomic_revert_precommit" || "${iter_mode}" == "atomic_mid_fail" || "${iter_mode}" == "atomic_mid_fail_reconnect" || "${iter_mode}" == "atomic_blockhash_mid_fail" || "${iter_mode}" == "atomic_blockhash_mid_fail_reconnect" || "${iter_mode}" == "atomic_resolver_mid_fail" || "${iter_mode}" == "atomic_resolver_mid_fail_reconnect" || "${iter_mode}" == "atomic_duplicate_sig_mid_fail" || "${iter_mode}" == "atomic_duplicate_sig_mid_fail_reconnect" || "${iter_mode}" == "empty_batch_reject_reconnect" || "${iter_mode}" == "malformed_first_atomic_reconnect" || "${iter_mode}" == "malformed_tail_atomic_reconnect" || "${iter_mode}" == "bad_signature_first_atomic_reconnect" || "${iter_mode}" == "bad_signature_tail_atomic_reconnect" ]]; then
     printf '%s\n' synthetic
     return 0
@@ -1476,7 +1565,7 @@ write_repro() {
 #!/usr/bin/env bash
 set -euo pipefail
 IFS=\$'\\n\\t'
-  USE_SUDO=${USE_SUDO@Q} FDCTL_BIN=${FDCTL_BIN@Q} SOLANA_BIN_DIR=${SOLANA_BIN_DIR@Q} GUI_URL=${GUI_URL@Q} METRICS_URL=${METRICS_URL@Q} CHECK_BAM_SHRED=${CHECK_BAM_SHRED@Q} BAM_SERVER_TLS_CERT=${BAM_SERVER_TLS_CERT@Q} BAM_SERVER_TLS_KEY=${BAM_SERVER_TLS_KEY@Q} BAM_PRESEEDED_NONCE_HASH_SEED_BASE=${BAM_PRESEEDED_NONCE_HASH_SEED_BASE@Q} BAM_PRESEEDED_PROGRAM_ELF=${BAM_PRESEEDED_PROGRAM_ELF@Q} BAM_PRESEEDED_PROGRAM_ID=${BAM_PRESEEDED_PROGRAM_ID@Q} FULLFD_SNAPSHOT_FILE=${FULLFD_SNAPSHOT_FILE@Q} FULLFD_SNAPSHOT_DIR=${FULLFD_SNAPSHOT_DIR@Q} FULLFD_SNAPSHOT_BOOTSTRAP_CONFIG=${FULLFD_SNAPSHOT_BOOTSTRAP_CONFIG@Q} FULLFD_SNAPSHOT_GENESIS_FILE=${FULLFD_SNAPSHOT_GENESIS_FILE@Q} FULLFD_SNAPSHOT_GENESIS_DEST=${FULLFD_SNAPSHOT_GENESIS_DEST@Q} QUEUE_BURST_BATCH_COUNT=${QUEUE_BURST_BATCH_COUNT@Q} QUEUE_BURST_MAX_SCHEDULE_SLOT=${QUEUE_BURST_MAX_SCHEDULE_SLOT@Q} QUEUE_BURST_CLOSE_AFTER_RESULTS=${QUEUE_BURST_CLOSE_AFTER_RESULTS@Q} NORMAL_TPU_BURST_COUNT=${NORMAL_TPU_BURST_COUNT@Q} NORMAL_TPU_MATRIX_COUNT=${NORMAL_TPU_MATRIX_COUNT@Q} BAM_DISABLED_HOLD_MS=${BAM_DISABLED_HOLD_MS@Q} BAM_DISABLED_WORKLOAD_SCRIPT=${BAM_DISABLED_WORKLOAD_SCRIPT@Q} ${ROOT}/contrib/fuzz-local-bam-stateful.sh --config ${CONFIG@Q} --rpc-url ${RPC_URL@Q} --target-name ${TARGET_NAME@Q} --fddev-bin ${FDDEV@Q} --runner-kind ${RUNNER_KIND@Q} --bam-bind ${BAM_BIND@Q} --bam-url ${BAM_URL@Q} --bam-bad-url ${BAM_BAD_URL@Q} --bam-tpu-port ${BAM_TPU_PORT} --bam-tpu-fwd-port ${BAM_TPU_FWD_PORT} --bam-shred-port ${BAM_SHRED_PORT} --iterations 1 --seed ${iter_seed} --mode ${iter_mode} --input-family ${iter_input_family} --kunorpus-count ${KUNORPUS_COUNT} --kunorpus-seed-window ${KUNORPUS_SEED_WINDOW} --kunorpus-max-transfer-lamports ${KUNORPUS_MAX_TRANSFER_LAMPORTS} --kunorpus-system-kind ${KUNORPUS_SYSTEM_KIND} --timeout-secs ${TIMEOUT_SECS} --log-dir ${iter_dir@Q} --from-genesis-account ${FROM_GENESIS_ACCOUNT} --to-genesis-account-one ${TO_GENESIS_ACCOUNT_ONE} --to-genesis-account-two ${TO_GENESIS_ACCOUNT_TWO} $( [[ -n "${EXTERNAL_SCENARIO_FILE}" ]] && printf ' --scenario-file %q' "${EXTERNAL_SCENARIO_FILE}" ) $( [[ -n "${EXTERNAL_OPERATOR_EVENTS_FILE}" ]] && printf ' --operator-events-file %q' "${EXTERNAL_OPERATOR_EVENTS_FILE}" ) $( [[ "${ALLOW_OPERATOR_PERTURBATIONS}" == "1" ]] && printf '%s' '--allow-operator-perturbations' ) $( [[ "${ALLOW_SELF_CHECK_FAILURES}" == "1" ]] && printf '%s' '--allow-self-check-failures' ) $( [[ -n "${LIVE_COVERAGE_DIR}" ]] && printf ' --live-coverage-dir %q' "${LIVE_COVERAGE_DIR}" )
+  USE_SUDO=${USE_SUDO@Q} FDCTL_BIN=${FDCTL_BIN@Q} SOLANA_BIN_DIR=${SOLANA_BIN_DIR@Q} GUI_URL=${GUI_URL@Q} METRICS_URL=${METRICS_URL@Q} CHECK_BAM_SHRED=${CHECK_BAM_SHRED@Q} BAM_SERVER_TLS_CERT=${BAM_SERVER_TLS_CERT@Q} BAM_SERVER_TLS_KEY=${BAM_SERVER_TLS_KEY@Q} BAM_PRESEEDED_NONCE_HASH_SEED_BASE=${BAM_PRESEEDED_NONCE_HASH_SEED_BASE@Q} BAM_PRESEEDED_PROGRAM_ELF=${BAM_PRESEEDED_PROGRAM_ELF@Q} BAM_PRESEEDED_PROGRAM_ID=${BAM_PRESEEDED_PROGRAM_ID@Q} FULLFD_SNAPSHOT_FILE=${FULLFD_SNAPSHOT_FILE@Q} FULLFD_SNAPSHOT_DIR=${FULLFD_SNAPSHOT_DIR@Q} FULLFD_SNAPSHOT_BOOTSTRAP_CONFIG=${FULLFD_SNAPSHOT_BOOTSTRAP_CONFIG@Q} FULLFD_SNAPSHOT_GENESIS_FILE=${FULLFD_SNAPSHOT_GENESIS_FILE@Q} FULLFD_SNAPSHOT_GENESIS_DEST=${FULLFD_SNAPSHOT_GENESIS_DEST@Q} QUEUE_BURST_BATCH_COUNT=${QUEUE_BURST_BATCH_COUNT@Q} QUEUE_BURST_MAX_SCHEDULE_SLOT=${QUEUE_BURST_MAX_SCHEDULE_SLOT@Q} QUEUE_BURST_CLOSE_AFTER_RESULTS=${QUEUE_BURST_CLOSE_AFTER_RESULTS@Q} NORMAL_TPU_BURST_COUNT=${NORMAL_TPU_BURST_COUNT@Q} NORMAL_TPU_MATRIX_COUNT=${NORMAL_TPU_MATRIX_COUNT@Q} BAM_DISABLED_HOLD_MS=${BAM_DISABLED_HOLD_MS@Q} BAM_DISABLED_WORKLOAD_SCRIPT=${BAM_DISABLED_WORKLOAD_SCRIPT@Q} ${ROOT}/contrib/fuzz-local-bam-stateful.sh --config ${CONFIG@Q} --rpc-url ${RPC_URL@Q} --target-name ${TARGET_NAME@Q} --fddev-bin ${FDDEV@Q} --runner-kind ${RUNNER_KIND@Q} --bam-bind ${BAM_BIND@Q} --bam-url ${BAM_URL@Q} --bam-bad-url ${BAM_BAD_URL@Q} --bam-tpu-port ${BAM_TPU_PORT} --bam-tpu-fwd-port ${BAM_TPU_FWD_PORT} --bam-shred-port ${BAM_SHRED_PORT} --iterations 1 --seed ${iter_seed} --mode ${iter_mode} --input-family ${iter_input_family} --kunorpus-count ${KUNORPUS_COUNT} --kunorpus-seed-window ${KUNORPUS_SEED_WINDOW} --kunorpus-max-transfer-lamports ${KUNORPUS_MAX_TRANSFER_LAMPORTS} --kunorpus-system-kind ${KUNORPUS_SYSTEM_KIND} --generated-bundle-max-batches ${GENERATED_BUNDLE_MAX_BATCHES} --generated-bundle-max-packets ${GENERATED_BUNDLE_MAX_PACKETS} --timeout-secs ${TIMEOUT_SECS} --log-dir ${iter_dir@Q} --from-genesis-account ${FROM_GENESIS_ACCOUNT} --to-genesis-account-one ${TO_GENESIS_ACCOUNT_ONE} --to-genesis-account-two ${TO_GENESIS_ACCOUNT_TWO} $( [[ -n "${EXTERNAL_SCENARIO_FILE}" ]] && printf ' --scenario-file %q' "${EXTERNAL_SCENARIO_FILE}" ) $( [[ -n "${EXTERNAL_OPERATOR_EVENTS_FILE}" ]] && printf ' --operator-events-file %q' "${EXTERNAL_OPERATOR_EVENTS_FILE}" ) $( [[ "${ALLOW_OPERATOR_PERTURBATIONS}" == "1" ]] && printf '%s' '--allow-operator-perturbations' ) $( [[ "${ALLOW_SELF_CHECK_FAILURES}" == "1" ]] && printf '%s' '--allow-self-check-failures' ) $( [[ -n "${LIVE_COVERAGE_DIR}" ]] && printf ' --live-coverage-dir %q' "${LIVE_COVERAGE_DIR}" )
 EOF2
   chmod +x "${iter_dir}/repro.sh"
 }
@@ -1581,8 +1670,13 @@ start_fddev() {
       "FD_DEV_PRESEED_BAM_NONCE_HASH_SEED=$((BAM_PRESEEDED_NONCE_HASH_SEED_BASE + ITER_SEED))"
     )
   fi
-  run_logged "validator configure check" "${configure_log}" \
-    "${SUDO[@]}" "${configure_check_env[@]}" "${FDDEV}" configure check all --config "${CONFIG}"
+  if [[ "${RUNNER_KIND}" == "fullfd" ]]; then
+    run_logged_retry "validator configure check" "${configure_log}" 10 1 \
+      "${SUDO[@]}" "${configure_check_env[@]}" "${FDDEV}" configure check all --config "${CONFIG}"
+  else
+    run_logged "validator configure check" "${configure_log}" \
+      "${SUDO[@]}" "${configure_check_env[@]}" "${FDDEV}" configure check all --config "${CONFIG}"
+  fi
 
   local validator_env=()
   if [[ -n "${LIVE_COVERAGE_DIR}" ]]; then
@@ -7599,6 +7693,11 @@ validate_iteration() {
   fi
 
   case "${iter_mode}" in
+    generated_bundle)
+      [[ "${EXPECTED_TERMINAL_RESULTS}" =~ ^[0-9]+$ && "${EXPECTED_TERMINAL_RESULTS}" -ge 1 ]] \
+        || die "generated bundle did not record a positive terminal-result count"
+      require_pattern "${bam_log}" 'scripted send_multi_batch seq_ids=\[' 'scenario emitted the generated multi-batch request' "${TIMEOUT_SECS}"
+      ;;
     mixed_multi_batch)
       local seq_mid=$((seq_one + 1))
       require_pattern "${bam_log}" "scripted send_multi_batch seq_ids=\\[${seq_one}, ${seq_mid}, ${seq_two}\\]" 'scenario emitted the mixed multi-batch request' "${TIMEOUT_SECS}"
@@ -8204,7 +8303,7 @@ validate_iteration() {
       ;;
     seq_id_out_of_order_multi_batch|seq_id_wrap_out_of_order_multi_batch|seq_id_wrap_conflicting_spend_multi_batch|mixed_multi_batch|mixed_empty_multi_batch|mixed_malformed_multi_batch|mixed_bad_signature_multi_batch|mixed_bad_signature_reconnect|mixed_stale_multi_batch|mixed_stale_reconnect|mixed_terminal_producers_reconnect|random_mixed_multi_batch)
       ;;
-    external_scenario)
+    external_scenario|generated_bundle)
       ;;
     non_atomic_inconsistent_bundle)
       require_pattern "${bam_log}" "scheduler<-validator batch_result seq_id=${seq_one} status=committed txns=2 conn=1" 'independent two-transaction batch returned a committed result on conn=1' "${TIMEOUT_SECS}"
@@ -8263,8 +8362,8 @@ validate_iteration() {
 
   echo "  checking balance invariants"
   case "${iter_mode}" in
-    external_scenario)
-      echo "  external scenario has no balance invariant"
+    external_scenario|generated_bundle)
+      echo "  ${iter_mode} has no single-recipient balance invariant"
       ;;
     raw_kunorpus_once|raw_kunorpus_reconnect)
       echo "  raw corpus mode has no balance invariant"
@@ -8545,6 +8644,7 @@ echo "kunorpus count: ${KUNORPUS_COUNT}"
 echo "kunorpus seed window: ${KUNORPUS_SEED_WINDOW}"
 echo "kunorpus max transfer lamports: ${KUNORPUS_MAX_TRANSFER_LAMPORTS}"
 echo "kunorpus system kind: ${KUNORPUS_SYSTEM_KIND}"
+echo "generated bundle maxima: batches=${GENERATED_BUNDLE_MAX_BATCHES} packets=${GENERATED_BUNDLE_MAX_PACKETS}"
 echo "allow operator perturbations: ${ALLOW_OPERATOR_PERTURBATIONS}"
 echo "allow self-check failures: ${ALLOW_SELF_CHECK_FAILURES}"
 echo "live coverage dir: ${LIVE_COVERAGE_DIR:-disabled}"
@@ -8713,7 +8813,41 @@ for iter in $(seq 1 "${ITERATIONS}"); do
   ITER_EXPECT_TO_TWO=""
   EXPECTED_TERMINAL_RESULTS=""
   BLOCKHASH="n/a"
-  if [[ "${ITER_MODE}" == "external_scenario" ]]; then
+  if [[ "${ITER_MODE}" == "generated_bundle" ]]; then
+    GENERATED_RECIPE_PATH="${ITER_DIR}/scenario.recipe.toml"
+    GENERATED_MATERIALIZE_META="${ITER_DIR}/generated-materialized.env"
+    GENERATED_PACKET_DIR="${ITER_DIR}/generated-packets"
+    BLOCKHASH=$(wait_rpc_ready "${ITER_RPC_READY_TIMEOUT_SECS}") || die "validator RPC did not provide a fresh blockhash at ${RPC_URL}"
+    materialize_generated_bundle_scenario \
+      "${ITER_SEED}" \
+      "${GENERATED_RECIPE_PATH}" \
+      "${SCENARIO_PATH}" \
+      "${GENERATED_PACKET_DIR}" \
+      "${GENERATED_MATERIALIZE_META}" \
+      "${BLOCKHASH}"
+    EXPECTED_TERMINAL_RESULTS=$(metadata_get "${GENERATED_MATERIALIZE_META}" expected_terminal_results)
+    MATERIALIZED_PACKET_COUNT=$(metadata_get "${GENERATED_MATERIALIZE_META}" materialized_packet_count)
+    GENERATED_FAMILY_COUNTS=$(metadata_get "${GENERATED_MATERIALIZE_META}" generated_family_counts)
+    ITER_SYSTEM_KIND="heterogeneous"
+    ITER_FROM=$(metadata_get "${GENERATED_MATERIALIZE_META}" payer)
+    ITER_TO_ONE=$(metadata_get "${GENERATED_MATERIALIZE_META}" first_recipient)
+    ITER_TO_TWO=$(metadata_get "${GENERATED_MATERIALIZE_META}" last_recipient)
+    [[ -n "${ITER_FROM}" ]] || ITER_FROM="n/a"
+    [[ -n "${ITER_TO_ONE}" ]] || ITER_TO_ONE="n/a"
+    [[ -n "${ITER_TO_TWO}" ]] || ITER_TO_TWO="n/a"
+    if [[ "${ITER_FROM}" != "n/a" ]]; then
+      ITER_PAYER_INITIAL=$(rpc_balance "${ITER_FROM}" 2>/dev/null || true)
+    fi
+    if [[ "${ITER_TO_ONE}" != "n/a" ]]; then
+      ITER_INITIAL_TO_ONE=$(rpc_balance "${ITER_TO_ONE}" 2>/dev/null || true)
+    fi
+    if [[ "${ITER_TO_TWO}" != "n/a" ]]; then
+      ITER_INITIAL_TO_TWO=$(rpc_balance "${ITER_TO_TWO}" 2>/dev/null || true)
+    fi
+    PREPARED_INPUT_PATH="${GENERATED_RECIPE_PATH}"
+    PREPARED_INPUT_LABEL="generated_heterogeneous_bundle"
+    PREPARED_INPUT_NOTE="generated_bundle_seed=${ITER_SEED} max_batches=${GENERATED_BUNDLE_MAX_BATCHES} max_packets=${GENERATED_BUNDLE_MAX_PACKETS} materialized_packet_count=${MATERIALIZED_PACKET_COUNT} expected_terminal_results=${EXPECTED_TERMINAL_RESULTS} family_counts=${GENERATED_FAMILY_COUNTS}"
+  elif [[ "${ITER_MODE}" == "external_scenario" ]]; then
     EXTERNAL_SOURCE_SCENARIO_PATH="${ITER_DIR}/scenario.external.toml"
     EXTERNAL_MATERIALIZE_META="${ITER_DIR}/external-materialized.env"
     EXTERNAL_PACKET_DIR="${ITER_DIR}/external-packets"
@@ -9122,7 +9256,7 @@ for iter in $(seq 1 "${ITERATIONS}"); do
     fi
   fi
 
-	  if [[ "${ITER_MODE}" != "external_scenario" ]]; then
+	  if [[ "${ITER_MODE}" != "external_scenario" && "${ITER_MODE}" != "generated_bundle" ]]; then
 	    render_scenario "${ITER_MODE}" "${SCENARIO_PATH}" "${PACKET_ONE_PATH}" "${PACKET_TWO_PATH}" "${PACKET_BATCH_PATH}" "${SEQ_ONE}" "${SEQ_TWO}" "${ITER_SEED}"
 	  fi
 	  ITER_START_SLOT=$(rpc_slot 2>/dev/null || printf '0')
@@ -9166,8 +9300,21 @@ for iter in $(seq 1 "${ITERATIONS}"); do
 	  fi
 
 		  validate_iteration     "${ITER_MODE}"     "${SEQ_ONE}"     "${SEQ_TWO}"     "${FD_LOG}"     "${BAM_LOG}"     "${OPERATOR_LOG}"     "${ITER_TO_ONE}"     "${ITER_INITIAL_TO_ONE}"     "${ITER_EXPECT_TO_ONE}"     "${ITER_TO_TWO}"     "${ITER_INITIAL_TO_TWO}"     "${ITER_EXPECT_TO_TWO}"
+	  if [[ "${ITER_MODE}" == "generated_bundle" ]]; then
+	    sleep 2
+	  fi
 	  if [[ -n "${ITER_FROM}" && "${ITER_FROM}" != "n/a" ]]; then
 	    ITER_PAYER_OBSERVED=$(rpc_balance "${ITER_FROM}" 2>/dev/null || true)
+	  fi
+	  if [[ "${ITER_MODE}" == "generated_bundle" && -n "${ITER_TO_ONE}" && "${ITER_TO_ONE}" != "n/a" ]]; then
+	    ITER_OBSERVED_TO_ONE=$(rpc_balance "${ITER_TO_ONE}" 2>/dev/null || true)
+	    ITER_OWNER_ONE_OBSERVED=$(rpc_account_owner "${ITER_TO_ONE}" 2>/dev/null || true)
+	    ITER_SPACE_ONE_OBSERVED=$(rpc_account_space "${ITER_TO_ONE}" 2>/dev/null || true)
+	  fi
+	  if [[ "${ITER_MODE}" == "generated_bundle" && -n "${ITER_TO_TWO}" && "${ITER_TO_TWO}" != "n/a" ]]; then
+	    ITER_OBSERVED_TO_TWO=$(rpc_balance "${ITER_TO_TWO}" 2>/dev/null || true)
+	    ITER_OWNER_TWO_OBSERVED=$(rpc_account_owner "${ITER_TO_TWO}" 2>/dev/null || true)
+	    ITER_SPACE_TWO_OBSERVED=$(rpc_account_space "${ITER_TO_TWO}" 2>/dev/null || true)
 	  fi
 	  ITER_END_SLOT=$(rpc_slot 2>/dev/null || printf "${ITER_START_SLOT}")
 	  capture_rpc_blocks "${ITER_START_SLOT}" "${ITER_END_SLOT}" "${ITER_DIR}/rpc_blocks.jsonl"
@@ -9221,6 +9368,11 @@ start_slot=${ITER_START_SLOT}
 end_slot=${ITER_END_SLOT}
 scenario_file=${SCENARIO_PATH}
 requested_kunorpus_system_kind=${KUNORPUS_SYSTEM_KIND}
+kunorpus_count=${KUNORPUS_COUNT}
+kunorpus_seed_window=${KUNORPUS_SEED_WINDOW}
+kunorpus_max_transfer_lamports=${KUNORPUS_MAX_TRANSFER_LAMPORTS}
+generated_bundle_max_batches=${GENERATED_BUNDLE_MAX_BATCHES}
+generated_bundle_max_packets=${GENERATED_BUNDLE_MAX_PACKETS}
 system_kind=${ITER_SYSTEM_KIND}
 input_path=${PREPARED_INPUT_PATH}
 input_label=${PREPARED_INPUT_LABEL}
@@ -9255,6 +9407,11 @@ start_slot=${ITER_START_SLOT}
 end_slot=${ITER_END_SLOT}
 scenario_file=${SCENARIO_PATH}
 requested_kunorpus_system_kind=${KUNORPUS_SYSTEM_KIND}
+kunorpus_count=${KUNORPUS_COUNT}
+kunorpus_seed_window=${KUNORPUS_SEED_WINDOW}
+kunorpus_max_transfer_lamports=${KUNORPUS_MAX_TRANSFER_LAMPORTS}
+generated_bundle_max_batches=${GENERATED_BUNDLE_MAX_BATCHES}
+generated_bundle_max_packets=${GENERATED_BUNDLE_MAX_PACKETS}
 system_kind=${ITER_SYSTEM_KIND}
 input_path=${PREPARED_INPUT_PATH}
 input_label=${PREPARED_INPUT_LABEL}

@@ -190,6 +190,11 @@ MODE_VALUE=$(summary_get mode)
 INPUT_FAMILY_VALUE=$(summary_get input_family)
 SEED_VALUE=$(summary_get seed)
 REQUESTED_KUNORPUS_SYSTEM_KIND=$(summary_get requested_kunorpus_system_kind)
+KUNORPUS_COUNT_VALUE=$(summary_get kunorpus_count)
+KUNORPUS_SEED_WINDOW_VALUE=$(summary_get kunorpus_seed_window)
+KUNORPUS_MAX_TRANSFER_LAMPORTS_VALUE=$(summary_get kunorpus_max_transfer_lamports)
+GENERATED_BUNDLE_MAX_BATCHES_VALUE=$(summary_get generated_bundle_max_batches)
+GENERATED_BUNDLE_MAX_PACKETS_VALUE=$(summary_get generated_bundle_max_packets)
 if [[ "${MODE_VALUE}" == "external_scenario" ]]; then
   [[ -n "${SCENARIO_FILE}" ]] || die "--scenario-file is required for external_scenario"
   [[ -f "${SCENARIO_FILE}" ]] || die "missing scenario file ${SCENARIO_FILE}"
@@ -207,6 +212,11 @@ fi
 if [[ -z "${REQUESTED_KUNORPUS_SYSTEM_KIND}" ]]; then
   REQUESTED_KUNORPUS_SYSTEM_KIND=any
 fi
+KUNORPUS_COUNT_VALUE=${KUNORPUS_COUNT_VALUE:-64}
+KUNORPUS_SEED_WINDOW_VALUE=${KUNORPUS_SEED_WINDOW_VALUE:-16}
+KUNORPUS_MAX_TRANSFER_LAMPORTS_VALUE=${KUNORPUS_MAX_TRANSFER_LAMPORTS_VALUE:-50000000000000}
+GENERATED_BUNDLE_MAX_BATCHES_VALUE=${GENERATED_BUNDLE_MAX_BATCHES_VALUE:-8}
+GENERATED_BUNDLE_MAX_PACKETS_VALUE=${GENERATED_BUNDLE_MAX_PACKETS_VALUE:-5}
 
 if [[ -z "${LOG_DIR}" ]]; then
   LOG_DIR=$(mktemp -d /tmp/firebam-fullfd-scenario.XXXXXX)
@@ -238,7 +248,12 @@ fuzz_args=(
   --seed "${SEED_VALUE}" \
   --mode "${MODE_VALUE}" \
   --input-family "${INPUT_FAMILY_VALUE}" \
+  --kunorpus-count "${KUNORPUS_COUNT_VALUE}" \
+  --kunorpus-seed-window "${KUNORPUS_SEED_WINDOW_VALUE}" \
+  --kunorpus-max-transfer-lamports "${KUNORPUS_MAX_TRANSFER_LAMPORTS_VALUE}" \
   --kunorpus-system-kind "${REQUESTED_KUNORPUS_SYSTEM_KIND}" \
+  --generated-bundle-max-batches "${GENERATED_BUNDLE_MAX_BATCHES_VALUE}" \
+  --generated-bundle-max-packets "${GENERATED_BUNDLE_MAX_PACKETS_VALUE}" \
   --timeout-secs "${TIMEOUT_SECS}" \
   --log-dir "${WORK_DIR}"
 )
@@ -283,6 +298,11 @@ input_family=${INPUT_FAMILY_VALUE}
 scenario_file=${SCENARIO_FILE}
 source_summary=${SOURCE_SUMMARY}
 requested_kunorpus_system_kind=${REQUESTED_KUNORPUS_SYSTEM_KIND}
+kunorpus_count=${KUNORPUS_COUNT_VALUE}
+kunorpus_seed_window=${KUNORPUS_SEED_WINDOW_VALUE}
+kunorpus_max_transfer_lamports=${KUNORPUS_MAX_TRANSFER_LAMPORTS_VALUE}
+generated_bundle_max_batches=${GENERATED_BUNDLE_MAX_BATCHES_VALUE}
+generated_bundle_max_packets=${GENERATED_BUNDLE_MAX_PACKETS_VALUE}
 fullfd_bin=${FULLFD_BIN}
 config=${CONFIG}
 rpc_url=${RPC_URL}

@@ -134,6 +134,13 @@ def export_iteration(iter_dir: Path, output_root: Path) -> dict[str, Any] | None
     entry_dir.mkdir(parents=True, exist_ok=True)
 
     dest_scenario, copied_packets = copy_scenario_with_packets(source_scenario, entry_dir)
+    recipe_path: Path | None = None
+    source_recipe = summary.get("input_path")
+    if mode == "generated_bundle" and source_recipe:
+        candidate = Path(source_recipe)
+        if candidate.is_file():
+            recipe_path = entry_dir / "scenario.recipe.toml"
+            shutil.copy2(candidate, recipe_path)
     if summary_path.exists():
         shutil.copy2(summary_path, entry_dir / "summary.txt")
     if outcome_path.exists():
@@ -152,6 +159,7 @@ def export_iteration(iter_dir: Path, output_root: Path) -> dict[str, Any] | None
         "seq_two": summary.get("seq_two"),
         "source_iteration": str(iter_dir),
         "scenario": str(dest_scenario.relative_to(output_root)),
+        "recipe": str(recipe_path.relative_to(output_root)) if recipe_path else None,
         "summary": str((entry_dir / "summary.txt").relative_to(output_root)),
         "normalized_outcome": str((entry_dir / "normalized_outcome.json").relative_to(output_root))
         if outcome_path.exists()
