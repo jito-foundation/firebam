@@ -603,6 +603,35 @@ fd_bam_shred_update( fd_bam_tile_t *    ctx,
                                                  ctx->shred_out.wmark );
 }
 
+static inline void
+fd_bam_tile_begin_ownership_generation( fd_bam_tile_t * ctx,
+                                        _Bool           forget_feedback ) {
+  ctx->ownership_gen++;
+  if( FD_UNLIKELY( !ctx->ownership_gen ) ) ctx->ownership_gen++;
+  ctx->ownership_gen_retired = 1U;
+
+  while( FD_UNLIKELY( !bam_pending_txn_empty( ctx->pending_txns ) ) )
+    bam_pending_txn_remove_head( ctx->pending_txns );
+  if( FD_UNLIKELY( forget_feedback && ctx->feedback_queue_depth ) ) {
+    ctx->metrics.feedback_results_dropped_cnt += (ulong)ctx->feedback_queue_depth;
+    ctx->bam_results_head     = ctx->bam_results_tail;
+    ctx->feedback_queue_depth = 0U;
+  }
+
+  ctx->bam_tpu            = (fd_ip4_port_t){0};
+  ctx->bam_tpu_fwd        = (fd_ip4_port_t){0};
+  ctx->bam_shred_sock_cnt = 0U;
+  fd_memset( ctx->bam_shred_sock, 0, sizeof(ctx->bam_shred_sock) );
+  ctx->tpu_update_state       = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
+  ctx->client_id_update_state = FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN;
+
+  /* The low bit remains set until pack has purged pending old work. */
+  if( FD_LIKELY( ctx->bam_gen_fseq ) ) {
+    FD_HW_MFENCE_ST();
+    fd_fseq_update( ctx->bam_gen_fseq, ((ulong)ctx->ownership_gen<<1) | 1UL );
+  }
+}
+
 void
 fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
                              fd_stem_context_t * stem,
@@ -610,6 +639,15 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
   _Bool use_bam_contact = bam_active && fd_bam_has_effective_contact( ctx );
   _Bool prev_bam_active = ctx->bam_status_fseq &&
                           fd_fseq_query( ctx->bam_status_fseq )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+
+  /* Hold ownership until pack acknowledges retirement of pending work. */
+  if( FD_UNLIKELY( prev_bam_active && !bam_active && !ctx->ownership_gen_retired ) )
+    fd_bam_tile_begin_ownership_generation( ctx, 0 );
+
+  _Bool generation_ready = !ctx->bam_gen_fseq ||
+                           fd_fseq_query( ctx->bam_gen_fseq )==((ulong)ctx->ownership_gen<<1);
+  if( FD_UNLIKELY( ctx->ownership_gen_retired && !generation_ready ) ) return;
+  if( FD_UNLIKELY( ctx->ownership_gen_retired || prev_bam_active!=bam_active ) ) FD_HW_MFENCE_LD();
 
   if( FD_UNLIKELY( !bam_active ) ) {
     ctx->bam_gossip_handoff_pending = 0U;
@@ -649,36 +687,18 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
        active-state refresh. */
     if( FD_UNLIKELY( !prev_bam_active ) )
       (void)FD_ATOMIC_CAS( ctx->bam_status_fseq, 0UL, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+    if( FD_LIKELY( fd_fseq_query( ctx->bam_status_fseq )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) )
+      ctx->ownership_gen_retired = 0U;
   }
 }
 
 static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
 
 static inline void
-fd_bam_tile_forget_scheduler_work( fd_bam_tile_t * ctx ) {
-  while( FD_UNLIKELY( !bam_pending_txn_empty( ctx->pending_txns ) ) )
-    bam_pending_txn_remove_head( ctx->pending_txns );
-
-  if( FD_UNLIKELY( ctx->feedback_queue_depth ) ) {
-    ctx->metrics.feedback_results_dropped_cnt += (ulong)ctx->feedback_queue_depth;
-    ctx->bam_results_head      = ctx->bam_results_tail;
-    ctx->feedback_queue_depth  = 0U;
-  }
-}
-
-static inline void
 fd_bam_tile_begin_scheduler_generation( fd_bam_tile_t * ctx ) {
   ctx->scheduler_gen++;
   if( FD_UNLIKELY( !ctx->scheduler_gen ) ) ctx->scheduler_gen++;
-
-  fd_bam_tile_forget_scheduler_work( ctx );
-
-  ctx->bam_tpu            = (fd_ip4_port_t){0};
-  ctx->bam_tpu_fwd        = (fd_ip4_port_t){0};
-  ctx->bam_shred_sock_cnt = 0U;
-  fd_memset( ctx->bam_shred_sock, 0, sizeof(ctx->bam_shred_sock) );
-  ctx->tpu_update_state       = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
-  ctx->client_id_update_state = FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN;
+  fd_bam_tile_begin_ownership_generation( ctx, 1 );
 }
 
 /* Two-phase fragment staging kind.
@@ -994,6 +1014,7 @@ after_credit( fd_bam_tile_t *  ctx,
           .max_schedule_slot = pending->max_schedule_slot,
           .seq_id            = pending->seq_id,
           .scheduler_gen     = ctx->scheduler_gen,
+          .ownership_gen     = ctx->ownership_gen,
           .txn_cnt           = pending->batch_cnt,
           .batch_idx         = pending->batch_idx,
           .revert_on_error   = !!pending->revert_on_error,
@@ -1409,6 +1430,7 @@ privileged_init( fd_topo_t const *      topo,
   }
 
   memset( ctx, 0, sizeof(fd_bam_tile_t) );
+  ctx->ownership_gen_retired = 1U;
   ctx->grpc_client_mem = grpc_mem;
   ctx->pending_txns    = bam_pending_txn_join( bam_pending_txn_new( pending_mem, pending_max ) );
   ctx->decoded_multi   = (fd_bam_decoded_multi_batch_t *)decoded_multi_mem;
@@ -1667,9 +1689,16 @@ unprivileged_init( fd_topo_t const *      topo,
   if( FD_UNLIKELY( bam_status_obj_id == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_status object" ));
   ctx->bam_status_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) );
   if( FD_UNLIKELY( !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "bam tile missing bam_status fseq" ));
+
+  ulong bam_gen_obj_id = fd_pod_query_ulong( topo->props, "bam_gen", ULONG_MAX );
+  if( FD_UNLIKELY( bam_gen_obj_id == ULONG_MAX ) ) FD_LOG_ERR(( "Missing bam_gen object" ));
+  ctx->bam_gen_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_gen_obj_id ) );
+  if( FD_UNLIKELY( !ctx->bam_gen_fseq ) ) FD_LOG_ERR(( "bam tile missing bam_gen fseq" ));
+
   /* Start disconnected so a late BAM connect transitions the flag to 1
      and wakes up peers waiting for the override. */
   fd_fseq_update( ctx->bam_status_fseq, 0UL );
+  fd_fseq_update( ctx->bam_gen_fseq, (ulong)ctx->ownership_gen<<1 );
 
   fd_bam_tile_parse_endpoint( ctx, tile );
 

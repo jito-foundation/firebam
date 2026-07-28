@@ -5900,6 +5900,52 @@ test_bam_endpoint_change_forgets_cached_contact_before_incomplete_refresh( fd_wk
   test_bam_env_destroy( env );
 }
 
+static void
+test_bam_ownership_generation_retirement_waits_for_pack( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  ulong bam_status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+  ulong generation = (ulong)state->ownership_gen<<1;
+  state->bam_status_fseq  = &bam_status;
+  state->bam_gen_fseq     = &generation;
+  state->ownership_gen_retired = 0U;
+
+  fd_bam_bundle_result_t result = test_make_bundle_result( 731U, 1731UL, 1U );
+  result.scheduler_gen = state->scheduler_gen;
+  test_enqueue_bundle_result( state, &result );
+  FD_TEST( state->feedback_queue_depth==1UL );
+
+  /* A transport reset requests a new ownership generation without
+     changing scheduler identity or dropping durable feedback.  Ownership
+     remains active until pack acknowledges that old pending work is gone. */
+  ushort old_scheduler_gen = state->scheduler_gen;
+  ushort old_ownership_gen = state->ownership_gen;
+  fd_bam_client_reset( state );
+  FD_TEST( state->scheduler_gen==old_scheduler_gen );
+  FD_TEST( state->ownership_gen!=old_ownership_gen );
+  FD_TEST( generation==(((ulong)state->ownership_gen<<1) | 1UL) );
+  FD_TEST( bam_status==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  FD_TEST( state->ownership_gen_retired );
+  FD_TEST( state->feedback_queue_depth==1UL );
+
+  /* A fast reconnect cannot bypass the still-unacknowledged retirement
+     merely because bam_status has not dropped yet. */
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( bam_status==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  FD_TEST( state->ownership_gen_retired );
+
+  generation &= ~1UL;
+  fd_bam_publish_active_state( state, state->stem, 0 );
+  FD_TEST( bam_status==0UL );
+  FD_TEST( state->feedback_queue_depth==1UL );
+
+  state->bam_status_fseq  = NULL;
+  state->bam_gen_fseq     = NULL;
+  test_bam_env_destroy( env );
+}
+
 /* --- Config and fee propagation ----------------------------------------------------- */
 
 static void
@@ -6246,6 +6292,7 @@ main( int     argc,
   test_bam_heartbeat_timeout_forces_disconnect( wksp );
   test_bam_heartbeat_reset_extends_timeout( wksp );
   test_bam_client_status( wksp );
+  test_bam_ownership_generation_retirement_waits_for_pack( wksp );
 
   /* Scheduler/auth messaging */
   test_bam_auth_challenge_response_verifies_cached_identity( wksp );

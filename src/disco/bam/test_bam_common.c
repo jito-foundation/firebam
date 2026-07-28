@@ -463,6 +463,7 @@ test_bam_env_create( test_bam_env_t * env,
   fd_base58_encode_32( state->bam_identity_pubkey, NULL, state->bam_identity_pubkey_b58 );
   state->stem = env->stem;
   state->enabled = 1;
+  state->ownership_gen_retired = 1U;
   ulong const pending_max = mcache_depth;
   env->pending_txn_mem = fd_wksp_alloc_laddr( wksp, bam_pending_txn_align(), bam_pending_txn_footprint( pending_max ), 1UL );
   FD_TEST( env->pending_txn_mem );

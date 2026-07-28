@@ -30,6 +30,7 @@ FD_IMPORT_BINARY( test_pack_tile_non_vote,    "src/ballet/txn/fixtures/transacti
 
 int fd_pack_insert_bundle_fini( fd_pack_t *, fd_txn_e_t * const *, ulong, ulong,
                                 int, void const *, ulong *, ulong * );
+ulong fd_pack_delete_transaction( fd_pack_t *, fd_ed25519_sig_t const * );
 
 #include "../bam/test_bam_common.c"
 
@@ -44,6 +45,7 @@ static ulong             test_bundle_cancel_last_txn_cnt;
 static ulong             test_insert_fini_call_cnt;
 static int               test_insert_fini_result;
 static int               test_insert_fini_use_real_pack;
+static int               test_delete_use_real_pack;
 static int               test_delete_before_insert_fini;
 static ulong             test_insert_txn_init_call_cnt;
 static ulong             test_insert_txn_fini_call_cnt;
@@ -58,10 +60,11 @@ static fd_txn_e_t        test_insert_txn_slot[1];
 ulong
 test_fd_pack_delete_transaction( fd_pack_t *                 pack,
                                  fd_ed25519_sig_t const *    sig0 ) {
-  (void)pack;
   test_delete_call_cnt++;
   if( FD_UNLIKELY( !sig0 ) ) return 1UL;
   fd_memcpy( test_delete_last_sig, sig0, sizeof(fd_ed25519_sig_t) );
+  if( FD_UNLIKELY( test_delete_use_real_pack ) )
+    return fd_pack_delete_transaction( pack, sig0 );
   return 1UL;
 }
 
@@ -256,6 +259,7 @@ test_pack_tile_harness_new( test_pack_tile_harness_t * h ) {
   test_insert_fini_call_cnt       = 0UL;
   test_insert_fini_result         = FD_PACK_INSERT_ACCEPT_NONVOTE_ADD;
   test_insert_fini_use_real_pack  = 0;
+  test_delete_use_real_pack       = 0;
   test_delete_before_insert_fini  = 0;
   test_insert_txn_init_call_cnt   = 0UL;
   test_insert_txn_fini_call_cnt   = 0UL;
@@ -478,6 +482,7 @@ static void
 test_pack_tile_send_bam_resolv_frag( test_pack_tile_harness_t * h,
                                      uint                       seq_id,
                                      ushort                     scheduler_gen,
+                                     ushort                     ownership_gen,
                                      ulong                      max_schedule_slot,
                                      uchar                      batch_idx,
                                      uchar                      txn_cnt,
@@ -496,6 +501,7 @@ test_pack_tile_send_bam_resolv_frag( test_pack_tile_harness_t * h,
   txnm->bam.max_schedule_slot = max_schedule_slot;
   txnm->bam.seq_id            = seq_id;
   txnm->bam.scheduler_gen      = scheduler_gen;
+  txnm->bam.ownership_gen      = ownership_gen;
   txnm->bam.txn_cnt            = txn_cnt;
   txnm->bam.batch_idx          = batch_idx;
   txnm->bam.revert_on_error    = revert_on_error;
@@ -506,6 +512,174 @@ test_pack_tile_send_bam_resolv_frag( test_pack_tile_harness_t * h,
 
   during_frag( h->ctx, 0UL, 0UL, blockhash_slot, 0UL, sz, 0UL );
   after_frag( h->ctx, 0UL, 0UL, blockhash_slot, sz, 0UL, 0UL, &h->out->stem );
+}
+
+static void
+test_pack_tile_bam_ownership_generation_retirement_barrier( void ) {
+  test_pack_tile_harness_t h[1];
+  test_pack_tile_harness_new( h );
+
+  ulong generation = 7UL<<1;
+  h->ctx->bam_gen_fseq = &generation;
+  h->ctx->bam_ownership_gen = 7U;
+
+  fd_ed25519_sig_t pending_old_sig[1];
+  fd_ed25519_sig_t scheduled_old_sig[1];
+  test_pack_tile_fill_sig( *pending_old_sig,   10U );
+  test_pack_tile_fill_sig( *scheduled_old_sig, 20U );
+
+  FD_TEST( pack_tile_track_bam_work( h->ctx, pending_old_sig,   0L, 10U, 7U, 100UL, ULONG_MAX, 100UL, 0U, 1U ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, scheduled_old_sig, 0L, 11U, 7U, 100UL, ULONG_MAX, 100UL, 0U, 1U ) );
+  (void)test_pack_tile_mark_bam_work_scheduled( h, scheduled_old_sig );
+
+  generation = (8UL<<1) | 1UL;
+  pack_tile_sync_bam_ownership_generation( h->ctx );
+
+  FD_TEST( generation==(8UL<<1) );
+  FD_TEST( h->ctx->bam_ownership_gen==8U );
+  FD_TEST( h->ctx->bam_work_cnt==1UL );
+  FD_TEST( h->ctx->bam_pending_work_cnt==0UL );
+  FD_TEST( h->ctx->bam_scheduled_work_cnt==1UL );
+  FD_TEST( pack_tile_bam_work_find_by_sig0( h->ctx, pending_old_sig )==h->ctx->bam_work_cnt );
+  FD_TEST( pack_tile_bam_work_find_by_sig0( h->ctx, scheduled_old_sig )<h->ctx->bam_work_cnt );
+  test_pack_tile_assert_deleted_sig( pending_old_sig );
+
+  /* An old fragment that was already upstream when pack acknowledged
+     the barrier cannot recreate retired work. */
+  test_pack_tile_send_bam_resolv_frag( h, 13U, 7U, 7U, ULONG_MAX, 0U, 1U, 0, 0, 100UL, 40U );
+  FD_TEST( h->ctx->bam_work_cnt==1UL );
+  FD_TEST( test_insert_fini_call_cnt==0UL );
+
+  test_pack_tile_harness_delete( h );
+}
+
+static void
+test_pack_tile_complete_bam_bundle( test_pack_tile_harness_t *,
+                                    fd_txn_e_t * const *,
+                                    uchar,
+                                    uint,
+                                    ulong,
+                                    ulong,
+                                    uchar );
+
+static void
+test_pack_tile_make_d18_poc_txns( fd_txn_p_t *,
+                                  fd_txn_p_t * );
+
+/* Regression for D-36_FULLFD_JITO_DIFFERENTIAL_POC: BAM work that was
+   accepted by pack while the override was active used to become eligible
+   for ordinary scheduling when BAM disabled.  The ownership-generation
+   handshake must delete that pending work before BAM clears the override. */
+static void
+test_pack_tile_bam_disable_retires_pending_before_override_clear( void ) {
+  fd_pack_limits_t limits = {
+    .max_cost_per_block           = FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND,
+    .max_vote_cost_per_block      = FD_PACK_MAX_VOTE_COST_PER_BLOCK_LOWER_BOUND,
+    .max_write_cost_per_acct      = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND,
+    .max_data_bytes_per_block     = FD_PACK_MAX_DATA_PER_BLOCK,
+    .max_txn_per_microblock       = FD_PACK_MAX_TXN_PER_BUNDLE,
+    .max_microblocks_per_block    = 8UL,
+    .max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK,
+  };
+
+  /* First demonstrate the POC precondition.  Clearing the override without
+     retiring the accepted BAM work makes the target bundle schedulable.  Then
+     replay the same setup with the retirement handshake and prove it cannot
+     schedule after the override clears. */
+  for( int retire_before_clear=0; retire_before_clear<2; retire_before_clear++ ) {
+    fd_rng_t pack_rng[1];
+    FD_TEST( fd_rng_join( fd_rng_new( pack_rng, 0U, (ulong)retire_before_clear ) ) );
+
+    ulong pack_footprint = fd_pack_footprint( TEST_PACK_TILE_BAM_WORK_CAP,
+                                              BUNDLE_META_SZ,
+                                              1UL,
+                                              &limits );
+    void * pack_mem = aligned_alloc( fd_pack_align(),
+                                     fd_ulong_align_up( pack_footprint, fd_pack_align() ) );
+    FD_TEST( pack_mem );
+    fd_pack_t * pack = fd_pack_join( fd_pack_new( pack_mem,
+                                                  TEST_PACK_TILE_BAM_WORK_CAP,
+                                                  BUNDLE_META_SZ,
+                                                  1UL,
+                                                  &limits,
+                                                  NULL,
+                                                  0UL,
+                                                  pack_rng ) );
+    FD_TEST( pack );
+    fd_pack_set_initializer_bundles_ready( pack );
+
+    test_pack_tile_harness_t h[1];
+    test_pack_tile_harness_new( h );
+
+    ulong generation = 7UL<<1;
+    ulong bam_status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+    h->ctx->pack              = pack;
+    h->ctx->bam_gen_fseq      = &generation;
+    h->ctx->bam_status_fseq   = &bam_status;
+    h->ctx->bam_ownership_gen = 7U;
+    test_insert_fini_use_real_pack = 1;
+    test_delete_use_real_pack      = 1;
+    FD_TEST( pack_tile_bam_override_active( h->ctx ) );
+
+    fd_txn_e_t * bundle[ 1 ];
+    FD_TEST( fd_pack_insert_bundle_init( pack, bundle, 1UL )==bundle );
+    fd_txn_p_t unused_invalid_txn[ 1 ];
+    test_pack_tile_make_d18_poc_txns( unused_invalid_txn, bundle[ 0 ]->txnp );
+    bundle[ 0 ]->txnp->bam.seq_id          = 360001U;
+    bundle[ 0 ]->txnp->bam.scheduler_gen   = 9U;
+    bundle[ 0 ]->txnp->bam.revert_on_error = 1U;
+    h->ctx->current_bundle_bam->scheduler_gen = 9U;
+    h->ctx->current_bundle_bam->ownership_gen = 7U;
+    test_pack_tile_complete_bam_bundle( h,
+                                        bundle,
+                                        1U,
+                                        360001U,
+                                        ULONG_MAX,
+                                        100UL,
+                                        0U );
+
+    FD_TEST( test_insert_fini_call_cnt==1UL );
+    FD_TEST( h->ctx->bam_work_cnt==1UL );
+    FD_TEST( h->ctx->bam_pending_work_cnt==1UL );
+    FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
+
+    if( FD_LIKELY( retire_before_clear ) ) {
+      generation = (8UL<<1) | 1UL;
+      pack_tile_sync_bam_ownership_generation( h->ctx );
+
+      FD_TEST( generation==(8UL<<1) );
+      FD_TEST( h->ctx->bam_ownership_gen==8U );
+      FD_TEST( h->ctx->bam_work_cnt==0UL );
+      FD_TEST( h->ctx->bam_pending_work_cnt==0UL );
+      FD_TEST( test_delete_call_cnt==1UL );
+      FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
+    }
+
+    bam_status = 0UL;
+    FD_TEST( !pack_tile_bam_override_active( h->ctx ) );
+    fd_txn_e_t scheduled[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+    ulong scheduled_cnt = fd_pack_schedule_next_microblock(
+        pack,
+        FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND,
+        0.0f,
+        0UL,
+        FD_PACK_SCHEDULE_VOTE | FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_TXN,
+        scheduled );
+
+    if( FD_UNLIKELY( !retire_before_clear ) ) {
+      FD_TEST( scheduled_cnt==1UL );
+      FD_TEST( scheduled[ 0 ].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+      FD_TEST( scheduled[ 0 ].txnp->bam.seq_id==360001U );
+      FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+    } else {
+      FD_TEST( scheduled_cnt==0UL );
+    }
+
+    test_pack_tile_harness_delete( h );
+    FD_TEST( fd_pack_delete( fd_pack_leave( pack ) )==pack_mem );
+    free( pack_mem );
+    FD_TEST( fd_rng_delete( fd_rng_leave( pack_rng ) )==pack_rng );
+  }
 }
 
 static void
@@ -914,6 +1088,7 @@ test_pack_tile_bam_resolver_expired_member_reports_exact_idx( void ) {
     h->ctx->current_bundle->bundle                     = h->ctx->current_bundle->_txn;
     h->ctx->current_bundle_bam->max_schedule_slot      = max_schedule_slot;
     h->ctx->current_bundle_bam->scheduler_gen          = scheduler_gen;
+    h->ctx->current_bundle_bam->ownership_gen          = 0U;
     h->ctx->current_bundle_bam->is_bam                 = 1;
     h->ctx->current_bundle_bam->min_blockhash_slot_txn_idx = 0U;
     h->ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = FD_PACK_MAX_TXN_PER_BUNDLE;
@@ -923,6 +1098,7 @@ test_pack_tile_bam_resolver_expired_member_reports_exact_idx( void ) {
       test_pack_tile_send_bam_resolv_frag( h,
                                            seq_id,
                                            scheduler_gen,
+                                           0U,
                                            max_schedule_slot,
                                            batch_idx,
                                            3U,
@@ -1649,6 +1825,8 @@ main( int     argc,
   test_pack_tile_bam_result_mapping_tracking_reject();
   test_pack_tile_bam_atomic_abandon_result_mapping();
   test_pack_tile_bam_preprocess_marker_has_one_terminal_owner();
+  test_pack_tile_bam_ownership_generation_retirement_barrier();
+  test_pack_tile_bam_disable_retires_pending_before_override_clear();
   test_pack_tile_bam_override_allows_votes_only_from_normal_ingress();
   test_pack_tile_bam_override_after_frag_preserves_votes_only();
   test_pack_tile_bam_override_drops_block_engine_bundles();

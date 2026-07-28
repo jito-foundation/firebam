@@ -301,6 +301,7 @@ struct fd_bam_tile {
   ulong                 leader_schedule_recheck_slot;    /* Slot when BAM may retry while next_leader_slot is unknown; DUE means retry now, NONE means wait for replay progress */
   long                  leader_schedule_gate_start_ns;   /* fd_bam_now() when the unknown-leader startup gate first began waiting, or 0 if inactive */
   ushort                scheduler_gen;                   /* Incremented when the configured scheduler identity changes or BAM is disabled. */
+  ushort                ownership_gen;                   /* Incremented whenever BAM ownership is relinquished, including transient disconnects. */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
@@ -313,6 +314,7 @@ struct fd_bam_tile {
   uint                  bam_config_received    : 1;      /* set after a successfully decoded ConfigResponse lands on the current connection */
   uint                  bam_builder_heartbeat_received : 1; /* set after a BuilderHeartBeat lands on the current scheduler stream */
   uint                  bam_leader_pending     : 1;      /* set when a coalesced leader snapshot awaits send; not durable like bam_results */
+  uint                  ownership_gen_retired  : 1;      /* current ownership generation has already requested pack retirement */
 
   /* Error backoff */
   fd_rng_t rng[1];                                /* RNG used to randomize reconnects */
@@ -327,6 +329,7 @@ struct fd_bam_tile {
   fd_bam_out_ctx_t    shred_out;        /* Stem output buffer used for BAM shred receiver updates */
   fd_bam_decoded_multi_batch_t * decoded_multi; /* Tile-owned staging buffer for MultipleAtomicTxnBatch decode */
   ulong *             bam_status_fseq; /* Shared latch written with BAM status bits (bit 0 = override active) */
+  ulong *             bam_gen_fseq;    /* Ownership generation handshake: odd=requested, even=pack acknowledged. */
   ulong *             bam_gossip_fseq; /* Gossip tile's bam_gossip consumer fseq, read-only for activation handoff. */
   ulong               bam_gossip_handoff_target; /* Consumer fseq value required before first activating bam_status. */
   uint                bam_gossip_handoff_pending : 1; /* Waiting for gossip to consume the published BAM contact. */

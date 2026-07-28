@@ -65,6 +65,7 @@ struct fd_txn_m {
     ulong  max_schedule_slot; /* Solana slot for which this bundle is valid for (inclusive). eg if we're building slot 100, and max_schedule_slot == 100, process the txn */
     uint   seq_id;            /* Unique for a single leader rotation, propagated so downstream stages can correlate execution results */
     ushort scheduler_gen;     /* BAM scheduler identity generation, propagated to discard stale in-flight results after endpoint/key changes */
+    ushort ownership_gen;     /* BAM ownership generation, propagated so pack can reject work crossing a disable/disconnect boundary */
     uchar  txn_cnt;           /* How many transactions are expected in the atomic transaction batch */
     uchar  batch_idx;         /* Index of this transaction inside the atomic transaction batch */
     uchar  revert_on_error   : 1; /* If true and any transaction in the batch fails, revert everything. otherwise commit errors */

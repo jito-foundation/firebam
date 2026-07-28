@@ -1106,15 +1106,19 @@ fd_topo_initialize( config_t * config ) {
 
   if( FD_UNLIKELY( bam_enabled ) ) {
     fd_topo_obj_t *  bam_status_obj = fd_topob_obj( topo, "fseq", "bam_status" );
+    fd_topo_obj_t *  bam_gen_obj    = fd_topob_obj( topo, "fseq", "bam_status" );
     fd_topo_tile_t * bam_tile       = &topo->tiles[ fd_topo_find_tile( topo, "bam", 0UL ) ];
     fd_topo_tile_t * pack_tile      = &topo->tiles[ fd_topo_find_tile( topo, "pack", 0UL ) ];
     fd_topob_tile_uses( topo, bam_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
     fd_topob_tile_uses( topo, pack_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
+    fd_topob_tile_uses( topo, bam_tile, bam_gen_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+    fd_topob_tile_uses( topo, pack_tile, bam_gen_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
     if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
       fd_topo_tile_t * bundle_tile = &topo->tiles[ fd_topo_find_tile( topo, "bundle", 0UL ) ];
       fd_topob_tile_uses( topo, bundle_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
     }
     FD_TEST( fd_pod_insertf_ulong( topo->props, bam_status_obj->id, "bam_status" ) );
+    FD_TEST( fd_pod_insertf_ulong( topo->props, bam_gen_obj->id, "bam_gen" ) );
 
     ulong gossip_tile_id = fd_topo_find_tile( topo, "gossip", 0UL );
     if( FD_UNLIKELY( gossip_tile_id == ULONG_MAX ) ) FD_LOG_ERR(( "Missing gossip tile for bam_gossip handoff" ));

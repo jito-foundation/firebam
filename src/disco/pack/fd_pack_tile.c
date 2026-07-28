@@ -359,6 +359,8 @@ struct fd_pack_ctx {
   fd_histf_t insert_duration  [ 1 ];
   fd_histf_t complete_duration[ 1 ];
   ulong *    bam_status_fseq;
+  ulong *       bam_gen_fseq;
+  ushort        bam_ownership_gen;
 
   struct {
     uint metric_state;
@@ -389,6 +391,7 @@ struct fd_pack_ctx {
   struct {
     ulong max_schedule_slot;
     ushort scheduler_gen;
+    ushort ownership_gen;
     _Bool is_bam;
     uchar min_blockhash_slot_txn_idx;
     uchar resolver_blockhash_expired_txn_idx;
@@ -1183,6 +1186,50 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
   ctx->current_bundle_bam->is_bam = (uchar)!is_new_seq_abandon;
 }
 
+/* Retire partial and pending work before acknowledging the new ownership
+   generation.  Already-dispatched work remains tracked through completion. */
+static inline void
+pack_tile_sync_bam_ownership_generation( fd_pack_ctx_t * ctx ) {
+  if( FD_LIKELY( !ctx->bam_gen_fseq ) ) return;
+
+  ulong  gen_state     = fd_fseq_query( ctx->bam_gen_fseq );
+  ushort requested_gen = (ushort)(gen_state>>1);
+
+  if( FD_UNLIKELY( requested_gen!=ctx->bam_ownership_gen ) ) {
+    if( FD_UNLIKELY( ctx->current_bundle_bam->is_bam &&
+                     ctx->current_bundle_bam->ownership_gen!=requested_gen ) ) {
+      if( FD_LIKELY( ctx->current_bundle->bundle ) )
+        fd_pack_insert_bundle_cancel( ctx->pack,
+                                      ctx->current_bundle->bundle,
+                                      ctx->current_bundle->txn_cnt );
+      ctx->current_bundle->bundle       = NULL;
+      ctx->current_bundle->txn_received = 0UL;
+      ctx->current_bundle_bam->is_bam   = 0U;
+      ctx->bundle_kind                  = PACK_TILE_BUNDLE_KIND_NONE;
+      ctx->cur_spot                     = NULL;
+    }
+
+    for( ulong i=0UL; i<ctx->bam_work_cnt; ) {
+      pack_bam_work_t * work = &ctx->bam_work[ i ];
+      if( FD_UNLIKELY( work->state!=PACK_BAM_WORK_STATE_SCHEDULED ) ) {
+        ulong deleted = fd_pack_delete_transaction(
+            ctx->pack,
+            (fd_ed25519_sig_t const *)(void const *)&work->sig[ 0 ] );
+        FD_MCNT_INC( PACK, TXN_DELETED, deleted );
+        (void)pack_tile_bam_work_swap_remove( ctx, i );
+      } else {
+        i++;
+      }
+    }
+    ctx->bam_ownership_gen = requested_gen;
+  }
+
+  if( FD_UNLIKELY( gen_state & 1UL ) ) {
+    FD_HW_MFENCE_ST();
+    (void)FD_ATOMIC_CAS( ctx->bam_gen_fseq, gen_state, gen_state & ~1UL );
+  }
+}
+
 static inline void
 pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               fd_stem_context_t * stem,
@@ -1411,6 +1458,7 @@ after_credit( fd_pack_ctx_t *     ctx,
               int *               opt_poll_in FD_PARAM_UNUSED,
               int *               charge_busy ) {
   ctx->bam_result_publish_cnt = 0UL;
+  pack_tile_sync_bam_ownership_generation( ctx );
 
   if( FD_UNLIKELY( (ctx->skip_cnt--)>0L ) ) return; /* It would take ages for this to hit LONG_MIN */
 
@@ -1835,6 +1883,16 @@ during_frag( fd_pack_ctx_t * ctx,
     ulong txn_t_sz    = txnm->txn_t_sz;
     uint  source_ipv4 = txnm->source_ipv4;
     uchar source_tpu  = txnm->source_tpu;
+
+    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+      pack_tile_sync_bam_ownership_generation( ctx );
+      if( FD_UNLIKELY( ctx->bam_gen_fseq &&
+                       txnm->bam.ownership_gen!=ctx->bam_ownership_gen ) ) {
+        ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
+        return;
+      }
+    }
+
     long  now_ticks = fd_tickcount();
     long  arrival_ticks = txnm->scheduler_arrival_tspub
                           ? fd_frag_meta_ts_decomp( (ulong)txnm->scheduler_arrival_tspub, now_ticks )
@@ -1850,7 +1908,8 @@ during_frag( fd_pack_ctx_t * ctx,
 
       if( FD_UNLIKELY( ctx->current_bundle_bam->is_bam ) ) {
         if( FD_UNLIKELY( ctx->current_bundle->id!=bam_bundle_id ||
-                         ctx->current_bundle_bam->scheduler_gen!=txnm->bam.scheduler_gen ) ) {
+                         ctx->current_bundle_bam->scheduler_gen!=txnm->bam.scheduler_gen ||
+                         ctx->current_bundle_bam->ownership_gen!=txnm->bam.ownership_gen ) ) {
           pack_tile_abandon_current_bam_bundle( ctx, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE );
         } else {
           FD_TEST( ctx->current_bundle->txn_received==txnm->bam.batch_idx );
@@ -1906,6 +1965,7 @@ during_frag( fd_pack_ctx_t * ctx,
                        ctx->current_bundle_bam->is_bam &&
                        ctx->current_bundle->id==bam_bundle_id &&
                        ctx->current_bundle_bam->scheduler_gen==txnm->bam.scheduler_gen &&
+                       ctx->current_bundle_bam->ownership_gen==txnm->bam.ownership_gen &&
                        txnm->bam.batch_idx==ctx->current_bundle->txn_received ) ) {
         ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_BAM;
         if( FD_UNLIKELY( txnm->bam.blockhash_expired &&
@@ -1919,6 +1979,7 @@ during_frag( fd_pack_ctx_t * ctx,
                          !ctx->current_bundle_bam->is_bam ||
                          ctx->current_bundle->id!=bam_bundle_id ||
                          ctx->current_bundle_bam->scheduler_gen!=txnm->bam.scheduler_gen ||
+                         ctx->current_bundle_bam->ownership_gen!=txnm->bam.ownership_gen ||
                          txnm->bam.batch_idx!=ctx->current_bundle->txn_received ) ) ) {
         ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
         return;
@@ -1947,6 +2008,7 @@ during_frag( fd_pack_ctx_t * ctx,
 
         ctx->current_bundle_bam->max_schedule_slot = txnm->bam.max_schedule_slot;
         ctx->current_bundle_bam->scheduler_gen     = txnm->bam.scheduler_gen;
+        ctx->current_bundle_bam->ownership_gen     = txnm->bam.ownership_gen;
         ctx->current_bundle_bam->is_bam            = 1;
         ctx->current_bundle_bam->min_blockhash_slot_txn_idx = 0U;
         ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = FD_PACK_MAX_TXN_PER_BUNDLE;
@@ -2821,6 +2883,13 @@ unprivileged_init( fd_topo_t const *      topo,
                        ? fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) )
                        : NULL;
   if( FD_UNLIKELY( bam_status_obj_id!=ULONG_MAX && !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "pack tile missing bam_status fseq" ));
+
+  ulong bam_gen_obj_id = fd_pod_query_ulong( topo->props, "bam_gen", ULONG_MAX );
+  if( FD_LIKELY( bam_gen_obj_id!=ULONG_MAX ) ) {
+    ctx->bam_gen_fseq = fd_fseq_join( fd_topo_obj_laddr( topo, bam_gen_obj_id ) );
+    if( FD_UNLIKELY( !ctx->bam_gen_fseq ) ) FD_LOG_ERR(( "pack tile missing bam_gen fseq" ));
+    ctx->bam_ownership_gen = (ushort)(fd_fseq_query( ctx->bam_gen_fseq )>>1);
+  }
 
   /* Initialize metrics storage */
   memset( ctx->insert_result, '\0', FD_PACK_INSERT_RETVAL_CNT * sizeof(ulong) );

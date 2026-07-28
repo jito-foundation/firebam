@@ -120,8 +120,9 @@ void
 fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   long now = fd_bam_now();
 
-  /* Publish BAM inactive immediately so downstream tiles can resume
-     QUIC/bundle ingestion without waiting for housekeeping. */
+  /* Request BAM deactivation immediately rather than waiting for
+     housekeeping.  Downstream ownership remains active until pack
+     acknowledges retirement of pending BAM work. */
   fd_bam_publish_active_state( ctx, ctx->stem, 0 );
 
   if( FD_UNLIKELY( ctx->tcp_sock >= 0 ) ) {
