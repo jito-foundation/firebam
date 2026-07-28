@@ -34,6 +34,9 @@ $(call add-objs,config,fd_fdctl)
 
 ifdef FD_HAS_THREADS
 
+$(call make-unit-test,test_fdctl_topology_bam,test_topology_bam,fd_fdctl fdctl_shared fdctl_platform fd_discoh fd_disco fd_choreo fd_flamenco fd_quic fd_tls fd_reedsol fd_waltz fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))
+$(call run-unit-test,test_fdctl_topology_bam)
+
 .PHONY: fdctl cargo-validator cargo-solana cargo-ledger-tool rust solana check-agave-hash
 
 # fdctl commands

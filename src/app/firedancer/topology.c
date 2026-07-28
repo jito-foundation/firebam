@@ -233,12 +233,11 @@ setup_topo_accdb( fd_topo_t *  topo,
      we just deduct the writable (2) contribution that any read-only
      pubkey can never provide.)
 
-     Bundles enabled:  5 * 191 = 955 slots per class.
-     Bundles disabled:     191 slots per class.
+     Bundle or BAM atomic batches enabled:  5 * 191 = 955 slots per class.
+     Atomic batches disabled:                   191 slots per class.
 
-     Note: the topology forces tiles.bundle.enabled=0 when block
-     production is disabled, so the caller's check on
-     tiles.bundle.enabled covers both gates. */
+     The caller gates this on block production and either bundle or BAM
+     ingestion being enabled. */
   ulong cache_min_reserved = bundle_enabled ? (5UL*191UL) : 191UL;
 
   FD_TEST( fd_pod_insertf_ulong( topo->props, max_accounts,       "obj.%lu.max_accounts",       obj->id ) );
@@ -420,7 +419,7 @@ fd_topo_initialize( config_t * config ) {
   int leader_enabled    = !!config->firedancer.layout.enable_block_production;
   int rserve_enabled    = config->tiles.rserve.enabled;
   int bam_enabled       = leader_enabled && config->tiles.bam.enabled;
-  int pack_sign_enabled = leader_enabled && ( config->tiles.bundle.enabled || config->tiles.bam.enabled );
+  _Bool tip_crank_enabled = leader_enabled && ( config->tiles.bundle.enabled || config->tiles.bam.enabled );
 
   /* Pack assembles BAM bundles in strict batch_idx order, but multiple resolv
      tiles shard transactions round-robin by sequence number and would split a
@@ -541,7 +540,7 @@ fd_topo_initialize( config_t * config ) {
   fd_topob_wksp( topo, "txsend_sign"   );
   fd_topob_wksp( topo, "sign_txsend"   );
 
-  if( FD_UNLIKELY( pack_sign_enabled ) ) {
+  if( FD_UNLIKELY( tip_crank_enabled ) ) {
     fd_topob_wksp( topo, "pack_sign" );
     fd_topob_wksp( topo, "sign_pack" );
   }
@@ -642,7 +641,7 @@ fd_topo_initialize( config_t * config ) {
     /**/                   fd_topob_link( topo, "executed_txn",  "executed_txn",  16384UL,                                  FD_TXN_SIGNATURE_SZ,           MAX_TXN_PER_MICROBLOCK );
   }
 
-  if( FD_UNLIKELY( pack_sign_enabled ) ) {
+  if( FD_UNLIKELY( tip_crank_enabled ) ) {
     /**/                   fd_topob_link( topo, "pack_sign",    "pack_sign",    65536UL,                                  1232UL,                    1UL );
     /**/                   fd_topob_link( topo, "sign_pack",    "sign_pack",    128UL,                                    64UL,                      1UL );
   }
@@ -744,7 +743,7 @@ fd_topo_initialize( config_t * config ) {
     FOR(verify_tile_cnt) fd_topob_tile( topo, "verify",  "verify",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0,               0 );
     /**/                 fd_topob_tile( topo, "dedup",   "dedup",   "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0,               0 );
     FOR(resolv_tile_cnt) fd_topob_tile( topo, "resolv",  "resolv",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0,               0 );
-    /**/                 fd_topob_tile( topo, "pack",    "pack",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        config->tiles.bundle.enabled, 0 );
+    /**/                 fd_topob_tile( topo, "pack",    "pack",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        tip_crank_enabled, 0 );
     FOR(execle_tile_cnt) fd_topob_tile( topo, "execle",  "execle",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0,               0 );
     /**/                 fd_topob_tile( topo, "poh",     "poh",     "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0,               0 );
   }
@@ -925,7 +924,7 @@ fd_topo_initialize( config_t * config ) {
     FOR(shred_tile_cnt)  fd_topob_tile_in ( topo, "shred",   i,            "metric_in", "poh_shred",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
   }
 
-  if( FD_UNLIKELY( pack_sign_enabled ) ) {
+  if( FD_UNLIKELY( tip_crank_enabled ) ) {
     /**/                 fd_topob_tile_in(  topo, "sign",   0UL,           "metric_in", "pack_sign",      0UL,        FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
     /**/                 fd_topob_tile_out( topo, "pack",   0UL,                        "pack_sign",      0UL                                                );
     /**/                 fd_topob_tile_in(  topo, "pack",   0UL,           "metric_in", "sign_pack",      0UL,        FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
@@ -1323,7 +1322,7 @@ fd_topo_initialize( config_t * config ) {
       8192UL,
       partition_sz,
       config->firedancer.accounts.cache_size_gib*(1UL<<30UL),
-      config->tiles.bundle.enabled,
+      tip_crank_enabled,
       accdb_joiners );
   fd_topob_tile_uses( topo, &topo->tiles[ fd_topo_find_tile( topo, "accdb", 0UL ) ], accdb_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
   fd_topob_tile_uses( topo, &topo->tiles[ fd_topo_find_tile( topo, "replay", 0UL ) ], accdb_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
@@ -1386,6 +1385,9 @@ fd_topo_initialize( config_t * config ) {
 void
 fd_topo_configure_tile( fd_topo_tile_t * tile,
                         fd_config_t *    config ) {
+  _Bool tip_crank_enabled = config->firedancer.layout.enable_block_production &&
+                            ( config->tiles.bundle.enabled || config->tiles.bam.enabled );
+
   if( FD_UNLIKELY( !strcmp( tile->name, "metric" ) ) ) {
 
     if( FD_UNLIKELY( !fd_cstr_to_ip4_addr( config->tiles.metric.prometheus_listen_address, &tile->metric.prometheus_listen_addr ) ) )
@@ -1628,10 +1630,10 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     fd_cstr_ncpy( tile->replay.dump_proto_dir, config->capture.dump_proto_dir, sizeof(tile->replay.dump_proto_dir) );
     tile->replay.dump_block_to_pb = config->capture.dump_block_to_pb;
 
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_UNLIKELY( tip_crank_enabled ) ) {
 #define PARSE_PUBKEY( _tile, f ) \
       if( FD_UNLIKELY( !fd_base58_decode_32( config->tiles.bundle.f, tile->_tile.bundle.f ) ) )  \
-        FD_LOG_ERR(( "[tiles.bundle.enabled] set to true, but failed to parse [tiles.bundle."#f"] %s", config->tiles.bundle.f ));
+        FD_LOG_ERR(( "[tiles.bundle."#f"] is required and must be a base58 pubkey when either [tiles.bundle.enabled] or [tiles.bam.enabled] is true (got `%s`)", config->tiles.bundle.f ));
       tile->replay.bundle.enabled = 1;
       PARSE_PUBKEY( replay, tip_distribution_program_addr );
       PARSE_PUBKEY( replay, tip_payment_program_addr      );
@@ -1763,7 +1765,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     }
     tile->pack.dump_bam_mode                 = BAM_DUMP_MODE( config );
 
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_UNLIKELY( tip_crank_enabled ) ) {
 
       tile->pack.bundle.enabled = 1;
       PARSE_PUBKEY( pack, tip_distribution_program_addr );

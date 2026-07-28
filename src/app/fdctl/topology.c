@@ -46,6 +46,8 @@ fd_topo_initialize( config_t * config ) {
   ulong bank_tile_cnt   = config->frankendancer.layout.bank_tile_count;
   ulong shred_tile_cnt  = config->layout.shred_tile_count;
 
+  _Bool tip_crank_enabled = config->tiles.bundle.enabled || config->tiles.bam.enabled;
+
   fd_topo_t * topo = { fd_topob_new( &config->topo, config->name ) };
   topo->max_page_size = fd_cstr_to_shmem_page_sz( config->hugetlbfs.max_page_size );
   topo->gigantic_page_threshold = config->hugetlbfs.gigantic_page_threshold_mib << 20;
@@ -154,7 +156,7 @@ fd_topo_initialize( config_t * config ) {
   FOR(verify_tile_cnt) fd_topob_tile( topo, "verify",  "verify",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0,                 0 );
   /**/                 fd_topob_tile( topo, "dedup",   "dedup",   "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0,                 0 );
   FOR(resolh_tile_cnt) fd_topob_tile( topo, "resolh",  "resolh",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 1,        0,                 0 );
-  /**/                 fd_topob_tile( topo, "pack",    "pack",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        config->tiles.bundle.enabled, 0 );
+  /**/                 fd_topob_tile( topo, "pack",    "pack",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        tip_crank_enabled, 0 );
   FOR(bank_tile_cnt)   fd_topob_tile( topo, "bank",    "bank",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 1,        0,                 0 );
   /**/                 fd_topob_tile( topo, "pohh",    "pohh",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 1,        1,                 0 );
   FOR(shred_tile_cnt)  fd_topob_tile( topo, "shred",   "shred",   "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1,                 0 );
@@ -287,7 +289,7 @@ fd_topo_initialize( config_t * config ) {
     FOR(bank_tile_cnt)   fd_topob_tile_in(  topo, "guih",   0UL,           "metric_in", "bank_pohh",    i,            FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
   }
 
-  if( FD_UNLIKELY( config->tiles.bundle.enabled || config->tiles.bam.enabled ) )
+  if( FD_UNLIKELY( tip_crank_enabled ) )
   {
     fd_topob_wksp( topo, "pack_sign"    );
     fd_topob_wksp( topo, "sign_pack"    );
@@ -519,6 +521,7 @@ void
 fd_topo_configure_tile( fd_topo_tile_t * tile,
                         fd_config_t *    config ) {
   int plugins_enabled = config->tiles.gui.enabled;
+  _Bool tip_crank_enabled = config->tiles.bundle.enabled || config->tiles.bam.enabled;
 
   if( FD_UNLIKELY( !strcmp( tile->name, "net" ) || !strcmp( tile->name, "sock" ) ) ) {
 
@@ -621,10 +624,10 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
                                                   ? FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST
                                                   : FD_BAM_DEBUG_DUMP_MODE_OFF );
 
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_UNLIKELY( tip_crank_enabled ) ) {
 #define PARSE_PUBKEY( _tile, f ) \
       if( FD_UNLIKELY( !fd_base58_decode_32( config->tiles.bundle.f, tile->_tile.bundle.f ) ) )  \
-        FD_LOG_ERR(( "[tiles.bundle.enabled] set to true, but failed to parse [tiles.bundle."#f"] %s", config->tiles.bundle.f ));
+        FD_LOG_ERR(( "[tiles.bundle."#f"] is required and must be a base58 pubkey when either [tiles.bundle.enabled] or [tiles.bam.enabled] is true (got `%s`)", config->tiles.bundle.f ));
       tile->pack.bundle.enabled = 1;
       PARSE_PUBKEY( pack, tip_distribution_program_addr );
       PARSE_PUBKEY( pack, tip_payment_program_addr      );
@@ -644,7 +647,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->pohh.execle_cnt = config->frankendancer.layout.bank_tile_count;
     tile->pohh.lagged_consecutive_leader_start = config->tiles.pohh.lagged_consecutive_leader_start;
 
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_UNLIKELY( tip_crank_enabled ) ) {
       tile->pohh.bundle.enabled = 1;
       PARSE_PUBKEY( pohh, tip_distribution_program_addr );
       PARSE_PUBKEY( pohh, tip_payment_program_addr      );
