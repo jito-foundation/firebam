@@ -1,0 +1,25 @@
+description = "Keep scheduler heartbeats alive across two validator identity changes without replaying old work."
+heartbeat_interval_ms = 1000
+replay_on_reconnect = false
+expected_terminal_results = 1
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 4242301
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
+
+[[events]]
+type = "sleep"
+ms = 120000
