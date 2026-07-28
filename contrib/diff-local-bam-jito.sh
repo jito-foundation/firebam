@@ -21,7 +21,12 @@ MODE_EXPLICIT=0
 MODE_LIST=""
 EXTERNAL_SCENARIO_FILE=""
 INPUT_FAMILY="synthetic"
+KUNORPUS_COUNT=64
+KUNORPUS_SEED_WINDOW=16
+KUNORPUS_MAX_TRANSFER_LAMPORTS=50000000000000
 KUNORPUS_SYSTEM_KIND="any"
+GENERATED_BUNDLE_MAX_BATCHES=8
+GENERATED_BUNDLE_MAX_PACKETS=5
 TIMEOUT_SECS=180
 BUILD_JITO=0
 JITO_SOLANA_DIR="${JITO_SOLANA_DIR:-${HOME}/jito-solana}"
@@ -130,6 +135,7 @@ BASE_SWEEP_MODES=(
   mixed_stale_reconnect
   mixed_terminal_producers_reconnect
   random_mixed_multi_batch
+  generated_bundle
   stale_slot_reject
   empty_batch_reject
   empty_batch_reject_reconnect
@@ -233,6 +239,7 @@ PRE_FULLFD_HARDENING_SWEEP_MODES=(
   mixed_stale_reconnect
   mixed_terminal_producers_reconnect
   random_mixed_multi_batch
+  generated_bundle
   empty_batch_reject
   empty_batch_reject_reconnect
   stale_slot_reject_reconnect
@@ -307,7 +314,19 @@ Options:
   --scenario-file PATH        External scripted BAM scenario to replay through
                               the source fddev generator
   --input-family NAME         Source fddev input family (default: synthetic)
+  --kunorpus-count N          Kunorpus candidates generated per pool
+                              (default: 64)
+  --kunorpus-seed-window N    Consecutive Kunorpus seeds tried per pool
+                              (default: 16)
+  --kunorpus-max-transfer-lamports N
+                              Executable system-transfer selection bound
   --kunorpus-system-kind NAME Source fddev System-program family selector
+  --generated-bundle-max-batches N
+                              Maximum batches per generated wrapper
+                              (default: 8, maximum: 128)
+  --generated-bundle-max-packets N
+                              Maximum packets per generated batch
+                              (default and protocol maximum: 5)
   --timeout-secs N            Per-target timeout (default: 180)
   --jito-solana-dir PATH      jito-solana checkout (default: ~/jito-solana)
   --profile NAME              Jito Cargo profile (default: release)
@@ -728,6 +747,7 @@ is_replayable_iteration() {
     random_mixed_multi_batch:create_account|\
     random_mixed_multi_batch:transfer_with_seed|\
     random_mixed_multi_batch:create_account_with_seed|\
+    generated_bundle:heterogeneous|\
     external_scenario:*|\
     stale_slot_reject_reconnect:|stale_slot_reject_reconnect:transfer|\
     empty_batch_reject_reconnect:|empty_batch_reject_reconnect:transfer|\
@@ -829,6 +849,11 @@ start_slot=0
 end_slot=0
 scenario_file=${iter_dir}/scenario.toml
 requested_kunorpus_system_kind=${KUNORPUS_SYSTEM_KIND}
+kunorpus_count=${KUNORPUS_COUNT}
+kunorpus_seed_window=${KUNORPUS_SEED_WINDOW}
+kunorpus_max_transfer_lamports=${KUNORPUS_MAX_TRANSFER_LAMPORTS}
+generated_bundle_max_batches=${GENERATED_BUNDLE_MAX_BATCHES}
+generated_bundle_max_packets=${GENERATED_BUNDLE_MAX_PACKETS}
 system_kind=transfer
 input_path=${iter_dir}/scenario.toml
 input_label=external_scripted_scenario
@@ -873,6 +898,11 @@ start_slot=0
 end_slot=0
 scenario_file=${iter_dir}/scenario.toml
 requested_kunorpus_system_kind=${KUNORPUS_SYSTEM_KIND}
+kunorpus_count=${KUNORPUS_COUNT}
+kunorpus_seed_window=${KUNORPUS_SEED_WINDOW}
+kunorpus_max_transfer_lamports=${KUNORPUS_MAX_TRANSFER_LAMPORTS}
+generated_bundle_max_batches=${GENERATED_BUNDLE_MAX_BATCHES}
+generated_bundle_max_packets=${GENERATED_BUNDLE_MAX_PACKETS}
 system_kind=
 input_path=
 input_label=fullfd_seed_source
@@ -947,8 +977,28 @@ while (($#)); do
       INPUT_FAMILY="$2"
       shift 2
       ;;
+    --kunorpus-count)
+      KUNORPUS_COUNT="$2"
+      shift 2
+      ;;
+    --kunorpus-seed-window)
+      KUNORPUS_SEED_WINDOW="$2"
+      shift 2
+      ;;
+    --kunorpus-max-transfer-lamports)
+      KUNORPUS_MAX_TRANSFER_LAMPORTS="$2"
+      shift 2
+      ;;
     --kunorpus-system-kind)
       KUNORPUS_SYSTEM_KIND="$2"
+      shift 2
+      ;;
+    --generated-bundle-max-batches)
+      GENERATED_BUNDLE_MAX_BATCHES="$2"
+      shift 2
+      ;;
+    --generated-bundle-max-packets)
+      GENERATED_BUNDLE_MAX_PACKETS="$2"
       shift 2
       ;;
     --timeout-secs)
@@ -1116,6 +1166,18 @@ done
 [[ -x "${ROOT}/contrib/compare-bam-outcomes.py" ]] || die "missing compare-bam-outcomes.py"
 [[ -x "${ROOT}/contrib/export-bam-diff-corpus.py" ]] || die "missing export-bam-diff-corpus.py"
 [[ -x "${ROOT}/contrib/render-bam-local-config.py" ]] || die "missing render-bam-local-config.py"
+[[ "${KUNORPUS_COUNT}" =~ ^[0-9]+$ && "${KUNORPUS_COUNT}" -ge 1 ]] \
+  || die "--kunorpus-count must be a positive integer"
+[[ "${KUNORPUS_SEED_WINDOW}" =~ ^[0-9]+$ && "${KUNORPUS_SEED_WINDOW}" -ge 1 ]] \
+  || die "--kunorpus-seed-window must be a positive integer"
+[[ "${KUNORPUS_MAX_TRANSFER_LAMPORTS}" =~ ^[0-9]+$ ]] \
+  || die "--kunorpus-max-transfer-lamports must be a non-negative integer"
+[[ "${GENERATED_BUNDLE_MAX_BATCHES}" =~ ^[0-9]+$ ]] \
+  && (( GENERATED_BUNDLE_MAX_BATCHES >= 1 && GENERATED_BUNDLE_MAX_BATCHES <= 128 )) \
+  || die "--generated-bundle-max-batches must be an integer from 1 through 128"
+[[ "${GENERATED_BUNDLE_MAX_PACKETS}" =~ ^[0-9]+$ ]] \
+  && (( GENERATED_BUNDLE_MAX_PACKETS >= 0 && GENERATED_BUNDLE_MAX_PACKETS <= 5 )) \
+  || die "--generated-bundle-max-packets must be an integer from 0 through 5"
 
 case "${TARGET_PAIR}" in
   fddev:jito-agave|fullfd:jito-agave)
@@ -1396,7 +1458,12 @@ if [[ -z "${SOURCE_LOG_DIR}" ]]; then
     --seed "${SEED}"
     --mode "${MODE}"
     --input-family "${INPUT_FAMILY}"
+    --kunorpus-count "${KUNORPUS_COUNT}"
+    --kunorpus-seed-window "${KUNORPUS_SEED_WINDOW}"
+    --kunorpus-max-transfer-lamports "${KUNORPUS_MAX_TRANSFER_LAMPORTS}"
     --kunorpus-system-kind "${KUNORPUS_SYSTEM_KIND}"
+    --generated-bundle-max-batches "${GENERATED_BUNDLE_MAX_BATCHES}"
+    --generated-bundle-max-packets "${GENERATED_BUNDLE_MAX_PACKETS}"
     --config "${FDDEV_CONFIG}"
     --rpc-url "${FDDEV_RPC_URL}"
     --bam-bind "${BAM_BIND}"
@@ -1437,7 +1504,11 @@ if [[ -z "${SOURCE_LOG_DIR}" ]]; then
   if [[ "${ALLOW_OPERATOR_PERTURBATIONS}" == "1" ]]; then
     fuzz_args+=( --allow-operator-perturbations )
   fi
-  ALLOW_SELF_CHECK_FAILURES="${XFAIL_KNOWN}" \
+  source_allow_self_check_failures="${XFAIL_KNOWN}"
+  if mode_selection_contains generated_bundle; then
+    source_allow_self_check_failures=1
+  fi
+  ALLOW_SELF_CHECK_FAILURES="${source_allow_self_check_failures}" \
   "${ROOT}/contrib/fuzz-local-bam-stateful.sh" \
     "${fuzz_args[@]}"
   fi
@@ -1529,7 +1600,11 @@ for iter_dir in "${iteration_dirs[@]}"; do
   left_outcome="${source_outcome}"
   if [[ "${TARGET_PAIR}" == "fullfd:jito-agave" ]]; then
     left_outcome="${fullfd_dir}/normalized_outcome.json"
-    if env "${fullfd_runner_env[@]}" ALLOW_SELF_CHECK_FAILURES="${XFAIL_KNOWN}" \
+    iteration_allow_self_check_failures="${XFAIL_KNOWN}"
+    if [[ "${mode}" == "generated_bundle" ]]; then
+      iteration_allow_self_check_failures=1
+    fi
+    if env "${fullfd_runner_env[@]}" ALLOW_SELF_CHECK_FAILURES="${iteration_allow_self_check_failures}" \
       "${ROOT}/contrib/run-fullfd-bam-scenario.sh" \
       --fullfd-bin "${FULLFD_BIN}" \
       --config "${FULLFD_CONFIG}" \
@@ -1677,6 +1752,11 @@ check_bam_shred=${CHECK_BAM_SHRED}
 queue_burst_batch_count=${QUEUE_BURST_BATCH_COUNT}
 queue_burst_max_schedule_slot=${QUEUE_BURST_MAX_SCHEDULE_SLOT}
 queue_burst_close_after_results=${QUEUE_BURST_CLOSE_AFTER_RESULTS}
+kunorpus_count=${KUNORPUS_COUNT}
+kunorpus_seed_window=${KUNORPUS_SEED_WINDOW}
+kunorpus_max_transfer_lamports=${KUNORPUS_MAX_TRANSFER_LAMPORTS}
+generated_bundle_max_batches=${GENERATED_BUNDLE_MAX_BATCHES}
+generated_bundle_max_packets=${GENERATED_BUNDLE_MAX_PACKETS}
 fullfd_log_dir=${FULLFD_ROOT}
 jito_log_dir=${JITO_ROOT}
 comparison_dir=${COMPARISON_ROOT}

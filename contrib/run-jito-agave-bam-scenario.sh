@@ -221,6 +221,7 @@ MAKE_ALT_SETUP_TXNS_BIN="${ROOT}/contrib/txnctx-bridge/target/debug/make_alt_set
 NORMALIZER="${ROOT}/contrib/normalize-bam-outcome.py"
 CAPTURE_CHAIN_EVIDENCE="${ROOT}/contrib/capture-bam-chain-evidence.py"
 MATERIALIZE_SCENARIO="${ROOT}/contrib/materialize-bam-scenario-packets.py"
+KUNORPUS="${KUNORPUS:-${HOME}/solfuzz/kunorpus/target/release/kunorpus}"
 FDDEV="${FDDEV:-${ROOT}/build/native/gcc/bin/fddev}"
 if [[ ! -x "${FDDEV}" && -x "${ROOT}/build/native/gcc/bin/firedancer-dev" ]]; then
   FDDEV="${ROOT}/build/native/gcc/bin/firedancer-dev"
@@ -630,6 +631,10 @@ materialize_external_scenario() {
     --gen-simple-system-txnctx "${GEN_SIMPLE_SYSTEM_TXNCTX_BIN}" \
     --gen-program-invocation "${GEN_PROGRAM_INVOCATION_BIN}" \
     --bridge "${BRIDGE_BIN}" \
+    --kunorpus "${KUNORPUS}" \
+    --kunorpus-count "${SOURCE_KUNORPUS_COUNT:-64}" \
+    --kunorpus-seed-window "${SOURCE_KUNORPUS_SEED_WINDOW:-16}" \
+    --kunorpus-max-transfer-lamports "${SOURCE_KUNORPUS_MAX_TRANSFER_LAMPORTS:-50000000000000}" \
     --recent-blockhash "${blockhash}" \
     --from-seed-index 0 \
     --to-seed-start 1
@@ -4306,10 +4311,14 @@ SOURCE_INPUT_PATH=$(summary_get input_path)
 SOURCE_INPUT_NOTE=$(summary_get input_note)
 SOURCE_SYSTEM_KIND=$(summary_get system_kind)
 SOURCE_RANDOM_MIXED_PATTERN=$(summary_get random_mixed_pattern)
+SOURCE_KUNORPUS_COUNT=$(summary_get kunorpus_count)
+SOURCE_KUNORPUS_SEED_WINDOW=$(summary_get kunorpus_seed_window)
+SOURCE_KUNORPUS_MAX_TRANSFER_LAMPORTS=$(summary_get kunorpus_max_transfer_lamports)
 SEQ_ONE=$(summary_get seq_one)
 SEQ_TWO=$(summary_get seq_two)
 SEQ_THREE=$(summary_get seq_three)
 PAYER=$(summary_get payer)
+SOURCE_PAYER_INITIAL=$(summary_get payer_initial)
 RECIPIENT_ONE=$(summary_get recipient_one)
 RECIPIENT_TWO=$(summary_get recipient_two)
 SRC_RECIPIENT_ONE_INITIAL=$(summary_get recipient_one_initial)
@@ -4442,8 +4451,12 @@ NORMAL_TPU_PORT=""
 NORMAL_TPU_EXPECTED_LANDED=""
 TARGET_DURABLE_NONCE_ACCOUNT=""
 TARGET_DURABLE_NONCE_HASH=""
-if [[ "${MODE_VALUE}" == "external_scenario" ]]; then
+TARGET_EXPECTED_TERMINAL_RESULTS=""
+if [[ "${MODE_VALUE}" == "external_scenario" || "${MODE_VALUE}" == "generated_bundle" ]]; then
   ensure_bridge_bin
+  if [[ "${MODE_VALUE}" == "generated_bundle" ]]; then
+    [[ -x "${KUNORPUS}" ]] || die "missing ${KUNORPUS}; build Kunorpus before replaying generated bundles"
+  fi
 
   EXTERNAL_RECIPE="${SOURCE_INPUT_PATH}"
   if [[ -z "${EXTERNAL_RECIPE}" || ! -f "${EXTERNAL_RECIPE}" ]]; then
@@ -4464,13 +4477,24 @@ if [[ "${MODE_VALUE}" == "external_scenario" ]]; then
   TARGET_PACKET_FILE="${EXTERNAL_PACKET_DIR}"
 
   MATERIALIZED_PACKET_COUNT=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" materialized_packet_count)
-  PAYER=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" payer)
-  RECIPIENT_ONE=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" first_recipient)
-  RECIPIENT_TWO=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" last_recipient)
+  TARGET_EXPECTED_TERMINAL_RESULTS=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" expected_terminal_results)
+  if [[ "${MODE_VALUE}" == "generated_bundle" ]]; then
+    SOURCE_SYSTEM_KIND="heterogeneous"
+    PAYER=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" payer)
+    RECIPIENT_ONE=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" first_recipient)
+    RECIPIENT_TWO=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" last_recipient)
+    if [[ "${SOURCE_PAYER_INITIAL}" =~ ^[0-9]+$ ]]; then
+      PAYER_PREFUND_LAMPORTS="${SOURCE_PAYER_INITIAL}"
+    fi
+  else
+    PAYER=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" payer)
+    RECIPIENT_ONE=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" first_recipient)
+    RECIPIENT_TWO=$(metadata_get "${EXTERNAL_MATERIALIZE_META}" last_recipient)
+  fi
   [[ -n "${PAYER}" ]] || PAYER="n/a"
   [[ -n "${RECIPIENT_ONE}" ]] || RECIPIENT_ONE="n/a"
   [[ -n "${RECIPIENT_TWO}" ]] || RECIPIENT_TWO="n/a"
-  if [[ "${MATERIALIZED_PACKET_COUNT:-0}" =~ ^[0-9]+$ && "${MATERIALIZED_PACKET_COUNT:-0}" -gt 0 ]]; then
+  if [[ "${MODE_VALUE}" == "external_scenario" && "${MATERIALIZED_PACKET_COUNT:-0}" =~ ^[0-9]+$ && "${MATERIALIZED_PACKET_COUNT:-0}" -gt 0 ]]; then
     SOURCE_SYSTEM_KIND="transfer"
   fi
 elif [[ "${MODE_VALUE}" == "non_atomic_inconsistent_bundle" || "${MODE_VALUE}" == "non_atomic_first_overdraft" || "${MODE_VALUE}" == "non_atomic_partial_overdraft" || "${MODE_VALUE}" == "non_atomic_partial_overdraft_reconnect" || "${MODE_VALUE}" == "seq_id_wrap_conflicting_spend_multi_batch" ]]; then
@@ -5970,7 +5994,7 @@ if is_queue_source_mix_mode "${MODE_VALUE}"; then
 fi
 if [[ "${MODE_VALUE}" == "external_scenario" ]] && ! scenario_has_send_events "${EFFECTIVE_SCENARIO_FILE}"; then
   echo "external scenario has no live BAM send events; preserving handshake-only outcome"
-elif [[ "${MODE_VALUE}" == "atomic_blockhash_mid_fail" || "${MODE_VALUE}" == "atomic_resolver_mid_fail" || "${MODE_VALUE}" == "atomic_duplicate_sig_mid_fail" || "${MODE_VALUE}" == "queue_reconnect_timing_jitter" ]]; then
+elif [[ "${MODE_VALUE}" == "atomic_blockhash_mid_fail" || "${MODE_VALUE}" == "atomic_resolver_mid_fail" || "${MODE_VALUE}" == "atomic_duplicate_sig_mid_fail" || "${MODE_VALUE}" == "queue_reconnect_timing_jitter" || "${MODE_VALUE}" == "generated_bundle" ]]; then
 	  if ! wait_for_pattern "${BAM_LOG}" 'scheduler<-validator batch_result' 12; then
 	    echo "warning: jito-agave did not return an early ${MODE_VALUE} batch result; preserving incomplete outcome for diff"
 	  fi
@@ -5979,6 +6003,10 @@ else
     || die "jito-agave did not return a BAM batch result"
 fi
 case "${MODE_VALUE}" in
+  generated_bundle)
+    [[ "${TARGET_EXPECTED_TERMINAL_RESULTS}" =~ ^[0-9]+$ && "${TARGET_EXPECTED_TERMINAL_RESULTS}" -ge 1 ]] \
+      || die "generated bundle replay did not record a positive terminal-result count"
+    ;;
 	  replay_same_conn|replay_after_reconnect|seq_id_max_replay_after_reconnect)
     wait_for_pattern "${BAM_LOG}" "scheduler<-validator batch_result seq_id=${SEQ_TWO} status=not_committed .*ALREADY_PROCESSED" "${TIMEOUT_SECS}" \
       || die "jito-agave did not return the expected replay rejection for seq_id=${SEQ_TWO}"
@@ -6886,6 +6914,9 @@ capture_end_slot=${CAPTURE_END_SLOT}
 source_summary=${SOURCE_SUMMARY}
 scenario_file=${SCENARIO_FILE}
 effective_scenario_file=${EFFECTIVE_SCENARIO_FILE}
+kunorpus_count=${SOURCE_KUNORPUS_COUNT:-64}
+kunorpus_seed_window=${SOURCE_KUNORPUS_SEED_WINDOW:-16}
+kunorpus_max_transfer_lamports=${SOURCE_KUNORPUS_MAX_TRANSFER_LAMPORTS:-50000000000000}
 random_mixed_pattern=${SOURCE_RANDOM_MIXED_PATTERN}
 ledger_dir=${LEDGER_DIR}
 target_blockhash=${TARGET_BLOCKHASH}
