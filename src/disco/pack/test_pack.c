@@ -1553,6 +1553,50 @@ test_duplicate_sig( void ) {
   FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
 }
 
+static void
+test_duplicate_sig_bam_bundle_delete( void ) {
+  FD_LOG_NOTICE(( "TEST DUPLICATE SIGNATURE BAM BUNDLE DELETE" ));
+  fd_pack_t * pack = init_all( 128UL, 1UL, 128UL, &outcome );
+  fd_pack_set_initializer_bundles_ready( pack );
+
+  fd_txn_e_t * bundle_storage[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  fd_txn_e_t * const * bundle =
+      fd_pack_insert_bundle_init( pack, bundle_storage, FD_PACK_MAX_TXN_PER_BUNDLE );
+
+  make_transaction1( bundle[ 0 ]->txnp, 450045UL, 1000U, 500U, 11.0,
+                     "AB", "", NULL, NULL );
+  bundle[ 0 ]->txnp->source_tpu          = FD_TXN_M_TPU_SOURCE_BAM;
+  bundle[ 0 ]->txnp->bam.seq_id          = 450045U;
+  bundle[ 0 ]->txnp->bam.revert_on_error = 0U;
+
+  for( ulong i=1UL; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {
+    *bundle[ i ]->txnp = *bundle[ 0 ]->txnp;
+    bundle[ i ]->txnp->bam.batch_idx = (uchar)i;
+  }
+
+  fd_ed25519_sig_t sig;
+  fd_memcpy( sig, txnp_get_signatures( bundle[ 0 ]->txnp ), sizeof(fd_ed25519_sig_t) );
+
+  ulong deleted;
+  int insert_result = fd_pack_insert_bundle_fini( pack,
+                                                  bundle,
+                                                  FD_PACK_MAX_TXN_PER_BUNDLE,
+                                                  1000UL,
+                                                  0,
+                                                  NULL,
+                                                  &deleted,
+                                                  NULL );
+  FD_TEST( insert_result==FD_PACK_INSERT_ACCEPT_NONVOTE_ADD );
+  FD_TEST( deleted==0UL );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==FD_PACK_MAX_TXN_PER_BUNDLE );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+
+  FD_TEST( fd_pack_delete_transaction( pack, fd_type_pun( &sig ) )==FD_PACK_MAX_TXN_PER_BUNDLE );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
+  FD_TEST( fd_pack_delete_transaction( pack, fd_type_pun( &sig ) )==0UL );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+}
+
 static inline void
 test_nonce( void ) {
   FD_LOG_NOTICE(( "TEST DUPLICATE NONCE" ));
@@ -2140,6 +2184,7 @@ main( int     argc,
   test_reject();
   test_reject_blocklist();
   test_duplicate_sig();
+  test_duplicate_sig_bam_bundle_delete();
   test_nonce();
   test_bundle_nonce();
   test_bam_nonrevert_seq_conflict_order();

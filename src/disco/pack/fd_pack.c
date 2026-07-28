@@ -3190,15 +3190,13 @@ ulong
 fd_pack_delete_transaction( fd_pack_t              * pack,
                             fd_ed25519_sig_t const * sig0 ) {
   ulong cnt = 0;
-  ulong next = ULONG_MAX;
-  for( ulong idx = sig2txn_idx_query_const( pack->signature_map, (wrapped_sig_t const *)sig0, ULONG_MAX, pack->pool );
-      idx!=ULONG_MAX; idx=next ) {
-    /* Iterating while deleting, not just this element, but perhaps the
-       whole bundle, feels a bit dangerous, but is actually fine because
-       a bundle can't contain two transactions with the same signature.
-       That means we know next is not part of the same bundle as idx,
-       which means that deleting idx will not delete next. */
-    next = sig2txn_idx_next_const( idx, ULONG_MAX, pack->pool );
+  ulong idx;
+  while( (idx=sig2txn_idx_query_const( pack->signature_map,
+                                       (wrapped_sig_t const *)sig0,
+                                       ULONG_MAX,
+                                       pack->pool ))!=ULONG_MAX ) {
+    /* Deleting one match may delete its whole bundle, including the map's
+       next matching entry.  Re-query after each deletion to avoid a stale index. */
     cnt += delete_transaction( pack, pack->pool+idx, 1, 1 );
   }
 
