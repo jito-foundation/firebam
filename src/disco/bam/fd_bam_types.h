@@ -40,7 +40,7 @@ typedef struct {
   ushort scheduling_error; /* bam_types_SchedulingError reason code when the batch never scheduled; FD_BAM_SCHED_ERR_NONE when scheduling succeeded or the bundle executed. */
   uchar transaction_err[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Per-transaction bam_types_TransactionErrorReason for indices <bundle_txn_cnt. */
   uchar transaction_err_count; /* Number of transaction errors. 0 denotes success. */
-  uint  consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Actual compute units consumed per transaction (exec+account data), even when the bundle later reverts. 0 when the txn never executed. */
+  uint  consumed_cus    [ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Actual program execution CUs only, even when the bundle later reverts. 0 when the txn never executed. */
   ulong feepayer_balance_lamports[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Fee payer post-balance per transaction. Only meaningful for committed results. */
   uint  loaded_accounts_data_size[ FD_PACK_MAX_TXN_PER_BUNDLE ]; /* Loaded accounts data size (bytes) per transaction. Only meaningful for committed results. */
   _Bool sanitize_success[ FD_PACK_MAX_TXN_PER_BUNDLE ];  /* Boolean sanitize outcome per transaction (true=passed bank sanitize, false=failed). When false, transaction_err typically reports SANITIZE_FAILURE. */

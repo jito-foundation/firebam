@@ -238,7 +238,6 @@ bam_fill_txn_result( fd_bam_bundle_result_t * res,
   uint actual_execution_cus = 0U;
   if( FD_LIKELY( txn_out->details.compute_budget.compute_unit_limit>=txn_out->details.compute_budget.compute_meter ) )
     actual_execution_cus = (uint)(txn_out->details.compute_budget.compute_unit_limit - txn_out->details.compute_budget.compute_meter);
-  uint actual_acct_data_cus = (uint)txn_out->details.txn_cost.transaction.loaded_accounts_data_size_cost;
   ulong feepayer_balance_lamports = 0UL;
   if( FD_UNLIKELY( txn_out->err.is_fees_only ) )
     feepayer_balance_lamports = txn_out->accounts.fee_payer_rollback_lamports;
@@ -249,7 +248,7 @@ bam_fill_txn_result( fd_bam_bundle_result_t * res,
 
   if( FD_LIKELY( txn_out->err.txn_err!=FD_RUNTIME_TXN_ERR_SANITIZE_FAILURE ) )
     fd_bam_result_mark_sanitize_success( res, idx );
-  res->consumed_cus[ idx ]              = actual_execution_cus + actual_acct_data_cus;
+  res->consumed_cus[ idx ]              = actual_execution_cus;
   res->feepayer_balance_lamports[ idx ] = feepayer_balance_lamports;
   res->loaded_accounts_data_size[ idx ] = (uint)fd_ulong_min( txn_out->details.loaded_accounts_data_size, (ulong)UINT_MAX );
 }

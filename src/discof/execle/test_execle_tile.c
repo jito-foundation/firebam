@@ -684,6 +684,23 @@ FD_UNIT_TEST( execle_seccomp ) {
   populate_allowed_seccomp( NULL, NULL, sock_filter_policy_fd_execle_tile_instr_cnt, filter );
 }
 
+FD_UNIT_TEST( execle_bam_result_cus ) {
+  fd_bam_bundle_result_t res[1];
+  fd_txn_out_t           txn_out[1];
+  fd_memset( res,     0, sizeof(res)     );
+  fd_memset( txn_out, 0, sizeof(txn_out) );
+
+  txn_out->details.compute_budget.compute_unit_limit = 200UL;
+  txn_out->details.compute_budget.compute_meter      = 50UL;
+  txn_out->details.txn_cost.transaction.loaded_accounts_data_size_cost = 8U;
+  txn_out->details.loaded_accounts_data_size = 206UL;
+
+  bam_fill_txn_result( res, 0UL, txn_out );
+
+  FD_TEST( res->consumed_cus[ 0 ]==150U );
+  FD_TEST( res->loaded_accounts_data_size[ 0 ]==206U );
+}
+
 FD_UNIT_TEST( execle_vote ) {
   /* Simple vote transaction */
   test_env_t * env = test_env_create();

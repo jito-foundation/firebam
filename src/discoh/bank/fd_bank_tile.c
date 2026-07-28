@@ -362,7 +362,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
       FD_LOG_WARNING(( "FeesOnly txn actual CUs (%u+%u) exceed requested (%u), dropping",
                        actual_execution_cus, actual_acct_data_cus, requested_exec_plus_acct_data_cus ));
       if( FD_UNLIKELY( bam_result_member ) )
-        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, actual_execution_cus + actual_acct_data_cus, transaction_err_idx, 1, 0UL, 0U );
+        bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, actual_execution_cus, transaction_err_idx, 1, 0UL, 0U );
       skip_commit = 1;
       ctx->metrics.processing_failed++;
       continue;
@@ -399,7 +399,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     txn->flags                      |= FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
 
     if( FD_UNLIKELY( bam_result_member ) )
-      bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, actual_execution_cus + actual_acct_data_cus, transaction_err_idx, 1, feepayer_balance_lamports[ sanitized_idx-1UL ], loaded_accounts_data_size[ sanitized_idx-1UL ] );
+      bank_tile_fill_bam_nonrevert_result( bam_res, txn, bam_idx, actual_execution_cus, transaction_err_idx, 1, feepayer_balance_lamports[ sanitized_idx-1UL ], loaded_accounts_data_size[ sanitized_idx-1UL ] );
 
     if( FD_UNLIKELY( !(processing_results[ sanitized_idx-1UL ] & FD_BANK_TRANSACTION_EXECUTED) ) ) continue;
 
@@ -615,7 +615,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     for( ulong i=0UL; i<txn_cnt; i++ ) {
       _Bool sanitize_success = !!( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
       if( FD_LIKELY( sanitize_success ) ) fd_bam_result_mark_sanitize_success( &res, i );
-      res.consumed_cus[ i ] = consumed_cus[ i ];
+      res.consumed_cus[ i ] = actual_execution_cus[ i ];
       if( FD_LIKELY( execution_success ) ) {
         res.feepayer_balance_lamports[ i ] = feepayer_balance_lamports[ i ];
         res.loaded_accounts_data_size[ i ] = loaded_accounts_data_size[ i ];
