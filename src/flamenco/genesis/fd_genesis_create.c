@@ -1,10 +1,16 @@
 #include "fd_genesis_create.h"
 
+#include "../runtime/fd_alut.h"
 #include "../runtime/fd_system_ids.h"
 #include "../stakes/fd_stakes.h"
+#include "../runtime/program/fd_system_program.h"
 #include "../runtime/program/fd_vote_program.h"
 #include "../runtime/program/vote/fd_vote_codec.h"
 #include "../runtime/sysvar/fd_sysvar_rent.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* TODO: Unify type with the one in fd_genesis_parse.c */
 
@@ -99,6 +105,38 @@ struct genesis_solana {
   uint                       cluster_type;
 };
 typedef struct genesis_solana genesis_solana_t;
+
+static int
+env_truthy( char const * name ) {
+  char const * val = getenv( name );
+  if( FD_UNLIKELY( !val ) ) return 0;
+  return !strcmp( val, "1" ) || !strcmp( val, "true" ) || !strcmp( val, "yes" );
+}
+
+static ulong
+env_ulong_or( char const * name,
+              ulong        fallback ) {
+  char const * val = getenv( name );
+  if( FD_LIKELY( !val || !val[0] ) ) return fallback;
+
+  errno = 0;
+  char * end = NULL;
+  unsigned long long parsed = strtoull( val, &end, 10 );
+  if( FD_UNLIKELY( errno || !end || end[0] || parsed>ULONG_MAX ) ) {
+    FD_LOG_WARNING(( "Ignoring invalid %s=%s", name, val ));
+    return fallback;
+  }
+  return (ulong)parsed;
+}
+
+static void
+pubkey_from_dev_seed( fd_pubkey_t * pubkey,
+                      ulong         seed ) {
+  uchar privkey[ 32 ] = {0};
+  FD_STORE( ulong, privkey, seed );
+  fd_sha512_t sha[1];
+  fd_ed25519_public_from_private( pubkey->key, privkey, sha );
+}
 
 /* genesis_encode serializes a genesis_solana_t into a bincode blob
    byte-for-byte compatible with Anza's genesis.bin format.  Returns the
@@ -361,12 +399,110 @@ genesis_create( void *                       buf,
     }
   }
 
+  /* Optional deterministic accounts for live full-Firedancer BAM fuzzing. */
+
+  int          preseed_bam_alt         = env_truthy( "FD_DEV_PRESEED_BAM_ALT" );
+  fd_pubkey_t  preseed_bam_alt_table   = {0};
+  fd_pubkey_t  preseed_bam_alt_address = {0};
+  uchar *      preseed_bam_alt_data    = NULL;
+  ulong        preseed_bam_alt_data_sz = 0UL;
+
+  if( FD_UNLIKELY( preseed_bam_alt ) ) {
+    ulong table_seed   = env_ulong_or( "FD_DEV_PRESEED_BAM_ALT_TABLE_SEED", 424242UL );
+    ulong address_seed = env_ulong_or( "FD_DEV_PRESEED_BAM_ALT_ADDRESS_SEED", 1UL );
+
+    pubkey_from_dev_seed( &preseed_bam_alt_table,   table_seed   );
+    pubkey_from_dev_seed( &preseed_bam_alt_address, address_seed );
+
+    preseed_bam_alt_data_sz = FD_LOOKUP_TABLE_META_SIZE + sizeof(fd_pubkey_t);
+    preseed_bam_alt_data = fd_scratch_alloc( alignof(fd_pubkey_t), preseed_bam_alt_data_sz );
+
+    fd_alut_meta_t meta = {
+      .discriminant                   = FD_ALUT_STATE_DISC_LOOKUP_TABLE,
+      .deactivation_slot              = ULONG_MAX,
+      .last_extended_slot             = 0UL,
+      .last_extended_slot_start_index = 1U,
+      .has_authority                  = 0U,
+    };
+    REQUIRE( !fd_alut_state_encode( &meta, preseed_bam_alt_data, FD_LOOKUP_TABLE_META_SIZE ) );
+    fd_memcpy( preseed_bam_alt_data + FD_LOOKUP_TABLE_META_SIZE,
+               preseed_bam_alt_address.key,
+               sizeof(fd_pubkey_t) );
+  }
+
+  int         preseed_bam_nonce          = env_truthy( "FD_DEV_PRESEED_BAM_NONCE" );
+  fd_pubkey_t preseed_bam_nonce_account  = {0};
+  fd_pubkey_t preseed_bam_nonce_auth     = {0};
+  fd_pubkey_t preseed_bam_nonce_hash_key = {0};
+  fd_hash_t   preseed_bam_nonce_hash     = {0};
+  uchar *     preseed_bam_nonce_data     = NULL;
+
+  if( FD_UNLIKELY( preseed_bam_nonce ) ) {
+    ulong account_seed = env_ulong_or( "FD_DEV_PRESEED_BAM_NONCE_ACCOUNT_SEED", 900000UL );
+    ulong auth_seed    = env_ulong_or( "FD_DEV_PRESEED_BAM_NONCE_AUTH_SEED",         0UL );
+    ulong hash_seed    = env_ulong_or( "FD_DEV_PRESEED_BAM_NONCE_HASH_SEED",   1900000UL );
+
+    pubkey_from_dev_seed( &preseed_bam_nonce_account,  account_seed );
+    pubkey_from_dev_seed( &preseed_bam_nonce_auth,     auth_seed    );
+    pubkey_from_dev_seed( &preseed_bam_nonce_hash_key, hash_seed    );
+    fd_memcpy( preseed_bam_nonce_hash.hash,
+               preseed_bam_nonce_hash_key.key,
+               sizeof(fd_hash_t) );
+
+    preseed_bam_nonce_data =
+        fd_scratch_alloc( alignof(fd_nonce_state_versions_t), FD_SYSTEM_PROGRAM_NONCE_DLEN );
+    fd_memset( preseed_bam_nonce_data, 0, FD_SYSTEM_PROGRAM_NONCE_DLEN );
+
+    fd_nonce_state_versions_t state = {
+      .version                = FD_NONCE_VERSION_CURRENT,
+      .kind                   = FD_NONCE_STATE_INITIALIZED,
+      .authority              = preseed_bam_nonce_auth,
+      .durable_nonce          = preseed_bam_nonce_hash,
+      .lamports_per_signature = genesis->fee_rate_governor.target_lamports_per_signature
+    };
+    ulong written = 0UL;
+    REQUIRE( !fd_nonce_state_versions_encode(
+        &state, preseed_bam_nonce_data, FD_SYSTEM_PROGRAM_NONCE_DLEN, &written ) );
+    REQUIRE( written==FD_SYSTEM_PROGRAM_NONCE_DLEN );
+  }
+
+  char const * preseed_bam_program_path = getenv( "FD_DEV_PRESEED_BAM_PROGRAM_ELF" );
+  char const * preseed_bam_program_id   = getenv( "FD_DEV_PRESEED_BAM_PROGRAM_ID" );
+  int          preseed_bam_program      = preseed_bam_program_path && preseed_bam_program_path[0];
+  fd_pubkey_t  preseed_bam_program_key  = {0};
+  uchar *      preseed_bam_program_data = NULL;
+  ulong        preseed_bam_program_sz   = 0UL;
+
+  if( FD_UNLIKELY( preseed_bam_program ) ) {
+    REQUIRE( preseed_bam_program_id && preseed_bam_program_id[0] );
+    REQUIRE( fd_base58_decode_32( preseed_bam_program_id, preseed_bam_program_key.key ) );
+
+    FILE * program_file = fopen( preseed_bam_program_path, "rb" );
+    REQUIRE( program_file );
+    REQUIRE( !fseek( program_file, 0L, SEEK_END ) );
+    long program_sz = ftell( program_file );
+    REQUIRE( program_sz>0L );
+    REQUIRE( !fseek( program_file, 0L, SEEK_SET ) );
+
+    preseed_bam_program_sz   = (ulong)program_sz;
+    preseed_bam_program_data = fd_scratch_alloc( 8UL, preseed_bam_program_sz );
+    REQUIRE( fread( preseed_bam_program_data,
+                    1UL,
+                    preseed_bam_program_sz,
+                    program_file )==preseed_bam_program_sz );
+    REQUIRE( !fclose( program_file ) );
+  }
+
   /* Allocate the account table */
 
   ulong default_funded_cnt = options->fund_initial_accounts;
 
-  ulong default_funded_idx = genesis->accounts_len;      genesis->accounts_len += default_funded_cnt;
-  ulong feature_gate_idx   = genesis->accounts_len;      genesis->accounts_len += feature_cnt;
+  ulong default_funded_idx    = genesis->accounts_len; genesis->accounts_len += default_funded_cnt;
+  ulong preseed_bam_alt_idx   = genesis->accounts_len; genesis->accounts_len += preseed_bam_alt ? 1UL : 0UL;
+  ulong preseed_bam_nonce_idx = genesis->accounts_len; genesis->accounts_len += preseed_bam_nonce ? 1UL : 0UL;
+  ulong preseed_bam_program_idx =
+      genesis->accounts_len; genesis->accounts_len += preseed_bam_program ? 1UL : 0UL;
+  ulong feature_gate_idx = genesis->accounts_len; genesis->accounts_len += feature_cnt;
 
   genesis->accounts = fd_scratch_alloc( alignof(fd_genesis_account_pair_t),
                                         genesis->accounts_len * sizeof(fd_genesis_account_pair_t) );
@@ -392,6 +528,45 @@ genesis_create( void *                       buf,
       .owner      = fd_solana_vote_program_id
     }
   };
+
+  if( FD_UNLIKELY( preseed_bam_alt ) ) {
+    genesis->accounts[ preseed_bam_alt_idx ] = (fd_genesis_account_pair_t) {
+      .key     = preseed_bam_alt_table,
+      .account = (fd_genesis_account_t) {
+        .lamports = fd_rent_exempt_minimum_balance( &genesis->rent, preseed_bam_alt_data_sz ),
+        .data_len = preseed_bam_alt_data_sz,
+        .data     = preseed_bam_alt_data,
+        .owner    = fd_solana_address_lookup_table_program_id
+      }
+    };
+  }
+
+  if( FD_UNLIKELY( preseed_bam_nonce ) ) {
+    genesis->accounts[ preseed_bam_nonce_idx ] = (fd_genesis_account_pair_t) {
+      .key     = preseed_bam_nonce_account,
+      .account = (fd_genesis_account_t) {
+        .lamports = fd_rent_exempt_minimum_balance( &genesis->rent, FD_SYSTEM_PROGRAM_NONCE_DLEN ),
+        .data_len = FD_SYSTEM_PROGRAM_NONCE_DLEN,
+        .data     = preseed_bam_nonce_data,
+        .owner    = fd_solana_system_program_id
+      }
+    };
+  }
+
+  if( FD_UNLIKELY( preseed_bam_program ) ) {
+    genesis->accounts[ preseed_bam_program_idx ] = (fd_genesis_account_pair_t) {
+      .key     = preseed_bam_program_key,
+      .account = (fd_genesis_account_t) {
+        .lamports =
+            fd_ulong_max( 1UL, fd_rent_exempt_minimum_balance( &genesis->rent, preseed_bam_program_sz ) ),
+        .data_len   = preseed_bam_program_sz,
+        .data       = preseed_bam_program_data,
+        .owner      = fd_solana_bpf_loader_program_id,
+        .executable = 1U,
+        .rent_epoch = ULONG_MAX
+      }
+    };
+  }
 
   /* Set up primordial accounts */
 

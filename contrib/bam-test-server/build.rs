@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 fn main() -> Result<(), std::io::Error> {
     const PROTOC_ENVAR: &str = "PROTOC";
-    const PROTO_FILES: [&str; 2] = ["bam_types.proto", "bam_api.proto"];
+    const PROTO_FILES: [&str; 1] = ["bam_types.proto"];
     const PROTO_DIR_CANDIDATES: [&str; 4] = [
         "../../src/disco/bam/proto/bam-protos",
         "../../src/disco/bam/proto",
@@ -34,14 +34,31 @@ fn main() -> Result<(), std::io::Error> {
             ),
         ))?;
 
-    let protos = PROTO_FILES.map(|file| {
-        let proto = proto_base_path.join(file);
-        println!("cargo:rerun-if-changed={}", proto.display());
-        proto
-    });
+    let mut protos = PROTO_FILES
+        .map(|file| {
+            let proto = proto_base_path.join(file);
+            println!("cargo:rerun-if-changed={}", proto.display());
+            proto
+        })
+        .to_vec();
+    let fault_api = manifest_dir.join("proto/bam_api.proto");
+    println!("cargo:rerun-if-changed={}", fault_api.display());
+    protos.push(fault_api);
 
     tonic_build::configure()
         .build_client(false)
         .build_server(true)
-        .compile_protos(&protos, &[proto_base_path])
+        .extern_path(
+            ".bam_api.RawSchedulerResponse",
+            "crate::scenario::RawSchedulerResponse",
+        )
+        .extern_path(
+            ".bam_api.RawAuthChallengeResponse",
+            "crate::scenario::RawAuthChallengeResponse",
+        )
+        .extern_path(
+            ".bam_api.RawConfigResponse",
+            "crate::scenario::RawConfigResponse",
+        )
+        .compile_protos(&protos, &[manifest_dir.join("proto"), proto_base_path])
 }
