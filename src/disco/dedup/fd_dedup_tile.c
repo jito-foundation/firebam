@@ -166,8 +166,7 @@ after_frag( fd_dedup_ctx_t *    ctx,
   }
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
   int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
-  ulong failure_group_id = txnm->block_engine.bundle_id;
-  if( FD_UNLIKELY( is_bam && txnm->bam.txn_cnt>1U ) ) failure_group_id = (1UL<<63) | (((ulong)txnm->bam.seq_id)+1UL);
+  ulong failure_group_id = fd_txn_m_failure_group_id( txnm );
 
   /* BAM derives bundle_id from seq_id; a repeated seq_id is still a new
      BAM-batch boundary when batch_idx returns to zero. */

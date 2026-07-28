@@ -111,6 +111,20 @@ fd_txn_m_use_prepack_sig_dedup( fd_txn_m_t const * txnm ) {
             txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
 }
 
+static inline ulong
+fd_txn_m_failure_group_id( fd_txn_m_t const * txnm ) {
+  ulong group_id = txnm->block_engine.bundle_id;
+
+  /* BAM seq_ids and block-engine bundle_ids have independent namespaces.
+     Keep all BAM batches that require peer-failure tracking in a disjoint
+     namespace, including one-transaction atomic batches. */
+  if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                   (group_id || txnm->bam.txn_cnt>1U) ) )
+    group_id = (1UL<<63) | ((ulong)txnm->bam.seq_id+1UL);
+
+  return group_id;
+}
+
 static inline uchar *
 fd_txn_m_payload( fd_txn_m_t * txnm ) {
   return (uchar *)(txnm+1UL);

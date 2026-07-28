@@ -117,8 +117,7 @@ after_frag( fd_verify_ctx_t *   ctx,
 
   int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
   if( FD_UNLIKELY( is_bam ) ) txnm->bam.preprocess_failed = 0U;
-  ulong failure_group_id = txnm->block_engine.bundle_id;
-  if( FD_UNLIKELY( is_bam && txnm->bam.txn_cnt>1U ) ) failure_group_id = (1UL<<63) | (((ulong)txnm->bam.seq_id)+1UL);
+  ulong failure_group_id = fd_txn_m_failure_group_id( txnm );
   int is_bundle = !!failure_group_id;
 
   if( FD_UNLIKELY( is_bundle &&
