@@ -69,6 +69,8 @@ fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
   int fd = ctx->admin_rpc_fd;
   int close_fd = 0;
   int rc = -1;
+  int soft_timeout = 0;
+  int discard_response = 0;
   char const * fail_phase = NULL;
   int          fail_errno = 0;
   if( FD_UNLIKELY( fd<FD_BAM_ADMIN_RPC_FD_NONE ) ) return -1;
@@ -82,6 +84,10 @@ fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
     close_fd = 1;
   }
 
+  discard_response = ctx->admin_rpc_response_pending;
+  if( FD_UNLIKELY( discard_response ) ) goto read_response;
+
+send_request:;
   ulong request_len = strlen( request );
   ulong request_off = 0UL;
   while( request_off<request_len ) {
@@ -108,8 +114,9 @@ fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
     request_off += (ulong)wr;
   }
 
-  ulong response_len = 0UL;
-  response[ 0 ] = '\0';
+  ctx->admin_rpc_response_pending = 1U;
+
+read_response:
   for( int poll_idx=0; poll_idx<FD_BAM_ADMIN_RPC_MAX_POLLS; poll_idx++ ) {
     struct pollfd pfd = { .fd = fd, .events = POLLIN };
     int poll_rc = ppoll( &pfd, 1UL, &(struct timespec){ .tv_sec = 0L, .tv_nsec = FD_BAM_ADMIN_RPC_POLL_MS * (long)1000000L }, NULL );
@@ -125,20 +132,22 @@ fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
     if( FD_UNLIKELY( !poll_rc ) ) continue;
 
     for(;;) {
-      if( FD_UNLIKELY( response_len+1UL>=response_max ) ) {
+      if( FD_UNLIKELY( ctx->admin_rpc_response_len+1UL>=FD_BAM_ADMIN_RPC_RESPONSE_BUF_SZ ) ) {
         fail_phase = "response overflow";
         goto out;
       }
-      ssize_t rd = read( fd, response+response_len, response_max-response_len-1UL );
+      ssize_t rd = read( fd,
+                         ctx->admin_rpc_response_buf+ctx->admin_rpc_response_len,
+                         FD_BAM_ADMIN_RPC_RESPONSE_BUF_SZ-ctx->admin_rpc_response_len-1UL );
       if( FD_LIKELY( rd>0 ) ) {
-        response_len += (ulong)rd;
-        response[ response_len ] = '\0';
+        ctx->admin_rpc_response_len += (ulong)rd;
+        ctx->admin_rpc_response_buf[ ctx->admin_rpc_response_len ] = '\0';
         int depth     = 0;
         int in_string = 0;
         int escaped   = 0;
         int saw_obj   = 0;
-        for( ulong i=0UL; i<response_len; i++ ) {
-          char c = response[ i ];
+        for( ulong i=0UL; i<ctx->admin_rpc_response_len; i++ ) {
+          char c = ctx->admin_rpc_response_buf[ i ];
           if( in_string ) {
             if( escaped ) escaped = 0;
             else if( c=='\\' ) escaped = 1;
@@ -156,6 +165,19 @@ fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
             saw_obj = 1;
             depth++;
           } else if( FD_UNLIKELY( c=='}' && saw_obj && !--depth ) ) {
+            if( FD_UNLIKELY( !discard_response &&
+                             ctx->admin_rpc_response_len+1UL>response_max ) ) {
+              fail_phase = "response overflow";
+              goto out;
+            }
+            if( FD_LIKELY( !discard_response ) )
+              fd_memcpy( response, ctx->admin_rpc_response_buf, ctx->admin_rpc_response_len+1UL );
+            ctx->admin_rpc_response_len     = 0UL;
+            ctx->admin_rpc_response_pending = 0U;
+            if( FD_UNLIKELY( discard_response ) ) {
+              discard_response = 0;
+              goto send_request;
+            }
             rc = 0;
             goto out;
           }
@@ -163,7 +185,10 @@ fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
         continue;
       }
 
-      if( FD_LIKELY( !rd ) ) break;
+      if( FD_UNLIKELY( !rd ) ) {
+        fail_phase = "reading response EOF";
+        goto out;
+      }
       if( errno==EINTR ) continue;
       if( errno==EAGAIN || errno==EWOULDBLOCK ) break;
       fail_phase = "read";
@@ -171,7 +196,8 @@ fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
       goto out;
     }
   }
-  fail_phase = "waiting for a complete response";
+  fail_phase = discard_response ? "waiting for outstanding response" : "waiting for a complete response";
+  soft_timeout = 1;
 
 out:
   if( FD_UNLIKELY( rc && fail_phase ) ) {
@@ -180,7 +206,11 @@ out:
     else                          FD_LOG_WARNING(( "BAM admin RPC request failed while %s on `%s`",
                                                    fail_phase, admin_rpc_path ));
   }
-  if( FD_UNLIKELY( rc && !close_fd && fd>=0 ) ) {
+  if( FD_UNLIKELY( rc && ( !soft_timeout || close_fd ) ) ) {
+    ctx->admin_rpc_response_len     = 0UL;
+    ctx->admin_rpc_response_pending = 0U;
+  }
+  if( FD_UNLIKELY( rc && !soft_timeout && !close_fd && fd>=0 ) ) {
     close( fd );
     ctx->admin_rpc_fd = FD_BAM_ADMIN_RPC_FD_DEAD;
   } else if( FD_LIKELY( close_fd ) ) {

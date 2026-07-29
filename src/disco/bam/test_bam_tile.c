@@ -118,12 +118,12 @@ static struct {
   ulong                       reply_cnt;
   ulong                       reply_idx;
 } test_bam_admin_rpc_mock;
-static ulong * test_bam_admin_rpc_expect_fseq_zero;
+static ulong * test_bam_admin_rpc_expect_fseq_active;
 
 static void
 test_bam_admin_rpc_mock_reset( void ) {
   fd_memset( &test_bam_admin_rpc_mock, 0, sizeof(test_bam_admin_rpc_mock) );
-  test_bam_admin_rpc_expect_fseq_zero = NULL;
+  test_bam_admin_rpc_expect_fseq_active = NULL;
 }
 
 static void
@@ -142,8 +142,8 @@ fd_bam_admin_rpc_request( fd_bam_tile_t * ctx,
                           ulong        response_max ) {
   FD_TEST( test_bam_admin_rpc_mock.reply_idx < test_bam_admin_rpc_mock.reply_cnt );
   FD_TEST( test_bam_admin_rpc_mock.request_cnt < TEST_BAM_ADMIN_RPC_MAX_CALLS );
-  if( FD_UNLIKELY( test_bam_admin_rpc_expect_fseq_zero ) ) {
-    FD_TEST( fd_fseq_query( test_bam_admin_rpc_expect_fseq_zero ) == 0UL );
+  if( FD_UNLIKELY( test_bam_admin_rpc_expect_fseq_active ) ) {
+    FD_TEST( fd_fseq_query( test_bam_admin_rpc_expect_fseq_active ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   }
 
   ulong req_idx = test_bam_admin_rpc_mock.request_cnt++;
@@ -4561,7 +4561,7 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
 
   test_bam_admin_rpc_mock_reset();
-  test_bam_admin_rpc_expect_fseq_zero = fseq;
+  test_bam_admin_rpc_expect_fseq_active = fseq;
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"1.1.1.1:4242\",\"tpu_forwards\":\"2.2.2.2:4343\"},\"id\":1}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
 
@@ -4598,7 +4598,33 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   FD_TEST( !strcmp( ctx->server_fqdn, "testnet.bam.jito.wtf" ) );
   FD_TEST( ctx->server_tcp_port == 50055U );
 
-  test_bam_admin_rpc_expect_fseq_zero = NULL;
+  /* A failed restore keeps BAM ownership until housekeeping retries it. */
+  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  ctx->ownership_gen_retired = 0U;
+
+  test_bam_admin_rpc_mock_reset();
+  test_bam_admin_rpc_expect_fseq_active = fseq;
+  test_bam_admin_rpc_mock_push_reply( -1, NULL );
+
+  fd_bam_publish_active_state( ctx, ctx->stem, 0 );
+
+  FD_TEST( fd_fseq_query( fseq ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  FD_TEST( ctx->tpu_update_state       == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
+  FD_TEST( ctx->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT );
+
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"8.8.8.8:7001\"},\"id\":1}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":3}" );
+  test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":4}" );
+
+  fd_bam_tile_housekeeping( ctx );
+
+  FD_TEST( test_bam_admin_rpc_mock.request_cnt == 5UL );
+  FD_TEST( ctx->tpu_update_state       == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( ctx->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( fd_fseq_query( fseq ) == 0UL );
+
+  test_bam_admin_rpc_expect_fseq_active = NULL;
   FD_TEST( fd_fseq_leave( fseq ) == fseq_shmem );
   FD_TEST( fd_fseq_delete( fseq_shmem ) == fseq_shmem );
   ctx->bam_status_fseq = NULL;

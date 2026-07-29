@@ -188,6 +188,8 @@ typedef enum {
   FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_BAM     = 4, /* Needs an update attempt to apply the BAM client id. */
 } fd_bam_client_id_update_state_t;
 
+#define FD_BAM_ADMIN_RPC_RESPONSE_BUF_SZ (4096UL)
+
 /* fd_bam_tile_t is the context object provided to callbacks from
    stem, and contains all state needed to progress the tile. */
 
@@ -277,6 +279,9 @@ struct fd_bam_tile {
   fd_ip4_port_t default_tpu_fwd;       /* Non-BAM TPU Forward socket to restore on disable/disconnect */
   fd_ip4_port_t configured_default_tpu; /* Startup default TPU base port derived from local validator config. */
   int admin_rpc_fd;                    /* Admin RPC stream fd; see FD_BAM_ADMIN_RPC_FD_* below. */
+  ulong admin_rpc_response_len;        /* Bytes retained for the one outstanding admin RPC response. */
+  uchar admin_rpc_response_pending;    /* One request was sent but its complete response has not arrived yet. */
+  char admin_rpc_response_buf[ FD_BAM_ADMIN_RPC_RESPONSE_BUF_SZ ]; /* Partial outstanding response retained across soft timeouts. */
   char admin_rpc_path[ PATH_MAX ];     /* Empty disables admin RPC updates; full Firedancer currently uses gossip updates only. */
   fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for TPU advert updates */
   fd_bam_client_id_update_state_t client_id_update_state; /* Dedupe/retry state for ContactInfo client-id updates */

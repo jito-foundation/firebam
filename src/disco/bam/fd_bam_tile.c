@@ -651,7 +651,9 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
 
   if( FD_UNLIKELY( !bam_active ) ) {
     ctx->bam_gossip_handoff_pending = 0U;
-    if( FD_UNLIKELY( prev_bam_active ) )
+    /* Frankendancer restores Agave contact info before releasing ownership.
+       Full Firedancer retains the direct-gossip ordering. */
+    if( FD_UNLIKELY( prev_bam_active && !ctx->admin_rpc_path[0] ) )
       (void)FD_ATOMIC_CAS( ctx->bam_status_fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE, 0UL );
   }
 
@@ -668,6 +670,12 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
       client_id_update_state == ( use_bam_contact ? FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT : FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM ) ||
       ( use_bam_contact && client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN );
   if( FD_UNLIKELY( update_needed ) ) (void)fd_bam_gossip_update( ctx, stem, use_bam_contact );
+
+  if( FD_UNLIKELY( !bam_active && prev_bam_active && ctx->admin_rpc_path[0] ) ) {
+    if( FD_UNLIKELY( ctx->tpu_update_state       != FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT ||
+                     ctx->client_id_update_state != FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT ) ) return;
+    (void)FD_ATOMIC_CAS( ctx->bam_status_fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE, 0UL );
+  }
 
   fd_bam_shred_update( ctx, stem, bam_active );
 
