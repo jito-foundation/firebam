@@ -104,7 +104,7 @@ test_fd_pack_insert_bundle_fini( fd_pack_t          * pack,
                                  fd_txn_e_t * const * bundle,
                                  ulong                txn_cnt,
                                  ulong                expires_at,
-                                 int                  initializer_bundle,
+                                 int                  initializer_bundle_kind,
                                  void const *         bundle_meta,
                                  ulong *              delete_cnt,
                                  ulong *              reject_txn_idx ) {
@@ -112,7 +112,6 @@ test_fd_pack_insert_bundle_fini( fd_pack_t          * pack,
   (void)bundle;
   (void)txn_cnt;
   (void)expires_at;
-  (void)initializer_bundle;
   (void)bundle_meta;
   test_insert_fini_call_cnt++;
   test_delete_before_insert_fini = !!test_delete_call_cnt;
@@ -121,7 +120,7 @@ test_fd_pack_insert_bundle_fini( fd_pack_t          * pack,
                                        bundle,
                                        txn_cnt,
                                        expires_at,
-                                       initializer_bundle,
+                                       initializer_bundle_kind,
                                        bundle_meta,
                                        delete_cnt,
                                        reject_txn_idx );
@@ -340,6 +339,52 @@ static void
 test_pack_tile_fill_sig( uchar sig[ static FD_ED25519_SIG_SZ ],
                          uchar seed ) {
   for( ulong i=0UL; i<sizeof(fd_ed25519_sig_t); i++ ) sig[ i ] = (uchar)( seed + i );
+}
+
+static void
+test_pack_tile_bam_mode_edges_retire_pending_initializer( void ) {
+  test_pack_tile_harness_t h[ 1 ];
+  ulong                    bam_status = 0UL;
+  fd_ed25519_sig_t         normal_initializer_sig[ 1 ];
+  fd_ed25519_sig_t         bam_initializer_sig[ 1 ];
+
+  test_pack_tile_harness_new( h );
+  test_pack_tile_fill_sig( *normal_initializer_sig, 41U );
+  test_pack_tile_fill_sig( *bam_initializer_sig,    81U );
+
+  h->ctx->bam_status_fseq          = &bam_status;
+  h->ctx->bam_override_snapshot    = 0;
+  h->ctx->crank->enabled           = 1;
+  h->ctx->crank->ib_inserted       = 1;
+  h->ctx->crank->prev_config_before_ib->discriminator = 1UL;
+  h->ctx->crank->prev_config->discriminator           = 2UL;
+  fd_memcpy( h->ctx->crank->last_sig, normal_initializer_sig, sizeof(fd_ed25519_sig_t) );
+
+  /* Re-observing one mode leaves its pending initializer alone. */
+  FD_TEST( pack_tile_snapshot_bam_override( h->ctx )==0 );
+  FD_TEST( test_delete_call_cnt==0UL );
+
+  /* Activation retires the pending normal/Block Engine initializer. */
+  bam_status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+  FD_TEST( pack_tile_snapshot_bam_override( h->ctx )==1 );
+  FD_TEST( test_delete_call_cnt==1UL );
+  FD_TEST( !memcmp( test_delete_last_sig, normal_initializer_sig, sizeof(fd_ed25519_sig_t) ) );
+  FD_TEST( !h->ctx->crank->ib_inserted );
+  FD_TEST( h->ctx->crank->prev_config->discriminator==1UL );
+
+  /* Deactivation applies the same rule to a pending BAM initializer. */
+  h->ctx->crank->ib_inserted = 1;
+  h->ctx->crank->prev_config_before_ib->discriminator = 3UL;
+  h->ctx->crank->prev_config->discriminator           = 4UL;
+  fd_memcpy( h->ctx->crank->last_sig, bam_initializer_sig, sizeof(fd_ed25519_sig_t) );
+  bam_status = 0UL;
+  FD_TEST( pack_tile_snapshot_bam_override( h->ctx )==0 );
+  FD_TEST( test_delete_call_cnt==2UL );
+  FD_TEST( !memcmp( test_delete_last_sig, bam_initializer_sig, sizeof(fd_ed25519_sig_t) ) );
+  FD_TEST( !h->ctx->crank->ib_inserted );
+  FD_TEST( h->ctx->crank->prev_config->discriminator==3UL );
+
+  test_pack_tile_harness_delete( h );
 }
 
 static pack_bam_work_t *
@@ -1832,6 +1877,7 @@ main( int     argc,
   test_pack_tile_bam_override_drops_block_engine_bundles();
   test_pack_tile_bam_override_after_frag_cancels_block_engine_bundle();
   test_pack_tile_bam_fee_meta_seqlock_keeps_last_snapshot();
+  test_pack_tile_bam_mode_edges_retire_pending_initializer();
   test_pack_tile_bam_missing_builder_cfg_accepted();
 
   FD_LOG_NOTICE(( "pass" ));

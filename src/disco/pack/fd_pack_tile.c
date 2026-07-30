@@ -361,6 +361,7 @@ struct fd_pack_ctx {
   ulong *    bam_status_fseq;
   ulong *       bam_gen_fseq;
   ushort        bam_ownership_gen;
+  _Bool         bam_override_snapshot;
 
   struct {
     uint metric_state;
@@ -416,6 +417,7 @@ struct fd_pack_ctx {
     fd_acct_addr_t        tip_receiver_owner[1];
     ulong                 epoch;
     fd_bundle_crank_tip_payment_config_t prev_config[1]; /* as of start of slot, then updated */
+    fd_bundle_crank_tip_payment_config_t prev_config_before_ib[1]; /* restored if an unscheduled IB is deleted */
     uchar                 recent_blockhash[32];
     fd_ed25519_sig_t      last_sig[1];
 
@@ -578,6 +580,7 @@ remove_ib( fd_pack_ctx_t * ctx ) {
   if( FD_UNLIKELY( ctx->crank->enabled & ctx->crank->ib_inserted ) ) {
     ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)ctx->crank->last_sig );
     FD_MCNT_INC( PACK, TXN_DELETED, deleted );
+    if( FD_UNLIKELY( deleted ) ) *ctx->crank->prev_config = *ctx->crank->prev_config_before_ib;
   }
   ctx->crank->ib_inserted = 0;
 }
@@ -1391,9 +1394,22 @@ pack_tile_cancel_cur_spot( fd_pack_ctx_t * ctx ) {
   ctx->cur_spot = NULL;
 }
 
-static inline int
+static inline _Bool
 pack_tile_bam_override_active( fd_pack_ctx_t const * ctx ) {
-  return ctx->bam_status_fseq && ( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  return !!ctx->bam_status_fseq && !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+}
+
+/* Observe the mode once for initializer selection and the subsequent
+   scheduling call.  A pending initializer from the prior mode must not
+   survive the edge and become eligible under the new mode. */
+static inline _Bool
+pack_tile_snapshot_bam_override( fd_pack_ctx_t * ctx ) {
+  _Bool bam_override = pack_tile_bam_override_active( ctx );
+  if( FD_UNLIKELY( bam_override!=ctx->bam_override_snapshot ) ) {
+    remove_ib( ctx );
+    ctx->bam_override_snapshot = bam_override;
+  }
+  return bam_override;
 }
 
 static inline void
@@ -1592,13 +1608,14 @@ after_credit( fd_pack_ctx_t *     ctx,
   }
 #endif
 
+  _Bool bam_override = pack_tile_snapshot_bam_override( ctx );
   int any_ready     = 0;
   int any_scheduled = 0;
 
   *charge_busy = 1;
 
   if( FD_LIKELY( ctx->crank->enabled ) ) {
-    block_builder_info_t const * top_meta = fd_pack_peek_bundle_meta( ctx->pack );
+    block_builder_info_t const * top_meta = fd_pack_peek_bundle_meta( ctx->pack, bam_override );
     if( FD_UNLIKELY( top_meta ) ) {
       /* Have bundles, in a reasonable state to crank. */
 
@@ -1642,7 +1659,9 @@ after_credit( fd_pack_ctx_t *     ctx,
 
         ctx->crank->ib_inserted = 1;
         ulong deleted;
-        int retval = fd_pack_insert_bundle_fini( ctx->pack, bundle, 1UL, ctx->leader_slot-1UL, 1, NULL, &deleted, NULL );
+        int retval = fd_pack_insert_bundle_fini( ctx->pack, bundle, 1UL, ctx->leader_slot-1UL,
+                                                 fd_int_if( bam_override, FD_PACK_IB_TYPE_BAM, FD_PACK_IB_TYPE_NORMAL ),
+                                                 NULL, &deleted, NULL );
         FD_MCNT_INC( PACK, TXN_DELETED, deleted );
         ctx->insert_result[ retval + FD_PACK_INSERT_RETVAL_OFF ]++;
         if( FD_UNLIKELY( retval<0 ) ) {
@@ -1666,6 +1685,7 @@ after_credit( fd_pack_ctx_t *     ctx,
 
              Otherwise, the initializer bundle succeeded, which means
              that these are the right values to use. */
+          *ctx->crank->prev_config_before_ib = *ctx->crank->prev_config;
           fd_bundle_crank_apply( ctx->crank->gen, ctx->crank->prev_config, top_meta->commission_pubkey,
                                  ctx->crank->tip_receiver_owner, ctx->crank->epoch, top_meta->commission );
           ctx->crank->metrics[ 1 ]++; /* BUNDLE_CRANK_RESULT_INSERTED */
@@ -1702,9 +1722,7 @@ after_credit( fd_pack_ctx_t *     ctx,
                                       | fd_int_if( i<pacing_execle_cnt, FD_PACK_SCHEDULE_TXN,    0 );
         break;
     }
-    if( FD_UNLIKELY( pack_tile_bam_override_active( ctx ) ) ) {
-      flags |= FD_PACK_SCHEDULE_BAM_ONLY;
-    }
+    flags |= fd_int_if( bam_override, FD_PACK_SCHEDULE_BAM_ONLY, 0 );
 
     fd_txn_e_t * microblock_dst = fd_chunk_to_laddr( ctx->execle_out_mem, ctx->execle_out_chunk );
     long schedule_duration = -fd_tickcount();
@@ -2883,6 +2901,7 @@ unprivileged_init( fd_topo_t const *      topo,
                        ? fd_fseq_join( fd_topo_obj_laddr( topo, bam_status_obj_id ) )
                        : NULL;
   if( FD_UNLIKELY( bam_status_obj_id!=ULONG_MAX && !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "pack tile missing bam_status fseq" ));
+  ctx->bam_override_snapshot = pack_tile_bam_override_active( ctx );
 
   ulong bam_gen_obj_id = fd_pod_query_ulong( topo->props, "bam_gen", ULONG_MAX );
   if( FD_LIKELY( bam_gen_obj_id!=ULONG_MAX ) ) {

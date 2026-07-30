@@ -508,16 +508,17 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
    the bundle have the same expires_at value, since if one expires, the
    whole bundle becomes invalid.
 
-   If initializer_bundle is non-zero, this bundle will be inserted at
-   the front of the bundle queue so that it is the next bundle
-   scheduled.  Otherwise, the bundle will be inserted at the back of the
+   initializer_bundle_kind must be one of FD_PACK_IB_TYPE_{NONE,NORMAL,BAM}.
+   If it is NORMAL or BAM, this bundle will be inserted at the front of
+   the bundle queue so that it is the next bundle for that scheduling
+   mode.  Otherwise, the bundle will be inserted at the back of the
    bundle queue, and will be scheduled in FIFO order with the rest of
    the bundles.  If an initializer bundle is already present in pack's
    pending transactions, that bundle will be deleted.  Additionally, if
-   initializer_bundle is non-zero, the transactions in the bundle will
-   not be checked against the bundle blacklist; otherwise, the check
-   will be performed as normal.  See the section below on initializer
-   bundles for more details.
+   initializer_bundle_kind is NORMAL or BAM, the transactions in the
+   bundle will not be checked against the bundle blacklist; otherwise,
+   the check will be performed as normal.  See the section below on
+   initializer bundles for more details.
 
    Other than the blacklist check, transactions in a bundle are subject
    to the same checks as other transactions.  If any transaction in the
@@ -528,9 +529,9 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
    If bundle_meta is non-NULL, the contents of the memory will be copied
    to a metadata region associated with this bundle and can be retrieved
    later with fd_pack_peek_bundle_meta.  The contents of bundle_meta is
-   not retrievable if initializer_bundle is non-zero, so you may wish to
-   just pass NULL in that case.  This function does not retain any
-   interest in the contents of bundle_meta after it returns.
+   not retrievable if initializer_bundle_kind is NORMAL or BAM, so you
+   may wish to just pass NULL in that case.  This function does not
+   retain any interest in the contents of bundle_meta after it returns.
 
    txn_cnt must be in [1, MAX_TXN_PER_BUNDLE].  A txn_cnt of 1 inserts a
    single-transaction bundle which is transaction with extremely high
@@ -552,10 +553,13 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
 
 fd_txn_e_t * const * fd_pack_insert_bundle_init  ( fd_pack_t * pack, fd_txn_e_t *       * bundle, ulong txn_cnt                                        );
 int                  fd_pack_insert_bundle_fini  ( fd_pack_t * pack, fd_txn_e_t * const * bundle, ulong txn_cnt,
-                                                   ulong expires_at, int initializer_bundle, void const * bundle_meta,
+                                                   ulong expires_at, int initializer_bundle_kind, void const * bundle_meta,
                                                    ulong * delete_cnt, ulong * reject_txn_idx );
 void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t * const * bundle, ulong txn_cnt                                        );
 
+#define FD_PACK_IB_TYPE_NONE   (0)
+#define FD_PACK_IB_TYPE_NORMAL (1)
+#define FD_PACK_IB_TYPE_BAM    (2)
 
 /* =========== More details about initializer bundles ===============
    Initializer bundles are a special type of bundle with special support
@@ -583,14 +587,15 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
 
 
    When attempting to schedule a bundle the pack object checks the
-   state, and employs the following rules:
-   * [Not Initialized]: If the top bundle is an IB, schedule it,
-     removing it like normal, then transition to [Pending].  Otherwise,
-     do not schedule a bundle.
+   state and the requested scheduling mode, and employs the following
+   rules:
+   * [Not Initialized]: If the top bundle eligible for that mode is a
+     matching IB, schedule it, removing it like normal, then transition
+     to [Pending].  Otherwise, do not schedule a bundle.
    * [Pending]: Do not schedule a bundle.
    * [Failed]: Do not schedule a bundle
-   * [Ready]: Attempt to schedule the next bundle.  If scheduling an IB,
-     transition to [Pending].
+   * [Ready]: Attempt to schedule the next bundle eligible for that
+     mode.  If scheduling an IB, transition to [Pending].
 
    As described in the state machine, ending the block (via
    fd_pack_end_block) transitions to [Not Initialized], and calls to
@@ -625,9 +630,12 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
 
 /* fd_pack_peek_bundle_meta returns a constant pointer to the bundle
    metadata associated with the bundle currently in line to be scheduled
-   next, or NULL in any of the following cases:
-     * There are no bundles
-     * The bundle currently in line to be scheduled next is an IB
+   next for the selected mode.  bam_only has the same meaning as the
+   FD_PACK_SCHEDULE_BAM_ONLY scheduling flag.  It returns NULL in any of
+   the following cases:
+     * There are no bundles eligible for the selected mode
+     * The eligible bundle currently in line to be scheduled next is an
+       IB for the selected mode
      * The bundle state is currently [Pending] or [Failed].
 
    The lifetime of the returned pointer is until the next pack insert,
@@ -640,7 +648,8 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
    Pack doesn't do anything special to ensure the returned pointer
    points to memory with any particular alignment.  It will naturally
    have an alignment of at least GCD( 64, bundle_meta_sz ). */
-void const * fd_pack_peek_bundle_meta( fd_pack_t const * pack );
+void const * fd_pack_peek_bundle_meta( fd_pack_t const * pack,
+                                       _Bool             bam_only );
 
 /* fd_pack_set_initializer_bundles_ready sets the IB state machine state
    (see long initializer bundle comment above) to the [Ready] state.

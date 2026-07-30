@@ -579,6 +579,7 @@ struct fd_pack_private {
      respective values for a discussion of what each state means and the
      transitions between them. */
   int   initializer_bundle_state;
+  _Bool initializer_bundle_bam; /* Mode of the sole pending IB */
 
   /* relative_bundle_idx: the number of bundles that have been inserted
      since the last time pending_bundles was empty.  See the long
@@ -844,6 +845,7 @@ fd_pack_new( void                   * mem,
   pack->outstanding_microblock_mask = 0UL;
   pack->cumulative_rebated_cus      = 0UL;
   pack->initializer_bundle_state    = FD_PACK_IB_STATE_NOT_INITIALIZED;
+  pack->initializer_bundle_bam      = 0;
   pack->relative_bundle_idx         = 0UL;
 
   acct_blocklist_new( pack->acct_blocklist );
@@ -1534,10 +1536,15 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
                             fd_txn_e_t * const * bundle,
                             ulong                txn_cnt,
                             ulong                expires_at,
-                            int                  initializer_bundle,
+                            int                  initializer_bundle_kind,
                             void         const * bundle_meta,
                             ulong              * delete_cnt,
                             ulong              * reject_txn_idx ) {
+
+  FD_TEST( initializer_bundle_kind==FD_PACK_IB_TYPE_NONE   ||
+           initializer_bundle_kind==FD_PACK_IB_TYPE_NORMAL ||
+           initializer_bundle_kind==FD_PACK_IB_TYPE_BAM );
+  _Bool initializer_bundle = initializer_bundle_kind!=FD_PACK_IB_TYPE_NONE;
 
   int err = 0;
   *delete_cnt = 0UL;
@@ -1800,6 +1807,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     pack->relative_bundle_idx = 1UL;
   }
   ulong bundle_idx = fd_ulong_if( initializer_bundle, 0UL, pack->relative_bundle_idx );
+  if( FD_UNLIKELY( initializer_bundle ) ) pack->initializer_bundle_bam = initializer_bundle_kind==FD_PACK_IB_TYPE_BAM;
   insert_bundle_impl( pack, bundle_idx, txn_cnt, (fd_pack_ord_txn_t * *)bundle, expires_at );
   /* if IB this is max( 1, x ), which is x.  Otherwise, this is max(x,
      x+1) which is x++ */
@@ -1841,16 +1849,51 @@ insert_bundle_impl( fd_pack_t           * pack,
 
 }
 
+/* Returns the first whole bundle eligible for the selected mode.  Keeping
+   this traversal shared is important: the metadata used to generate an
+   initializer must belong to the bundle the scheduler will select next. */
+static treap_rev_iter_t
+fd_pack_bundle_candidate( fd_pack_t const * pack,
+                          _Bool             bam_only,
+                          ulong *           skipped_txn_cnt ) {
+  fd_pack_ord_txn_t * pool = pack->pool;
+  treap_rev_iter_t   iter = treap_rev_iter_init( pack->pending_bundles, pool );
+
+  while( !treap_rev_iter_done( iter ) ) {
+    fd_pack_ord_txn_t * cur = treap_rev_iter_ele( iter, pool );
+    ulong bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+    _Bool is_ib      = !!(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
+    _Bool mode_match = is_ib
+                     ? pack->initializer_bundle_bam==bam_only
+                     : !bam_only || cur->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+
+    if( FD_LIKELY( cur->skip!=pack->compressed_slot_number && mode_match ) ) return iter;
+
+    /* Source filtering and current-slot deferral both operate on whole
+       bundles.  Never return an iterator into the middle of a bundle. */
+    do {
+      if( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) (*skipped_txn_cnt)++;
+      iter = treap_rev_iter_next( iter, pool );
+      if( FD_UNLIKELY( treap_rev_iter_done( iter ) ) ) return iter;
+      cur = treap_rev_iter_ele( iter, pool );
+    } while( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )==bundle_idx );
+  }
+
+  return iter;
+}
+
 void const *
-fd_pack_peek_bundle_meta( fd_pack_t const * pack ) {
+fd_pack_peek_bundle_meta( fd_pack_t const * pack,
+                          _Bool             bam_only ) {
   int ib_state = pack->initializer_bundle_state;
   if( FD_UNLIKELY( (ib_state==FD_PACK_IB_STATE_PENDING) | (ib_state==FD_PACK_IB_STATE_FAILED) ) ) return NULL;
 
-  treap_rev_iter_t _cur=treap_rev_iter_init( pack->pending_bundles, pack->pool );
+  ulong skipped_txn_cnt = 0UL;
+  treap_rev_iter_t _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped_txn_cnt );
   if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return NULL; /* empty */
 
   fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pack->pool );
-  int is_ib = !!(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
+  _Bool is_ib = !!(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
   if( FD_UNLIKELY( is_ib ) ) return NULL;
 
   return (void const *)((uchar const *)pack->bundle_meta + (ulong)_cur * pack->bundle_meta_sz);
@@ -2393,42 +2436,22 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   int state = pack->initializer_bundle_state;
   if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_PENDING) | (state==FD_PACK_IB_STATE_FAILED ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
 
-  fd_pack_ord_txn_t * pool    = pack->pool;
-  treap_t           * bundles = pack->pending_bundles;
+  fd_pack_ord_txn_t * pool = pack->pool;
 
   int require_ib;
   if( FD_UNLIKELY( state==FD_PACK_IB_STATE_NOT_INITIALIZED ) ) { require_ib = 1; }
   if( FD_LIKELY  ( state==FD_PACK_IB_STATE_READY           ) ) { require_ib = 0; }
 
-  treap_rev_iter_t _cur  = treap_rev_iter_init( bundles, pool );
-  ulong bundle_idx = ULONG_MAX;
-
-  /* Skip any that we've marked as won't fit in this block */
-  while( FD_UNLIKELY( !treap_rev_iter_done( _cur ) && treap_rev_iter_ele( _cur, pool )->skip==pack->compressed_slot_number ) ) {
-    _cur = treap_rev_iter_next( _cur, pool );
-    pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
-  }
+  ulong skipped_txn_cnt = 0UL;
+  treap_rev_iter_t _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped_txn_cnt );
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ] += skipped_txn_cnt;
 
   if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
-
-  if( FD_UNLIKELY( bam_only ) ) {
-    fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
-    while( !(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) && cur->txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) {
-      ulong skipped_bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
-      do {
-        _cur = treap_rev_iter_next( _cur, pool );
-        if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
-        cur = treap_rev_iter_ele( _cur, pool );
-        if( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
-      } while( FD_UNLIKELY( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )==skipped_bundle_idx ||
-                            cur->skip==pack->compressed_slot_number ) );
-    }
-  }
 
   treap_rev_iter_t   _txn0 = _cur;
   fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
   int is_ib = !!(txn0->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
-  bundle_idx = RC_TO_REL_BUNDLE_IDX( txn0->rewards, txn0->compute_est );
+  ulong bundle_idx = RC_TO_REL_BUNDLE_IDX( txn0->rewards, txn0->compute_est );
 
   if( FD_UNLIKELY( require_ib & !is_ib ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
 

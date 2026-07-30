@@ -1983,16 +1983,21 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
   txn->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_UDP;
   FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &_deleted )>=0 );
 
+  ulong be_meta[ 8 ] = { 11UL };
+  ulong bam_meta[ 8 ] = { 22UL };
   fd_txn_e_t * _bundle[ FD_PACK_MAX_TXN_PER_BUNDLE ];
   fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
   make_transaction1( bundle[0]->txnp, 510UL, 2000U, 32U, 20.0, "b", "", NULL, NULL );
-  bundle[0]->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_UDP;
-  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted, NULL )>=0 );
+  bundle[0]->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_BUNDLE;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, be_meta, &_deleted, NULL )>=0 );
 
   bundle = fd_pack_insert_bundle_init( pack, _bundle, 1UL );
   make_transaction1( bundle[0]->txnp, 511UL, 2000U, 32U, 1.0, "c", "", NULL, NULL );
   bundle[0]->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
-  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, NULL, &_deleted, NULL )>=0 );
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, bam_meta, &_deleted, NULL )>=0 );
+
+  ulong const * selected_meta = fd_pack_peek_bundle_meta( pack, 1 );
+  FD_TEST( selected_meta && *selected_meta==22UL );
 
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 1.0f, 0UL, FD_PACK_SCHEDULE_VOTE | FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results );
   FD_TEST( txn_cnt==1UL );
@@ -2003,7 +2008,101 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
   FD_TEST( outcome.results[0].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
   fd_pack_microblock_complete( pack, 0UL );
 
+  selected_meta = fd_pack_peek_bundle_meta( pack, 0 );
+  FD_TEST( selected_meta && *selected_meta==11UL );
+
   fd_pack_clear_all( pack );
+  fd_pack_delete( fd_pack_leave( pack ) );
+}
+
+static void
+insert_mode_test_bundle( fd_pack_t *    pack,
+                         fd_txn_e_t *   slots[ static FD_PACK_MAX_TXN_PER_BUNDLE ],
+                         ulong          txn_id,
+                         uchar          source_tpu,
+                         int            initializer_bundle_kind,
+                         void const *   meta ) {
+  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, slots, 1UL );
+  uint compute = fd_uint_if( initializer_bundle_kind==FD_PACK_IB_TYPE_NONE, 2000U, 10000U );
+  make_transaction1( bundle[ 0 ]->txnp, txn_id, compute, 32U, 10.0, "a", "", NULL, NULL );
+  bundle[ 0 ]->txnp->source_tpu = source_tpu;
+  ulong deleted;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, initializer_bundle_kind,
+                                       meta, &deleted, NULL )>=0 );
+}
+
+/* Initializers are mode-bound.  This reproduces the activation sequence
+   from the Slack report: a normal initializer is already queued ahead of a
+   finalized Block Engine bundle when BAM work arrives. */
+static void
+test_initializer_bundle_mode_selection( void ) {
+  typedef struct {
+    ulong bundle_id;
+  } test_meta_t;
+
+  pack_outcome_t outcome;
+  fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, sizeof(test_meta_t), &outcome );
+  fd_txn_e_t * slots[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+
+  test_meta_t const be_meta  = { .bundle_id=31UL };
+  test_meta_t const bam_meta = { .bundle_id=32UL };
+
+  insert_mode_test_bundle( pack, slots, 610UL, FD_TXN_M_TPU_SOURCE_BUNDLE,
+                           FD_PACK_IB_TYPE_NONE, &be_meta );
+
+  /* This models the stale Block Engine-derived initializer inserted just
+     before Pack observes BAM activation. */
+  insert_mode_test_bundle( pack, slots, 611UL, FD_TXN_M_TPU_SOURCE_BUNDLE,
+                           FD_PACK_IB_TYPE_NORMAL, NULL );
+
+  /* BAM work arrives after the stale initializer is already pending. */
+  insert_mode_test_bundle( pack, slots, 612UL, FD_TXN_M_TPU_SOURCE_BAM,
+                           FD_PACK_IB_TYPE_NONE, &bam_meta );
+
+  test_meta_t const * meta = fd_pack_peek_bundle_meta( pack, 1 );
+  FD_TEST( meta && meta->bundle_id==bam_meta.bundle_id );
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY,
+                                             outcome.results )==0UL );
+
+  /* A BAM initializer replaces the stale normal initializer and is the
+     only initializer admissible while BAM-only scheduling is active. */
+  insert_mode_test_bundle( pack, slots, 613UL, FD_TXN_M_TPU_SOURCE_BUNDLE,
+                           FD_PACK_IB_TYPE_BAM, NULL );
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY,
+                                             outcome.results )==1UL );
+  FD_TEST( outcome.results[ 0 ].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
+  FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+
+  fd_pack_rebate_t rebate[ 1 ] = {{ .ib_result=1 }};
+  fd_pack_rebate_cus( pack, rebate );
+
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY,
+                                             outcome.results )==1UL );
+  FD_TEST( outcome.results[ 0 ].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL ); /* Block Engine retained */
+
+  /* The reverse transition has the same isolation: normal scheduling
+     cannot admit a pending BAM initializer. */
+  fd_pack_end_block( pack );
+  fd_pack_clear_all( pack );
+
+  insert_mode_test_bundle( pack, slots, 615UL, FD_TXN_M_TPU_SOURCE_BUNDLE,
+                           FD_PACK_IB_TYPE_BAM, NULL );
+
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE, outcome.results )==0UL );
+
+  insert_mode_test_bundle( pack, slots, 616UL, FD_TXN_M_TPU_SOURCE_BUNDLE,
+                           FD_PACK_IB_TYPE_NORMAL, NULL );
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE, outcome.results )==1UL );
+  FD_TEST( outcome.results[ 0 ].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
+  FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
@@ -2142,7 +2241,7 @@ test_bundle_metadata_persistence( void ) {
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, &meta, &_deleted, NULL )>=0 );
 
   /* Peek metadata before scheduling */
-  test_meta_t const * stored = (test_meta_t const *)fd_pack_peek_bundle_meta( pack );
+  test_meta_t const * stored = (test_meta_t const *)fd_pack_peek_bundle_meta( pack, 0 );
   FD_TEST( stored!=NULL );
   FD_TEST( stored->bundle_id==12345UL );
   FD_TEST( stored->commission==42 );
@@ -2154,7 +2253,7 @@ test_bundle_metadata_persistence( void ) {
   fd_pack_microblock_complete( pack, 0UL );
 
   /* Metadata should no longer be accessible after scheduling */
-  stored = (test_meta_t const *)fd_pack_peek_bundle_meta( pack );
+  stored = (test_meta_t const *)fd_pack_peek_bundle_meta( pack, 0 );
   FD_TEST( stored==NULL );
 
   fd_pack_delete( fd_pack_leave( pack ) );
@@ -2190,6 +2289,7 @@ main( int     argc,
   test_bam_nonrevert_seq_conflict_order();
   test_bam_nonrevert_multi_clears_bundle_flag();
   test_bam_only_schedule_filters_non_bam_work();
+  test_initializer_bundle_mode_selection();
 
   /* Generic bundle/initializer-pack regressions */
   test_bundle_account_conflicts();
