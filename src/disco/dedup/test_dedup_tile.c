@@ -77,7 +77,7 @@ test_publish( test_env_t * env,
       .seq_id            = seq_id,
       .txn_cnt           = txn_cnt,
       .batch_idx         = batch_idx,
-      .revert_on_error   = !!is_bam,
+      .revert_on_error   = !!(is_bam && bundle_id),
       .preprocess_failed = !!preprocess_failed,
     },
   };
@@ -91,6 +91,14 @@ test_publish( test_env_t * env,
 static void
 test_bam_block_engine_namespace( void ) {
   test_env_t env[ 1 ];
+
+  /* Non-revert BAM work has no block-engine bundle ID but must still be
+     pinned to resolver 0, including a later singleton. */
+  test_env_init( env );
+  test_publish( env, 1, 0UL, 17U, 2U, 0U, 0x30U, 0 );
+  FD_TEST( env->mcache[ fd_mcache_line_idx( env->seqs[ 0 ]-1UL, env->depths[ 0 ] ) ].sig==1UL );
+  test_publish( env, 1, 0UL, 18U, 1U, 0U, 0x40U, 0 );
+  FD_TEST( env->mcache[ fd_mcache_line_idx( env->seqs[ 0 ]-1UL, env->depths[ 0 ] ) ].sig==1UL );
 
   /* The Slack reproduction: a five-transaction BAM batch followed by a
      block-engine bundle with the same raw numeric ID.  Also cover the

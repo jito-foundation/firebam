@@ -255,6 +255,16 @@ main( int     argc,
   fd_boot( &argc, &argv );
   fd_metrics_register( fd_metrics_join( fd_metrics_new( metrics_scratch, 0UL ) ) );
 
+  test_harness_t h[1];
+  test_harness_new( h );
+  h->ctx->round_robin_cnt = 4UL;
+  for( ulong resolver_idx=0UL; resolver_idx<4UL; resolver_idx++ ) {
+    h->ctx->round_robin_idx = resolver_idx;
+    FD_TEST( before_frag( h->ctx, 0UL, 2UL, 1UL )==(resolver_idx!=0UL) );
+    FD_TEST( before_frag( h->ctx, 0UL, 2UL, 0UL )==(resolver_idx!=2UL) );
+  }
+  test_harness_delete( h );
+
   test_expired_bam_forwarded_to_pack();
   test_later_expired_bam_member_and_siblings_forwarded();
   test_no_bank_deser_marker( 0U );
