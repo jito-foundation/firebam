@@ -2434,13 +2434,12 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
                              _Bool        bam_only,
                              fd_txn_e_t * out ) {
   int state = pack->initializer_bundle_state;
-  if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_PENDING) | (state==FD_PACK_IB_STATE_FAILED ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
+  if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_PENDING) |
+                   ((state==FD_PACK_IB_STATE_FAILED) & !bam_only) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
 
   fd_pack_ord_txn_t * pool = pack->pool;
 
-  int require_ib;
-  if( FD_UNLIKELY( state==FD_PACK_IB_STATE_NOT_INITIALIZED ) ) { require_ib = 1; }
-  if( FD_LIKELY  ( state==FD_PACK_IB_STATE_READY           ) ) { require_ib = 0; }
+  int require_ib = (state==FD_PACK_IB_STATE_NOT_INITIALIZED) & !bam_only;
 
   ulong skipped_txn_cnt = 0UL;
   treap_rev_iter_t _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped_txn_cnt );

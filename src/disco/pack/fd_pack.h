@@ -591,11 +591,18 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
    rules:
    * [Not Initialized]: If the top bundle eligible for that mode is a
      matching IB, schedule it, removing it like normal, then transition
-     to [Pending].  Otherwise, do not schedule a bundle.
-   * [Pending]: Do not schedule a bundle.
-   * [Failed]: Do not schedule a bundle
+     to [Pending].  Otherwise, normal scheduling does not schedule a
+     bundle, while BAM-only scheduling attempts to schedule the BAM
+     bundle without an IB.
+   * [Pending]: Do not schedule a bundle in either mode.
+   * [Failed]: Normal scheduling does not schedule a bundle, while
+     BAM-only scheduling attempts to schedule the next BAM bundle.
    * [Ready]: Attempt to schedule the next bundle eligible for that
      mode.  If scheduling an IB, transition to [Pending].
+
+   Thus initializer maintenance is strict for normal bundles, but
+   best-effort for BAM-only scheduling except while an IB is [Pending].
+   A mode-matched queued IB remains ahead of non-initializer bundles.
 
    As described in the state machine, ending the block (via
    fd_pack_end_block) transitions to [Not Initialized], and calls to

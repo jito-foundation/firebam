@@ -2061,9 +2061,6 @@ test_initializer_bundle_mode_selection( void ) {
 
   test_meta_t const * meta = fd_pack_peek_bundle_meta( pack, 1 );
   FD_TEST( meta && meta->bundle_id==bam_meta.bundle_id );
-  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
-                                             FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY,
-                                             outcome.results )==0UL );
 
   /* A BAM initializer replaces the stale normal initializer and is the
      only initializer admissible while BAM-only scheduling is active. */
@@ -2102,6 +2099,63 @@ test_initializer_bundle_mode_selection( void ) {
                                              FD_PACK_SCHEDULE_BUNDLE, outcome.results )==1UL );
   FD_TEST( outcome.results[ 0 ].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
   FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+
+  fd_pack_delete( fd_pack_leave( pack ) );
+}
+
+/* BAM initializer maintenance is best-effort, while normal bundle
+   initializer semantics remain strict. */
+static void
+test_bam_initializer_best_effort( void ) {
+  pack_outcome_t outcome;
+  fd_pack_t * pack = init_all_with_meta( 64UL, 1UL, 8UL, 64UL, &outcome );
+  fd_txn_e_t * slots[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+
+  /* BAM work can proceed without an initializer in [Not Initialized]. */
+  insert_mode_test_bundle( pack, slots, 620UL, FD_TXN_M_TPU_SOURCE_BAM,
+                           FD_PACK_IB_TYPE_NONE, NULL );
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY,
+                                             outcome.results )==1UL );
+  FD_TEST( outcome.results[ 0 ].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+
+  /* Normal bundles still require a normal initializer. */
+  insert_mode_test_bundle( pack, slots, 621UL, FD_TXN_M_TPU_SOURCE_BUNDLE,
+                           FD_PACK_IB_TYPE_NONE, NULL );
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE, outcome.results )==0UL );
+
+  insert_mode_test_bundle( pack, slots, 622UL, FD_TXN_M_TPU_SOURCE_BAM,
+                           FD_PACK_IB_TYPE_NONE, NULL );
+  insert_mode_test_bundle( pack, slots, 623UL, FD_TXN_M_TPU_SOURCE_BUNDLE,
+                           FD_PACK_IB_TYPE_BAM, NULL );
+
+  /* A queued BAM initializer remains ahead of BAM work. */
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY,
+                                             outcome.results )==1UL );
+  FD_TEST( outcome.results[ 0 ].txnp->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE );
+  FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+
+  /* [Pending] remains strict until execution reports a result. */
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY,
+                                             outcome.results )==0UL );
+
+  fd_pack_rebate_t rebate[ 1 ] = {{ .ib_result=-1 }};
+  fd_pack_rebate_cus( pack, rebate );
+
+  /* [Failed] no longer suppresses otherwise eligible BAM work. */
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY,
+                                             outcome.results )==1UL );
+  FD_TEST( outcome.results[ 0 ].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+
+  /* The normal bundle remains blocked after initializer failure. */
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                             FD_PACK_SCHEDULE_BUNDLE, outcome.results )==0UL );
 
   fd_pack_delete( fd_pack_leave( pack ) );
 }
@@ -2290,6 +2344,7 @@ main( int     argc,
   test_bam_nonrevert_multi_clears_bundle_flag();
   test_bam_only_schedule_filters_non_bam_work();
   test_initializer_bundle_mode_selection();
+  test_bam_initializer_best_effort();
 
   /* Generic bundle/initializer-pack regressions */
   test_bundle_account_conflicts();
