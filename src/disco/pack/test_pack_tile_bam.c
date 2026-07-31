@@ -415,6 +415,29 @@ test_pack_tile_send_executed_txn( test_pack_tile_harness_t * h,
 }
 
 static void
+test_pack_tile_assert_pending_duplicate_results( test_pack_tile_harness_t * h,
+                                                 uint                       first_seq_id,
+                                                 ulong                      slot ) {
+  uchar seen[ 3 ] = { 0U };
+  for( uchar i=0U; i<3U; i++ ) {
+    if( FD_LIKELY( i ) ) h->ctx->bam_result_publish_cnt = 0UL;
+    FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+    uint seq_id = test_pack_tile_last_result( h )->seq_id;
+    FD_TEST( seq_id>=first_seq_id && seq_id<first_seq_id+3U );
+    uchar seq_idx = (uchar)( seq_id-first_seq_id );
+    FD_TEST( !seen[ seq_idx ] );
+    seen[ seq_idx ] = 1U;
+
+    fd_bam_bundle_result_t const * res = test_pack_tile_assert_last_result(
+        h, seq_id, slot, 2U, FD_BAM_SCHED_ERR_NONE, 2U );
+    FD_TEST( res->transaction_err[ 0 ]==bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+    FD_TEST( res->transaction_err[ 1 ]==bam_types_TransactionErrorReason_ALREADY_PROCESSED );
+    FD_TEST( res->sanitize_success[ 0 ] && res->sanitize_success[ 1 ] );
+  }
+  FD_TEST( !h->ctx->bam_pending_result_cnt );
+}
+
+static void
 test_pack_tile_bam_completion_outcomes( void ) {
   struct {
     ulong event_kind[ 3 ];
@@ -491,6 +514,29 @@ test_pack_tile_bam_completion_tracking_reuses_capacity( void ) {
 
   FD_TEST( h->ctx->bam_scheduled_work_cnt == 0UL );
   FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_COMPLETED_UNLANDED_IDX ] == 1UL+3UL*TEST_PACK_TILE_BAM_WORK_CAP );
+  test_pack_tile_harness_delete( h );
+}
+
+static void
+test_pack_tile_bam_overlapping_replay_reconciliation( void ) {
+  test_pack_tile_harness_t h[1];
+  uchar                    sigs[ 2 ][ sizeof(fd_ed25519_sig_t) ];
+
+  test_pack_tile_harness_new( h );
+  test_pack_tile_fill_sig( sigs[ 1 ], 90U );
+  for( uchar i=0U; i<3U; i++ ) {
+    test_pack_tile_fill_sig( sigs[ 0 ], (uchar)( 10U+i ) );
+    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs, 0L, 110U+i, 8U,
+                                      101UL, 101UL, 101UL, 0U, 2U ) );
+  }
+
+  h->ctx->in_kind[ 0 ] = IN_KIND_REPLAY;
+  h->ctx->txn_committed = 1U;
+  fd_memcpy( h->ctx->executed_txn_sig, sigs[ 1 ], sizeof(fd_ed25519_sig_t) );
+  after_frag( h->ctx, 0UL, 0UL, REPLAY_SIG_TXN_EXECUTED, 0UL, 0UL, 0UL, &h->out->stem );
+
+  FD_TEST( h->ctx->bam_work_cnt==0UL );
+  test_pack_tile_assert_pending_duplicate_results( h, 110U, 101UL );
   test_pack_tile_harness_delete( h );
 }
 
@@ -1028,6 +1074,83 @@ test_pack_tile_make_d18_poc_txns( fd_txn_p_t * bad_txnp,
   FD_TEST( control_txn->signature_cnt==1U && control_txn->acct_addr_cnt==3U && control_txn->instr_cnt==2U );
   FD_TEST( control_txn->instr[ 0 ].program_id==2U && control_txn->instr[ 0 ].acct_cnt==0U &&
            control_txn->instr[ 0 ].data_sz==sizeof(set_compute_unit_limit) );
+}
+
+/* Regression for the overlapping-signature PoC: real pack accepts queued
+   BAM bundles [A,X], [B,X], and [C,X].  Landing X must delete all three
+   bundles and retire all three corresponding pack-tile tracking records. */
+static void
+test_pack_tile_bam_overlapping_signature_poc_regression( void ) {
+  fd_pack_limits_t limits = {
+    .max_cost_per_block           = FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND,
+    .max_vote_cost_per_block      = FD_PACK_MAX_VOTE_COST_PER_BLOCK_LOWER_BOUND,
+    .max_write_cost_per_acct      = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND,
+    .max_data_bytes_per_block     = FD_PACK_MAX_DATA_PER_BLOCK,
+    .max_txn_per_microblock       = FD_PACK_MAX_TXN_PER_BUNDLE,
+    .max_microblocks_per_block    = TEST_PACK_TILE_BAM_WORK_CAP,
+    .max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK,
+  };
+
+  fd_rng_t pack_rng[1];
+  FD_TEST( fd_rng_join( fd_rng_new( pack_rng, 0U, 0UL ) ) );
+
+  ulong pack_footprint = fd_pack_footprint( TEST_PACK_TILE_BAM_WORK_CAP,
+                                            BUNDLE_META_SZ,
+                                            1UL,
+                                            &limits );
+  void * pack_mem = aligned_alloc( fd_pack_align(),
+                                   fd_ulong_align_up( pack_footprint, fd_pack_align() ) );
+  FD_TEST( pack_mem );
+  fd_pack_t * pack = fd_pack_join( fd_pack_new( pack_mem,
+                                                TEST_PACK_TILE_BAM_WORK_CAP,
+                                                BUNDLE_META_SZ,
+                                                1UL,
+                                                &limits,
+                                                NULL,
+                                                0UL,
+                                                pack_rng ) );
+  FD_TEST( pack );
+
+  test_pack_tile_harness_t h[1];
+  test_pack_tile_harness_new( h );
+  h->ctx->pack = pack;
+  test_insert_fini_use_real_pack = 1;
+  test_delete_use_real_pack      = 1;
+
+  uchar sigs[ 2 ][ sizeof(fd_ed25519_sig_t) ];
+  test_pack_tile_fill_sig( sigs[ 1 ], 90U );
+
+  fd_txn_p_t invalid_txn[1];
+  fd_txn_p_t valid_txn[1];
+  test_pack_tile_make_d18_poc_txns( invalid_txn, valid_txn );
+
+  uint const  first_seq_id = 140U;
+  ulong const slot         = 104UL;
+  for( uchar i=0U; i<3U; i++ ) {
+    test_pack_tile_fill_sig( sigs[ 0 ], (uchar)( 10U+i ) );
+
+    fd_txn_e_t * bundle[ 2 ];
+    FD_TEST( fd_pack_insert_bundle_init( pack, bundle, 2UL )==bundle );
+    for( uchar txn_idx=0U; txn_idx<2U; txn_idx++ ) {
+      *bundle[ txn_idx ]->txnp = *valid_txn;
+      fd_memcpy( bundle[ txn_idx ]->txnp->payload+1UL,
+                 sigs[ txn_idx ],
+                 sizeof(fd_ed25519_sig_t) );
+    }
+
+    test_pack_tile_complete_bam_bundle( h, bundle, 2U, first_seq_id+i, slot, slot, 0U );
+  }
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==6UL );
+
+  test_pack_tile_send_executed_txn( h, sigs[ 1 ], FD_EXECUTED_TXN_KIND_LANDED );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
+  FD_TEST( h->ctx->bam_work_cnt==0UL );
+  test_pack_tile_assert_pending_duplicate_results( h, first_seq_id, slot );
+
+  test_pack_tile_harness_delete( h );
+  FD_TEST( fd_pack_delete( fd_pack_leave( pack ) )==pack_mem );
+  free( pack_mem );
+  FD_TEST( fd_rng_delete( fd_rng_leave( pack_rng ) )==pack_rng );
 }
 
 static void
@@ -1853,6 +1976,8 @@ main( int     argc,
 
   test_pack_tile_bam_completion_outcomes();
   test_pack_tile_bam_completion_tracking_reuses_capacity();
+  test_pack_tile_bam_overlapping_replay_reconciliation();
+  test_pack_tile_bam_overlapping_signature_poc_regression();
   test_pack_tile_bam_stale_max_schedule_slot_rejected();
   test_pack_tile_bam_expired_blockhash_reports_member_idx();
   test_pack_tile_bam_resolver_expired_member_reports_exact_idx();

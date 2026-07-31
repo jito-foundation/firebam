@@ -812,6 +812,33 @@ pack_tile_bam_work_find_by_any_sig( fd_pack_ctx_t const * ctx,
   return ctx->bam_work_cnt;
 }
 
+static inline void
+pack_tile_retire_all_pending_bam_work_by_sig( fd_pack_ctx_t * ctx,
+                                              uchar const     sig[ static 64 ] ) {
+  for( ulong work_idx=0UL; work_idx<ctx->bam_work_cnt; ) {
+    pack_bam_work_t const * work = &ctx->bam_work[ work_idx ];
+    uchar matched_idx = UCHAR_MAX;
+    if( FD_LIKELY( work->state==PACK_BAM_WORK_STATE_PENDING ) ) {
+      for( uchar txn_idx=0U; txn_idx<work->txn_cnt; txn_idx++ ) {
+        if( FD_LIKELY( memcmp( work->sig[ txn_idx ], sig, sizeof(fd_ed25519_sig_t) ) ) ) continue;
+        matched_idx = txn_idx;
+        break;
+      }
+    }
+    if( FD_LIKELY( matched_idx==UCHAR_MAX ) ) {
+      work_idx++;
+      continue;
+    }
+
+    pack_bam_work_t item = pack_tile_bam_work_swap_remove( ctx, work_idx );
+    fd_bam_bundle_result_t res = fd_bam_result_base( item.seq_id, item.scheduler_gen, item.max_schedule_slot, item.txn_cnt );
+    fd_bam_result_mark_not_committed_txn_error( &res, matched_idx, bam_types_TransactionErrorReason_ALREADY_PROCESSED );
+    fd_bam_result_mark_sanitize_success_all( &res );
+    pack_tile_enqueue_bam_result( ctx, &res );
+    /* swap_remove moved unchecked work into work_idx. */
+  }
+}
+
 static inline int
 pack_tile_track_bam_work( fd_pack_ctx_t *          ctx,
                           void const *             sigs,
@@ -2178,6 +2205,8 @@ after_frag( fd_pack_ctx_t *     ctx,
       if( FD_LIKELY( sig==REPLAY_SIG_TXN_EXECUTED && ctx->txn_committed ) ) {
         ulong deleted = fd_pack_delete_transaction( ctx->pack, fd_type_pun( ctx->executed_txn_sig ) );
         FD_MCNT_INC( PACK, TXN_ALREADY_EXECUTED, deleted );
+        if( FD_UNLIKELY( deleted && ctx->bam_pending_work_cnt ) )
+          pack_tile_retire_all_pending_bam_work_by_sig( ctx, ctx->executed_txn_sig );
       }
       if( FD_UNLIKELY( sig!=REPLAY_SIG_BECAME_LEADER ) ) return;
       leader_slot = ctx->_became_leader->slot;
@@ -2611,22 +2640,8 @@ after_frag( fd_pack_ctx_t *     ctx,
 
     ulong deleted = fd_pack_delete_transaction( ctx->pack, fd_type_pun( ctx->executed_txn_sig ) );
     FD_MCNT_INC( PACK, TXN_ALREADY_EXECUTED, deleted );
-    if( FD_LIKELY( !deleted ) ) break;
-
-    uchar matched_idx = UCHAR_MAX;
-    ulong work_idx = pack_tile_bam_work_find_by_any_sig( ctx, ctx->executed_txn_sig, PACK_BAM_WORK_STATE_PENDING, &matched_idx );
-    if( FD_LIKELY( work_idx>=ctx->bam_work_cnt ) ) break;
-
-    pack_bam_work_t item = pack_tile_bam_work_swap_remove( ctx, work_idx );
-    (void)stem;
-    fd_bam_bundle_result_t res = fd_bam_result_base( item.seq_id, item.scheduler_gen, item.max_schedule_slot, item.txn_cnt );
-    res.transaction_err_count = item.txn_cnt;
-    for( uchar j=0U; j<res.bundle_txn_cnt; j++ ) {
-      fd_bam_result_mark_sanitize_success( &res, j );
-      fd_bam_result_set_txn_error( &res, j, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
-    }
-    fd_bam_result_set_txn_error( &res, matched_idx, fd_bam_txn_err_from_pack_insert( FD_PACK_INSERT_REJECT_DUPLICATE ) );
-    pack_tile_enqueue_bam_result( ctx, &res );
+    if( FD_UNLIKELY( deleted && ctx->bam_pending_work_cnt ) )
+      pack_tile_retire_all_pending_bam_work_by_sig( ctx, ctx->executed_txn_sig );
     break;
   }
   }
