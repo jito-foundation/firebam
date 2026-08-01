@@ -2621,7 +2621,9 @@ after_frag( fd_pack_ctx_t *     ctx,
     int completed_unlanded = sig==FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED;
 
     uchar scheduled_matched_idx = UCHAR_MAX;
-    ulong scheduled_work_idx = pack_tile_bam_work_find_by_any_sig( ctx, ctx->executed_txn_sig, PACK_BAM_WORK_STATE_SCHEDULED, &scheduled_matched_idx );
+    ulong scheduled_work_idx = ctx->bam_work_cnt;
+    if( FD_UNLIKELY( ctx->bam_scheduled_work_cnt ) )
+      scheduled_work_idx = pack_tile_bam_work_find_by_any_sig( ctx, ctx->executed_txn_sig, PACK_BAM_WORK_STATE_SCHEDULED, &scheduled_matched_idx );
     if( FD_LIKELY( scheduled_work_idx<ctx->bam_work_cnt ) ) {
       pack_bam_work_t * item = &ctx->bam_work[ scheduled_work_idx ];
       fd_memset( item->sig[ scheduled_matched_idx ], 0, sizeof(fd_ed25519_sig_t) );
