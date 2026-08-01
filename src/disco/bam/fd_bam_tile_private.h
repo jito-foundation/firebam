@@ -201,8 +201,8 @@ struct fd_bam_tile {
   fd_keyswitch_t * keyswitch;                     /* Manages the identity keypair */
   fd_keyguard_client_t keyguard_client[1];        /* Keyguard client used to request signatures */
 
-  ulong            bank_bam_in_idx;               /* First polled bank_bam input index in stem callback space */
-  ulong            bank_bam_in_cnt;               /* Count of contiguous bank_bam durable result inputs */
+  ulong            bank_bam_in_idx;               /* First polled result input index in stem callback space */
+  ulong            bank_bam_in_cnt;               /* Count of contiguous bank_bam and poh_bam durable result inputs */
   ulong            pack_bam_leader_in_idx;        /* Polled input index for pack_bam_ldr snapshot/control updates */
   ulong            pack_bam_result_in_idx;        /* Polled input index for pack_bam_res durable bundle feedback */
   ulong            replay_out_in_idx;             /* Optional replay_out input index for local leader schedule hints */
@@ -299,7 +299,7 @@ struct fd_bam_tile {
   ushort                feedback_queue_depth;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_head;                /* Index of next result to flush (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
-  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_res and bank_bam; preserved across reconnect/reset until flushed */
+  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_res, bank_bam, and poh_bam; preserved across reconnect/reset until flushed */
   fd_bam_leader_state_t  bam_leader_state;               /* Latest pack_bam_ldr snapshot awaiting publication; newer unsent snapshots supersede older ones */
   fd_bam_leader_slot_end_tracker_t leader_slot_end[ FD_BAM_LEADER_SLOT_END_TRACKER_CNT ]; /* Per-slot metric tracker used to record whether healthy BAM-owned slots saw fresh work before slot end. */
   ulong                 next_leader_slot;                /* Upcoming local leader slot from replay_out reset messages, or ULONG_MAX if none is known */

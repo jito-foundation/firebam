@@ -2,6 +2,8 @@
 #include "fd_poh_tile.h"
 #include "../replay/fd_replay_tile.h"
 #include "../../disco/fd_txn_m.h"
+#include "../../disco/bam/fd_bam_microblock.h"
+#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/tiles.h"
 #include "../../disco/fd_clock_tile.h"
 #include "../../discof/fd_startup.h"
@@ -49,6 +51,7 @@ struct fd_poh_tile {
   fd_poh_out_t shred_out[ 1 ];
   fd_poh_out_t replay_out[ 1 ];
   fd_poh_out_t executed_txn_out[ 1 ];
+  fd_poh_out_t bam_out[ 1 ];
 };
 
 typedef struct fd_poh_tile fd_poh_tile_t;
@@ -204,11 +207,15 @@ returnable_frag( fd_poh_tile_t *     ctx,
     }
     case IN_KIND_EXECLE: {
       ulong target_slot = fd_disco_execle_sig_slot( sig );
-      FD_TEST( sz>=sizeof(fd_microblock_trailer_t) && (sz-sizeof(fd_microblock_trailer_t))%sizeof(fd_txn_p_t)==0UL );
-      ulong txn_cnt = (sz-sizeof(fd_microblock_trailer_t))/sizeof(fd_txn_p_t);
       fd_txn_p_t const * txns = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
-      fd_microblock_trailer_t const * trailer = fd_type_pun_const( (uchar const*)txns+sz-sizeof(fd_microblock_trailer_t) );
-      fd_poh1_mixin( ctx->poh, stem, target_slot, trailer->hash, txn_cnt, txns );
+      fd_bam_microblock_view_t view[1];
+      FD_TEST( fd_bam_microblock_parse( txns, sz, view ) );
+      fd_poh1_mixin( ctx->poh, stem, target_slot, view->trailer->hash, view->txn_cnt, txns );
+      if( FD_UNLIKELY( view->result ) )
+        fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
+                               ctx->bam_out->chunk0, ctx->bam_out->wmark, view->result );
+
+      ulong txn_cnt = view->txn_cnt;
       fd_poh_out_t * executed_txn_out = ctx->executed_txn_out;
       for( ulong i=0UL; i<txn_cnt; i++ ) {
         int landed = !!(txns[ i ].flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS);
@@ -287,6 +294,9 @@ unprivileged_init( fd_topo_t const *      topo,
   *ctx->shred_out = out1( topo, tile, "poh_shred" );
   *ctx->replay_out = out1( topo, tile, "poh_replay" );
   *ctx->executed_txn_out = out1( topo, tile, "executed_txn" );
+  *ctx->bam_out = (fd_poh_out_t){ .idx = ULONG_MAX };
+  if( FD_UNLIKELY( fd_topo_find_tile_out_link( topo, tile, "poh_bam", tile->kind_id )!=ULONG_MAX ) )
+    *ctx->bam_out = out1( topo, tile, "poh_bam" );
 
   FD_TEST( fd_poh_join( fd_poh_new( ctx->poh ), ctx->shred_out, ctx->replay_out ) );
 
@@ -328,8 +338,8 @@ populate_allowed_fds( fd_topo_t const *      topo,
   return out_cnt;
 }
 
-/* Up to one executed signature per transaction. */
-#define STEM_BURST (MAX_TXN_PER_MICROBLOCK)
+/* Up to one executed signature per transaction and one BAM result. */
+#define STEM_BURST (MAX_TXN_PER_MICROBLOCK+1UL)
 
 /* See explanation in fd_pack */
 #define STEM_LAZY  (128L*3000L)

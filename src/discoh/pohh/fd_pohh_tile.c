@@ -308,6 +308,8 @@
 
 #include "../../disco/tiles.h"
 #include "../../disco/fd_txn_m.h"
+#include "../../disco/bam/fd_bam_microblock.h"
+#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/bundle/fd_bundle_crank.h"
 #include "../../disco/pack/fd_pack.h"
 #include "../../disco/pack/fd_pack_cost.h"
@@ -571,7 +573,7 @@ struct fd_pohh_tile {
   /* These are temporarily set in during_frag so they can be used in
      after_frag once the frag has been validated as not overrun. */
   uchar _txns[ USHORT_MAX ];
-  fd_microblock_trailer_t _microblock_trailer[ 1 ];
+  int   _bam_result_valid;
 
   int in_kind[ 64 ];
   fd_pohh_in_t in[ 64 ];
@@ -579,6 +581,7 @@ struct fd_pohh_tile {
   fd_pohh_out_t shred_out[ 1 ];
   fd_pohh_out_t pack_out[ 1 ];
   fd_pohh_out_t plugin_out[ 1 ];
+  fd_pohh_out_t bam_out[ 1 ];
 
   fd_histf_t begin_leader_delay[ 1 ];
   fd_histf_t first_microblock_delay[ 1 ];
@@ -2018,6 +2021,7 @@ during_frag( fd_pohh_tile_t * ctx,
              ulong            sz,
              ulong            ctl FD_PARAM_UNUSED ) {
   ctx->skip_frag = 0;
+  ctx->_bam_result_valid = 0;
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EPOCH ) ) {
     if( FD_UNLIKELY( chunk<ctx->in[ in_idx ].chunk0 || chunk>ctx->in[ in_idx ].wmark ) )
@@ -2080,8 +2084,10 @@ during_frag( fd_pohh_tile_t * ctx,
 
     uchar * src = (uchar *)fd_chunk_to_laddr( ctx->in[ in_idx ].mem, chunk );
 
-    fd_memcpy( ctx->_txns, src, sz-sizeof(fd_microblock_trailer_t) );
-    fd_memcpy( ctx->_microblock_trailer, src+sz-sizeof(fd_microblock_trailer_t), sizeof(fd_microblock_trailer_t) );
+    fd_bam_microblock_view_t view[1];
+    FD_TEST( fd_bam_microblock_parse( src, sz, view ) );
+    fd_memcpy( ctx->_txns, src, sz );
+    ctx->_bam_result_valid = !!view->result;
 
     ctx->skip_frag = is_frag_for_prior_leader_slot;
   }
@@ -2159,7 +2165,17 @@ after_frag( fd_pohh_tile_t *    ctx,
   (void)tsorig;
   (void)tspub;
 
-  if( FD_UNLIKELY( ctx->skip_frag ) ) return;
+  fd_bam_bundle_result_t * bam_result = ctx->_bam_result_valid
+                                      ? (fd_bam_bundle_result_t *)(ctx->_txns+sz-sizeof(fd_microblock_trailer_t)-sizeof(fd_bam_bundle_result_t))
+                                      : NULL;
+  if( FD_UNLIKELY( ctx->skip_frag ) ) {
+    if( FD_UNLIKELY( bam_result ) ) {
+      fd_bam_result_resolve_at_poh( bam_result, 0 );
+      fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
+                             ctx->bam_out->chunk0, ctx->bam_out->wmark, bam_result );
+    }
+    return;
+  }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EPOCH ) ) {
     fd_multi_epoch_leaders_stake_msg_fini( ctx->mleaders );
@@ -2216,8 +2232,10 @@ after_frag( fd_pohh_tile_t *    ctx,
   FD_TEST( ctx->microblocks_lower_bound<ctx->max_microblocks_per_slot );
   ctx->microblocks_lower_bound += 1UL;
 
-  ulong txn_cnt = (sz-sizeof(fd_microblock_trailer_t))/sizeof(fd_txn_p_t);
+  ulong txn_cnt = (sz-sizeof(fd_microblock_trailer_t)-
+                   (bam_result ? sizeof(fd_bam_bundle_result_t) : 0UL))/sizeof(fd_txn_p_t);
   fd_txn_p_t * txns = (fd_txn_p_t *)(ctx->_txns);
+  fd_microblock_trailer_t const * trailer = (fd_microblock_trailer_t const *)(ctx->_txns+sz-sizeof(fd_microblock_trailer_t));
   ulong executed_txn_cnt = 0UL;
   ulong cus_used         = 0UL;
   for( ulong i=0UL; i<txn_cnt; i++ ) {
@@ -2235,11 +2253,14 @@ after_frag( fd_pohh_tile_t *    ctx,
      transactions failed to execute, the microblock would be empty,
      causing agave to think it's a tick and complain.  Instead, we just
      skip the microblock and don't hash or update the hashcnt. */
-  if( FD_UNLIKELY( !executed_txn_cnt ) ) return;
+  if( FD_UNLIKELY( !executed_txn_cnt ) ) {
+    FD_TEST( !bam_result );
+    return;
+  }
 
   uchar data[ 64 ];
   fd_memcpy( data, ctx->hash, 32UL );
-  fd_memcpy( data+32UL, ctx->_microblock_trailer->hash, 32UL );
+  fd_memcpy( data+32UL, trailer->hash, 32UL );
   fd_sha256_hash( data, 64UL, ctx->hash );
 
   ctx->hashcnt++;
@@ -2267,6 +2288,11 @@ after_frag( fd_pohh_tile_t *    ctx,
   }
 
   publish_microblock( ctx, stem, target_slot, hashcnt_delta, txn_cnt );
+  if( FD_UNLIKELY( bam_result ) ) {
+    fd_bam_result_resolve_at_poh( bam_result, 1 );
+    fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
+                           ctx->bam_out->chunk0, ctx->bam_out->wmark, bam_result );
+  }
 
   if( FD_UNLIKELY( !(ctx->hashcnt%ctx->hashcnt_per_tick ) ) ) {
     if( FD_UNLIKELY( ctx->slot>ctx->next_leader_slot ) ) {
@@ -2587,6 +2613,9 @@ unprivileged_init( fd_topo_t const *      topo,
 
   *ctx->shred_out = out1( topo, tile, "pohh_shred" );
   *ctx->pack_out  = out1( topo, tile, "pohh_pack" );
+  *ctx->bam_out   = (fd_pohh_out_t){ .idx = ULONG_MAX };
+  if( FD_UNLIKELY( fd_topo_find_tile_out_link( topo, tile, "poh_bam", tile->kind_id )!=ULONG_MAX ) )
+    *ctx->bam_out = out1( topo, tile, "poh_bam" );
   ctx->plugin_out->mem = NULL;
   if( FD_LIKELY( tile->pohh.plugins_enabled ) ) {
     *ctx->plugin_out = out1( topo, tile, "pohh_plugin" );
@@ -2608,9 +2637,9 @@ unprivileged_init( fd_topo_t const *      topo,
 }
 
 /* One tick, one microblock, one plugin slot end, one plugin slot start,
-   one leader update, one features activation, and one leader bank
-   handoff. */
-#define STEM_BURST (7UL)
+   one leader update, one features activation, one leader bank handoff,
+   and one BAM result. */
+#define STEM_BURST (8UL)
 
 /* See explanation in fd_pack */
 #define STEM_LAZY  (128L*3000L)

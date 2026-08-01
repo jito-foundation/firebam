@@ -544,6 +544,7 @@ fd_topo_initialize( config_t * config ) {
     fd_topob_wksp( topo, "pack_bam_ldr" );
     fd_topob_wksp( topo, "pack_bam_res" );
     fd_topob_wksp( topo, "bank_bam"     );
+    fd_topob_wksp( topo, "poh_bam"      );
     fd_topob_wksp( topo, "bam_shred"    );
     fd_topob_wksp( topo, "bam_status"   );
     fd_topob_wksp( topo, "bam_ctrl"     );
@@ -644,6 +645,7 @@ fd_topo_initialize( config_t * config ) {
     /**/                   fd_topob_link( topo, "pack_bam_ldr", "pack_bam_ldr", FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_leader_state_t),  1UL );
     /**/                   fd_topob_link( topo, "pack_bam_res", "pack_bam_res", FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
     FOR(execle_tile_cnt)   fd_topob_link( topo, "bank_bam",     "bank_bam",     FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
+    /**/                   fd_topob_link( topo, "poh_bam",      "poh_bam",      FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_bundle_result_t), 1UL );
     /**/                   fd_topob_link( topo, "bam_shred",    "bam_shred",    128UL,                                    sizeof(fd_bam_shred_update_t),  1UL );
   }
 
@@ -937,6 +939,8 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "pack_bam_res", 0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
     FOR(execle_tile_cnt) fd_topob_tile_out( topo, "execle", i,                          "bank_bam",     i                                                  );
     FOR(execle_tile_cnt) fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "bank_bam",     i,            FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+    /**/                 fd_topob_tile_out( topo, "poh",    0UL,                        "poh_bam",      0UL                                                );
+    /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "poh_bam",      0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
     if( leader_enabled ) {
       /**/               fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "replay_out",   0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
     }

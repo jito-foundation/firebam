@@ -3,6 +3,7 @@
 #include "../../disco/tiles.h"
 #include "../../disco/fd_txn_m.h"
 #include "../../disco/bam/fd_bam_types.h"
+#include "../../disco/bam/fd_bam_microblock.h"
 #include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/pack/fd_pack.h"
 #include "../../disco/pack/fd_pack_cost.h"
@@ -407,7 +408,8 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     else                                       ctx->metrics.success++;
   }
 
-  if( FD_UNLIKELY( bam_nonrevert && ctx->bam_out_idx!=ULONG_MAX ) ) bank_tile_publish_bam_result( ctx, stem, bam_res );
+  if( FD_UNLIKELY( bam_nonrevert && !fd_bam_result_is_provisional( bam_res ) && ctx->bam_out_idx!=ULONG_MAX ) )
+    bank_tile_publish_bam_result( ctx, stem, bam_res );
 
   if( FD_UNLIKELY( skip_commit ) ) {
     FD_TEST( txn_cnt==1UL ); /* see comment about FeesOnly nonce transactions above */
@@ -434,7 +436,8 @@ handle_microblock( fd_bank_ctx_t *     ctx,
   /* Now produce the merkle hash of the transactions for inclusion
      (mixin) to the PoH hash.  This is done on the bank tile because
      it shards / scales horizontally here, while PoH does not. */
-  fd_microblock_trailer_t * trailer = (fd_microblock_trailer_t *)( dst + txn_cnt*sizeof(fd_txn_p_t) );
+  int attach_bam_result = bam_nonrevert && fd_bam_result_is_provisional( bam_res );
+  fd_microblock_trailer_t * trailer = fd_bam_microblock_prepare_trailer( dst, txn_cnt, attach_bam_result ? bam_res : NULL );
   hash_transactions( ctx->bmtree, (fd_txn_p_t*)dst, txn_cnt, trailer->hash );
   trailer->pack_txn_idx = ctx->_txn_idx;
   trailer->tips = 0;
@@ -471,7 +474,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
   /* We always need to publish, even if there are no successfully executed
      transactions so the PoH tile can keep an accurate count of microblocks
      it has seen. */
-  ulong new_sz = txn_cnt*sizeof(fd_txn_p_t) + sizeof(fd_microblock_trailer_t);
+  ulong new_sz = fd_bam_microblock_footprint( txn_cnt, attach_bam_result );
   fd_stem_publish( stem, 0UL, bank_sig, ctx->out_chunk, new_sz, 0UL, 0UL, (ulong)fd_frag_meta_ts_comp( tickcount ) );
   ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, new_sz, ctx->out_chunk0, ctx->out_wmark );
 }
@@ -608,8 +611,10 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     }
   }
 
-  if( FD_LIKELY( txn_cnt && txns->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txns->bam.revert_on_error ) ) {
-    fd_bam_bundle_result_t res = fd_bam_result_base( txns->bam.seq_id, txns->bam.scheduler_gen, slot, (uchar)txn_cnt );
+  _Bool bam_revert = !!( txn_cnt && txns->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txns->bam.revert_on_error );
+  fd_bam_bundle_result_t res;
+  if( FD_UNLIKELY( bam_revert ) ) {
+    res = fd_bam_result_base( txns->bam.seq_id, txns->bam.scheduler_gen, slot, (uchar)txn_cnt );
     res.execution_success = execution_success;
 
     for( ulong i=0UL; i<txn_cnt; i++ ) {
@@ -630,9 +635,8 @@ handle_bundle( fd_bank_ctx_t *     ctx,
             transaction_err_idx==FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ? bam_types_TransactionErrorReason_COMMIT_CANCELLED :
             fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) );
       }
+      bank_tile_publish_bam_result( ctx, stem, &res );
     }
-
-    bank_tile_publish_bam_result( ctx, stem, &res );
   }
 
   fd_pack_rebate_sum_add_txn( ctx->rebater, txns, writable_alt, txn_cnt );
@@ -649,7 +653,8 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     uchar * dst = (uchar *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
     fd_memcpy( dst, bundle_txn_temp+i, sizeof(fd_txn_p_t) );
 
-    fd_microblock_trailer_t * trailer = (fd_microblock_trailer_t *)( dst+sizeof(fd_txn_p_t) );
+    int attach_bam_result = bam_revert && fd_bam_result_is_provisional( &res ) && i==txn_cnt-1UL;
+    fd_microblock_trailer_t * trailer = fd_bam_microblock_prepare_trailer( dst, 1UL, attach_bam_result ? &res : NULL );
     hash_transactions( ctx->bmtree, (fd_txn_p_t*)dst, 1UL, trailer->hash );
     trailer->pack_txn_idx = ctx->_txn_idx + i;
     trailer->tips = tips[ i ];
@@ -670,7 +675,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     trailer->txn_ns_dt.commit_start = (float)fd_long_max( 0L, tx_end_ticks         - microblock_start_ticks ) * ctx->ns_per_tick;
     trailer->txn_ns_dt.commit_end   = (float)fd_long_max( 0L, fd_tickcount()       - microblock_start_ticks ) * ctx->ns_per_tick;
 
-    ulong new_sz = sizeof(fd_txn_p_t) + sizeof(fd_microblock_trailer_t);
+    ulong new_sz = fd_bam_microblock_footprint( 1UL, attach_bam_result );
     fd_stem_publish( stem, 0UL, bank_sig, ctx->out_chunk, new_sz, 0UL, 0UL, (ulong)fd_frag_meta_ts_comp( tickcount ) );
     ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, new_sz, ctx->out_chunk0, ctx->out_wmark );
   }

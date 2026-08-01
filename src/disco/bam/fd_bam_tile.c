@@ -861,7 +861,7 @@ bam_during_frag( fd_bam_tile_t * ctx,
   fd_bam_in_ctx_t const * frag_in     = NULL;
   ulong                   expected_sz = sizeof(fd_bam_bundle_result_t);
   uchar                   staged_kind = FD_BAM_FRAG_STAGED_RESULT;
-  char const *            frag_what   = "bank->bam result fragment";
+  char const *            frag_what   = "BAM result fragment";
 
   ulong bank_in_idx = in_idx - ctx->bank_bam_in_idx;
   if( FD_UNLIKELY( in_idx == ctx->replay_out_in_idx ) ) {
@@ -1605,9 +1605,9 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->bank_bam_in_cnt = 0UL;
   for( ulong raw_in_idx=bank_in_idx; raw_in_idx<tile->in_cnt; raw_in_idx++ ) {
     fd_topo_link_t const * link = &topo->links[ tile->in_link_id[ raw_in_idx ] ];
-    if( FD_UNLIKELY( strcmp( link->name, "bank_bam" ) ) ) break;
-    if( FD_UNLIKELY( !tile->in_link_poll[ raw_in_idx ] ) ) FD_LOG_ERR(( "bank_bam must be polled" ));
-    if( FD_UNLIKELY( ctx->bank_bam_in_cnt >= FD_TILE_MAX ) ) FD_LOG_ERR(( "too many bank_bam links" ));
+    if( FD_UNLIKELY( strcmp( link->name, "bank_bam" ) && strcmp( link->name, "poh_bam" ) ) ) break;
+    if( FD_UNLIKELY( !tile->in_link_poll[ raw_in_idx ] ) ) FD_LOG_ERR(( "BAM result link must be polled" ));
+    if( FD_UNLIKELY( ctx->bank_bam_in_cnt >= FD_TILE_MAX ) ) FD_LOG_ERR(( "too many BAM result links" ));
     ctx->bank_in[ ctx->bank_bam_in_cnt++ ] = bam_in_link( topo, link );
   }
 

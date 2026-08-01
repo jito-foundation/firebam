@@ -1,5 +1,5 @@
 ifdef FD_HAS_INT128
-$(call add-hdrs,fd_bam_types.h fd_bam_tile.h fd_bam_publish.h)
+$(call add-hdrs,fd_bam_types.h fd_bam_tile.h fd_bam_publish.h fd_bam_microblock.h)
 $(call add-objs,fd_bam_admin_rpc,fd_disco)
 $(call add-objs,fd_bam_client,fd_disco)
 $(call add-objs,fd_bam_client_decode,fd_disco)
