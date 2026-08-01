@@ -6210,9 +6210,7 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
 /* --- Bundle result durability ------------------------------------------------------- */
 
 /* Verifies that bundle results buffered in the queue survive fd_bam_client_reset
- * and flush after reconnect. The test simulates transport drain between flush
- * attempts because the gRPC client only accepts another stream DATA frame once
- * the previous frame leaves the TX ring. */
+ * and flush in FIFO order as one repeated-result protobuf message. */
 
 static void
 test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
@@ -6223,6 +6221,8 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
   test_bam_env_mock_conn( env );
   fd_bam_tile_t * state = env->state;
 
+  state->bam_results_head = FD_BAM_MAX_PENDING_RESULTS-1U;
+  state->bam_results_tail = FD_BAM_MAX_PENDING_RESULTS-1U;
   for( uint i=0; i<2; i++ ) {
     fd_bam_bundle_result_t res = test_make_bundle_result( 200 + i, 1200, 2 );
     test_enqueue_bundle_result( state, &res );
@@ -6231,10 +6231,10 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
   ulong expected_tail = state->bam_results_tail;
   fd_bam_client_reset( state );
   FD_TEST( state->feedback_queue_depth == 2UL );
-  FD_TEST( state->bam_results_head == 0UL );
+  FD_TEST( state->bam_results_head == FD_BAM_MAX_PENDING_RESULTS-1U );
   FD_TEST( state->bam_results_tail == expected_tail );
-  FD_TEST( state->bam_results[0].seq_id == 200U );
-  FD_TEST( state->bam_results[1].seq_id == 201U );
+  FD_TEST( state->bam_results[ FD_BAM_MAX_PENDING_RESULTS-1U ].seq_id == 200U );
+  FD_TEST( state->bam_results[ 0 ].seq_id == 201U );
 
   test_bam_env_mock_conn( env );
   state->bam_stream_live = 0U;
@@ -6252,15 +6252,9 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
   FD_TEST( fd_bam_test_flush_results( state ) == 1 );
   test_bam_decode_last_message( state, &decoded );
   FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
+  FD_TEST( decoded.multi.result_cnt == 2UL );
   FD_TEST( decoded.multi.results[0].seq_id == 200U );
-  FD_TEST( state->feedback_queue_depth == 1UL );
-
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == 1UL );
-  FD_TEST( decoded.multi.results[0].seq_id == 201U );
+  FD_TEST( decoded.multi.results[1].seq_id == 201U );
   FD_TEST( state->feedback_queue_depth == 0UL );
   FD_TEST( state->bam_results_head == state->bam_results_tail );
 

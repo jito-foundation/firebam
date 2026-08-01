@@ -98,6 +98,9 @@ typedef struct {
 #define TEST_BAM_MAX_DECODED_RESULTS 8UL
 #define TEST_BAM_PROTOBUF_BUF_SZ     (64UL*1024UL)
 
+FD_STATIC_ASSERT( FD_BAM_RESULTS_PER_MESSAGE<=TEST_BAM_MAX_DECODED_RESULTS,
+                  test_bam_decoded_results_hold_a_full_batch );
+
 typedef struct {
   bam_types_AtomicTxnBatchResult results[ TEST_BAM_MAX_DECODED_RESULTS ];
   ulong                          result_cnt;

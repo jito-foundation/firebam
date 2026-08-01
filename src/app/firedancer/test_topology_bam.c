@@ -199,6 +199,10 @@ test_topology( int bundle_enabled,
   FD_TEST( (fd_topo_find_tile( topo, "bundle", 0UL )!=ULONG_MAX)==bundle_enabled );
   FD_TEST( (fd_topo_find_tile( topo, "bam",    0UL )!=ULONG_MAX)==bam_enabled );
 
+  /* Normal landed transactions refresh dedup and remove stale pack copies,
+     so this feedback link remains present even when BAM is disabled. */
+  FD_TEST( fd_topo_find_link( topo, "executed_txn", 0UL )!=ULONG_MAX );
+
   fd_topo_obj_t const * accdb = fd_topo_find_obj( topo, "accdb", NULL, ULONG_MAX );
   FD_TEST( accdb );
   FD_TEST( fd_pod_queryf_ulong( topo->props, 0UL, "obj.%lu.cache_min_reserved", accdb->id )==

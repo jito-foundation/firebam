@@ -776,19 +776,23 @@ bam_fuzz_deliver_specs( test_bam_env_t *              env,
   bam_fuzz_drain_pending_txns( env, f, links, verify, dedup, resolv, pack, execle, drain_credit );
 }
 
+/* Validates results[ idx ] of a (possibly batched) outbound result message
+   against the expected shadow-queue entry. */
+
 static void
-bam_fuzz_assert_decoded_result( fd_bam_bundle_result_t const * expected,
-                                test_bam_decoded_message_t const * decoded ) {
+bam_fuzz_assert_decoded_result_at( fd_bam_bundle_result_t const *     expected,
+                                   test_bam_decoded_message_t const * decoded,
+                                   ulong                              idx ) {
   FD_TEST( decoded->msg.which_versioned_msg==bam_api_SchedulerMessage_v0_tag );
   FD_TEST( decoded->msg.versioned_msg.v0.which_msg==
            bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded->multi.result_cnt==1UL );
+  FD_TEST( idx<decoded->multi.result_cnt );
 
-  bam_types_AtomicTxnBatchResult const * result = &decoded->multi.results[ 0 ];
+  bam_types_AtomicTxnBatchResult const * result = &decoded->multi.results[ idx ];
   FD_TEST( result->seq_id==expected->seq_id );
   if( expected->execution_success ) {
     FD_TEST( result->which_result==bam_types_AtomicTxnBatchResult_committed_tag );
-    test_bam_committed_results_t const * committed = &decoded->multi.committed[ 0 ];
+    test_bam_committed_results_t const * committed = &decoded->multi.committed[ idx ];
     FD_TEST( committed->txn_cnt==expected->bundle_txn_cnt );
     for( uchar i=0U; i<expected->bundle_txn_cnt; i++ ) {
       bam_types_TransactionCommittedResult const * txn = &committed->txns[ i ];
@@ -885,9 +889,17 @@ bam_fuzz_drain_result_queue( test_bam_env_t * env,
 
   bam_fuzz_assert_shadow_queue( f, state );
   for( ulong i=0UL; i<max_cnt && state->feedback_queue_depth; i++ ) {
-    ushort pending = state->feedback_queue_depth;
+    ushort pending     = state->feedback_queue_depth;
     ushort head_before = state->bam_results_head;
-    fd_bam_bundle_result_t expected = f->durable_results[ f->durable_results_head ];
+
+    /* One flush drains up to FD_BAM_RESULTS_PER_MESSAGE queued results into a
+       single repeated-result message, so snapshot the whole expected batch
+       before flushing. */
+    uint expected_cnt = fd_uint_min( (uint)pending, FD_BAM_RESULTS_PER_MESSAGE );
+    fd_bam_bundle_result_t expected[ FD_BAM_RESULTS_PER_MESSAGE ];
+    for( uint k=0U; k<expected_cnt; k++ ) {
+      expected[ k ] = f->durable_results[ ( f->durable_results_head + k ) % FD_BAM_MAX_PENDING_RESULTS ];
+    }
 
     int flush_busy = fd_bam_test_flush_results( state );
     if( FD_UNLIKELY( !flush_busy ) ) {
@@ -897,12 +909,13 @@ bam_fuzz_drain_result_queue( test_bam_env_t * env,
 
     test_bam_decoded_message_t decoded;
     test_bam_decode_last_message( state, &decoded );
-    bam_fuzz_assert_decoded_result( &expected, &decoded );
+    FD_TEST( decoded.multi.result_cnt==(ulong)expected_cnt );
+    for( uint k=0U; k<expected_cnt; k++ ) bam_fuzz_assert_decoded_result_at( &expected[ k ], &decoded, k );
 
-    FD_TEST( state->feedback_queue_depth==(ushort)( pending-1U ) );
-    FD_TEST( state->bam_results_head==(ushort)(( (uint)head_before+1U ) % FD_BAM_MAX_PENDING_RESULTS) );
-    f->durable_results_head = (ushort)(( f->durable_results_head + 1U ) % FD_BAM_MAX_PENDING_RESULTS);
-    f->durable_results_depth = (ushort)( f->durable_results_depth - 1U );
+    FD_TEST( state->feedback_queue_depth==(ushort)( (uint)pending-expected_cnt ) );
+    FD_TEST( state->bam_results_head==(ushort)(( (uint)head_before+expected_cnt ) % FD_BAM_MAX_PENDING_RESULTS) );
+    f->durable_results_head  = (ushort)(( (uint)f->durable_results_head + expected_cnt ) % FD_BAM_MAX_PENDING_RESULTS);
+    f->durable_results_depth = (ushort)( (uint)f->durable_results_depth - expected_cnt );
     bam_fuzz_assert_shadow_queue( f, state );
   }
 }

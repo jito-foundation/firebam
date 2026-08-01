@@ -523,6 +523,11 @@ struct fd_pack_private {
   fd_pack_limits_t lim[1];
 
   ulong      pending_txn_cnt; /* Summed across all treaps */
+  /* Monotonic count of bundles pack evicted on its own initiative, i.e.
+     not in response to an explicit delete API.  Callers that track
+     bundles externally poll this to learn that some bundle they believe
+     is pending has silently gone away; see fd_pack_bundle_evicted_cnt. */
+  ulong      bundle_evicted_cnt;
   ulong      microblock_cnt; /* How many microblocks have we
                                 generated in this block? */
   ulong      data_bytes_consumed; /* How much data is in this block so
@@ -725,6 +730,7 @@ struct fd_pack_private {
 typedef struct fd_pack_private fd_pack_t;
 
 FD_STATIC_ASSERT( offsetof(fd_pack_t, pending_txn_cnt)==FD_PACK_PENDING_TXN_CNT_OFF, txn_cnt_off );
+FD_STATIC_ASSERT( offsetof(fd_pack_t, bundle_evicted_cnt)==FD_PACK_BUNDLE_EVICTED_CNT_OFF, bundle_evicted_cnt_off );
 
 /* Forward-declare some helper functions */
 static ulong delete_transaction( fd_pack_t * pack, fd_pack_ord_txn_t * txn, int delete_full_bundle, int move_from_penalty_treap );
@@ -834,6 +840,7 @@ fd_pack_new( void                   * mem,
   pack->bank_tile_cnt               = bank_tile_cnt;
   pack->lim[0]                      = *limits;
   pack->pending_txn_cnt             = 0UL;
+  pack->bundle_evicted_cnt          = 0UL;
   pack->microblock_cnt              = 0UL;
   pack->data_bytes_consumed         = 0UL;
   pack->alloc_consumed              = 0UL;
@@ -1249,6 +1256,14 @@ delete_worst( fd_pack_t * pack,
   if( FD_UNLIKELY( !worst                      ) ) return 0;
   if( FD_UNLIKELY( threshold_score<worst_score ) ) return 0;
 
+  /* Bundles score 1e20*rewards/compute, which is enormous but still finite
+     and so still below a FLT_MAX threshold.  A caller forcing a delete
+     (threshold_score==FLT_MAX, i.e. inserting a bundle into a full pack)
+     can therefore land on a bundle when every sample was a bundle. */
+  if( FD_UNLIKELY( (worst->root & FD_ORD_TXN_ROOT_TAG_MASK)==FD_ORD_TXN_ROOT_PENDING_BUNDLE ) ) {
+    pack->bundle_evicted_cnt++;
+  }
+
   return delete_transaction( pack, worst, 1, 1 );
 }
 
@@ -1656,6 +1671,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     if( FD_UNLIKELY( is_ib && 0UL==RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est ) ) ) {
       ulong _delete_cnt = delete_transaction( pack, cur, 1, 0 );
       *delete_cnt += _delete_cnt;
+      pack->bundle_evicted_cnt++;
     }
   }
 
@@ -3225,6 +3241,60 @@ fd_pack_delete_transaction( fd_pack_t              * pack,
   return cnt;
 }
 
+int
+fd_pack_contains_transaction( fd_pack_t const *        pack,
+                              fd_ed25519_sig_t const * sig0 ) {
+  return !!sig2txn_ele_query_const( pack->signature_map,
+                                    (wrapped_sig_t const *)sig0,
+                                    NULL,
+                                    pack->pool );
+}
+
+/* Returns the pool index of the pending BAM bundle's leading transaction.
+   sig2txn is a multimap, so every equal-signature entry must be checked:
+   the same signature can also belong to an unrelated transaction or to a
+   non-leading member of another bundle. */
+static ulong
+fd_pack_find_bam_bundle( fd_pack_t const *        pack,
+                         fd_ed25519_sig_t const * sig0,
+                         uint                     seq_id,
+                         ushort                   scheduler_gen ) {
+  ulong idx = sig2txn_idx_query_const( pack->signature_map,
+                                       (wrapped_sig_t const *)sig0,
+                                       ULONG_MAX,
+                                       pack->pool );
+  while( idx!=ULONG_MAX ) {
+    fd_pack_ord_txn_t const * ord = pack->pool + idx;
+    if( FD_LIKELY( ord->root==FD_ORD_TXN_ROOT_PENDING_BUNDLE &&
+                   ord->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                   ord->txn->bam.batch_idx==0U &&
+                   ord->txn->bam.seq_id==seq_id &&
+                   ord->txn->bam.scheduler_gen==scheduler_gen ) ) return idx;
+    idx = sig2txn_idx_next_const( idx, ULONG_MAX, pack->pool );
+  }
+  return ULONG_MAX;
+}
+
+int
+fd_pack_contains_bam_bundle( fd_pack_t const *        pack,
+                             fd_ed25519_sig_t const * sig0,
+                             uint                     seq_id,
+                             ushort                   scheduler_gen ) {
+  return fd_pack_find_bam_bundle( pack, sig0, seq_id, scheduler_gen )!=ULONG_MAX;
+}
+
+ulong
+fd_pack_delete_bam_bundle( fd_pack_t *              pack,
+                           fd_ed25519_sig_t const * sig0,
+                           uint                     seq_id,
+                           ushort                   scheduler_gen ) {
+  ulong cnt = 0UL;
+  for(;;) {
+    ulong idx = fd_pack_find_bam_bundle( pack, sig0, seq_id, scheduler_gen );
+    if( FD_LIKELY( idx==ULONG_MAX ) ) return cnt;
+    cnt += delete_transaction( pack, pack->pool+idx, 1, 1 );
+  }
+}
 
 int
 fd_pack_verify( fd_pack_t * pack,

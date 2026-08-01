@@ -12,6 +12,11 @@
 /* FD_BAM_MAX_PENDING_RESULTS is the bundle result queue depth, so long disconnects
  * don't drop SchedulerMessage payloads. */
 #define FD_BAM_MAX_PENDING_RESULTS 2048U
+/* FD_BAM_RESULTS_PER_MESSAGE is how many queued results are packed into a
+   single MultipleAtomicTxnBatchResult.  The gRPC client only accepts one
+   message per TX ring drain, so the drain rate is messages/second, not
+   results/second; batching multiplies result throughput by this factor. */
+#define FD_BAM_RESULTS_PER_MESSAGE 4U
 #define FD_BAM_MAX_TXN_PER_ATOMIC_BATCH             5U
 /* Stem burst sizing is independent from scheduler message decode capacity. */
 #define FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST   8U

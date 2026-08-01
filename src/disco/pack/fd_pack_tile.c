@@ -441,6 +441,9 @@ struct fd_pack_ctx {
   ulong             bam_scheduled_work_cnt;
   ulong             bam_pending_result_cnt;
   ulong             bam_result_publish_cnt;
+  /* Last observed fd_pack_bundle_evicted_cnt.  A change means pack dropped
+     a bundle we may still be tracking as pending work. */
+  ulong             bam_pack_bundle_evicted_cnt;
 };
 
 /* Bundle metadata must fit both block engine and BAM uses. */
@@ -573,6 +576,8 @@ pack_tile_bam_first_event_result_idx( uchar seen,
 }
 
 
+static inline void pack_tile_reconcile_pending_bam_work( fd_pack_ctx_t * ctx );
+
 static inline void
 remove_ib( fd_pack_ctx_t * ctx ) {
   /* It's likely the initializer bundle is long scheduled, but we want to
@@ -580,7 +585,10 @@ remove_ib( fd_pack_ctx_t * ctx ) {
   if( FD_UNLIKELY( ctx->crank->enabled & ctx->crank->ib_inserted ) ) {
     ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)ctx->crank->last_sig );
     FD_MCNT_INC( PACK, TXN_DELETED, deleted );
-    if( FD_UNLIKELY( deleted ) ) *ctx->crank->prev_config = *ctx->crank->prev_config_before_ib;
+    if( FD_UNLIKELY( deleted ) ) {
+      *ctx->crank->prev_config = *ctx->crank->prev_config_before_ib;
+      if( FD_UNLIKELY( ctx->bam_pending_work_cnt ) ) pack_tile_reconcile_pending_bam_work( ctx );
+    }
   }
   ctx->crank->ib_inserted = 0;
 }
@@ -777,18 +785,62 @@ static inline pack_bam_work_t
 pack_tile_bam_work_swap_remove( fd_pack_ctx_t * ctx,
                                 ulong           idx ) {
   FD_TEST( idx<ctx->bam_work_cnt );
+  FD_TEST( ctx->bam_scheduled_work_cnt+ctx->bam_pending_work_cnt==ctx->bam_work_cnt );
   pack_bam_work_t item = ctx->bam_work[ idx ];
-  ulong last_idx = --ctx->bam_work_cnt;
-  if( FD_LIKELY( idx<last_idx ) ) ctx->bam_work[ idx ] = ctx->bam_work[ last_idx ];
-  if( FD_LIKELY( item.state==PACK_BAM_WORK_STATE_PENDING ) ) ctx->bam_pending_work_cnt--;
-  else                                                        ctx->bam_scheduled_work_cnt--;
+  ulong last_idx = ctx->bam_work_cnt-1UL;
+  if( FD_LIKELY( item.state==PACK_BAM_WORK_STATE_PENDING ) ) {
+    FD_TEST( idx>=ctx->bam_scheduled_work_cnt );
+    if( FD_LIKELY( idx<last_idx ) ) ctx->bam_work[ idx ] = ctx->bam_work[ last_idx ];
+    ctx->bam_pending_work_cnt--;
+  } else {
+    /* Keep scheduled work in [0,bam_scheduled_work_cnt) and pending
+       work in [bam_scheduled_work_cnt,bam_work_cnt).  Removing a
+       scheduled item fills its hole from the end of the scheduled
+       range, then fills the old range boundary from the pending tail. */
+    FD_TEST( idx<ctx->bam_scheduled_work_cnt );
+    ulong scheduled_last_idx = ctx->bam_scheduled_work_cnt-1UL;
+    if( FD_LIKELY( idx<scheduled_last_idx ) )
+      ctx->bam_work[ idx ] = ctx->bam_work[ scheduled_last_idx ];
+    if( FD_UNLIKELY( scheduled_last_idx<last_idx ) )
+      ctx->bam_work[ scheduled_last_idx ] = ctx->bam_work[ last_idx ];
+    ctx->bam_scheduled_work_cnt--;
+  }
+  ctx->bam_work_cnt--;
   return item;
 }
 
+static inline pack_bam_work_t *
+pack_tile_bam_work_mark_scheduled( fd_pack_ctx_t * ctx,
+                                   ulong           idx ) {
+  FD_TEST( idx>=ctx->bam_scheduled_work_cnt && idx<ctx->bam_work_cnt );
+  FD_TEST( ctx->bam_work[ idx ].state==PACK_BAM_WORK_STATE_PENDING );
+
+  ulong scheduled_idx = ctx->bam_scheduled_work_cnt;
+  if( FD_UNLIKELY( idx!=scheduled_idx ) ) {
+    pack_bam_work_t tmp             = ctx->bam_work[ scheduled_idx ];
+    ctx->bam_work[ scheduled_idx ]  = ctx->bam_work[ idx ];
+    ctx->bam_work[ idx ]            = tmp;
+  }
+
+  pack_bam_work_t * item = &ctx->bam_work[ scheduled_idx ];
+  item->state             = PACK_BAM_WORK_STATE_SCHEDULED;
+  item->remaining_txn_cnt = item->txn_cnt;
+  ctx->bam_scheduled_work_cnt++;
+  ctx->bam_pending_work_cnt--;
+  return item;
+}
+
+/* Looks up sig0 within one half of the partition: the scheduled prefix
+   [0,bam_scheduled_work_cnt) or the pending suffix
+   [bam_scheduled_work_cnt,bam_work_cnt).  Returns bam_work_cnt on miss. */
+
 static inline ulong
-pack_tile_bam_work_find_by_sig0( fd_pack_ctx_t const *       ctx,
-                                 void const *                sig0 ) {
-  for( ulong i=0UL; i<ctx->bam_work_cnt; i++ ) {
+pack_tile_bam_work_find_by_sig0_state( fd_pack_ctx_t const * ctx,
+                                       void const *          sig0,
+                                       pack_bam_work_state_t state_filter ) {
+  ulong begin = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? 0UL : ctx->bam_scheduled_work_cnt;
+  ulong end   = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? ctx->bam_scheduled_work_cnt : ctx->bam_work_cnt;
+  for( ulong i=begin; i<end; i++ ) {
     if( FD_LIKELY( memcmp( ctx->bam_work[ i ].sig[ 0 ], sig0, sizeof(fd_ed25519_sig_t) ) ) ) continue;
     return i;
   }
@@ -800,9 +852,10 @@ pack_tile_bam_work_find_by_any_sig( fd_pack_ctx_t const * ctx,
                                     uchar const           sig[ static 64 ],
                                     pack_bam_work_state_t state_filter,
                                     uchar *               matched_idx ) {
-  for( ulong i=0UL; i<ctx->bam_work_cnt; i++ ) {
+  ulong begin = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? 0UL : ctx->bam_scheduled_work_cnt;
+  ulong end   = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? ctx->bam_scheduled_work_cnt : ctx->bam_work_cnt;
+  for( ulong i=begin; i<end; i++ ) {
     pack_bam_work_t const * item = &ctx->bam_work[ i ];
-    if( FD_UNLIKELY( item->state!=(uchar)state_filter ) ) continue;
     for( uchar j=0U; j<item->txn_cnt; j++ ) {
       if( FD_LIKELY( memcmp( item->sig[ j ], sig, sizeof(fd_ed25519_sig_t) ) ) ) continue;
       if( FD_UNLIKELY( matched_idx ) ) *matched_idx = j;
@@ -815,15 +868,13 @@ pack_tile_bam_work_find_by_any_sig( fd_pack_ctx_t const * ctx,
 static inline void
 pack_tile_retire_all_pending_bam_work_by_sig( fd_pack_ctx_t * ctx,
                                               uchar const     sig[ static 64 ] ) {
-  for( ulong work_idx=0UL; work_idx<ctx->bam_work_cnt; ) {
+  for( ulong work_idx=ctx->bam_scheduled_work_cnt; work_idx<ctx->bam_work_cnt; ) {
     pack_bam_work_t const * work = &ctx->bam_work[ work_idx ];
     uchar matched_idx = UCHAR_MAX;
-    if( FD_LIKELY( work->state==PACK_BAM_WORK_STATE_PENDING ) ) {
-      for( uchar txn_idx=0U; txn_idx<work->txn_cnt; txn_idx++ ) {
-        if( FD_LIKELY( memcmp( work->sig[ txn_idx ], sig, sizeof(fd_ed25519_sig_t) ) ) ) continue;
-        matched_idx = txn_idx;
-        break;
-      }
+    for( uchar txn_idx=0U; txn_idx<work->txn_cnt; txn_idx++ ) {
+      if( FD_LIKELY( memcmp( work->sig[ txn_idx ], sig, sizeof(fd_ed25519_sig_t) ) ) ) continue;
+      matched_idx = txn_idx;
+      break;
     }
     if( FD_LIKELY( matched_idx==UCHAR_MAX ) ) {
       work_idx++;
@@ -839,18 +890,26 @@ pack_tile_retire_all_pending_bam_work_by_sig( fd_pack_ctx_t * ctx,
   }
 }
 
+/* Appends without checking for an existing entry with the same sig[0];
+   scanning the pending suffix for that is the cost the after_frag
+   duplicate check exists to avoid.  fd_pack is no help here -- it accepts
+   duplicate signatures and never returns FD_PACK_INSERT_REJECT_DUPLICATE
+   -- so the caller's check is the only thing keeping sig[0] unique across
+   bam_work, and it in turn depends on every pending item's transaction
+   being present in fd_pack.  pack_tile_reconcile_pending_bam_work is what
+   keeps that true. */
+
 static inline int
-pack_tile_track_bam_work( fd_pack_ctx_t *          ctx,
-                          void const *             sigs,
-                          long                     first_rx_ts_ns,
-                          uint                     seq_id,
-                          ushort                   scheduler_gen,
-                          ulong                    slot,
-                          ulong                    max_schedule_slot,
-                          ulong                    blockhash_slot,
-                          uchar                    min_blockhash_slot_txn_idx,
-                          uchar                    txn_cnt ) {
-  if( FD_UNLIKELY( pack_tile_bam_work_find_by_sig0( ctx, sigs )<ctx->bam_work_cnt ) ) return 0;
+pack_tile_append_bam_work( fd_pack_ctx_t * ctx,
+                           void const *    sigs,
+                           long            first_rx_ts_ns,
+                           uint            seq_id,
+                           ushort          scheduler_gen,
+                           ulong           slot,
+                           ulong           max_schedule_slot,
+                           ulong           blockhash_slot,
+                           uchar           min_blockhash_slot_txn_idx,
+                           uchar           txn_cnt ) {
   if( FD_UNLIKELY( ctx->bam_work_cnt >= ctx->max_pending_transactions ) ) return 0;
   if( FD_UNLIKELY( ctx->bam_pending_result_cnt + ctx->bam_pending_work_cnt + 1UL >= 2UL*ctx->max_pending_transactions ) ) return 0;
 
@@ -876,14 +935,9 @@ static inline void
 pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx,
                                           ulong           current_slot ) {
   ulong old_work_cnt = ctx->bam_work_cnt;
-  ulong dst          = 0UL;
-  for( ulong src=0UL; src<old_work_cnt; src++ ) {
-    pack_bam_work_t * work = &ctx->bam_work[ src ];
-    if( FD_UNLIKELY( work->state!=PACK_BAM_WORK_STATE_PENDING ) ) {
-      if( FD_UNLIKELY( dst!=src ) ) ctx->bam_work[ dst ] = *work;
-      dst++;
-      continue;
-    }
+  ulong dst          = ctx->bam_scheduled_work_cnt;
+  for( ulong src=ctx->bam_scheduled_work_cnt; src<old_work_cnt; src++ ) {
+    pack_bam_work_t const * work = &ctx->bam_work[ src ];
     pack_tile_bam_invalid_reason_t invalid_reason =
         pack_tile_bam_invalid_reason( current_slot,
                                       work->max_schedule_slot,
@@ -933,7 +987,10 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx,
                                       item.first_rx_ts_ns,
                                       pack_tile_wallclock_from_ticks( ctx, fd_tickcount() ) );
 
-    ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)(void const *)&item.sig[ 0 ] );
+    ulong deleted = fd_pack_delete_bam_bundle( ctx->pack,
+                                               (fd_ed25519_sig_t const *)(void const *)&item.sig[ 0 ],
+                                               item.seq_id,
+                                               item.scheduler_gen );
     FD_MCNT_INC( PACK, TXN_DELETED, deleted );
 
     fd_bam_bundle_result_t res = pack_tile_make_bam_invalid_result( item.seq_id,
@@ -945,6 +1002,108 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx,
     pack_tile_enqueue_bam_result( ctx, &res );
   }
   FD_TEST( ctx->bam_work_cnt==dst );
+}
+
+/* fd_pack evicts a bundle on its own initiative when a bundle is inserted
+   into a full pack: delete_worst() is called with a FLT_MAX threshold, so
+   it deletes whatever it sampled as worst, and a bundle can be that when
+   every sample was a bundle.  Pack reports only a count, never which
+   bundle, so afterwards our pending suffix can hold work whose transaction
+   is gone and can therefore never be scheduled.
+
+   Retire those.  Beyond freeing work capacity and keeping
+   bam_pending_work_cnt honest, this is load-bearing for the duplicate
+   check in after_frag: that check treats fd_pack's signature map as the
+   index over pending work, so a pending item missing from pack would let a
+   resend of the same sig0 be tracked a second time.  This is a full scan of
+   the pending suffix, far too slow to run unconditionally.  Insertion
+   callers gate on fd_pack_bundle_evicted_cnt moving; explicit
+   signature-wide deletion callers reconcile directly after deleting
+   something.
+
+   fd_pack_bundle_evicted_cnt does not cover every way a pending item's
+   transaction can leave pack.  Signature-wide explicit deletion,
+   fd_pack_expire_before, and fd_pack_clear_all also drop bundles without
+   counting them.  remove_ib reconciles the explicit deletion directly,
+   fd_pack_clear_all is never called outside tests, and expiry is covered
+   because every fd_pack_expire_before call site is paired with a
+   pack_tile_evict_invalid_pending_bam_work at a matching threshold, which
+   removes the same set from bam_work first.  Keep those pairs in lockstep;
+   there is no counter that would catch them drifting apart. */
+
+static inline void
+pack_tile_reconcile_pending_bam_work( fd_pack_ctx_t * ctx ) {
+  long  now_ns       = pack_tile_wallclock_from_ticks( ctx, fd_tickcount() );
+  ulong old_work_cnt = ctx->bam_work_cnt;
+  ulong dst          = ctx->bam_scheduled_work_cnt;
+  for( ulong src=ctx->bam_scheduled_work_cnt; src<old_work_cnt; src++ ) {
+    pack_bam_work_t const * work = &ctx->bam_work[ src ];
+    if( FD_LIKELY( fd_pack_contains_bam_bundle( ctx->pack,
+                                               (fd_ed25519_sig_t const *)(void const *)&work->sig[ 0 ],
+                                               work->seq_id,
+                                               work->scheduler_gen ) ) ) {
+      if( FD_UNLIKELY( dst!=src ) ) ctx->bam_work[ dst ] = *work;
+      dst++;
+      continue;
+    }
+
+    pack_bam_work_t item = *work;
+    ctx->bam_work_cnt--;
+    ctx->bam_pending_work_cnt--;
+    pack_tile_log_bam_drop( ctx,
+                               "post_pending_validation",
+                               "pending_evicted_by_pack",
+                               0U,
+                               0U,
+                               0U,
+                               0,
+                               item.seq_id,
+                               item.txn_cnt,
+                               "pending",
+                               item.slot,
+                               item.max_schedule_slot,
+                               item.blockhash_slot,
+                               item.first_rx_ts_ns,
+                               0U,
+                               0U,
+                               0U,
+                               0U,
+                               item.txn_cnt,
+                               item.txn_cnt,
+                               0U,
+                               0U,
+                               item.sig[ 0 ] );
+
+    ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_EVICTED_IDX ]++;
+    pack_tile_note_bam_first_outcome( ctx,
+                                      FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_PENDING_EVICTED_IDX,
+                                      item.first_rx_ts_ns,
+                                      now_ns );
+
+    /* Pack dropped it to make room, so report it the same way an insert
+       that lost the priority contest is reported. */
+    fd_bam_bundle_result_t res = fd_bam_result_base( item.seq_id,
+                                                     item.scheduler_gen,
+                                                     item.max_schedule_slot,
+                                                     item.txn_cnt );
+    res.scheduling_error = FD_BAM_SCHED_ERR_CONTAINER_FULL;
+    pack_tile_enqueue_bam_result( ctx, &res );
+  }
+  FD_TEST( ctx->bam_work_cnt==dst );
+}
+
+/* Runs pack_tile_reconcile_pending_bam_work only when pack has evicted a
+   bundle since the last check.  Call this after any insertion that reports
+   deletions, before later code relies on pack's signature map indexing the
+   pending suffix. */
+
+static inline void
+pack_tile_maybe_reconcile_pending_bam_work( fd_pack_ctx_t * ctx ) {
+  ulong bundle_evicted_cnt = fd_pack_bundle_evicted_cnt( ctx->pack );
+  if( FD_UNLIKELY( bundle_evicted_cnt!=ctx->bam_pack_bundle_evicted_cnt ) ) {
+    ctx->bam_pack_bundle_evicted_cnt = bundle_evicted_cnt;
+    if( FD_UNLIKELY( ctx->bam_pending_work_cnt ) ) pack_tile_reconcile_pending_bam_work( ctx );
+  }
 }
 
 static inline int
@@ -1005,7 +1164,10 @@ pack_tile_publish_bam_tracking_reject( fd_pack_ctx_t *          ctx,
                                        _Bool                    revert_on_error_known,
                                        _Bool                    revert_on_error,
                                        uchar                    txn_cnt ) {
-  ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)sig0 );
+  ulong deleted = fd_pack_delete_bam_bundle( ctx->pack,
+                                             (fd_ed25519_sig_t const *)sig0,
+                                             seq_id,
+                                             scheduler_gen );
   FD_MCNT_INC( PACK, TXN_DELETED, deleted );
   pack_tile_log_bam_drop( ctx,
                              "tracking",
@@ -1239,17 +1401,16 @@ pack_tile_sync_bam_ownership_generation( fd_pack_ctx_t * ctx ) {
       ctx->cur_spot                     = NULL;
     }
 
-    for( ulong i=0UL; i<ctx->bam_work_cnt; ) {
-      pack_bam_work_t * work = &ctx->bam_work[ i ];
-      if( FD_UNLIKELY( work->state!=PACK_BAM_WORK_STATE_SCHEDULED ) ) {
-        ulong deleted = fd_pack_delete_transaction(
-            ctx->pack,
-            (fd_ed25519_sig_t const *)(void const *)&work->sig[ 0 ] );
-        FD_MCNT_INC( PACK, TXN_DELETED, deleted );
-        (void)pack_tile_bam_work_swap_remove( ctx, i );
-      } else {
-        i++;
-      }
+    while( ctx->bam_pending_work_cnt ) {
+      ulong work_idx = ctx->bam_scheduled_work_cnt;
+      pack_bam_work_t const * work = &ctx->bam_work[ work_idx ];
+      ulong deleted = fd_pack_delete_bam_bundle(
+          ctx->pack,
+          (fd_ed25519_sig_t const *)(void const *)&work->sig[ 0 ],
+          work->seq_id,
+          work->scheduler_gen );
+      FD_MCNT_INC( PACK, TXN_DELETED, deleted );
+      (void)pack_tile_bam_work_swap_remove( ctx, work_idx );
     }
     ctx->bam_ownership_gen = requested_gen;
   }
@@ -1486,6 +1647,7 @@ insert_from_extra( fd_pack_ctx_t * ctx ) {
   long insert_duration = -fd_tickcount();
   int result = fd_pack_insert_txn_fini( ctx->pack, spot, blockhash_slot, &deleted );
   insert_duration      += fd_tickcount();
+  if( FD_UNLIKELY( deleted ) ) pack_tile_maybe_reconcile_pending_bam_work( ctx );
 
   FD_MCNT_INC( PACK, TXN_DELETED, deleted );
   ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ]++;
@@ -1689,6 +1851,7 @@ after_credit( fd_pack_ctx_t *     ctx,
         int retval = fd_pack_insert_bundle_fini( ctx->pack, bundle, 1UL, ctx->leader_slot-1UL,
                                                  fd_int_if( bam_override, FD_PACK_IB_TYPE_BAM, FD_PACK_IB_TYPE_NORMAL ),
                                                  NULL, &deleted, NULL );
+        if( FD_UNLIKELY( deleted ) ) pack_tile_maybe_reconcile_pending_bam_work( ctx );
         FD_MCNT_INC( PACK, TXN_DELETED, deleted );
         ctx->insert_result[ retval + FD_PACK_INSERT_RETVAL_OFF ]++;
         if( FD_UNLIKELY( retval<0 ) ) {
@@ -1807,22 +1970,18 @@ after_credit( fd_pack_ctx_t *     ctx,
           ctx->bam_first_schedule_minus_slot_end_ns = now2_ns - ctx->slot_end_ns;
         }
 
-        ulong work_idx = pack_tile_bam_work_find_by_sig0( ctx, (fd_ed25519_sig_t const *)(txnp->payload + 1UL) );
+        ulong work_idx = pack_tile_bam_work_find_by_sig0_state( ctx,
+                                                                (fd_ed25519_sig_t const *)(txnp->payload + 1UL),
+                                                                PACK_BAM_WORK_STATE_PENDING );
         if( FD_UNLIKELY( work_idx>=ctx->bam_work_cnt ) ) continue;
 
-        pack_bam_work_t * item = &ctx->bam_work[ work_idx ];
-        if( FD_UNLIKELY( item->state!=PACK_BAM_WORK_STATE_PENDING ) ) continue;
+        pack_bam_work_t * item = pack_tile_bam_work_mark_scheduled( ctx, work_idx );
 
         ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_SCHEDULED_IDX ]++;
         pack_tile_note_bam_first_outcome( ctx,
                                           FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_SCHEDULED_IDX,
                                           item->first_rx_ts_ns,
                                           now2_ns );
-
-        item->state = PACK_BAM_WORK_STATE_SCHEDULED;
-        item->remaining_txn_cnt = item->txn_cnt;
-        ctx->bam_pending_work_cnt--;
-        ctx->bam_scheduled_work_cnt++;
       }
 
       pack_tile_publish_bam_leader_state( ctx, stem );
@@ -1992,6 +2151,12 @@ during_frag( fd_pack_ctx_t * ctx,
          with expired but high-fee-paying transactions.  That can only
          happen if we are getting transactions. */
       ctx->highest_observed_slot = sig;
+      /* Expiry can drop a pending item's transaction out of pack without
+         moving fd_pack_bundle_evicted_cnt, so it must stay paired with a
+         pack_tile_evict_invalid_pending_bam_work at the same threshold.
+         Here that pairing is deferred to bam_pending_check_slot, which
+         after_frag consumes at the top of the IN_KIND_RESOLV case, i.e.
+         before any BAM duplicate check for this frag. */
       ctx->bam_pending_check_slot = sig;
       ulong exp_cnt = fd_pack_expire_before( ctx->pack, fd_ulong_max( ctx->highest_observed_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS );
       FD_MCNT_INC( PACK, TXN_EXPIRED, exp_cnt );
@@ -2240,15 +2405,18 @@ after_frag( fd_pack_ctx_t *     ctx,
     ctx->bam_first_insert_minus_slot_end_ns = 0L;
     ctx->bam_first_schedule_minus_slot_end_ns = 0L;
     pack_tile_evict_invalid_pending_bam_work( ctx, ctx->leader_slot );
-    for( ulong i=0UL; i<ctx->bam_work_cnt; ) {
-      if( FD_UNLIKELY( ctx->bam_work[ i ].state==PACK_BAM_WORK_STATE_SCHEDULED &&
-                       ( ctx->bam_work[ i ].slot==ULONG_MAX || ctx->bam_work[ i ].slot < ctx->leader_slot ) ) ) {
+    for( ulong i=0UL; i<ctx->bam_scheduled_work_cnt; ) {
+      if( FD_UNLIKELY( ctx->bam_work[ i ].slot==ULONG_MAX || ctx->bam_work[ i ].slot < ctx->leader_slot ) ) {
         (void)pack_tile_bam_work_swap_remove( ctx, i );
         continue;
       }
       i++;
     }
 
+    /* Paired with the pack_tile_evict_invalid_pending_bam_work above, which
+       uses the same leader_slot threshold.  Expiry drops bundles without
+       moving fd_pack_bundle_evicted_cnt, so nothing else would retire the
+       bam_work whose transactions this removes.  Keep the two together. */
     ulong exp_cnt = fd_pack_expire_before( ctx->pack, fd_ulong_max( ctx->leader_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS );
     FD_MCNT_INC( PACK, TXN_EXPIRED, exp_cnt );
 
@@ -2366,6 +2534,7 @@ after_frag( fd_pack_ctx_t *     ctx,
         long insert_duration = -fd_tickcount();
         int result = fd_pack_insert_bundle_fini( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt, ctx->current_bundle->min_blockhash_slot, 0, ctx->blk_engine_cfg, &deleted, NULL );
         insert_duration      += fd_tickcount();
+        if( FD_UNLIKELY( deleted ) ) pack_tile_maybe_reconcile_pending_bam_work( ctx );
         FD_MCNT_INC( PACK, TXN_DELETED, deleted );
         ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
         fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
@@ -2476,7 +2645,32 @@ after_frag( fd_pack_ctx_t *     ctx,
         }
 
         int pre_insert_duplicate_reject = 0;
-        ulong duplicate_work_idx = pack_tile_bam_work_find_by_sig0( ctx, bam_sig[ 0 ] );
+        /* The pending suffix is indexed by fd_pack's signature map, an
+           invariant maintained immediately after deletion-producing pack
+           inserts.  Scan only the compact scheduled prefix on the normal
+           path, and scan the (potentially large) pending suffix only once
+           the map says sig0 is in pack at all.
+
+           A hit in the map is necessary but not sufficient.  Pack accepts
+           duplicate signatures, so sig0 can belong to an entry that is not
+           tracked BAM work: another bundle carrying that transaction in a
+           non-leading position, a vote, or a non-BAM transaction that
+           entered before the BAM override started refusing them and has
+           not expired or landed yet.  While the override is inactive a
+           mempool copy of a bundle's leading transaction is possible too,
+           since dedup deliberately does not filter BAM traffic.  None of
+           those are duplicate BAM work; rejecting over them would drop
+           valid bundles. */
+        ulong duplicate_work_idx = pack_tile_bam_work_find_by_sig0_state( ctx,
+                                                                          bam_sig[ 0 ],
+                                                                          PACK_BAM_WORK_STATE_SCHEDULED );
+        if( FD_LIKELY( duplicate_work_idx>=ctx->bam_work_cnt ) &&
+            FD_UNLIKELY( fd_pack_contains_transaction( ctx->pack,
+                                                       (fd_ed25519_sig_t const *)(void const *)bam_sig[ 0 ] ) ) ) {
+          duplicate_work_idx = pack_tile_bam_work_find_by_sig0_state( ctx,
+                                                                      bam_sig[ 0 ],
+                                                                      PACK_BAM_WORK_STATE_PENDING );
+        }
         if( FD_UNLIKELY( duplicate_work_idx<ctx->bam_work_cnt ) ) {
           pack_bam_work_t * duplicate = &ctx->bam_work[ duplicate_work_idx ];
           /* Same-sequence resends may replace pending work. Cross-sequence
@@ -2486,8 +2680,13 @@ after_frag( fd_pack_ctx_t *     ctx,
                          duplicate->seq_id==seq_id &&
                          duplicate->scheduler_gen==ctx->current_bundle_bam->scheduler_gen &&
                          duplicate->max_schedule_slot==max_schedule_slot ) ) {
+            uint   duplicate_seq_id        = duplicate->seq_id;
+            ushort duplicate_scheduler_gen = duplicate->scheduler_gen;
             (void)pack_tile_bam_work_swap_remove( ctx, duplicate_work_idx );
-            ulong duplicate_deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)(void const *)bam_sig[ 0 ] );
+            ulong duplicate_deleted = fd_pack_delete_bam_bundle( ctx->pack,
+                                                                 (fd_ed25519_sig_t const *)(void const *)bam_sig[ 0 ],
+                                                                 duplicate_seq_id,
+                                                                 duplicate_scheduler_gen );
             FD_MCNT_INC( PACK, TXN_DELETED, duplicate_deleted );
           } else {
             pre_insert_duplicate_reject = 1;
@@ -2511,6 +2710,7 @@ after_frag( fd_pack_ctx_t *     ctx,
                                                &reject_txn_idx );
           if( FD_UNLIKELY( result==FD_PACK_INSERT_REJECT_EXPIRED ) ) reject_txn_idx = min_blockhash_slot_txn_idx;
           insert_duration += fd_tickcount();
+          if( FD_UNLIKELY( deleted ) ) pack_tile_maybe_reconcile_pending_bam_work( ctx );
 
           FD_MCNT_INC( PACK, TXN_DELETED, deleted );
           ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
@@ -2557,16 +2757,16 @@ after_frag( fd_pack_ctx_t *     ctx,
                                                result );
           break;
         }
-        if( FD_UNLIKELY( !pack_tile_track_bam_work( ctx,
-                                                    bam_sig[ 0 ],
-                                                    first_rx_ts_ns,
-                                                    seq_id,
-                                                    ctx->current_bundle_bam->scheduler_gen,
-                                                    bam_slot,
-                                                    max_schedule_slot,
-                                                    min_blockhash_slot,
-                                                    min_blockhash_slot_txn_idx,
-                                                    txn_cnt ) ) ) {
+        if( FD_UNLIKELY( !pack_tile_append_bam_work( ctx,
+                                                     bam_sig[ 0 ],
+                                                     first_rx_ts_ns,
+                                                     seq_id,
+                                                     ctx->current_bundle_bam->scheduler_gen,
+                                                     bam_slot,
+                                                     max_schedule_slot,
+                                                     min_blockhash_slot,
+                                                     min_blockhash_slot_txn_idx,
+                                                     txn_cnt ) ) ) {
           pack_tile_publish_bam_tracking_reject( ctx,
                                                  bam_sig[ 0 ],
                                                  first_rx_ts_ns,
@@ -2603,6 +2803,7 @@ after_frag( fd_pack_ctx_t *     ctx,
       long insert_duration = -fd_tickcount();
       int result = fd_pack_insert_txn_fini( ctx->pack, ctx->cur_spot, blockhash_slot, &deleted );
       insert_duration      += fd_tickcount();
+      if( FD_UNLIKELY( deleted ) ) pack_tile_maybe_reconcile_pending_bam_work( ctx );
       FD_MCNT_INC( PACK, TXN_DELETED, deleted );
       ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ]++;
       fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
@@ -2813,6 +3014,7 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->bam_scheduled_work_cnt        = 0UL;
   ctx->bam_pending_result_cnt        = 0UL;
   ctx->bam_result_publish_cnt        = 0UL;
+  ctx->bam_pack_bundle_evicted_cnt   = fd_pack_bundle_evicted_cnt( ctx->pack );
   ctx->strategy                      = tile->pack.schedule_strategy;
   ctx->max_pending_transactions      = tile->pack.max_pending_transactions;
   ctx->leader_slot                   = ULONG_MAX;
@@ -2963,13 +3165,6 @@ unprivileged_init( fd_topo_t const *      topo,
   memset( ctx->blk_engine_cfg,            '\0', sizeof(ctx->blk_engine_cfg)            );
   memset( ctx->bam_fee_meta,              '\0', sizeof(ctx->bam_fee_meta)              );
   ctx->bam_fee_cfg_version      = 0U;
-  ctx->bam_work_cnt             = 0UL;
-  ctx->bam_result_queue_head    = 0UL;
-  ctx->bam_pending_work_cnt     = 0UL;
-  ctx->bam_scheduled_work_cnt   = 0UL;
-  ctx->bam_pending_result_cnt    = 0UL;
-  ctx->bam_result_publish_cnt    = 0UL;
-  ctx->bam_pending_check_slot   = 0UL;
   ctx->last_bam_leader_state.slot = ULONG_MAX;
   memset( ctx->last_sched_metrics,        '\0', sizeof(ctx->last_sched_metrics)        );
   memset( ctx->start_block_sched_metrics, '\0', sizeof(ctx->start_block_sched_metrics) );

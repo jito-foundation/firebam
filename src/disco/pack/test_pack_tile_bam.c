@@ -20,7 +20,13 @@ FD_IMPORT_BINARY( test_pack_tile_non_vote,    "src/ballet/txn/fixtures/transacti
 #define fd_pack_insert_txn_cancel test_fd_pack_insert_txn_cancel
 #define fd_pack_insert_bundle_fini test_fd_pack_insert_bundle_fini
 #define fd_pack_insert_bundle_cancel test_fd_pack_insert_bundle_cancel
+#define fd_pack_contains_transaction test_fd_pack_contains_transaction
+#define fd_pack_contains_bam_bundle test_fd_pack_contains_bam_bundle
+#define fd_pack_delete_bam_bundle test_fd_pack_delete_bam_bundle
 #include "fd_pack_tile.c"
+#undef fd_pack_delete_bam_bundle
+#undef fd_pack_contains_bam_bundle
+#undef fd_pack_contains_transaction
 #undef fd_pack_insert_bundle_cancel
 #undef fd_pack_insert_bundle_fini
 #undef fd_pack_insert_txn_cancel
@@ -31,6 +37,9 @@ FD_IMPORT_BINARY( test_pack_tile_non_vote,    "src/ballet/txn/fixtures/transacti
 int fd_pack_insert_bundle_fini( fd_pack_t *, fd_txn_e_t * const *, ulong, ulong,
                                 int, void const *, ulong *, ulong * );
 ulong fd_pack_delete_transaction( fd_pack_t *, fd_ed25519_sig_t const * );
+int fd_pack_contains_transaction( fd_pack_t const *, fd_ed25519_sig_t const * );
+int fd_pack_contains_bam_bundle( fd_pack_t const *, fd_ed25519_sig_t const *, uint, ushort );
+ulong fd_pack_delete_bam_bundle( fd_pack_t *, fd_ed25519_sig_t const *, uint, ushort );
 
 #include "../bam/test_bam_common.c"
 
@@ -51,11 +60,73 @@ static ulong             test_insert_txn_init_call_cnt;
 static ulong             test_insert_txn_fini_call_cnt;
 static ulong             test_insert_txn_cancel_call_cnt;
 static fd_txn_e_t        test_insert_txn_slot[1];
+static fd_pack_ctx_t *    test_query_ctx;
+
+/* Models fd_pack's signature map for the fake pack.  Everything reachable
+   through the fake pack got there by being tracked, so the base model is
+   "some pending bam_work item has this sig0" -- the invariant the tile
+   relies on.  The one state that cannot express is pack having evicted a
+   bundle the tile still tracks, so evictions are staged explicitly and
+   override the base.
+
+     (pending bam_work sig0s) & ~staged evictions
+
+   Occupancy the tile never tracked -- a mempool copy of a bundle's leading
+   transaction, or another bundle carrying it in a non-leading position --
+   is covered by the tests that attach a real fd_pack, where
+   fd_pack_contains_transaction runs for real. */
+#define TEST_PACK_STAGED_SIG_CAP 8UL
+static fd_ed25519_sig_t  test_pack_evicted_sigs[ TEST_PACK_STAGED_SIG_CAP ];
+static ulong             test_pack_evicted_sig_cnt;
+
+/* An insert puts the signature back into pack, so it stops reading as
+   evicted. */
+static void
+test_pack_clear_evicted_sig( void const * sig ) {
+  for( ulong i=0UL; i<test_pack_evicted_sig_cnt; i++ ) {
+    if( FD_LIKELY( memcmp( test_pack_evicted_sigs[ i ], sig, sizeof(fd_ed25519_sig_t) ) ) ) continue;
+    fd_memcpy( test_pack_evicted_sigs[ i ],
+               test_pack_evicted_sigs[ --test_pack_evicted_sig_cnt ],
+               sizeof(fd_ed25519_sig_t) );
+    return;
+  }
+}
 
 #define TEST_PACK_TILE_DCACHE_CHUNKS 16UL
 #define TEST_PACK_TILE_MCACHE_DEPTH  16UL
 #define TEST_PACK_TILE_BAM_WORK_CAP   8UL
 #define TEST_D18_INSTR_ACCT_CNT       (FD_PACK_MAX_ACCOUNTS_PER_INSTRUCTION+1UL)
+
+int
+test_fd_pack_contains_transaction( fd_pack_t const *        pack,
+                                   fd_ed25519_sig_t const * sig0 ) {
+  if( FD_UNLIKELY( test_insert_fini_use_real_pack ) )
+    return fd_pack_contains_transaction( pack, sig0 );
+  for( ulong i=0UL; i<test_pack_evicted_sig_cnt; i++ )
+    if( FD_UNLIKELY( !memcmp( test_pack_evicted_sigs[ i ], sig0, sizeof(fd_ed25519_sig_t) ) ) ) return 0;
+  if( FD_UNLIKELY( !test_query_ctx ) ) return 0;
+  return pack_tile_bam_work_find_by_sig0_state( test_query_ctx,
+                                                sig0,
+                                                PACK_BAM_WORK_STATE_PENDING )<test_query_ctx->bam_work_cnt;
+}
+
+int
+test_fd_pack_contains_bam_bundle( fd_pack_t const *        pack,
+                                  fd_ed25519_sig_t const * sig0,
+                                  uint                     seq_id,
+                                  ushort                   scheduler_gen ) {
+  if( FD_UNLIKELY( test_insert_fini_use_real_pack ) )
+    return fd_pack_contains_bam_bundle( pack, sig0, seq_id, scheduler_gen );
+  for( ulong i=0UL; i<test_pack_evicted_sig_cnt; i++ )
+    if( FD_UNLIKELY( !memcmp( test_pack_evicted_sigs[ i ], sig0, sizeof(fd_ed25519_sig_t) ) ) ) return 0;
+  if( FD_UNLIKELY( !test_query_ctx ) ) return 0;
+  for( ulong i=test_query_ctx->bam_scheduled_work_cnt; i<test_query_ctx->bam_work_cnt; i++ ) {
+    pack_bam_work_t const * work = &test_query_ctx->bam_work[ i ];
+    if( FD_LIKELY( memcmp( work->sig[ 0 ], sig0, sizeof(fd_ed25519_sig_t) ) ) ) continue;
+    if( FD_LIKELY( work->seq_id==seq_id && work->scheduler_gen==scheduler_gen ) ) return 1;
+  }
+  return 0;
+}
 
 ulong
 test_fd_pack_delete_transaction( fd_pack_t *                 pack,
@@ -65,6 +136,19 @@ test_fd_pack_delete_transaction( fd_pack_t *                 pack,
   fd_memcpy( test_delete_last_sig, sig0, sizeof(fd_ed25519_sig_t) );
   if( FD_UNLIKELY( test_delete_use_real_pack ) )
     return fd_pack_delete_transaction( pack, sig0 );
+  return 1UL;
+}
+
+ulong
+test_fd_pack_delete_bam_bundle( fd_pack_t *              pack,
+                                fd_ed25519_sig_t const * sig0,
+                                uint                     seq_id,
+                                ushort                   scheduler_gen ) {
+  test_delete_call_cnt++;
+  if( FD_UNLIKELY( !sig0 ) ) return 1UL;
+  fd_memcpy( test_delete_last_sig, sig0, sizeof(fd_ed25519_sig_t) );
+  if( FD_UNLIKELY( test_delete_use_real_pack ) )
+    return fd_pack_delete_bam_bundle( pack, sig0, seq_id, scheduler_gen );
   return 1UL;
 }
 
@@ -115,6 +199,10 @@ test_fd_pack_insert_bundle_fini( fd_pack_t          * pack,
   (void)bundle_meta;
   test_insert_fini_call_cnt++;
   test_delete_before_insert_fini = !!test_delete_call_cnt;
+  /* A successful insert puts the bundle back into pack, so it must stop
+     reading as evicted -- otherwise the model would keep reporting a
+     transaction that is demonstrably there as missing. */
+  if( FD_LIKELY( bundle && txn_cnt ) ) test_pack_clear_evicted_sig( bundle[ 0 ]->txnp->payload+1UL );
   if( FD_UNLIKELY( test_insert_fini_use_real_pack ) ) {
     return fd_pack_insert_bundle_fini( pack,
                                        bundle,
@@ -155,12 +243,21 @@ typedef struct {
 typedef struct {
   uchar          pad[ FD_PACK_PENDING_TXN_CNT_OFF ];
   ulong          pending_txn_cnt;
+  ulong          bundle_evicted_cnt;
   pack_bam_work_t bam_work[ TEST_PACK_TILE_BAM_WORK_CAP ];
   fd_bam_bundle_result_t bam_result_queue[ 2UL*TEST_PACK_TILE_BAM_WORK_CAP ];
 } test_fake_pack_t;
 
 FD_STATIC_ASSERT( offsetof( test_fake_pack_t, pending_txn_cnt )==FD_PACK_PENDING_TXN_CNT_OFF,
                   test_fake_pack_pending_txn_cnt_off );
+FD_STATIC_ASSERT( offsetof( test_fake_pack_t, bundle_evicted_cnt )==FD_PACK_BUNDLE_EVICTED_CNT_OFF,
+                  test_fake_pack_bundle_evicted_cnt_off );
+
+static void
+test_pack_stage_missing_sig( void const * sig ) {
+  FD_TEST( test_pack_evicted_sig_cnt<TEST_PACK_STAGED_SIG_CAP );
+  fd_memcpy( test_pack_evicted_sigs[ test_pack_evicted_sig_cnt++ ], sig, sizeof(fd_ed25519_sig_t) );
+}
 
 typedef struct {
   test_pack_tile_out_t out[1];
@@ -263,6 +360,7 @@ test_pack_tile_harness_new( test_pack_tile_harness_t * h ) {
   test_insert_txn_init_call_cnt   = 0UL;
   test_insert_txn_fini_call_cnt   = 0UL;
   test_insert_txn_cancel_call_cnt = 0UL;
+  test_pack_evicted_sig_cnt       = 0UL;
   fd_memset( test_insert_txn_slot, 0, sizeof(test_insert_txn_slot) );
   test_pack_tile_out_new( h->out );
 
@@ -278,12 +376,50 @@ test_pack_tile_harness_new( test_pack_tile_harness_t * h ) {
   h->ctx->highest_observed_slot    = 0UL;
   h->ctx->bam_result_out           = test_pack_tile_result_out( h->out );
   h->ctx->bam_fee_cfg              = h->fee_cfg;
+  test_query_ctx                   = h->ctx;
 }
 
 static void
 test_pack_tile_harness_delete( test_pack_tile_harness_t * h ) {
+  if( FD_LIKELY( test_query_ctx==h->ctx ) ) test_query_ctx = NULL;
   test_pack_tile_out_delete( h->out );
   fd_memset( h, 0, sizeof(*h) );
+}
+
+/* Searches all of bam_work regardless of state.  The tile itself always
+   knows which half of the partition it wants and so uses the state-scoped
+   lookup; tests use this to assert across both halves at once. */
+
+static inline ulong
+pack_tile_bam_work_find_by_sig0( fd_pack_ctx_t const * ctx,
+                                 void const *          sig0 ) {
+  for( ulong i=0UL; i<ctx->bam_work_cnt; i++ ) {
+    if( FD_LIKELY( memcmp( ctx->bam_work[ i ].sig[ 0 ], sig0, sizeof(fd_ed25519_sig_t) ) ) ) continue;
+    return i;
+  }
+  return ctx->bam_work_cnt;
+}
+
+/* Appends BAM work, refusing to create a second entry for a sig0 already
+   tracked.  The tile's own append does not check this -- see the comment
+   on pack_tile_append_bam_work -- so this exists purely so tests can stage
+   work items without accidentally building an impossible bam_work state. */
+
+static inline int
+pack_tile_track_bam_work( fd_pack_ctx_t * ctx,
+                          void const *    sigs,
+                          long            first_rx_ts_ns,
+                          uint            seq_id,
+                          ushort          scheduler_gen,
+                          ulong           slot,
+                          ulong           max_schedule_slot,
+                          ulong           blockhash_slot,
+                          uchar           min_blockhash_slot_txn_idx,
+                          uchar           txn_cnt ) {
+  if( FD_UNLIKELY( pack_tile_bam_work_find_by_sig0( ctx, sigs )<ctx->bam_work_cnt ) ) return 0;
+  return pack_tile_append_bam_work( ctx, sigs, first_rx_ts_ns, seq_id, scheduler_gen,
+                                    slot, max_schedule_slot, blockhash_slot,
+                                    min_blockhash_slot_txn_idx, txn_cnt );
 }
 
 static void
@@ -360,17 +496,32 @@ test_pack_tile_bam_mode_edges_retire_pending_initializer( void ) {
   h->ctx->crank->prev_config->discriminator           = 2UL;
   fd_memcpy( h->ctx->crank->last_sig, normal_initializer_sig, sizeof(fd_ed25519_sig_t) );
 
+  /* Signature-wide initializer deletion can also remove a pending BAM copy
+     without advancing fd_pack's autonomous-eviction counter. */
+  FD_TEST( pack_tile_track_bam_work( h->ctx, normal_initializer_sig, 0L,
+                                     71U, 3U, 100UL, 100UL, 100UL, 0U, 1U ) );
+  test_pack_stage_missing_sig( normal_initializer_sig );
+
   /* Re-observing one mode leaves its pending initializer alone. */
   FD_TEST( pack_tile_snapshot_bam_override( h->ctx )==0 );
   FD_TEST( test_delete_call_cnt==0UL );
+  FD_TEST( h->ctx->bam_pending_work_cnt==1UL );
 
-  /* Activation retires the pending normal/Block Engine initializer. */
+  /* Activation retires the pending normal/Block Engine initializer and
+     reconciles the BAM copy deleted as collateral. */
   bam_status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
   FD_TEST( pack_tile_snapshot_bam_override( h->ctx )==1 );
   FD_TEST( test_delete_call_cnt==1UL );
   FD_TEST( !memcmp( test_delete_last_sig, normal_initializer_sig, sizeof(fd_ed25519_sig_t) ) );
   FD_TEST( !h->ctx->crank->ib_inserted );
   FD_TEST( h->ctx->crank->prev_config->discriminator==1UL );
+  FD_TEST( h->ctx->bam_work_cnt==0UL );
+  FD_TEST( h->ctx->bam_pending_work_cnt==0UL );
+  FD_TEST( h->ctx->bam_pending_result_cnt==1UL );
+  fd_bam_bundle_result_t const * res = &h->ctx->bam_result_queue[ h->ctx->bam_result_queue_head ];
+  FD_TEST( res->seq_id==71U );
+  FD_TEST( res->scheduler_gen==3U );
+  FD_TEST( res->scheduling_error==FD_BAM_SCHED_ERR_CONTAINER_FULL );
 
   /* Deactivation applies the same rule to a pending BAM initializer. */
   h->ctx->crank->ib_inserted = 1;
@@ -397,12 +548,7 @@ test_pack_tile_mark_bam_work_scheduled( test_pack_tile_harness_t * h,
   FD_TEST( item->state==PACK_BAM_WORK_STATE_PENDING );
 
   h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_SCHEDULED_IDX ]++;
-  item->state             = PACK_BAM_WORK_STATE_SCHEDULED;
-  item->remaining_txn_cnt = item->txn_cnt;
-  h->ctx->bam_pending_work_cnt--;
-  h->ctx->bam_scheduled_work_cnt++;
-
-  return item;
+  return pack_tile_bam_work_mark_scheduled( h->ctx, work_idx );
 }
 
 static void
@@ -412,6 +558,49 @@ test_pack_tile_send_executed_txn( test_pack_tile_harness_t * h,
   h->ctx->in_kind[ 0 ] = IN_KIND_EXECUTED_TXN;
   fd_memcpy( h->ctx->executed_txn_sig, txn_sig, FD_TXN_SIGNATURE_SZ );
   after_frag( h->ctx, 0UL, 0UL, event_kind, FD_TXN_SIGNATURE_SZ, 0UL, 0UL, &h->out->stem );
+}
+
+static void
+test_pack_tile_bam_work_partition_mutations( void ) {
+  test_pack_tile_harness_t h[1];
+  uchar sigs[ 3 ][ sizeof(fd_ed25519_sig_t) ];
+  test_pack_tile_harness_new( h );
+
+  for( uchar i=0U; i<3U; i++ ) {
+    test_pack_tile_fill_sig( sigs[ i ], (uchar)( 200U+i ) );
+    FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ i ], 0L, (uint)i, 0U,
+                                      100UL, 100UL, 100UL, 0U, 1U ) );
+  }
+
+  (void)test_pack_tile_mark_bam_work_scheduled( h, sigs[ 1 ] );
+  (void)test_pack_tile_mark_bam_work_scheduled( h, sigs[ 2 ] );
+  FD_TEST( h->ctx->bam_scheduled_work_cnt==2UL );
+  FD_TEST( h->ctx->bam_pending_work_cnt==1UL );
+  for( ulong i=0UL; i<h->ctx->bam_scheduled_work_cnt; i++ )
+    FD_TEST( h->ctx->bam_work[ i ].state==PACK_BAM_WORK_STATE_SCHEDULED );
+  for( ulong i=h->ctx->bam_scheduled_work_cnt; i<h->ctx->bam_work_cnt; i++ )
+    FD_TEST( h->ctx->bam_work[ i ].state==PACK_BAM_WORK_STATE_PENDING );
+
+  ulong work_idx = pack_tile_bam_work_find_by_sig0_state( h->ctx, sigs[ 1 ], PACK_BAM_WORK_STATE_SCHEDULED );
+  FD_TEST( work_idx<h->ctx->bam_work_cnt );
+  (void)pack_tile_bam_work_swap_remove( h->ctx, work_idx );
+  FD_TEST( h->ctx->bam_scheduled_work_cnt==1UL );
+  FD_TEST( h->ctx->bam_pending_work_cnt==1UL );
+  FD_TEST( h->ctx->bam_work[ 0 ].state==PACK_BAM_WORK_STATE_SCHEDULED );
+  FD_TEST( h->ctx->bam_work[ 1 ].state==PACK_BAM_WORK_STATE_PENDING );
+
+  work_idx = pack_tile_bam_work_find_by_sig0_state( h->ctx, sigs[ 0 ], PACK_BAM_WORK_STATE_PENDING );
+  FD_TEST( work_idx<h->ctx->bam_work_cnt );
+  (void)pack_tile_bam_work_swap_remove( h->ctx, work_idx );
+  FD_TEST( h->ctx->bam_work_cnt==1UL );
+  FD_TEST( h->ctx->bam_scheduled_work_cnt==1UL );
+  FD_TEST( h->ctx->bam_pending_work_cnt==0UL );
+
+  (void)pack_tile_bam_work_swap_remove( h->ctx, 0UL );
+  FD_TEST( !h->ctx->bam_work_cnt );
+  FD_TEST( !h->ctx->bam_scheduled_work_cnt );
+  FD_TEST( !h->ctx->bam_pending_work_cnt );
+  test_pack_tile_harness_delete( h );
 }
 
 static void
@@ -945,8 +1134,10 @@ test_pack_tile_complete_bam_bundle( test_pack_tile_harness_t * h,
   h->ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = FD_PACK_MAX_TXN_PER_BUNDLE;
 
   for( uchar i=0U; i<txn_cnt; i++ ) {
-    txns[ i ]->txnp->bam.batch_idx = i;
-    txns[ i ]->txnp->source_tpu    = FD_TXN_M_TPU_SOURCE_BAM;
+    txns[ i ]->txnp->bam.seq_id        = seq_id;
+    txns[ i ]->txnp->bam.scheduler_gen = h->ctx->current_bundle_bam->scheduler_gen;
+    txns[ i ]->txnp->bam.batch_idx     = i;
+    txns[ i ]->txnp->source_tpu        = FD_TXN_M_TPU_SOURCE_BAM;
     h->ctx->current_bundle->_txn[ i ] = txns[ i ];
   }
   h->ctx->cur_spot = txns[ txn_cnt-1U ];
@@ -1184,6 +1375,312 @@ test_pack_tile_bam_stale_max_schedule_slot_rejected( void ) {
   test_pack_tile_assert_last_result( h, 55U, 100UL, 2U, FD_BAM_SCHED_ERR_OUTSIDE_SLOT, 0U );
 
   test_pack_tile_harness_delete( h );
+}
+
+/* Builds a real fd_pack and points the harness at it.  Returns the backing
+   allocation, which the caller frees after test_pack_tile_harness_delete. */
+static void *
+test_pack_tile_bam_attach_real_pack( test_pack_tile_harness_t * h,
+                                     fd_rng_t *                 rng,
+                                     ulong                      pack_depth ) {
+  fd_pack_limits_t limits = {
+    .max_cost_per_block           = FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND,
+    .max_vote_cost_per_block      = FD_PACK_MAX_VOTE_COST_PER_BLOCK_LOWER_BOUND,
+    .max_write_cost_per_acct      = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND,
+    .max_data_bytes_per_block     = FD_PACK_MAX_DATA_PER_BLOCK,
+    .max_txn_per_microblock       = FD_PACK_MAX_TXN_PER_BUNDLE,
+    .max_microblocks_per_block    = TEST_PACK_TILE_BAM_WORK_CAP,
+    .max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK,
+  };
+
+  FD_TEST( fd_rng_join( fd_rng_new( rng, 0U, 0UL ) ) );
+
+  ulong  pack_footprint = fd_pack_footprint( pack_depth, BUNDLE_META_SZ, 1UL, &limits );
+  void * pack_mem       = aligned_alloc( fd_pack_align(),
+                                         fd_ulong_align_up( pack_footprint, fd_pack_align() ) );
+  FD_TEST( pack_mem );
+  fd_pack_t * pack = fd_pack_join( fd_pack_new( pack_mem, pack_depth, BUNDLE_META_SZ, 1UL,
+                                                &limits, NULL, 0UL, rng ) );
+  FD_TEST( pack );
+
+  h->ctx->pack                        = pack;
+  h->ctx->bam_pack_bundle_evicted_cnt = fd_pack_bundle_evicted_cnt( pack );
+  test_insert_fini_use_real_pack      = 1;
+  test_delete_use_real_pack           = 1;
+  return pack_mem;
+}
+
+/* Inserting a bundle into a full pack makes fd_pack call delete_worst with
+   a FLT_MAX threshold, which is free to evict a bundle we are still
+   tracking as pending work.  Pack reports only a count, so without
+   reconciliation that work item lingers with no transaction behind it --
+   and because the after_frag duplicate check uses fd_pack's signature map
+   as the index over pending work, a resend of the same sig0 would then be
+   tracked a second time.  Uses a real pack shallower than the BAM work cap
+   so the eviction is genuine rather than simulated. */
+
+static void
+test_pack_tile_bam_pack_evicted_bundle_is_reconciled( void ) {
+  ulong const pack_depth = 4UL;
+  test_pack_tile_harness_t h[1];
+  fd_rng_t                 pack_rng[1];
+  test_pack_tile_harness_new( h );
+  void * pack_mem = test_pack_tile_bam_attach_real_pack( h, pack_rng, pack_depth );
+  fd_pack_t * pack = h->ctx->pack;
+
+  fd_txn_p_t invalid_txn[1];
+  fd_txn_p_t valid_txn[1];
+  test_pack_tile_make_d18_poc_txns( invalid_txn, valid_txn );
+
+  uchar       sigs[ 5 ][ sizeof(fd_ed25519_sig_t) ];
+  uint  const first_seq_id = 700U;
+  ulong const slot         = 104UL;
+
+  /* Fill pack exactly to depth.  Nothing is evicted yet. */
+  for( uchar i=0U; i<(uchar)pack_depth; i++ ) {
+    test_pack_tile_fill_sig( sigs[ i ], (uchar)( 30U+i ) );
+
+    fd_txn_e_t * bundle[ 1 ];
+    FD_TEST( fd_pack_insert_bundle_init( pack, bundle, 1UL )==bundle );
+    *bundle[ 0 ]->txnp = *valid_txn;
+    fd_memcpy( bundle[ 0 ]->txnp->payload+1UL, sigs[ i ], sizeof(fd_ed25519_sig_t) );
+
+    test_pack_tile_complete_bam_bundle( h, bundle, 1U, first_seq_id+i, slot, slot, 0U );
+  }
+  FD_TEST( h->ctx->bam_work_cnt==pack_depth );
+  FD_TEST( h->ctx->bam_pending_work_cnt==pack_depth );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==pack_depth );
+  FD_TEST( !fd_pack_bundle_evicted_cnt( pack ) );
+
+  ulong const evicted_stage_before =
+      h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_EVICTED_IDX ];
+  ulong const pending_results_before = h->ctx->bam_pending_result_cnt;
+
+  /* The pool is now entirely bundles, so the forced delete lands on one. */
+  test_pack_tile_fill_sig( sigs[ 4 ], 30U+(uchar)pack_depth );
+  fd_txn_e_t * overflow[ 1 ];
+  FD_TEST( fd_pack_insert_bundle_init( pack, overflow, 1UL )==overflow );
+  *overflow[ 0 ]->txnp = *valid_txn;
+  fd_memcpy( overflow[ 0 ]->txnp->payload+1UL, sigs[ 4 ], sizeof(fd_ed25519_sig_t) );
+  test_pack_tile_complete_bam_bundle( h, overflow, 1U, first_seq_id+(uint)pack_depth, slot, slot, 0U );
+
+  FD_TEST( fd_pack_bundle_evicted_cnt( pack )==1UL );
+  FD_TEST( h->ctx->bam_pack_bundle_evicted_cnt==1UL );
+
+  /* One work item was appended and the silently evicted one was retired. */
+  FD_TEST( h->ctx->bam_work_cnt==pack_depth );
+  FD_TEST( h->ctx->bam_pending_work_cnt==pack_depth );
+  FD_TEST( !h->ctx->bam_scheduled_work_cnt );
+  FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_EVICTED_IDX ]
+           ==evicted_stage_before+1UL );
+  FD_TEST( h->ctx->bam_pending_result_cnt==pending_results_before+1UL );
+
+  /* The invariant the duplicate check depends on holds again, and no sig0
+     is tracked twice. */
+  for( ulong i=0UL; i<h->ctx->bam_work_cnt; i++ ) {
+    FD_TEST( fd_pack_contains_transaction( pack,
+                                           (fd_ed25519_sig_t const *)(void const *)&h->ctx->bam_work[ i ].sig[ 0 ] ) );
+    for( ulong j=i+1UL; j<h->ctx->bam_work_cnt; j++ ) {
+      FD_TEST( memcmp( h->ctx->bam_work[ i ].sig[ 0 ],
+                       h->ctx->bam_work[ j ].sig[ 0 ],
+                       sizeof(fd_ed25519_sig_t) ) );
+    }
+  }
+
+  /* The retired sequence is reported as losing the priority contest, which
+     is what actually happened to it. */
+  ulong result_idx = ( h->ctx->bam_result_queue_head + pending_results_before ) %
+                     ( 2UL*h->ctx->max_pending_transactions );
+  fd_bam_bundle_result_t const * res = &h->ctx->bam_result_queue[ result_idx ];
+  FD_TEST( res->scheduling_error==FD_BAM_SCHED_ERR_CONTAINER_FULL );
+  FD_TEST( res->seq_id>=first_seq_id && res->seq_id<first_seq_id+(uint)pack_depth );
+
+  /* Replaying the evicted sequence must not produce a second entry for a
+     sig0 that is already tracked. */
+  uchar evicted_i = (uchar)( res->seq_id - first_seq_id );
+  FD_TEST( pack_tile_bam_work_find_by_sig0( h->ctx, sigs[ evicted_i ] )==h->ctx->bam_work_cnt );
+
+  ulong const work_cnt_before_replay = h->ctx->bam_work_cnt;
+  fd_txn_e_t * replay[ 1 ];
+  FD_TEST( fd_pack_insert_bundle_init( pack, replay, 1UL )==replay );
+  *replay[ 0 ]->txnp = *valid_txn;
+  fd_memcpy( replay[ 0 ]->txnp->payload+1UL, sigs[ evicted_i ], sizeof(fd_ed25519_sig_t) );
+  test_pack_tile_complete_bam_bundle( h, replay, 1U, res->seq_id, slot, slot, 0U );
+
+  FD_TEST( h->ctx->bam_work_cnt==work_cnt_before_replay );
+  for( ulong i=0UL; i<h->ctx->bam_work_cnt; i++ ) {
+    for( ulong j=i+1UL; j<h->ctx->bam_work_cnt; j++ ) {
+      FD_TEST( memcmp( h->ctx->bam_work[ i ].sig[ 0 ],
+                       h->ctx->bam_work[ j ].sig[ 0 ],
+                       sizeof(fd_ed25519_sig_t) ) );
+    }
+  }
+
+  test_pack_tile_harness_delete( h );
+  free( pack_mem );
+}
+
+/* fd_pack accepts duplicate signatures -- it never returns
+   FD_PACK_INSERT_REJECT_DUPLICATE -- so a bundle's leading transaction can
+   already sit in pack under a signature the tile does not track as BAM
+   work.  Runs with the BAM override active, because that is the mode where
+   it matters and where it is least obvious: the override refuses new
+   non-vote non-BAM transactions, but it does not purge the ones already in
+   pack, and those stay in fd_pack's signature map until they expire or
+   land.  A hit in that map is therefore only a hint that the pending suffix
+   is worth scanning, never grounds to reject the bundle. */
+
+static void
+test_pack_tile_bam_sig0_shared_with_untracked_pack_txn_is_accepted( void ) {
+  test_pack_tile_harness_t h[1];
+  fd_rng_t                 pack_rng[1];
+  ulong                    bam_status_fseq = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+
+  test_pack_tile_harness_new( h );
+  h->ctx->bam_status_fseq = &bam_status_fseq;
+  void * pack_mem = test_pack_tile_bam_attach_real_pack( h, pack_rng, 8UL );
+  fd_pack_t * pack = h->ctx->pack;
+
+  fd_txn_p_t invalid_txn[1];
+  fd_txn_p_t valid_txn[1];
+  test_pack_tile_make_d18_poc_txns( invalid_txn, valid_txn );
+
+  uchar shared_sig[ sizeof(fd_ed25519_sig_t) ];
+  test_pack_tile_fill_sig( shared_sig, 61U );
+
+  /* Put shared_sig into pack without telling the tile about it. */
+  fd_txn_e_t * untracked[ 1 ];
+  FD_TEST( fd_pack_insert_bundle_init( pack, untracked, 1UL )==untracked );
+  *untracked[ 0 ]->txnp = *valid_txn;
+  fd_memcpy( untracked[ 0 ]->txnp->payload+1UL, shared_sig, sizeof(fd_ed25519_sig_t) );
+  ulong deleted = 0UL;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, untracked, 1UL, 100UL, 0, NULL, &deleted, NULL )>=0 );
+  FD_TEST( fd_pack_contains_transaction( pack, (fd_ed25519_sig_t const *)(void const *)shared_sig ) );
+  FD_TEST( !h->ctx->bam_work_cnt );
+
+  /* A BAM bundle whose sig0 collides with it must still be inserted. */
+  ulong const cancel_before = test_bundle_cancel_call_cnt;
+  fd_txn_e_t * bundle[ 1 ];
+  FD_TEST( fd_pack_insert_bundle_init( pack, bundle, 1UL )==bundle );
+  *bundle[ 0 ]->txnp = *valid_txn;
+  fd_memcpy( bundle[ 0 ]->txnp->payload+1UL, shared_sig, sizeof(fd_ed25519_sig_t) );
+  test_pack_tile_complete_bam_bundle( h, bundle, 1U, 900U, 104UL, 104UL, 0U );
+
+  FD_TEST( test_bundle_cancel_call_cnt==cancel_before );
+  FD_TEST( h->ctx->bam_pending_work_cnt==1UL );
+  FD_TEST( h->ctx->bam_work_cnt==1UL );
+  FD_TEST( pack_tile_bam_work_find_by_sig0( h->ctx, shared_sig )<h->ctx->bam_work_cnt );
+  FD_TEST( !h->ctx->insert_result[ FD_PACK_INSERT_REJECT_DUPLICATE + FD_PACK_INSERT_RETVAL_OFF ] );
+
+  test_pack_tile_harness_delete( h );
+  free( pack_mem );
+}
+
+/* Same premise, reached without any non-BAM transaction being involved:
+   bundle A carries Y in a non-leading position, so pack holds Y while no
+   bam_work has sig[0]==Y.  Bundle B leading with Y is not a duplicate of A
+   and must be accepted.  Reachable with the BAM override active and pack
+   holding nothing but BAM work, so it is purely a BAM-to-BAM overlap. */
+
+static void
+test_pack_tile_bam_overlapping_bundle_leading_sig_is_accepted( void ) {
+  test_pack_tile_harness_t h[1];
+  fd_rng_t                 pack_rng[1];
+  ulong                    bam_status_fseq = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+
+  test_pack_tile_harness_new( h );
+  h->ctx->bam_status_fseq = &bam_status_fseq;
+  void * pack_mem = test_pack_tile_bam_attach_real_pack( h, pack_rng, 8UL );
+  fd_pack_t * pack = h->ctx->pack;
+
+  fd_txn_p_t invalid_txn[1];
+  fd_txn_p_t valid_txn[1];
+  test_pack_tile_make_d18_poc_txns( invalid_txn, valid_txn );
+
+  uchar sig_x[ sizeof(fd_ed25519_sig_t) ];
+  uchar sig_y[ sizeof(fd_ed25519_sig_t) ];
+  uchar sig_z[ sizeof(fd_ed25519_sig_t) ];
+  test_pack_tile_fill_sig( sig_x, 71U );
+  test_pack_tile_fill_sig( sig_y, 72U );
+  test_pack_tile_fill_sig( sig_z, 73U );
+
+  /* Bundle A = [X,Y], tracked.  bam_work holds sig[0]==X, sig[1]==Y. */
+  fd_txn_e_t * bundle_a[ 2 ];
+  FD_TEST( fd_pack_insert_bundle_init( pack, bundle_a, 2UL )==bundle_a );
+  *bundle_a[ 0 ]->txnp = *valid_txn;
+  *bundle_a[ 1 ]->txnp = *valid_txn;
+  fd_memcpy( bundle_a[ 0 ]->txnp->payload+1UL, sig_x, sizeof(fd_ed25519_sig_t) );
+  fd_memcpy( bundle_a[ 1 ]->txnp->payload+1UL, sig_y, sizeof(fd_ed25519_sig_t) );
+  test_pack_tile_complete_bam_bundle( h, bundle_a, 2U, 910U, 104UL, 104UL, 0U );
+  FD_TEST( h->ctx->bam_pending_work_cnt==1UL );
+  FD_TEST( fd_pack_contains_transaction( pack, (fd_ed25519_sig_t const *)(void const *)sig_y ) );
+  FD_TEST( pack_tile_bam_work_find_by_sig0( h->ctx, sig_y )==h->ctx->bam_work_cnt );
+
+  /* Bundle B = [Y,Z] leads with Y. */
+  ulong const cancel_before = test_bundle_cancel_call_cnt;
+  fd_txn_e_t * bundle_b[ 2 ];
+  FD_TEST( fd_pack_insert_bundle_init( pack, bundle_b, 2UL )==bundle_b );
+  *bundle_b[ 0 ]->txnp = *valid_txn;
+  *bundle_b[ 1 ]->txnp = *valid_txn;
+  fd_memcpy( bundle_b[ 0 ]->txnp->payload+1UL, sig_y, sizeof(fd_ed25519_sig_t) );
+  fd_memcpy( bundle_b[ 1 ]->txnp->payload+1UL, sig_z, sizeof(fd_ed25519_sig_t) );
+  test_pack_tile_complete_bam_bundle( h, bundle_b, 2U, 911U, 104UL, 104UL, 0U );
+
+  FD_TEST( test_bundle_cancel_call_cnt==cancel_before );
+  FD_TEST( h->ctx->bam_pending_work_cnt==2UL );
+  FD_TEST( pack_tile_bam_work_find_by_sig0( h->ctx, sig_y )<h->ctx->bam_work_cnt );
+
+  /* Replacing B must delete B exactly.  Signature-wide deletion by Y would
+     also delete A because Y is A's non-leading transaction. */
+  fd_txn_e_t * bundle_b_resend[ 2 ];
+  FD_TEST( fd_pack_insert_bundle_init( pack, bundle_b_resend, 2UL )==bundle_b_resend );
+  *bundle_b_resend[ 0 ]->txnp = *valid_txn;
+  *bundle_b_resend[ 1 ]->txnp = *valid_txn;
+  fd_memcpy( bundle_b_resend[ 0 ]->txnp->payload+1UL, sig_y, sizeof(fd_ed25519_sig_t) );
+  fd_memcpy( bundle_b_resend[ 1 ]->txnp->payload+1UL, sig_z, sizeof(fd_ed25519_sig_t) );
+  test_pack_tile_complete_bam_bundle( h, bundle_b_resend, 2U, 911U, 104UL, 104UL, 0U );
+
+  FD_TEST( h->ctx->bam_pending_work_cnt==2UL );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==4UL );
+  FD_TEST( fd_pack_contains_bam_bundle( pack,
+                                        (fd_ed25519_sig_t const *)(void const *)sig_x,
+                                        910U,
+                                        0U ) );
+  FD_TEST( fd_pack_contains_bam_bundle( pack,
+                                        (fd_ed25519_sig_t const *)(void const *)sig_y,
+                                        911U,
+                                        0U ) );
+
+  /* Simulate pack having evicted B.  A still makes the generic signature
+     query for Y succeed, so reconciliation must use the exact BAM identity
+     and retire only B's work item. */
+  FD_TEST( fd_pack_delete_bam_bundle( pack,
+                                      (fd_ed25519_sig_t const *)(void const *)sig_y,
+                                      911U,
+                                      0U )==2UL );
+  FD_TEST( fd_pack_contains_transaction( pack,
+                                         (fd_ed25519_sig_t const *)(void const *)sig_y ) );
+  FD_TEST( !fd_pack_contains_bam_bundle( pack,
+                                         (fd_ed25519_sig_t const *)(void const *)sig_y,
+                                         911U,
+                                         0U ) );
+
+  ulong pending_results_before = h->ctx->bam_pending_result_cnt;
+  pack_tile_reconcile_pending_bam_work( h->ctx );
+  FD_TEST( h->ctx->bam_pending_work_cnt==1UL );
+  FD_TEST( h->ctx->bam_work_cnt==1UL );
+  FD_TEST( pack_tile_bam_work_find_by_sig0( h->ctx, sig_x )<h->ctx->bam_work_cnt );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==2UL );
+  FD_TEST( h->ctx->bam_pending_result_cnt==pending_results_before+1UL );
+
+  ulong result_idx = ( h->ctx->bam_result_queue_head + pending_results_before ) %
+                     ( 2UL*h->ctx->max_pending_transactions );
+  fd_bam_bundle_result_t const * result = &h->ctx->bam_result_queue[ result_idx ];
+  FD_TEST( result->seq_id==911U );
+  FD_TEST( result->scheduling_error==FD_BAM_SCHED_ERR_CONTAINER_FULL );
+
+  test_pack_tile_harness_delete( h );
+  free( pack_mem );
 }
 
 static void
@@ -1974,6 +2471,10 @@ main( int     argc,
   fd_boot( &argc, &argv );
   fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
 
+  test_pack_tile_bam_work_partition_mutations();
+  test_pack_tile_bam_pack_evicted_bundle_is_reconciled();
+  test_pack_tile_bam_sig0_shared_with_untracked_pack_txn_is_accepted();
+  test_pack_tile_bam_overlapping_bundle_leading_sig_is_accepted();
   test_pack_tile_bam_completion_outcomes();
   test_pack_tile_bam_completion_tracking_reuses_capacity();
   test_pack_tile_bam_overlapping_replay_reconciliation();

@@ -186,6 +186,14 @@ typedef struct {
   fd_shred_dest_weighted_t adtl_dests_retransmit[ FD_TOPO_ADTL_DESTS_MAX ];
   uchar                    bam_dests_cnt;
   fd_shred_dest_weighted_t bam_dests[ FD_BAM_SHRED_SOCK_MAX ];
+  /* Memoizes "is this validator leader in shred->slot+1..+4" for the BAM
+     retransmit forwarding check.  The answer only changes once per slot,
+     but the check sits in the per-shred retransmit path, so recomputing it
+     for every shred would cost four leader-schedule lookups each.
+     bam_leader_soon_slot is the shred->slot the cached answer applies to,
+     or ULONG_MAX when no answer is cached. */
+  ulong                    bam_leader_soon_slot;
+  int                      bam_leader_soon;
 
   fd_ip4_udp_hdrs_t data_shred_net_hdr  [1];
   fd_ip4_udp_hdrs_t parity_shred_net_hdr[1];
@@ -362,6 +370,7 @@ during_housekeeping( fd_shred_ctx_t * ctx ) {
 
     memcpy( ctx->identity_key->uc, ctx->keyswitch->bytes, 32UL );
     fd_stake_ci_set_identity( ctx->stake_ci, ctx->identity_key );
+    ctx->bam_leader_soon_slot = ULONG_MAX; /* cached answer was for the old identity */
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
   }
 }
@@ -968,14 +977,20 @@ fd_shred_send_bam_shred( fd_shred_ctx_t *    ctx,
     /* Stop forwarding older retransmits once local leader shredding starts. */
     if( FD_UNLIKELY( ctx->slot!=ULONG_MAX && shred->slot<ctx->slot ) ) return;
 
-    for( ulong off=1UL; off<5UL; off++ ) {
-      ulong slot = shred->slot + off;
-      fd_epoch_leaders_t const * lsched = fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot );
-      if( FD_UNLIKELY( !lsched || (slot-lsched->slot0)%FD_EPOCH_SLOTS_PER_ROTATION ) ) continue;
-      fd_pubkey_t const * leader = fd_epoch_leaders_get( lsched, slot );
-      if( FD_UNLIKELY( !leader || !fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) ) ) continue;
-      should_send = 1;
-      break;
+    if( FD_LIKELY( shred->slot==ctx->bam_leader_soon_slot ) ) {
+      should_send = ctx->bam_leader_soon;
+    } else {
+      for( ulong off=1UL; off<5UL; off++ ) {
+        ulong slot = shred->slot + off;
+        fd_epoch_leaders_t const * lsched = fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot );
+        if( FD_UNLIKELY( !lsched || (slot-lsched->slot0)%FD_EPOCH_SLOTS_PER_ROTATION ) ) continue;
+        fd_pubkey_t const * leader = fd_epoch_leaders_get( lsched, slot );
+        if( FD_UNLIKELY( !leader || !fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) ) ) continue;
+        should_send = 1;
+        break;
+      }
+      ctx->bam_leader_soon_slot = shred->slot;
+      ctx->bam_leader_soon      = should_send;
     }
   } else {
     fd_pubkey_t const * leader = fd_epoch_leaders_get( fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, shred->slot ), shred->slot );
@@ -1010,11 +1025,13 @@ after_frag( fd_shred_ctx_t *    ctx,
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EPOCH ) ) {
     fd_stake_ci_epoch_msg_fini( ctx->stake_ci );
+    ctx->bam_leader_soon_slot = ULONG_MAX; /* leader schedule changed */
     return;
   }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_STAKE ) ) {
     fd_stake_ci_stake_msg_fini( ctx->stake_ci );
+    ctx->bam_leader_soon_slot = ULONG_MAX; /* leader schedule changed */
     return;
   }
 
@@ -1556,7 +1573,8 @@ unprivileged_init( fd_topo_t const *      topo,
     ctx->adtl_dests_leader[i].ip4  = tile->shred.adtl_dests_leader[i].ip;
     ctx->adtl_dests_leader[i].port = tile->shred.adtl_dests_leader[i].port;
   }
-  ctx->bam_dests_cnt = 0U;
+  ctx->bam_dests_cnt        = 0U;
+  ctx->bam_leader_soon_slot = ULONG_MAX;
 
   uchar has_contact_info_in = 0;
   ulong polled_in_idx = 0UL;

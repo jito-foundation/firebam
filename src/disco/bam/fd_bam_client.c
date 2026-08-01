@@ -304,16 +304,6 @@ fd_bam_encode_committed_cb( pb_ostream_t *          stream,
   return true;
 }
 
-static bool
-fd_bam_encode_batch_results_cb( pb_ostream_t *          stream,
-                                pb_field_t const *       field,
-                                void * const *           arg ) {
-  bam_types_AtomicTxnBatchResult const * atomic_res = (bam_types_AtomicTxnBatchResult const *)*arg;
-  if( FD_UNLIKELY( !atomic_res ) ) return false;
-  if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
-  return pb_encode_submessage( stream, bam_types_AtomicTxnBatchResult_fields, atomic_res );
-}
-
 static void
 fd_bam_request_auth_challenge( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
@@ -634,84 +624,100 @@ fd_bam_send_heartbeat( fd_bam_tile_t * ctx,
       : FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_HEARTBEAT_ENQUEUE_FAIL_IDX ]++;
 }
 
+static bool
+fd_bam_encode_batch_results_cb( pb_ostream_t *    stream,
+                                pb_field_t const * field,
+                                void * const *     arg ) {
+  fd_bam_tile_t const * ctx = (fd_bam_tile_t const *)*arg;
+
+  uint result_cnt = fd_uint_min( (uint)ctx->feedback_queue_depth, FD_BAM_RESULTS_PER_MESSAGE );
+  for( uint result_i=0U; result_i<result_cnt; result_i++ ) {
+    ushort result_idx = (ushort)(((uint)ctx->bam_results_head+result_i) % FD_BAM_MAX_PENDING_RESULTS);
+    fd_bam_bundle_result_t const * res = &ctx->bam_results[ result_idx ];
+    bam_types_AtomicTxnBatchResult atomic_res = bam_types_AtomicTxnBatchResult_init_default;
+    atomic_res.seq_id = res->seq_id;
+
+    if( FD_LIKELY( res->execution_success ) ) {
+      atomic_res.which_result = bam_types_AtomicTxnBatchResult_committed_tag;
+      atomic_res.result.committed.transaction_results.funcs.encode = fd_bam_encode_committed_cb;
+      atomic_res.result.committed.transaction_results.arg          = (void *)res;
+    } else {
+      atomic_res.which_result = bam_types_AtomicTxnBatchResult_not_committed_tag;
+      bam_types_NotCommitted * out = &atomic_res.result.not_committed;
+
+      switch( res->bundle_err ) {
+      case FD_BAM_BUNDLE_ERR_NONE:
+        break;
+      case FD_BAM_BUNDLE_ERR_DESER:
+        out->which_reason                        = bam_types_NotCommitted_deserialization_error_tag;
+        out->reason.deserialization_error.index  = res->deser_index;
+        out->reason.deserialization_error.reason = (bam_types_DeserializationErrorReason)res->deser_reason;
+        break;
+      }
+
+      if( FD_UNLIKELY( !out->which_reason && res->scheduling_error != FD_BAM_SCHED_ERR_NONE ) ) {
+        out->which_reason            = bam_types_NotCommitted_scheduling_error_tag;
+        out->reason.scheduling_error = (bam_types_SchedulingError)res->scheduling_error;
+      }
+
+      if( FD_UNLIKELY( !out->which_reason ) ) {
+        for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
+          if( FD_UNLIKELY( !res->sanitize_success[ i ] ) ) {
+            out->which_reason                        = bam_types_NotCommitted_deserialization_error_tag;
+            out->reason.deserialization_error.index  = i;
+            out->reason.deserialization_error.reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
+            break;
+          }
+        }
+      }
+
+      if( FD_UNLIKELY( !out->which_reason && res->transaction_err_count ) ) {
+        uchar err_idx = 0U;
+        _Bool found_non_cancelled = 0;
+        for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
+          if( FD_LIKELY( res->transaction_err[ i ] != bam_types_TransactionErrorReason_COMMIT_CANCELLED ) ) {
+            err_idx = i;
+            found_non_cancelled = 1;
+            break;
+          }
+        }
+
+        if( FD_UNLIKELY( !found_non_cancelled && res->bundle_txn_cnt>1U ) ) {
+          out->which_reason            = bam_types_NotCommitted_scheduling_error_tag;
+          out->reason.scheduling_error = bam_types_SchedulingError_POH_TIMEOUT;
+        } else {
+          out->which_reason                    = bam_types_NotCommitted_transaction_error_tag;
+          out->reason.transaction_error.index  = err_idx;
+          out->reason.transaction_error.reason = (bam_types_TransactionErrorReason)res->transaction_err[ err_idx ];
+        }
+      }
+
+      if( FD_UNLIKELY( !out->which_reason ) ) {
+        out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
+        fd_cstr_ncpy( out->reason.generic_invalid.message,
+                      FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED,
+                      sizeof( out->reason.generic_invalid.message ) );
+      }
+    }
+
+    if( FD_UNLIKELY( !pb_encode_tag_for_field( stream, field ) ) ) return false;
+    if( FD_UNLIKELY( !pb_encode_submessage( stream,
+                                            bam_types_AtomicTxnBatchResult_fields,
+                                            &atomic_res ) ) ) return false;
+  }
+  return true;
+}
+
 static int
-fd_bam_send_result( fd_bam_tile_t *               ctx,
-                    fd_bam_bundle_result_t const * res ) {
+fd_bam_send_results( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) {
     ctx->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_NO_STREAM_IDX ]++;
     return 0;
   }
 
-  bam_types_AtomicTxnBatchResult atomic_res = bam_types_AtomicTxnBatchResult_init_default;
-  atomic_res.seq_id = res->seq_id;
-
-  if( FD_LIKELY( res->execution_success ) ) {
-    atomic_res.which_result = bam_types_AtomicTxnBatchResult_committed_tag;
-    atomic_res.result.committed.transaction_results.funcs.encode = fd_bam_encode_committed_cb;
-    atomic_res.result.committed.transaction_results.arg          = (void *)res;
-  } else {
-    atomic_res.which_result = bam_types_AtomicTxnBatchResult_not_committed_tag;
-    bam_types_NotCommitted * out = &atomic_res.result.not_committed;
-    *out = (bam_types_NotCommitted)bam_types_NotCommitted_init_default;
-
-    switch( res->bundle_err ) {
-    case FD_BAM_BUNDLE_ERR_NONE:
-      break;
-    case FD_BAM_BUNDLE_ERR_DESER:
-      out->which_reason                        = bam_types_NotCommitted_deserialization_error_tag;
-      out->reason.deserialization_error.index  = res->deser_index;
-      out->reason.deserialization_error.reason = (bam_types_DeserializationErrorReason)res->deser_reason;
-      break;
-    }
-
-    if( FD_UNLIKELY( !out->which_reason && res->scheduling_error != FD_BAM_SCHED_ERR_NONE ) ) {
-      out->which_reason            = bam_types_NotCommitted_scheduling_error_tag;
-      out->reason.scheduling_error = (bam_types_SchedulingError)res->scheduling_error;
-    }
-
-    if( FD_UNLIKELY( !out->which_reason ) ) {
-      for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
-        if( FD_UNLIKELY( !res->sanitize_success[ i ] ) ) {
-          out->which_reason                        = bam_types_NotCommitted_deserialization_error_tag;
-          out->reason.deserialization_error.index  = i;
-          out->reason.deserialization_error.reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
-          break;
-        }
-      }
-    }
-
-    if( FD_UNLIKELY( !out->which_reason && res->transaction_err_count ) ) {
-      uchar err_idx = 0U;
-      _Bool found_non_cancelled = 0;
-      for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
-        if( FD_LIKELY( res->transaction_err[ i ] != bam_types_TransactionErrorReason_COMMIT_CANCELLED ) ) {
-          err_idx = i;
-          found_non_cancelled = 1;
-          break;
-        }
-      }
-
-      if( FD_UNLIKELY( !found_non_cancelled && res->bundle_txn_cnt>1U ) ) {
-        out->which_reason            = bam_types_NotCommitted_scheduling_error_tag;
-        out->reason.scheduling_error = bam_types_SchedulingError_POH_TIMEOUT;
-      } else {
-        out->which_reason                    = bam_types_NotCommitted_transaction_error_tag;
-        out->reason.transaction_error.index  = err_idx;
-        out->reason.transaction_error.reason = (bam_types_TransactionErrorReason)res->transaction_err[ err_idx ];
-      }
-    }
-
-    if( FD_UNLIKELY( !out->which_reason ) ) {
-      out->which_reason = bam_types_NotCommitted_generic_invalid_tag;
-      fd_cstr_ncpy( out->reason.generic_invalid.message,
-                    FD_BAM_ERR_MSG_BUNDLE_EXECUTION_FAILED,
-                    sizeof( out->reason.generic_invalid.message ) );
-    }
-  }
-
   bam_types_MultipleAtomicTxnBatchResult multi = bam_types_MultipleAtomicTxnBatchResult_init_default;
   multi.results.funcs.encode = fd_bam_encode_batch_results_cb;
-  multi.results.arg          = &atomic_res;
+  multi.results.arg          = ctx;
 
   bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
   msg.which_versioned_msg                        = bam_api_SchedulerMessage_v0_tag;
@@ -768,11 +774,10 @@ static int
 fd_bam_flush_results( fd_bam_tile_t * ctx ) {
   int busy = 0;
   while( ctx->feedback_queue_depth ) {
-    fd_bam_bundle_result_t const * res =
-        &ctx->bam_results[ ctx->bam_results_head ];
-    if( FD_UNLIKELY( !fd_bam_send_result( ctx, res ) ) ) break;
-    ctx->bam_results_head = (ctx->bam_results_head + 1) % FD_BAM_MAX_PENDING_RESULTS;
-    ctx->feedback_queue_depth--;
+    uint result_cnt = fd_uint_min( (uint)ctx->feedback_queue_depth, FD_BAM_RESULTS_PER_MESSAGE );
+    if( FD_UNLIKELY( !fd_bam_send_results( ctx ) ) ) break;
+    ctx->bam_results_head = (ushort)(((uint)ctx->bam_results_head + result_cnt) % FD_BAM_MAX_PENDING_RESULTS);
+    ctx->feedback_queue_depth = (ushort)((uint)ctx->feedback_queue_depth - result_cnt);
     busy = 1;
   }
   return busy;

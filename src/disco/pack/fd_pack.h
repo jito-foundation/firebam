@@ -792,6 +792,43 @@ ulong fd_pack_expire_before( fd_pack_t * pack, ulong expire_before );
    might be >1 if a bundle was caused to be deleted. */
 ulong fd_pack_delete_transaction( fd_pack_t * pack, fd_ed25519_sig_t const * sig0 );
 
+/* fd_pack_contains_transaction returns 1 when a pending transaction with
+   first signature sig0 is present in pack and 0 otherwise.  This is a
+   read-only query backed by pack's existing signature map. */
+int fd_pack_contains_transaction( fd_pack_t const * pack, fd_ed25519_sig_t const * sig0 );
+
+/* fd_pack_contains_bam_bundle returns 1 when pack contains the pending
+   BAM bundle identified by its leading transaction signature, scheduler
+   generation, and sequence ID.  Unlike fd_pack_contains_transaction,
+   signatures belonging to unrelated transactions or bundles do not
+   count as a match. */
+int fd_pack_contains_bam_bundle( fd_pack_t const *        pack,
+                                 fd_ed25519_sig_t const * sig0,
+                                 uint                     seq_id,
+                                 ushort                   scheduler_gen );
+
+/* fd_pack_delete_bam_bundle deletes pending BAM bundles matching the exact
+   identity used by fd_pack_contains_bam_bundle.  Returns the number of
+   transactions deleted.  Unrelated transactions and overlapping bundles
+   that happen to carry sig0 are left intact. */
+ulong fd_pack_delete_bam_bundle( fd_pack_t *              pack,
+                                 fd_ed25519_sig_t const * sig0,
+                                 uint                     seq_id,
+                                 ushort                   scheduler_gen );
+
+/* fd_pack_bundle_evicted_cnt returns a monotonically increasing count of
+   bundles that pack evicted on its own initiative, i.e. to make room for
+   an insert rather than in response to an explicit delete API.  Pack does
+   not report which bundle went away, so a caller that tracks pending BAM
+   bundles externally should poll this and, when it moves, reconcile its
+   own view with fd_pack_contains_bam_bundle.  Never reset, including by
+   fd_pack_clear_all, so that a stale snapshot cannot miss an edge. */
+#define FD_PACK_BUNDLE_EVICTED_CNT_OFF 88
+FD_FN_PURE static inline ulong
+fd_pack_bundle_evicted_cnt( fd_pack_t const * pack ) {
+  return *((ulong const *)((uchar const *)pack + FD_PACK_BUNDLE_EVICTED_CNT_OFF));
+}
+
 /* fd_pack_end_block resets some state to prepare for the next block.
    Specifically, the per-block limits are cleared and transactions in
    the microblocks scheduled after the call to this function are allowed

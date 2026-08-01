@@ -371,8 +371,11 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
     ctx->metrics.feedback_results_dropped_cnt++;
     return;
   }
+  /* Duplicate terminal results usually arrive close together.  Search from
+     the newest entry so the common case is O(1) while preserving the same
+     bounded-ring fallback for older duplicates. */
   for( ushort i=0U; i<ctx->feedback_queue_depth; i++ ) {
-    ushort idx = (ushort)(((uint)ctx->bam_results_head + (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
+    ushort idx = (ushort)(((uint)ctx->bam_results_tail + FD_BAM_MAX_PENDING_RESULTS - 1U - (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
     fd_bam_bundle_result_t const * pending = &ctx->bam_results[ idx ];
     if( FD_UNLIKELY( pending->scheduler_gen==res->scheduler_gen &&
                      pending->slot         ==res->slot          &&
