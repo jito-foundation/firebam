@@ -38,7 +38,7 @@ fd_bam_tile_backoff( fd_bam_tile_t * ctx,
 static double
 fd_bam_client_retry_ms( fd_bam_tile_t * ctx ) {
   long wait_ns = ctx->backoff_until - fd_bam_now();
-  if( wait_ns < 0L ) wait_ns = 0L;
+  if( FD_UNLIKELY( wait_ns < 0L ) ) wait_ns = 0L;
   return (double)wait_ns / 1e6;
 }
 
@@ -214,7 +214,7 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
 
   char const * scheme = "http";
 # if FD_HAS_OPENSSL
-  if( ctx->is_ssl ) scheme = "https";
+  if( FD_LIKELY( ctx->is_ssl ) ) scheme = "https";
 # endif
 
   FD_LOG_INFO(( "Connecting to %s://" FD_IP4_ADDR_FMT ":%hu (%.*s)",
@@ -242,7 +242,7 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
   }
 
 # if FD_HAS_OPENSSL
-  if( ctx->is_ssl ) {
+  if( FD_LIKELY( ctx->is_ssl ) ) {
     BIO * bio = fd_openssl_bio_new_socket( ctx->tcp_sock, BIO_NOCLOSE );
     if( FD_UNLIKELY( !bio ) ) {
       FD_LOG_ERR(( "fd_openssl_bio_new_socket failed" ));
@@ -278,7 +278,7 @@ static int
 fd_bam_client_drive_io( fd_bam_tile_t * ctx,
                            int *              charge_busy ) {
 # if FD_HAS_OPENSSL
-  if( ctx->is_ssl ) {
+  if( FD_LIKELY( ctx->is_ssl ) ) {
     return fd_grpc_client_rxtx_ossl( ctx->grpc_client, ctx->ssl, charge_busy );
   }
 # endif /* FD_HAS_OPENSSL */
@@ -481,7 +481,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   fd_ip4_port_t new_shred_sock[ FD_BAM_SHRED_SOCK_MAX ] = {0};
   uchar         new_shred_sock_cnt = 0U;
 
-  if( cfg->has_tpu_sock ) {
+  if( FD_LIKELY( cfg->has_tpu_sock ) ) {
     uint ip4;
     if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_sock.ip, &ip4 ) ) &&
         FD_LIKELY( cfg->tpu_sock.port > 0 && cfg->tpu_sock.port <= (uint)(USHRT_MAX-6U) ) ) {
@@ -494,7 +494,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     }
   }
 
-  if( cfg->has_tpu_fwd_sock ) {
+  if( FD_LIKELY( cfg->has_tpu_fwd_sock ) ) {
     uint ip4;
     if( FD_LIKELY( fd_cstr_to_ip4_addr( cfg->tpu_fwd_sock.ip, &ip4 ) ) &&
         FD_LIKELY( cfg->tpu_fwd_sock.port > 0 && cfg->tpu_fwd_sock.port <= (uint)(USHRT_MAX-6U) ) ) {
@@ -548,7 +548,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
                                ctx->stem,
                                status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 
-  if( cfg->prio_fee_recipient_pubkey[0] ) {
+  if( FD_LIKELY( cfg->prio_fee_recipient_pubkey[0] ) ) {
     uchar decoded[ 32 ];
     if( FD_LIKELY( fd_base58_decode_32( cfg->prio_fee_recipient_pubkey, decoded ) ) ) {
       /* Either we have not seen a key before, or the pubkey changed. */
@@ -773,7 +773,7 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
 static int
 fd_bam_flush_results( fd_bam_tile_t * ctx ) {
   int busy = 0;
-  while( ctx->feedback_queue_depth ) {
+  while( FD_UNLIKELY( ctx->feedback_queue_depth ) ) {
     uint result_cnt = fd_uint_min( (uint)ctx->feedback_queue_depth, FD_BAM_RESULTS_PER_MESSAGE );
     if( FD_UNLIKELY( !fd_bam_send_results( ctx ) ) ) break;
     ctx->bam_results_head = (ushort)(((uint)ctx->bam_results_head + result_cnt) % FD_BAM_MAX_PENDING_RESULTS);
@@ -1081,7 +1081,7 @@ fd_bam_client_step( fd_bam_tile_t * ctx,
       } else if( FD_UNLIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) {
         char const * scheme = "http";
 # if FD_HAS_OPENSSL
-        if( ctx->is_ssl ) scheme = "https";
+        if( FD_LIKELY( ctx->is_ssl ) ) scheme = "https";
 # endif
         FD_LOG_NOTICE(( "Connected to BAM node at %s://%s/ (" FD_IP4_ADDR_FMT ":%hu)",
                         scheme,
@@ -1140,14 +1140,14 @@ fd_bam_client_grpc_rx_start(
     ctx->bam_last_builder_activity_ns    = now;
     ctx->bam_builder_heartbeat_received  = 0U;
     fd_bam_leader_state_suppress_reason_t reason;
-    if( ctx->bam_leader_state.slot != ULONG_MAX &&
-        fd_bam_leader_state_suppress_reason( ctx, &ctx->bam_leader_state, now, 0, &reason ) ) {
+    if( FD_UNLIKELY( ctx->bam_leader_state.slot != ULONG_MAX &&
+                     fd_bam_leader_state_suppress_reason( ctx, &ctx->bam_leader_state, now, 0, &reason ) ) ) {
       fd_bam_note_leader_state_suppressed( ctx, &ctx->bam_leader_state, reason, now );
       ctx->bam_leader_state = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
       ctx->bam_leader_pending = 0U;
-    } else if( ctx->bam_leader_state.slot != ULONG_MAX &&
-               ctx->bam_leader_state.slot_end_ns &&
-               fd_long_sat_add( ctx->bam_leader_state.slot_end_ns, FD_BAM_LEADER_STATE_EXPIRY_GRACE_NS ) > now ) {
+    } else if( FD_UNLIKELY( ctx->bam_leader_state.slot != ULONG_MAX &&
+                            ctx->bam_leader_state.slot_end_ns &&
+                            fd_long_sat_add( ctx->bam_leader_state.slot_end_ns, FD_BAM_LEADER_STATE_EXPIRY_GRACE_NS ) > now ) ) {
       ctx->bam_leader_pending = 1U;
     } else {
       ctx->bam_leader_pending = 0U;
@@ -1234,7 +1234,7 @@ fd_bam_client_grpc_rx_end(
   }
 
   resp->grpc_msg_len = (uint)fd_url_unescape( resp->grpc_msg, resp->grpc_msg_len );
-  if( !resp->grpc_msg_len ) {
+  if( FD_LIKELY( !resp->grpc_msg_len ) ) {
     fd_memcpy( resp->grpc_msg, "unknown error", 13 );
     resp->grpc_msg_len = 13;
   }

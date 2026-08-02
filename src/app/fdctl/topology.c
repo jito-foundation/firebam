@@ -289,7 +289,7 @@ fd_topo_initialize( config_t * config ) {
     FOR(bank_tile_cnt)   fd_topob_tile_in(  topo, "guih",   0UL,           "metric_in", "bank_pohh",    i,            FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
   }
 
-  if( FD_UNLIKELY( tip_crank_enabled ) )
+  if( FD_LIKELY( tip_crank_enabled ) )
   {
     fd_topob_wksp( topo, "pack_sign"    );
     fd_topob_wksp( topo, "sign_pack"    );
@@ -334,7 +334,7 @@ fd_topo_initialize( config_t * config ) {
 
   }
 
-  if( FD_UNLIKELY( config->tiles.bam.enabled ) ) {
+  if( FD_LIKELY( config->tiles.bam.enabled ) ) {
     fd_topob_wksp( topo, "bam"         );
     fd_topob_wksp( topo, "bam_verif"   );
     fd_topob_wksp( topo, "bam_sign"    );
@@ -388,7 +388,7 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_in(  topo, "bam",    0UL,           "metric_in", "sign_bam",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
     /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_bam",     0UL                                                );
 
-    if( plugins_enabled ) {
+    if( FD_LIKELY( plugins_enabled ) ) {
       fd_topob_wksp( topo, "bam_plugi" );
       /* bam_plugi must be kind of deep, to prevent exhausting shared
          flow control credits when publishing many packets at once. */
@@ -459,7 +459,7 @@ fd_topo_initialize( config_t * config ) {
     }
   }
 
-  if( FD_UNLIKELY( config->tiles.bam.enabled)) {
+  if( FD_LIKELY( config->tiles.bam.enabled)) {
     fd_topo_obj_t * bam_status_obj = fd_topob_obj( topo, "fseq", "bam_status" );
     fd_topo_obj_t * bam_gen_obj    = fd_topob_obj( topo, "fseq", "bam_status" );
     fd_topo_tile_t * bam_tile      = &topo->tiles[ fd_topo_find_tile( topo, "bam", 0UL ) ];
@@ -468,7 +468,7 @@ fd_topo_initialize( config_t * config ) {
     fd_topob_tile_uses( topo, pack_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
     fd_topob_tile_uses( topo, bam_tile, bam_gen_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
     fd_topob_tile_uses( topo, pack_tile, bam_gen_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_LIKELY( config->tiles.bundle.enabled ) ) {
       fd_topo_tile_t * bundle_tile = &topo->tiles[ fd_topo_find_tile( topo, "bundle", 0UL ) ];
       fd_topob_tile_uses( topo, bundle_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
     }
@@ -632,7 +632,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
                                                   ? FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST
                                                   : FD_BAM_DEBUG_DUMP_MODE_OFF );
 
-    if( FD_UNLIKELY( tip_crank_enabled ) ) {
+    if( FD_LIKELY( tip_crank_enabled ) ) {
 #define PARSE_PUBKEY( _tile, f ) \
       if( FD_UNLIKELY( !fd_base58_decode_32( config->tiles.bundle.f, tile->_tile.bundle.f ) ) )  \
         FD_LOG_ERR(( "[tiles.bundle."#f"] is required and must be a base58 pubkey when either [tiles.bundle.enabled] or [tiles.bam.enabled] is true (got `%s`)", config->tiles.bundle.f ));
@@ -655,7 +655,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->pohh.execle_cnt = config->frankendancer.layout.bank_tile_count;
     tile->pohh.lagged_consecutive_leader_start = config->tiles.pohh.lagged_consecutive_leader_start;
 
-    if( FD_UNLIKELY( tip_crank_enabled ) ) {
+    if( FD_LIKELY( tip_crank_enabled ) ) {
       tile->pohh.bundle.enabled = 1;
       PARSE_PUBKEY( pohh, tip_distribution_program_addr );
       PARSE_PUBKEY( pohh, tip_payment_program_addr      );

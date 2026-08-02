@@ -83,7 +83,7 @@ set_bam_apply_request( args_t *   args,
       FD_LOG_ERR(( "Another BAM configuration update is in progress" ));
     else if( FD_UNLIKELY( state != FD_BAM_CTRL_STATE_IDLE ) )
       FD_LOG_ERR(( "Unexpected BAM configuration state: %u", (uint)state ));
-    if( FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_IDLE, FD_BAM_CTRL_STATE_LOCKED ) == FD_BAM_CTRL_STATE_IDLE )
+    if( FD_LIKELY( FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_IDLE, FD_BAM_CTRL_STATE_LOCKED ) == FD_BAM_CTRL_STATE_IDLE ) )
       break;
   }
 
@@ -123,7 +123,7 @@ set_bam_apply_request( args_t *   args,
           last_wait_log_ns = now;
         }
       } else if( st == FD_BAM_CTRL_STATE_REQUEST ) {
-        if( FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_IDLE )==FD_BAM_CTRL_STATE_REQUEST )
+        if( FD_LIKELY( FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_IDLE )==FD_BAM_CTRL_STATE_REQUEST ) )
           FD_LOG_ERR(( "Timed out waiting for BAM runtime update to be claimed. Is Firedancer currently running?" ));
       } else {
         FD_LOG_ERR(( "Timed out waiting for BAM runtime update (state=%u). Is Firedancer currently running?",

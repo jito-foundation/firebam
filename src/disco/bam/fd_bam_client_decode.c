@@ -285,7 +285,7 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   }
 
   _Bool packet_revert_on_error = 0;
-  if( packet->has_meta && packet->meta.has_flags ) {
+  if( FD_LIKELY( packet->has_meta && packet->meta.has_flags ) ) {
     packet_revert_on_error = !!packet->meta.flags.revert_on_error;
   }
 
@@ -420,7 +420,7 @@ fd_bam_record_batch_ingress_timing( fd_bam_tile_t *            ctx,
       fd_bam_slot_ingress_timing_query_or_insert( ctx, max_schedule_slot, leader_slot );
   if( FD_UNLIKELY( !entry ) ) return NULL;
 
-  if( FD_UNLIKELY( slot_end_ns ) ) {
+  if( FD_LIKELY( slot_end_ns ) ) {
     entry->slot_end_ns = slot_end_ns;
     entry->first_rx_after_slot_end = (uchar)( entry->first_rx_ts_ns > slot_end_ns );
   }

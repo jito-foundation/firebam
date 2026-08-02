@@ -106,7 +106,7 @@ void
 fd_bam_try_emit_slot_ingress_timing_summary( fd_bam_tile_t *                ctx,
                                              fd_bam_slot_ingress_timing_t * entry,
                                              ulong                          current_leader_slot ) {
-  if( FD_UNLIKELY( !ctx->dump_bam_mode || entry->summary_emitted ) ) return;
+  if( FD_LIKELY( !ctx->dump_bam_mode || entry->summary_emitted ) ) return;
   long first_rx_minus_slot_end_ns =
       ( entry->first_rx_ts_ns && entry->slot_end_ns )
       ? entry->first_rx_ts_ns - entry->slot_end_ns
@@ -482,7 +482,7 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
         break;
       }
 
-      if( FD_UNLIKELY( i==0UL ) ) {
+      if( i==0UL ) {
         /* Agave refreshes contact-info on each setter.  A short delay avoids
            same-millisecond CRDS tie-breaks between the TPU and TPU-forwards writes. */
         fd_log_wait_until( fd_log_wallclock() + (long)2e6 );
@@ -877,7 +877,7 @@ bam_during_frag( fd_bam_tile_t * ctx,
     } else {
       return;
     }
-  } else if( FD_LIKELY( bank_in_idx < ctx->bank_bam_in_cnt ) ) {
+  } else if( FD_UNLIKELY( bank_in_idx < ctx->bank_bam_in_cnt ) ) {
     frag_in = &ctx->bank_in[ bank_in_idx ];
   } else if( FD_LIKELY( in_idx == ctx->pack_bam_leader_in_idx ) ) {
     frag_in     = &ctx->pack_leader_in;
@@ -923,10 +923,10 @@ bam_after_frag( fd_bam_tile_t *     ctx,
     fd_bam_leader_state_t const * leader_state = (fd_bam_leader_state_t const *)fd_chunk_to_laddr( ctx->frag_staged_mem, ctx->frag_staged_chunk );
     ulong const prev_slot = ctx->bam_leader_state.slot;
     fd_bam_stage_leader_state( ctx, leader_state );
-    if( FD_LIKELY( prev_slot!=leader_state->slot &&
-                   ctx->bam_stream &&
-                   ctx->bam_stream_live &&
-                   fd_bam_send_leader_state( ctx, &ctx->bam_leader_state ) ) ) {
+    if( FD_UNLIKELY( prev_slot!=leader_state->slot &&
+                     ctx->bam_stream &&
+                     ctx->bam_stream_live &&
+                     fd_bam_send_leader_state( ctx, &ctx->bam_leader_state ) ) ) {
       ctx->bam_leader_pending = 0U;
     }
     break;
@@ -1040,7 +1040,7 @@ after_credit( fd_bam_tile_t *  ctx,
                        0UL,
                        fd_frag_meta_ts_comp( fd_bam_now() ) );
       ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
-      if( FD_UNLIKELY( i+1UL==batch_cnt ) ) {
+      if( FD_LIKELY( i+1UL==batch_cnt ) ) {
         ctx->metrics.ingress_batch_published_cnt++;
         if( FD_UNLIKELY( pending->revert_on_error ) ) ctx->metrics.atomic_batch_published_cnt++;
       }
@@ -1258,7 +1258,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
 
 finalize:
   if( FD_UNLIKELY( scheduler_work_stale ) ) fd_bam_tile_begin_scheduler_generation( ctx );
-  if( need_reset ) {
+  if( FD_LIKELY( need_reset ) ) {
     fd_bam_client_reset( ctx );
     ctx->backoff_until = 0; /* Clear any backoff so admin-triggered changes take effect immediately. */
   }
@@ -1282,7 +1282,7 @@ fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx ) {
   for( ;; ) {
     uchar state = FD_VOLATILE_CONST( ctx->ctrl->state );
     if( FD_LIKELY( state != FD_BAM_CTRL_STATE_REQUEST ) ) return;
-    if( FD_ATOMIC_CAS( &ctx->ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_APPLYING ) == FD_BAM_CTRL_STATE_REQUEST )
+    if( FD_LIKELY( FD_ATOMIC_CAS( &ctx->ctrl->state, FD_BAM_CTRL_STATE_REQUEST, FD_BAM_CTRL_STATE_APPLYING ) == FD_BAM_CTRL_STATE_REQUEST ) )
       break;
   }
 
@@ -1401,11 +1401,11 @@ fd_bam_tile_init_openssl( fd_bam_tile_t * ctx,
     FD_LOG_ERR(( "SSL_CTX_set_alpn_protos failed" ));
   }
 
-  if( tls_cert_verify ) {
+  if( FD_UNLIKELY( tls_cert_verify ) ) {
     fd_ossl_load_certs( ssl_ctx );
   }
 
-  if( FD_LIKELY( ctx->keylog_fd >= 0 ) ) {
+  if( FD_UNLIKELY( ctx->keylog_fd >= 0 ) ) {
     SSL_CTX_set_keylog_callback( ssl_ctx, fd_ossl_keylog_callback );
   }
 
@@ -1497,7 +1497,7 @@ privileged_init( fd_topo_t const *      topo,
   ctx->enabled = !!tile->bam.enabled;
   ctx->dump_bam_mode = tile->bam.dump_bam_mode;
   fd_cstr_ncpy( ctx->admin_rpc_path, tile->bam.admin_rpc_path, sizeof( ctx->admin_rpc_path ) );
-  if( FD_UNLIKELY( ctx->admin_rpc_path[0] && fd_pod_query_int( topo->props, "sandbox", 1 ) ) ) {
+  if( FD_LIKELY( ctx->admin_rpc_path[0] && fd_pod_query_int( topo->props, "sandbox", 1 ) ) ) {
     long deadline = fd_log_wallclock() + FD_BAM_ADMIN_RPC_CONNECT_TIMEOUT_NS;
     long next_log = 0L;
     for(;;) {
@@ -1669,7 +1669,7 @@ unprivileged_init( fd_topo_t const *      topo,
   }
 
   ulong shred_out_idx = fd_topo_find_tile_out_link( topo, tile, "bam_shred", tile->kind_id );
-  if( shred_out_idx != ULONG_MAX ) {
+  if( FD_LIKELY( shred_out_idx != ULONG_MAX ) ) {
     ctx->shred_out = bam_out_link( topo, &topo->links[ tile->out_link_id[ shred_out_idx ] ], shred_out_idx );
   } else {
     ctx->shred_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
@@ -1773,7 +1773,7 @@ populate_allowed_fds( fd_topo_t const *      topo,
   out_fds[ out_cnt++ ] = ctx->netdb_fds->etc_resolv_conf;
   if( FD_UNLIKELY( ctx->keylog_fd >= 0 ) )
     out_fds[ out_cnt++ ] = ctx->keylog_fd;
-  if( FD_UNLIKELY( ctx->admin_rpc_fd >= 0 ) )
+  if( FD_LIKELY( ctx->admin_rpc_fd >= 0 ) )
     out_fds[ out_cnt++ ] = ctx->admin_rpc_fd;
   return out_cnt;
 }

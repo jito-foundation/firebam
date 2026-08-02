@@ -680,7 +680,7 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
                         uint                  first_missing_idx_known,
                         uint                  first_missing_idx,
                         void const *          sig0 ) {
-  if( FD_UNLIKELY( ctx->dump_bam_mode!=FD_BAM_DEBUG_DUMP_MODE_ALL ) ) {
+  if( FD_LIKELY( ctx->dump_bam_mode!=FD_BAM_DEBUG_DUMP_MODE_ALL ) ) {
     if( FD_LIKELY( ctx->dump_bam_mode!=FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST || work_slot==ULONG_MAX ) ) return;
     pack_bam_recent_slot_t const * entry = &ctx->bam_recent_slot[ work_slot & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
     if( FD_UNLIKELY( entry->slot!=work_slot || entry->first_debug_seq_id!=seq_id ) ) return;
@@ -788,7 +788,7 @@ pack_tile_bam_work_swap_remove( fd_pack_ctx_t * ctx,
   FD_TEST( ctx->bam_scheduled_work_cnt+ctx->bam_pending_work_cnt==ctx->bam_work_cnt );
   pack_bam_work_t item = ctx->bam_work[ idx ];
   ulong last_idx = ctx->bam_work_cnt-1UL;
-  if( FD_LIKELY( item.state==PACK_BAM_WORK_STATE_PENDING ) ) {
+  if( FD_UNLIKELY( item.state==PACK_BAM_WORK_STATE_PENDING ) ) {
     FD_TEST( idx>=ctx->bam_scheduled_work_cnt );
     if( FD_LIKELY( idx<last_idx ) ) ctx->bam_work[ idx ] = ctx->bam_work[ last_idx ];
     ctx->bam_pending_work_cnt--;
@@ -858,7 +858,7 @@ pack_tile_bam_work_find_by_any_sig( fd_pack_ctx_t const * ctx,
     pack_bam_work_t const * item = &ctx->bam_work[ i ];
     for( uchar j=0U; j<item->txn_cnt; j++ ) {
       if( FD_LIKELY( memcmp( item->sig[ j ], sig, sizeof(fd_ed25519_sig_t) ) ) ) continue;
-      if( FD_UNLIKELY( matched_idx ) ) *matched_idx = j;
+      if( FD_LIKELY( matched_idx ) ) *matched_idx = j;
       return i;
     }
   }
@@ -1382,7 +1382,7 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
    generation.  Already-dispatched work remains tracked through completion. */
 static inline void
 pack_tile_sync_bam_ownership_generation( fd_pack_ctx_t * ctx ) {
-  if( FD_LIKELY( !ctx->bam_gen_fseq ) ) return;
+  if( FD_UNLIKELY( !ctx->bam_gen_fseq ) ) return;
 
   ulong  gen_state     = fd_fseq_query( ctx->bam_gen_fseq );
   ushort requested_gen = (ushort)(gen_state>>1);
@@ -1808,7 +1808,7 @@ after_credit( fd_pack_ctx_t *     ctx,
     if( FD_UNLIKELY( top_meta ) ) {
       /* Have bundles, in a reasonable state to crank. */
 
-      if( FD_UNLIKELY( top_meta->is_bam ) ) {
+      if( FD_LIKELY( top_meta->is_bam ) ) {
         /* Unlike Block Engine metadata, the BAM builder configuration is
            global and may rotate while a bundle waits in pack.  Refresh it
            at crank time so generate and apply use the current tuple. */
@@ -1963,7 +1963,7 @@ after_credit( fd_pack_ctx_t *     ctx,
       fd_long_store_if( ctx->use_consumed_cus, &(ctx->skip_cnt), (long)(ctx->execle_cnt + 1) );
       for( ulong j=0UL; j<schedule_cnt; j++ ) {
         fd_txn_p_t const * txnp = microblock_dst[ j ].txnp;
-        if( FD_UNLIKELY( txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
+        if( FD_LIKELY( txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
         if( FD_UNLIKELY( txnp->bam.batch_idx ) ) continue;
         if( FD_UNLIKELY( !ctx->bam_first_schedule_seen ) ) {
           ctx->bam_first_schedule_seen = 1U;
@@ -2825,7 +2825,7 @@ after_frag( fd_pack_ctx_t *     ctx,
     ulong scheduled_work_idx = ctx->bam_work_cnt;
     if( FD_UNLIKELY( ctx->bam_scheduled_work_cnt ) )
       scheduled_work_idx = pack_tile_bam_work_find_by_any_sig( ctx, ctx->executed_txn_sig, PACK_BAM_WORK_STATE_SCHEDULED, &scheduled_matched_idx );
-    if( FD_LIKELY( scheduled_work_idx<ctx->bam_work_cnt ) ) {
+    if( FD_UNLIKELY( scheduled_work_idx<ctx->bam_work_cnt ) ) {
       pack_bam_work_t * item = &ctx->bam_work[ scheduled_work_idx ];
       fd_memset( item->sig[ scheduled_matched_idx ], 0, sizeof(fd_ed25519_sig_t) );
       item->saw_unlanded_completion |= (uchar)completed_unlanded;

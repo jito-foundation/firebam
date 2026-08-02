@@ -404,7 +404,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
 
     if( FD_UNLIKELY( !(processing_results[ sanitized_idx-1UL ] & FD_BANK_TRANSACTION_EXECUTED) ) ) continue;
 
-    if( transaction_err_idx ) ctx->metrics.exec_failed++;
+    if( FD_UNLIKELY( transaction_err_idx ) ) ctx->metrics.exec_failed++;
     else                                       ctx->metrics.success++;
   }
 

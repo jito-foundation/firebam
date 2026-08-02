@@ -2614,7 +2614,7 @@ unprivileged_init( fd_topo_t const *      topo,
   *ctx->shred_out = out1( topo, tile, "pohh_shred" );
   *ctx->pack_out  = out1( topo, tile, "pohh_pack" );
   *ctx->bam_out   = (fd_pohh_out_t){ .idx = ULONG_MAX };
-  if( FD_UNLIKELY( fd_topo_find_tile_out_link( topo, tile, "poh_bam", tile->kind_id )!=ULONG_MAX ) )
+  if( FD_LIKELY( fd_topo_find_tile_out_link( topo, tile, "poh_bam", tile->kind_id )!=ULONG_MAX ) )
     *ctx->bam_out = out1( topo, tile, "poh_bam" );
   ctx->plugin_out->mem = NULL;
   if( FD_LIKELY( tile->pohh.plugins_enabled ) ) {

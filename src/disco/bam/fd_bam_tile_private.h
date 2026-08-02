@@ -499,10 +499,10 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
     for( ulong i=0UL; i<FD_BAM_LEADER_SLOT_END_TRACKER_CNT; i++ ) {
       fd_bam_leader_slot_end_tracker_t * candidate = &ctx->leader_slot_end[ i ];
       if( FD_UNLIKELY( !candidate->valid ) ) {
-        if( FD_LIKELY( !free_tracker ) ) free_tracker = candidate;
+        if( FD_UNLIKELY( !free_tracker ) ) free_tracker = candidate;
         continue;
       }
-      if( FD_LIKELY( candidate->slot==state->slot ) ) {
+      if( FD_UNLIKELY( candidate->slot==state->slot ) ) {
         tracker = candidate;
         break;
       }

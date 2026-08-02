@@ -983,9 +983,9 @@ fd_shred_send_bam_shred( fd_shred_ctx_t *    ctx,
       for( ulong off=1UL; off<5UL; off++ ) {
         ulong slot = shred->slot + off;
         fd_epoch_leaders_t const * lsched = fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot );
-        if( FD_UNLIKELY( !lsched || (slot-lsched->slot0)%FD_EPOCH_SLOTS_PER_ROTATION ) ) continue;
+        if( FD_LIKELY( !lsched || (slot-lsched->slot0)%FD_EPOCH_SLOTS_PER_ROTATION ) ) continue;
         fd_pubkey_t const * leader = fd_epoch_leaders_get( lsched, slot );
-        if( FD_UNLIKELY( !leader || !fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) ) ) continue;
+        if( FD_LIKELY( !leader || !fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) ) ) continue;
         should_send = 1;
         break;
       }

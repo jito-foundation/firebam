@@ -93,8 +93,8 @@ send_request:;
   while( request_off<request_len ) {
     ssize_t wr = send( fd, request+request_off, request_len-request_off, MSG_NOSIGNAL );
     if( FD_UNLIKELY( wr<0 ) ) {
-      if( errno==EINTR ) continue;
-      if( errno==EAGAIN || errno==EWOULDBLOCK ) {
+      if( FD_UNLIKELY( errno==EINTR ) ) continue;
+      if( FD_LIKELY( errno==EAGAIN || errno==EWOULDBLOCK ) ) {
         struct pollfd pfd = { .fd = fd, .events = POLLOUT };
         int poll_rc = ppoll( &pfd, 1UL, &(struct timespec){ .tv_sec = 0L, .tv_nsec = FD_BAM_ADMIN_RPC_POLL_MS * (long)1000000L }, NULL );
         if( FD_LIKELY( poll_rc>0 ) ) continue;
@@ -121,7 +121,7 @@ read_response:
     struct pollfd pfd = { .fd = fd, .events = POLLIN };
     int poll_rc = ppoll( &pfd, 1UL, &(struct timespec){ .tv_sec = 0L, .tv_nsec = FD_BAM_ADMIN_RPC_POLL_MS * (long)1000000L }, NULL );
     if( FD_UNLIKELY( poll_rc<0 ) ) {
-      if( errno==EINTR ) {
+      if( FD_LIKELY( errno==EINTR ) ) {
         poll_idx--;
         continue;
       }
@@ -149,9 +149,9 @@ read_response:
         for( ulong i=0UL; i<ctx->admin_rpc_response_len; i++ ) {
           char c = ctx->admin_rpc_response_buf[ i ];
           if( in_string ) {
-            if( escaped ) escaped = 0;
-            else if( c=='\\' ) escaped = 1;
-            else if( c=='"' )  in_string = 0;
+            if( FD_UNLIKELY( escaped ) ) escaped = 0;
+            else if( FD_UNLIKELY( c=='\\' ) ) escaped = 1;
+            else if( FD_UNLIKELY( c=='"' ) )  in_string = 0;
             continue;
           }
 
@@ -161,7 +161,7 @@ read_response:
           }
 
           if( FD_UNLIKELY( !saw_obj && isspace( (uchar)c ) ) ) continue;
-          if( c=='{' ) {
+          if( FD_UNLIKELY( c=='{' ) ) {
             saw_obj = 1;
             depth++;
           } else if( FD_UNLIKELY( c=='}' && saw_obj && !--depth ) ) {
@@ -189,8 +189,8 @@ read_response:
         fail_phase = "reading response EOF";
         goto out;
       }
-      if( errno==EINTR ) continue;
-      if( errno==EAGAIN || errno==EWOULDBLOCK ) break;
+      if( FD_UNLIKELY( errno==EINTR ) ) continue;
+      if( FD_LIKELY( errno==EAGAIN || errno==EWOULDBLOCK ) ) break;
       fail_phase = "read";
       fail_errno = errno;
       goto out;
@@ -213,7 +213,7 @@ out:
   if( FD_UNLIKELY( rc && !soft_timeout && !close_fd && fd>=0 ) ) {
     close( fd );
     ctx->admin_rpc_fd = FD_BAM_ADMIN_RPC_FD_DEAD;
-  } else if( FD_LIKELY( close_fd ) ) {
+  } else if( FD_UNLIKELY( close_fd ) ) {
     close( fd );
   }
   return rc;

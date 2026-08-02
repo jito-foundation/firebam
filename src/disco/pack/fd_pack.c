@@ -2675,8 +2675,8 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     out_txnp->source_ipv4                     = cur->txn->source_ipv4;
     out_txnp->flags                           = cur->txn->flags;
     out_txnp->bam                             = cur->txn->bam;
-    if( FD_UNLIKELY( out_txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
-                     !out_txnp->bam.revert_on_error ) ) out_txnp->flags &= ~FD_TXN_P_FLAGS_BUNDLE;
+    if( FD_LIKELY( out_txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                   !out_txnp->bam.revert_on_error ) ) out_txnp->flags &= ~FD_TXN_P_FLAGS_BUNDLE;
     /* Copy the ALT accounts from the source fd_txn_e_t */
     ulong alt_acct_cnt = (ulong)txn->addr_table_adtl_cnt;
     fd_memcpy( out->alt_accts, cur->txn_e->alt_accts, alt_acct_cnt * sizeof(fd_acct_addr_t) );
@@ -2811,7 +2811,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
 
 
   /* Fill any remaining space with non-vote transactions */
-  if( FD_LIKELY( (schedule_flags & FD_PACK_SCHEDULE_TXN) && !(schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY) ) ) {
+  if( FD_UNLIKELY( (schedule_flags & FD_PACK_SCHEDULE_TXN) && !(schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY) ) ) {
     status = fd_pack_schedule_impl( pack, pack->pending,       cu_limit, txn_limit,          byte_limit, alloc_limit, bank_tile,
         pack->pending_smallest,       use_by_bank_txn, out+scheduled );
 
