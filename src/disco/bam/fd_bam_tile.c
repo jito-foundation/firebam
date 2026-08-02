@@ -560,7 +560,7 @@ publish:
                    sizeof(fd_bam_contact_update_t),
                    0UL,
                    0UL,
-                   fd_frag_meta_ts_comp( fd_bam_now() ) );
+                   fd_frag_meta_ts_comp( fd_tickcount() ) );
   ctx->gossip_out.chunk = fd_dcache_compact_next( ctx->gossip_out.chunk,
                                                   sizeof(fd_bam_contact_update_t),
                                                   ctx->gossip_out.chunk0,
@@ -596,7 +596,7 @@ fd_bam_shred_update( fd_bam_tile_t *    ctx,
                    sizeof(fd_bam_shred_update_t),
                    0UL,
                    0UL,
-                   fd_frag_meta_ts_comp( fd_bam_now() ) );
+                   fd_frag_meta_ts_comp( fd_tickcount() ) );
   ctx->shred_out.chunk = fd_dcache_compact_next( ctx->shred_out.chunk,
                                                  sizeof(fd_bam_shred_update_t),
                                                  ctx->shred_out.chunk0,
@@ -1038,7 +1038,7 @@ after_credit( fd_bam_tile_t *  ctx,
                        sz,
                        0UL,
                        0UL,
-                       fd_frag_meta_ts_comp( fd_bam_now() ) );
+                       fd_frag_meta_ts_comp( fd_tickcount() ) );
       ctx->verify_out.chunk = fd_dcache_compact_next( ctx->verify_out.chunk, sz, ctx->verify_out.chunk0, ctx->verify_out.wmark );
       if( FD_LIKELY( i+1UL==batch_cnt ) ) {
         ctx->metrics.ingress_batch_published_cnt++;
@@ -1086,7 +1086,7 @@ after_credit( fd_bam_tile_t *  ctx,
   update->keepalive_rtt_deviation = ctx->rtt->var_rtt;
   update->feedback_queue_depth = ctx->feedback_queue_depth;
 
-  ulong tspub = fd_frag_meta_ts_comp( fd_bam_now() );
+  ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
   fd_stem_publish(
       stem,
       ctx->plugin_out.idx,

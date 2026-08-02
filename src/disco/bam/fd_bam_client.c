@@ -1042,10 +1042,9 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
 
   /* Are we ready to issue a new request? */
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
-  long io_ts = fd_bam_now();
-  if( FD_UNLIKELY( fd_bam_tile_should_stall( ctx, io_ts ) ) ) return;
+  if( FD_UNLIKELY( fd_bam_tile_should_stall( ctx, check_ts ) ) ) return;
 
-  *charge_busy |= fd_bam_client_step_reconnect( ctx, io_ts );
+  *charge_busy |= fd_bam_client_step_reconnect( ctx, check_ts );
 }
 
 void

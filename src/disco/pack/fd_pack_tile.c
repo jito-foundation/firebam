@@ -603,7 +603,12 @@ pack_tile_enqueue_bam_result( fd_pack_ctx_t *               ctx,
                      res->seq_id, res->slot, ctx->bam_pending_result_cnt, result_queue_cap ));
     return 0;
   }
-  ulong queue_idx = ( ctx->bam_result_queue_head + ctx->bam_pending_result_cnt ) % result_queue_cap;
+  /* head and pending_result_cnt are both < result_queue_cap, so the sum
+     wraps at most once.  result_queue_cap is a runtime value and not a
+     power of two, so a modulo here would be a hardware divide on a path
+     that runs per enqueued result. */
+  ulong queue_idx = ctx->bam_result_queue_head + ctx->bam_pending_result_cnt;
+  if( FD_UNLIKELY( queue_idx>=result_queue_cap ) ) queue_idx -= result_queue_cap;
   ctx->bam_result_queue[ queue_idx ] = *res;
   ctx->bam_pending_result_cnt++;
   return 1;
@@ -832,15 +837,25 @@ pack_tile_bam_work_mark_scheduled( fd_pack_ctx_t * ctx,
 
 /* Looks up sig0 within one half of the partition: the scheduled prefix
    [0,bam_scheduled_work_cnt) or the pending suffix
-   [bam_scheduled_work_cnt,bam_work_cnt).  Returns bam_work_cnt on miss. */
+   [bam_scheduled_work_cnt,bam_work_cnt).  Returns bam_work_cnt on miss.
+
+   These are linear scans over an array that can hold
+   max_pending_transactions entries, so the per-entry constant matters.
+   Signatures are effectively random, so comparing the first 8 bytes
+   rejects all but ~2^-64 of the non-matching entries with a single load,
+   leaving the full 64 byte memcmp for the entry we are actually looking
+   for.  The needle is not necessarily aligned (it usually points into a
+   txn payload at offset 1), hence fd_ulong_load_8. */
 
 static inline ulong
 pack_tile_bam_work_find_by_sig0_state( fd_pack_ctx_t const * ctx,
                                        void const *          sig0,
                                        pack_bam_work_state_t state_filter ) {
-  ulong begin = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? 0UL : ctx->bam_scheduled_work_cnt;
-  ulong end   = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? ctx->bam_scheduled_work_cnt : ctx->bam_work_cnt;
+  ulong begin  = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? 0UL : ctx->bam_scheduled_work_cnt;
+  ulong end    = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? ctx->bam_scheduled_work_cnt : ctx->bam_work_cnt;
+  ulong prefix = fd_ulong_load_8( sig0 );
   for( ulong i=begin; i<end; i++ ) {
+    if( FD_LIKELY( fd_ulong_load_8( ctx->bam_work[ i ].sig[ 0 ] )!=prefix ) ) continue;
     if( FD_LIKELY( memcmp( ctx->bam_work[ i ].sig[ 0 ], sig0, sizeof(fd_ed25519_sig_t) ) ) ) continue;
     return i;
   }
@@ -852,11 +867,13 @@ pack_tile_bam_work_find_by_any_sig( fd_pack_ctx_t const * ctx,
                                     uchar const           sig[ static 64 ],
                                     pack_bam_work_state_t state_filter,
                                     uchar *               matched_idx ) {
-  ulong begin = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? 0UL : ctx->bam_scheduled_work_cnt;
-  ulong end   = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? ctx->bam_scheduled_work_cnt : ctx->bam_work_cnt;
+  ulong begin  = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? 0UL : ctx->bam_scheduled_work_cnt;
+  ulong end    = state_filter==PACK_BAM_WORK_STATE_SCHEDULED ? ctx->bam_scheduled_work_cnt : ctx->bam_work_cnt;
+  ulong prefix = fd_ulong_load_8( sig );
   for( ulong i=begin; i<end; i++ ) {
     pack_bam_work_t const * item = &ctx->bam_work[ i ];
     for( uchar j=0U; j<item->txn_cnt; j++ ) {
+      if( FD_LIKELY( fd_ulong_load_8( item->sig[ j ] )!=prefix ) ) continue;
       if( FD_LIKELY( memcmp( item->sig[ j ], sig, sizeof(fd_ed25519_sig_t) ) ) ) continue;
       if( FD_LIKELY( matched_idx ) ) *matched_idx = j;
       return i;
@@ -868,10 +885,12 @@ pack_tile_bam_work_find_by_any_sig( fd_pack_ctx_t const * ctx,
 static inline void
 pack_tile_retire_all_pending_bam_work_by_sig( fd_pack_ctx_t * ctx,
                                               uchar const     sig[ static 64 ] ) {
+  ulong prefix = fd_ulong_load_8( sig );
   for( ulong work_idx=ctx->bam_scheduled_work_cnt; work_idx<ctx->bam_work_cnt; ) {
     pack_bam_work_t const * work = &ctx->bam_work[ work_idx ];
     uchar matched_idx = UCHAR_MAX;
     for( uchar txn_idx=0U; txn_idx<work->txn_cnt; txn_idx++ ) {
+      if( FD_LIKELY( fd_ulong_load_8( work->sig[ txn_idx ] )!=prefix ) ) continue;
       if( FD_LIKELY( memcmp( work->sig[ txn_idx ], sig, sizeof(fd_ed25519_sig_t) ) ) ) continue;
       matched_idx = txn_idx;
       break;
@@ -1119,7 +1138,10 @@ pack_tile_drain_one_pending_bam_result( fd_pack_ctx_t *     ctx,
                                                         ctx->bam_result_out.chunk0,
                                                         ctx->bam_result_out.wmark,
                                                         res );
-  ctx->bam_result_queue_head = ( ctx->bam_result_queue_head + 1UL ) % ( 2UL*ctx->max_pending_transactions );
+  /* Advance by one with a compare instead of a modulo; this runs once per
+     drained result. */
+  ctx->bam_result_queue_head++;
+  if( FD_UNLIKELY( ctx->bam_result_queue_head>=2UL*ctx->max_pending_transactions ) ) ctx->bam_result_queue_head = 0UL;
   ctx->bam_pending_result_cnt--;
   return 1;
 }

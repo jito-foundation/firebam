@@ -274,8 +274,13 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     return false;
   }
 
+  /* Do not pre-initialize packet here.  pb_decode already sets every
+     field to its default before decoding, and for the static bytes field
+     that means a memset of the full 1232 byte payload.  Initializing it
+     again on this side doubles that cost, and at 5 packets per batch and
+     128 batches per message it is the single largest memory write in the
+     decode path. */
   bam_types_Packet * packet = &state->packets[ state->packet_cnt ];
-  *packet = (bam_types_Packet)bam_types_Packet_init_default;
   if( FD_UNLIKELY( !pb_decode( stream, &bam_types_Packet_msg, packet ) ) ) {
     state->has_deser_err        = true;
     state->packet_decode_failed = true;

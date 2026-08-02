@@ -604,6 +604,40 @@ test_pack_tile_bam_work_partition_mutations( void ) {
 }
 
 static void
+test_pack_tile_bam_signature_prefix_collision( void ) {
+  test_pack_tile_harness_t h[1];
+  uchar                    sigs[ 2 ][ sizeof(fd_ed25519_sig_t) ];
+
+  test_pack_tile_harness_new( h );
+  test_pack_tile_fill_sig( sigs[ 0 ], 10U );
+  fd_memcpy( sigs[ 1 ], sigs[ 0 ], sizeof(fd_ed25519_sig_t) );
+  sigs[ 1 ][ sizeof(fd_ed25519_sig_t)-1UL ]++;
+
+  FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ 0 ], 0L, 100U, 0U,
+                                     100UL, 100UL, 100UL, 0U, 1U ) );
+  FD_TEST( pack_tile_track_bam_work( h->ctx, sigs[ 1 ], 0L, 101U, 0U,
+                                     100UL, 100UL, 100UL, 0U, 1U ) );
+
+  ulong work_idx = pack_tile_bam_work_find_by_sig0_state( h->ctx, sigs[ 1 ], PACK_BAM_WORK_STATE_PENDING );
+  FD_TEST( work_idx<h->ctx->bam_work_cnt );
+  FD_TEST( h->ctx->bam_work[ work_idx ].seq_id==101U );
+
+  uchar matched_idx = UCHAR_MAX;
+  work_idx = pack_tile_bam_work_find_by_any_sig( h->ctx, sigs[ 1 ], PACK_BAM_WORK_STATE_PENDING, &matched_idx );
+  FD_TEST( work_idx<h->ctx->bam_work_cnt );
+  FD_TEST( h->ctx->bam_work[ work_idx ].seq_id==101U );
+  FD_TEST( matched_idx==0U );
+
+  pack_tile_retire_all_pending_bam_work_by_sig( h->ctx, sigs[ 0 ] );
+  FD_TEST( h->ctx->bam_work_cnt==1UL );
+  FD_TEST( h->ctx->bam_pending_work_cnt==1UL );
+  FD_TEST( h->ctx->bam_pending_result_cnt==1UL );
+  FD_TEST( h->ctx->bam_work[ 0 ].seq_id==101U );
+
+  test_pack_tile_harness_delete( h );
+}
+
+static void
 test_pack_tile_assert_pending_duplicate_results( test_pack_tile_harness_t * h,
                                                  uint                       first_seq_id,
                                                  ulong                      slot ) {
@@ -2100,6 +2134,34 @@ test_pack_tile_bam_queued_results_preserve_fifo_before_direct_publish( void ) {
 }
 
 static void
+test_pack_tile_bam_result_queue_wrap_preserves_fifo( void ) {
+  test_pack_tile_harness_t h[1];
+  test_pack_tile_harness_new( h );
+
+  ulong const cap = 2UL*h->ctx->max_pending_transactions;
+  h->ctx->bam_result_queue_head = cap-1UL;
+
+  fd_bam_bundle_result_t first  = fd_bam_result_base( 100U, 0U, 100UL, 1U );
+  fd_bam_bundle_result_t second = fd_bam_result_base( 101U, 0U, 101UL, 1U );
+  FD_TEST( pack_tile_enqueue_bam_result( h->ctx, &first  ) );
+  FD_TEST( pack_tile_enqueue_bam_result( h->ctx, &second ) );
+  FD_TEST( h->ctx->bam_result_queue[ cap-1UL ].seq_id==100U );
+  FD_TEST( h->ctx->bam_result_queue[ 0UL     ].seq_id==101U );
+
+  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+  test_pack_tile_assert_last_result( h, 100U, 100UL, 1U, FD_BAM_SCHED_ERR_NONE, 0U );
+  FD_TEST( h->ctx->bam_result_queue_head==0UL );
+
+  h->ctx->bam_result_publish_cnt = 0UL;
+  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+  test_pack_tile_assert_last_result( h, 101U, 101UL, 1U, FD_BAM_SCHED_ERR_NONE, 0U );
+  FD_TEST( h->ctx->bam_result_queue_head==1UL );
+  FD_TEST( !h->ctx->bam_pending_result_cnt );
+
+  test_pack_tile_harness_delete( h );
+}
+
+static void
 test_pack_tile_bam_pending_results_reserve_direct_result_headroom( void ) {
   test_pack_tile_harness_t h[1];
   uchar                    sigs[ TEST_PACK_TILE_BAM_WORK_CAP ][ sizeof(fd_ed25519_sig_t) ];
@@ -2472,6 +2534,7 @@ main( int     argc,
   fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
 
   test_pack_tile_bam_work_partition_mutations();
+  test_pack_tile_bam_signature_prefix_collision();
   test_pack_tile_bam_pack_evicted_bundle_is_reconciled();
   test_pack_tile_bam_sig0_shared_with_untracked_pack_txn_is_accepted();
   test_pack_tile_bam_overlapping_bundle_leading_sig_is_accepted();
@@ -2489,6 +2552,7 @@ main( int     argc,
   test_pack_tile_bam_scheduled_duplicate_rejected_before_insert();
   test_pack_tile_bam_pending_result_does_not_shadow_new_work();
   test_pack_tile_bam_queued_results_preserve_fifo_before_direct_publish();
+  test_pack_tile_bam_result_queue_wrap_preserves_fifo();
   test_pack_tile_bam_pending_results_reserve_direct_result_headroom();
   test_pack_tile_bam_scheduled_work_does_not_consume_result_headroom();
   test_pack_tile_bam_instr_acct_reject_serializes_exact_member();
