@@ -801,7 +801,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
       fd_bam_slot_ingress_timing_t * entry = &ctx->slot_ingress_timing[ i ];
       if( FD_LIKELY( !entry->valid ) ) continue;
       if( FD_LIKELY( leader_slot<=entry->slot ) ) continue;
-      if( FD_UNLIKELY( !entry->summary_emitted ) ) {
+      if( FD_LIKELY( !entry->summary_emitted ) ) {
         fd_bam_try_emit_slot_ingress_timing_summary( ctx, entry, leader_slot );
       }
       if( FD_LIKELY( leader_slot-entry->slot<FD_BAM_SLOT_INGRESS_RETENTION_SLOTS ) ) continue;
@@ -827,7 +827,7 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
 
   for( ulong i=0UL; i<FD_BAM_LEADER_SLOT_END_TRACKER_CNT; i++ ) {
     fd_bam_leader_slot_end_tracker_t * tracker = &ctx->leader_slot_end[ i ];
-    if( FD_UNLIKELY( !tracker->valid || tracker->counted || !tracker->slot_end_ns || now_ns<tracker->slot_end_ns ) ) continue;
+    if( FD_LIKELY( !tracker->valid || tracker->counted || !tracker->slot_end_ns || now_ns<tracker->slot_end_ns ) ) continue;
 
     if( FD_LIKELY( tracker->healthy_at_end ) ) {
       ulong result_idx = tracker->fresh_seen_before_end
@@ -866,7 +866,7 @@ bam_during_frag( fd_bam_tile_t * ctx,
   ulong bank_in_idx = in_idx - ctx->bank_bam_in_idx;
   if( FD_UNLIKELY( in_idx == ctx->replay_out_in_idx ) ) {
     frag_in     = &ctx->replay_in;
-    if( FD_LIKELY( sig==REPLAY_SIG_RESET ) ) {
+    if( sig==REPLAY_SIG_RESET ) {
       expected_sz = sizeof(fd_poh_reset_t);
       staged_kind = FD_BAM_FRAG_STAGED_REPLAY_RESET;
       frag_what   = "replay reset fragment";

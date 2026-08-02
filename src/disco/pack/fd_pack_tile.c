@@ -2318,7 +2318,7 @@ during_frag( fd_pack_ctx_t * ctx,
     ctx->cur_spot->txnp->payload_sz  = payload_sz;
     ctx->cur_spot->txnp->source_ipv4 = source_ipv4;
     ctx->cur_spot->txnp->source_tpu  = source_tpu;
-    if( FD_LIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+    if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
       ctx->cur_spot->txnp->bam.seq_id          = txnm->bam.seq_id;
       ctx->cur_spot->txnp->bam.scheduler_gen   = txnm->bam.scheduler_gen;
       ctx->cur_spot->txnp->bam.batch_idx       = txnm->bam.batch_idx;
@@ -2463,7 +2463,7 @@ after_frag( fd_pack_ctx_t *     ctx,
        reinitialize it the next time when we actually become leader. */
     fd_pack_pacing_init( ctx->pacer, now_ticks, end_ticks, (float)ctx->ticks_per_ns, ctx->limits.slot_max_cost );
 
-    if( FD_UNLIKELY( ctx->crank->enabled ) ) {
+    if( FD_LIKELY( ctx->crank->enabled ) ) {
       /* If we get overrun, we'll just never use these values, but the
          old values aren't really useful either. */
       ctx->crank->epoch = ctx->_became_leader->epoch;
@@ -2823,7 +2823,7 @@ after_frag( fd_pack_ctx_t *     ctx,
 
     uchar scheduled_matched_idx = UCHAR_MAX;
     ulong scheduled_work_idx = ctx->bam_work_cnt;
-    if( FD_UNLIKELY( ctx->bam_scheduled_work_cnt ) )
+    if( FD_LIKELY( ctx->bam_scheduled_work_cnt ) )
       scheduled_work_idx = pack_tile_bam_work_find_by_any_sig( ctx, ctx->executed_txn_sig, PACK_BAM_WORK_STATE_SCHEDULED, &scheduled_matched_idx );
     if( FD_UNLIKELY( scheduled_work_idx<ctx->bam_work_cnt ) ) {
       pack_bam_work_t * item = &ctx->bam_work[ scheduled_work_idx ];

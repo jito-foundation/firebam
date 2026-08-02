@@ -145,7 +145,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   memset( ctx->rtt, 0, sizeof(fd_rtt_estimate_t) );
 
 # if FD_HAS_OPENSSL
-  if( FD_UNLIKELY( ctx->ssl ) ) {
+  if( FD_LIKELY( ctx->ssl ) ) {
     SSL_free( ctx->ssl );
     ctx->ssl = NULL;
   }
@@ -822,7 +822,7 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
   }
 
   /* Start scheduler stream. */
-  if( FD_LIKELY( ctx->bam_auth_ready ) ) {
+  if( FD_UNLIKELY( ctx->bam_auth_ready ) ) {
     fd_bam_try_start_stream( ctx );
   }
 
@@ -1078,7 +1078,7 @@ fd_bam_client_step( fd_bam_tile_t * ctx,
         FD_LOG_INFO(( "BAM connection state CONNECTING" ));
       } else if( FD_UNLIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY ) ) {
         FD_LOG_INFO(( "BAM connection state CONNECTED_UNHEALTHY" ));
-      } else if( FD_UNLIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) {
+      } else if( FD_LIKELY( status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) {
         char const * scheme = "http";
 # if FD_HAS_OPENSSL
         if( FD_LIKELY( ctx->is_ssl ) ) scheme = "https";
