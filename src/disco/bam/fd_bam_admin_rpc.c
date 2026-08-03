@@ -36,18 +36,17 @@ fd_bam_admin_rpc_connect( char const * admin_rpc_path ) {
   fd_memcpy( addr.un.sun_path, admin_rpc_path, path_len );
   addr.un.sun_path[ path_len ] = '\0';
 
-  int fd = socket( AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0 );
+  /* Non-blocking up front so the post-sandbox path needs no fcntl. */
+  int fd = socket( AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0 );
   if( FD_UNLIKELY( fd<0 ) ) return -1;
 
+  /* Any nonzero connect() leaves the socket unconnected.  A non-blocking
+     AF_UNIX connect reports a full listen backlog as EAGAIN, and unlike
+     TCP there is no deferred completion: the socket still polls writable
+     and reads SO_ERROR==0, but send() fails ENOTCONN until connect() is
+     retried.  So never hand such a socket back as connected -- fail the
+     attempt and let the caller retry. */
   if( FD_UNLIKELY( connect( fd, &addr.sa, (socklen_t)( offsetof( struct sockaddr_un, sun_path ) + path_len + 1UL ) ) ) ) {
-    int err = errno;
-    close( fd );
-    errno = err;
-    return -1;
-  }
-
-  int flags = fcntl( fd, F_GETFL, 0 );
-  if( FD_UNLIKELY( flags<0 || fcntl( fd, F_SETFL, flags|O_NONBLOCK ) ) ) {
     int err = errno;
     close( fd );
     errno = err;

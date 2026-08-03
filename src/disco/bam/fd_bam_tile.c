@@ -25,7 +25,7 @@
 #include "../../waltz/resolv/fd_netdb.h"
 #include "../../discof/replay/fd_replay_tile.h"
 
-#include "../bundle/generated/fd_bundle_tile_seccomp.h"
+#include "generated/fd_bam_tile_seccomp.h"
 
 #define FD_BAM_HEAP_USAGE_REFRESH_NS ((long)1e9)
 #define FD_BAM_ADMIN_RPC_RETRY_NS    ((long)100e6)
@@ -1745,14 +1745,14 @@ populate_allowed_seccomp( fd_topo_t const *      topo,
                           struct sock_filter *   out ) {
   fd_bam_tile_t * ctx = fd_topo_obj_laddr( topo, tile->tile_obj_id );
 
-  populate_sock_filter_policy_fd_bundle_tile(
+  populate_sock_filter_policy_fd_bam_tile(
       out_cnt, out,
       (uint)fd_log_private_logfile_fd(),
       (uint)ctx->keylog_fd,
       (uint)ctx->netdb_fds->etc_hosts,
       (uint)ctx->netdb_fds->etc_resolv_conf
   );
-  return sock_filter_policy_fd_bundle_tile_instr_cnt;
+  return sock_filter_policy_fd_bam_tile_instr_cnt;
 }
 
 static ulong

@@ -2,7 +2,6 @@
 #define HEADER_fd_src_app_shared_fd_action_h
 
 #include "../platform/fd_cap_chk.h"
-#include "../../disco/bam/fd_bam_ctrl.h"
 
 /* FD_APP_NAME and FD_BINARY_NAME identify the control binary at run time
    (e.g. "Firedancer"/"firedancer", "Frankendancer"/"fddev").  They are

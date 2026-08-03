@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "../fd_config.h"
 #include "../fd_action.h"
+#include "../../../disco/bam/fd_bam_ctrl.h"
 #include "../../../util/pod/fd_pod.h"
 #include <stdio.h> // snprintf
 #include <unistd.h> // usleep

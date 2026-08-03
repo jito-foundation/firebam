@@ -1,8 +1,10 @@
 #include "fd_bam_tile_private.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -71,11 +73,58 @@ test_bam_admin_rpc_soft_timeout_drains_late_response( void ) {
   FD_TEST( WIFEXITED( status ) && !WEXITSTATUS( status ) );
 }
 
+static void
+test_bam_admin_rpc_connect_pathname( void ) {
+  char path[ 64 ];
+  FD_TEST( fd_cstr_printf_check( path, sizeof(path), NULL, "/tmp/fd_bam_admin_rpc_%i.sock", (int)getpid() ) );
+  unlink( path );
+
+  /* Nothing is listening yet. */
+  FD_TEST( fd_bam_admin_rpc_connect( path )<0 );
+
+  struct sockaddr_un addr = { .sun_family = AF_UNIX };
+  fd_cstr_ncpy( addr.sun_path, path, sizeof(addr.sun_path) );
+  int srv = socket( AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0 );
+  FD_TEST( srv>=0 );
+  FD_TEST( !bind( srv, (struct sockaddr *)&addr, sizeof(addr) ) );
+  FD_TEST( !listen( srv, 1 ) );
+
+  /* A connected stream comes back non-blocking and immediately usable. */
+  int fd = fd_bam_admin_rpc_connect( path );
+  FD_TEST( fd>=0 );
+  FD_TEST( fcntl( fd, F_GETFL, 0 )&O_NONBLOCK );
+  FD_TEST( send( fd, "x", 1UL, MSG_NOSIGNAL )==1L );
+  int accepted = accept( srv, NULL, NULL );
+  FD_TEST( accepted>=0 );
+  FD_TEST( !close( accepted ) );
+  FD_TEST( !close( fd ) );
+
+  /* Saturate the listen backlog.  A non-blocking AF_UNIX connect reports
+     that as EAGAIN, and unlike TCP there is no deferred completion: such a
+     socket polls writable and reads SO_ERROR==0 while send() still fails
+     ENOTCONN.  It must be reported as a failed attempt, never handed back
+     as connected, so the caller retries instead of caching a dead fd. */
+  int   pending[ 64 ];
+  ulong pending_cnt = 0UL;
+  int   connect_errno = 0;
+  for( ulong i=0UL; i<sizeof(pending)/sizeof(pending[0]); i++ ) {
+    int p = fd_bam_admin_rpc_connect( path );
+    if( FD_UNLIKELY( p<0 ) ) { connect_errno = errno; break; }
+    pending[ pending_cnt++ ] = p;
+  }
+  FD_TEST( connect_errno==EAGAIN );
+
+  for( ulong i=0UL; i<pending_cnt; i++ ) FD_TEST( !close( pending[ i ] ) );
+  FD_TEST( !close( srv ) );
+  FD_TEST( !unlink( path ) );
+}
+
 int
 main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
   test_bam_admin_rpc_soft_timeout_drains_late_response();
+  test_bam_admin_rpc_connect_pathname();
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
   return 0;
