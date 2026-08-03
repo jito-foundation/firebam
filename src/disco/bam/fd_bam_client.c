@@ -875,12 +875,6 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
   return busy;
 }
 
-int
-fd_bam_test_client_step_reconnect( fd_bam_tile_t * ctx,
-                   long             now ) {
-  return fd_bam_client_step_reconnect( ctx, now );
-}
-
 static void
 fd_bam_client_step1( fd_bam_tile_t * ctx,
                        int *              charge_busy ) {

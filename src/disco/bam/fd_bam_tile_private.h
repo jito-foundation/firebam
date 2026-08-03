@@ -676,13 +676,6 @@ int
 fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
                                  long               now );
 
-/* Expose reconnect step logic for unit tests. Returns 1 if any work was
-   performed, 0 otherwise. Not used in production. */
-
-int
-fd_bam_test_client_step_reconnect( fd_bam_tile_t * ctx,
-                                      long               now );
-
 /* Expose internal result flushing logic for unit tests. Returns 1 if any
    results were flushed (busy), 0 otherwise. Not used in production. */
 
