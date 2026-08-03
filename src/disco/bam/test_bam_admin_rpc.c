@@ -86,7 +86,7 @@ test_bam_admin_rpc_connect_pathname( void ) {
   fd_cstr_ncpy( addr.sun_path, path, sizeof(addr.sun_path) );
   int srv = socket( AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0 );
   FD_TEST( srv>=0 );
-  FD_TEST( !bind( srv, (struct sockaddr *)&addr, sizeof(addr) ) );
+  FD_TEST( !bind( srv, fd_type_pun( &addr ), sizeof(addr) ) );
   FD_TEST( !listen( srv, 1 ) );
 
   /* A connected stream comes back non-blocking and immediately usable. */
