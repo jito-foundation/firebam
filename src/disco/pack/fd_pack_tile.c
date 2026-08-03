@@ -1822,11 +1822,16 @@ after_credit( fd_pack_ctx_t *     ctx,
   _Bool bam_override = pack_tile_snapshot_bam_override( ctx );
   int any_ready     = 0;
   int any_scheduled = 0;
+  ulong bundle_hint            = ULONG_MAX;
+  ulong skipped_bundle_txn_cnt = 0UL;
 
   *charge_busy = 1;
 
   if( FD_LIKELY( ctx->crank->enabled ) ) {
-    block_builder_info_t const * top_meta = fd_pack_peek_bundle_meta( ctx->pack, bam_override );
+    block_builder_info_t const * top_meta = fd_pack_peek_bundle_meta_with_hint( ctx->pack,
+                                                                                bam_override,
+                                                                                &bundle_hint,
+                                                                                &skipped_bundle_txn_cnt );
     if( FD_UNLIKELY( top_meta ) ) {
       /* Have bundles, in a reasonable state to crank. */
 
@@ -1870,6 +1875,8 @@ after_credit( fd_pack_ctx_t *     ctx,
 
         ctx->crank->ib_inserted = 1;
         ulong deleted;
+        /* Any insert invalidates the candidate returned by the peek. */
+        bundle_hint = ULONG_MAX;
         int retval = fd_pack_insert_bundle_fini( ctx->pack, bundle, 1UL, ctx->leader_slot-1UL,
                                                  fd_int_if( bam_override, FD_PACK_IB_TYPE_BAM, FD_PACK_IB_TYPE_NORMAL ),
                                                  NULL, &deleted, NULL );
@@ -1938,7 +1945,14 @@ after_credit( fd_pack_ctx_t *     ctx,
 
     fd_txn_e_t * microblock_dst = fd_chunk_to_laddr( ctx->execle_out_mem, ctx->execle_out_chunk );
     long schedule_duration = -fd_tickcount();
-    ulong schedule_cnt = fd_pack_schedule_next_microblock( ctx->pack, CUS_PER_MICROBLOCK, VOTE_FRACTION, (ulong)i, flags, microblock_dst );
+    ulong schedule_cnt = fd_pack_schedule_next_microblock_with_bundle_hint( ctx->pack,
+                                                                            CUS_PER_MICROBLOCK,
+                                                                            VOTE_FRACTION,
+                                                                            (ulong)i,
+                                                                            flags,
+                                                                            bundle_hint,
+                                                                            skipped_bundle_txn_cnt,
+                                                                            microblock_dst );
     schedule_duration      += fd_tickcount();
     fd_histf_sample( (schedule_cnt>0UL) ? ctx->schedule_duration : ctx->no_sched_duration, (ulong)schedule_duration );
 

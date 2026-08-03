@@ -371,10 +371,17 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
     ctx->metrics.feedback_results_dropped_cnt++;
     return;
   }
-  /* Duplicate terminal results usually arrive close together.  Search from
-     the newest entry so the common case is O(1) while preserving the same
-     bounded-ring fallback for older duplicates. */
-  for( ushort i=0U; i<ctx->feedback_queue_depth; i++ ) {
+  /* Duplicate terminal results usually arrive close together.  Check the
+     newest entry first so the common duplicate is O(1), then fall back to the
+     bounded ring scan before treating a full queue as a drop. */
+  if( FD_LIKELY( ctx->feedback_queue_depth ) ) {
+    ushort idx = (ushort)(((uint)ctx->bam_results_tail + FD_BAM_MAX_PENDING_RESULTS - 1U) % FD_BAM_MAX_PENDING_RESULTS);
+    fd_bam_bundle_result_t const * pending = &ctx->bam_results[ idx ];
+    if( FD_UNLIKELY( pending->scheduler_gen==res->scheduler_gen &&
+                     pending->slot         ==res->slot          &&
+                     pending->seq_id       ==res->seq_id ) ) return;
+  }
+  for( ushort i=1U; i<ctx->feedback_queue_depth; i++ ) {
     ushort idx = (ushort)(((uint)ctx->bam_results_tail + FD_BAM_MAX_PENDING_RESULTS - 1U - (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
     fd_bam_bundle_result_t const * pending = &ctx->bam_results[ idx ];
     if( FD_UNLIKELY( pending->scheduler_gen==res->scheduler_gen &&
@@ -496,8 +503,10 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
     fd_bam_leader_slot_end_tracker_t * tracker = NULL;
     fd_bam_leader_slot_end_tracker_t * free_tracker = NULL;
     fd_bam_leader_slot_end_tracker_t * counted_tracker = NULL;
-    for( ulong i=0UL; i<FD_BAM_LEADER_SLOT_END_TRACKER_CNT; i++ ) {
-      fd_bam_leader_slot_end_tracker_t * candidate = &ctx->leader_slot_end[ i ];
+    ulong tracker_start = state->slot & (FD_BAM_LEADER_SLOT_END_TRACKER_CNT-1UL);
+    for( ulong probe=0UL; probe<FD_BAM_LEADER_SLOT_END_TRACKER_CNT; probe++ ) {
+      fd_bam_leader_slot_end_tracker_t * candidate = &ctx->leader_slot_end[
+          (tracker_start+probe) & (FD_BAM_LEADER_SLOT_END_TRACKER_CNT-1UL) ];
       if( FD_UNLIKELY( !candidate->valid ) ) {
         if( FD_UNLIKELY( !free_tracker ) ) free_tracker = candidate;
         continue;

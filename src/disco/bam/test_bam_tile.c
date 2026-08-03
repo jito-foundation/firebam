@@ -3516,7 +3516,8 @@ test_bam_leader_state_supersede_counts_drop( fd_wksp_t * wksp ) {
   fd_bam_leader_state_t newer_state = {
     .slot = 42UL,
     .tick = 8U,
-    .slot_cu_budget_remaining = 111U
+    .slot_cu_budget_remaining = 111U,
+    .slot_end_ns = 9000L
   };
 
   fd_bam_stage_leader_state( state, &newer_state );
@@ -3525,6 +3526,9 @@ test_bam_leader_state_supersede_counts_drop( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_leader_state.slot == newer_state.slot );
   FD_TEST( state->bam_leader_state.tick == newer_state.tick );
   FD_TEST( state->bam_leader_state.slot_cu_budget_remaining == newer_state.slot_cu_budget_remaining );
+  ulong tracker_idx = newer_state.slot & (FD_BAM_LEADER_SLOT_END_TRACKER_CNT-1UL);
+  FD_TEST( state->leader_slot_end[ tracker_idx ].valid );
+  FD_TEST( state->leader_slot_end[ tracker_idx ].slot==newer_state.slot );
 
   fd_bam_stage_leader_state( state, &newer_state );
 
@@ -6261,6 +6265,36 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+static void
+test_bam_full_result_queue_deduplicates_before_reject( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  for( uint i=0U; i<FD_BAM_MAX_PENDING_RESULTS; i++ ) {
+    fd_bam_bundle_result_t res = test_make_bundle_result( 10000U+i, 2000UL+i, 1U );
+    test_enqueue_bundle_result( state, &res );
+  }
+
+  ulong dropped_before = state->metrics.feedback_results_dropped_cnt;
+  ushort newest_idx = (ushort)(((uint)state->bam_results_tail + FD_BAM_MAX_PENDING_RESULTS - 1U) % FD_BAM_MAX_PENDING_RESULTS);
+  fd_bam_enqueue_result( state, &state->bam_results[ newest_idx ] );
+  FD_TEST( state->feedback_queue_depth==FD_BAM_MAX_PENDING_RESULTS );
+  FD_TEST( state->metrics.feedback_results_dropped_cnt==dropped_before );
+
+  fd_bam_enqueue_result( state, &state->bam_results[ state->bam_results_head ] );
+  FD_TEST( state->feedback_queue_depth==FD_BAM_MAX_PENDING_RESULTS );
+  FD_TEST( state->metrics.feedback_results_dropped_cnt==dropped_before );
+
+  fd_bam_bundle_result_t unique = test_make_bundle_result( 20000U, 3000UL, 1U );
+  unique.scheduler_gen = state->scheduler_gen;
+  fd_bam_enqueue_result( state, &unique );
+  FD_TEST( state->feedback_queue_depth==FD_BAM_MAX_PENDING_RESULTS );
+  FD_TEST( state->metrics.feedback_results_dropped_cnt==dropped_before+1UL );
+
+  test_bam_env_destroy( env );
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -6386,6 +6420,7 @@ main( int     argc,
 
   /* Bundle result durability */
   test_bam_bundle_result_queue_flushes_after_reconnect( wksp );
+  test_bam_full_result_queue_deduplicates_before_reject( wksp );
 
   fd_wksp_usage_t wksp_usage;
   FD_TEST( fd_wksp_usage( wksp, NULL, 0UL, &wksp_usage ) );

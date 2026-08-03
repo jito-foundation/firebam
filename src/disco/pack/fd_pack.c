@@ -1899,20 +1899,35 @@ fd_pack_bundle_candidate( fd_pack_t const * pack,
 }
 
 void const *
-fd_pack_peek_bundle_meta( fd_pack_t const * pack,
-                          _Bool             bam_only ) {
+fd_pack_peek_bundle_meta_with_hint( fd_pack_t const * pack,
+                                    _Bool             bam_only,
+                                    ulong *           bundle_hint,
+                                    ulong *           skipped_txn_cnt ) {
+  *bundle_hint     = ULONG_MAX;
+  *skipped_txn_cnt = 0UL;
+
   int ib_state = pack->initializer_bundle_state;
   if( FD_UNLIKELY( (ib_state==FD_PACK_IB_STATE_PENDING) | (ib_state==FD_PACK_IB_STATE_FAILED) ) ) return NULL;
 
-  ulong skipped_txn_cnt = 0UL;
-  treap_rev_iter_t _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped_txn_cnt );
+  ulong skipped = 0UL;
+  treap_rev_iter_t _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped );
   if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return NULL; /* empty */
 
   fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pack->pool );
   _Bool is_ib = !!(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
   if( FD_UNLIKELY( is_ib ) ) return NULL;
 
+  *bundle_hint     = (ulong)_cur;
+  *skipped_txn_cnt = skipped;
   return (void const *)((uchar const *)pack->bundle_meta + (ulong)_cur * pack->bundle_meta_sz);
+}
+
+void const *
+fd_pack_peek_bundle_meta( fd_pack_t const * pack,
+                          _Bool             bam_only ) {
+  ulong bundle_hint;
+  ulong skipped_txn_cnt;
+  return fd_pack_peek_bundle_meta_with_hint( pack, bam_only, &bundle_hint, &skipped_txn_cnt );
 }
 
 void
@@ -2448,6 +2463,8 @@ static inline int
 fd_pack_try_schedule_bundle( fd_pack_t  * pack,
                              ulong        bank_tile,
                              _Bool        bam_only,
+                             ulong        bundle_hint,
+                             ulong        hinted_skipped_txn_cnt,
                              fd_txn_e_t * out ) {
   int state = pack->initializer_bundle_state;
   if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_PENDING) |
@@ -2457,8 +2474,12 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
   int require_ib = (state==FD_PACK_IB_STATE_NOT_INITIALIZED) & !bam_only;
 
-  ulong skipped_txn_cnt = 0UL;
-  treap_rev_iter_t _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped_txn_cnt );
+  ulong skipped_txn_cnt = hinted_skipped_txn_cnt;
+  treap_rev_iter_t _cur = (treap_rev_iter_t)bundle_hint;
+  if( FD_UNLIKELY( bundle_hint==ULONG_MAX ) ) {
+    skipped_txn_cnt = 0UL;
+    _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped_txn_cnt );
+  }
   pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ] += skipped_txn_cnt;
 
   if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
@@ -2744,12 +2765,14 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
 
 ulong
-fd_pack_schedule_next_microblock( fd_pack_t *  pack,
-                                  ulong        total_cus,
-                                  float        vote_fraction,
-                                  ulong        bank_tile,
-                                  int          schedule_flags,
-                                  fd_txn_e_t * out ) {
+fd_pack_schedule_next_microblock_with_bundle_hint( fd_pack_t *  pack,
+                                                   ulong        total_cus,
+                                                   float        vote_fraction,
+                                                   ulong        bank_tile,
+                                                   int          schedule_flags,
+                                                   ulong        bundle_hint,
+                                                   ulong        skipped_bundle_txn_cnt,
+                                                   fd_txn_e_t * out ) {
 
   /* TODO: Decide if these are exactly how we want to handle limits */
   total_cus = fd_ulong_min( total_cus, pack->lim->max_cost_per_block - pack->cumulative_block_cost );
@@ -2799,7 +2822,8 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
   /* Bundle can't mix with votes, so only try to schedule a bundle if we
      didn't get any votes. */
   if( FD_UNLIKELY( !!(schedule_flags & FD_PACK_SCHEDULE_BUNDLE) & (status1.txns_scheduled==0UL) ) ) {
-    int bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY, out );
+    int bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY,
+                                                     bundle_hint, skipped_bundle_txn_cnt, out );
     if( FD_UNLIKELY( bundle_result>0                         ) ) return (ulong)bundle_result;
     if( FD_UNLIKELY( bundle_result==TRY_BUNDLE_HAS_CONFLICTS ) ) return 0UL;
     /* in the NO_READY_BUNDLES or DOES_NOT_FIT case, we schedule like
@@ -2838,6 +2862,17 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
 #endif
 
   return scheduled;
+}
+
+ulong
+fd_pack_schedule_next_microblock( fd_pack_t *  pack,
+                                  ulong        total_cus,
+                                  float        vote_fraction,
+                                  ulong        bank_tile,
+                                  int          schedule_flags,
+                                  fd_txn_e_t * out ) {
+  return fd_pack_schedule_next_microblock_with_bundle_hint( pack, total_cus, vote_fraction, bank_tile,
+                                                            schedule_flags, ULONG_MAX, 0UL, out );
 }
 
 ulong fd_pack_bank_tile_cnt     ( fd_pack_t const * pack ) { return pack->bank_tile_cnt;         }

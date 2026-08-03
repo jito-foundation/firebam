@@ -658,6 +658,21 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
 void const * fd_pack_peek_bundle_meta( fd_pack_t const * pack,
                                        _Bool             bam_only );
 
+/* fd_pack_peek_bundle_meta_with_hint is fd_pack_peek_bundle_meta with two
+   outputs that let an immediately following schedule avoid walking
+   the pending bundle treap a second time.  On success, opt_bundle_hint is an
+   opaque handle for fd_pack_schedule_next_microblock_with_bundle_hint and
+   opt_skipped_txn_cnt is the number of current-slot-deferred transactions
+   encountered while finding it.  On failure, opt_bundle_hint is ULONG_MAX and
+   opt_skipped_txn_cnt is zero.
+
+   The hint has the same lifetime as the returned metadata pointer: it is
+   invalidated by the next pack insert, schedule, delete, or expire call. */
+void const * fd_pack_peek_bundle_meta_with_hint( fd_pack_t const * pack,
+                                                 _Bool             bam_only,
+                                                 ulong *           bundle_hint,
+                                                 ulong *           skipped_txn_cnt );
+
 /* fd_pack_set_initializer_bundles_ready sets the IB state machine state
    (see long initializer bundle comment above) to the [Ready] state.
    This function makes it easy to use bundles without initializer
@@ -740,6 +755,20 @@ fd_pack_schedule_next_microblock( fd_pack_t  * pack,
                                   ulong        bank_tile,
                                   int          schedule_flags,
                                   fd_txn_e_t * out );
+
+/* fd_pack_schedule_next_microblock_with_bundle_hint is identical to
+   fd_pack_schedule_next_microblock, except that it reuses a bundle candidate
+   returned by fd_pack_peek_bundle_meta_with_hint.  Pass ULONG_MAX and zero to
+   opt out of the hint. */
+ulong
+fd_pack_schedule_next_microblock_with_bundle_hint( fd_pack_t  * pack,
+                                                   ulong        total_cus,
+                                                   float        vote_fraction,
+                                                   ulong        bank_tile,
+                                                   int          schedule_flags,
+                                                   ulong        bundle_hint,
+                                                   ulong        skipped_bundle_txn_cnt,
+                                                   fd_txn_e_t * out );
 
 
 /* fd_pack_rebate_cus adjusts the compute unit accounting for the
