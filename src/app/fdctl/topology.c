@@ -302,7 +302,7 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_out( topo, "sign",   0UL,                        "sign_pack",      0UL                                                );
   }
 
-  if( FD_LIKELY( config->tiles.bundle.enabled ) ) {
+  if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
     fd_topob_wksp( topo, "bundle_verif" );
     fd_topob_wksp( topo, "bundle_sign"  );
     fd_topob_wksp( topo, "sign_bundle"  );

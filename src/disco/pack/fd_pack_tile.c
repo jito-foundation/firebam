@@ -1510,7 +1510,7 @@ metrics_write( fd_pack_ctx_t * ctx ) {
   FD_MCNT_ENUM_COPY( PACK, BAM_LEADER_SLOT_FIRST_INSERT_RESULT,   ctx->bam_first_insert_result_cnt );
   FD_MCNT_ENUM_COPY( PACK, BAM_LEADER_SLOT_FIRST_SCHEDULE_RESULT, ctx->bam_first_schedule_result_cnt );
   FD_MHIST_COPY(     PACK, BAM_WORK_RX_TO_FIRST_OUTCOME_NANOS,              ctx->bam_work_rx_to_first_outcome_nanos );
-  FD_MCNT_ENUM_COPY( PACK, STATE_DURATION_NANOS,          ((ulong*)ctx->metric_timing) );
+  FD_MCNT_ENUM_COPY( PACK, STATE_DURATION_NANOS,        ((ulong*)ctx->metric_timing) );
   FD_MCNT_ENUM_COPY( PACK, BUNDLE_CRANK_RESULT,           ctx->crank->metrics );
   FD_MHIST_COPY( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS, ctx->schedule_duration );
   FD_MHIST_COPY( PACK, NO_SCHEDULE_MICROBLOCK_DURATION_SECONDS, ctx->no_sched_duration );
@@ -2485,7 +2485,7 @@ after_frag( fd_pack_ctx_t *     ctx,
        reinitialize it the next time when we actually become leader. */
     fd_pack_pacing_init( ctx->pacer, now_ticks, end_ticks, (float)ctx->ticks_per_ns, ctx->limits.slot_max_cost );
 
-    if( FD_LIKELY( ctx->crank->enabled ) ) {
+    if( FD_UNLIKELY( ctx->crank->enabled ) ) {
       /* If we get overrun, we'll just never use these values, but the
          old values aren't really useful either. */
       ctx->crank->epoch = ctx->_became_leader->epoch;
