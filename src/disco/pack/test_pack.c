@@ -2009,11 +2009,9 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
   /* Peek again after the vote schedule and verify the hinted path selects
      the same BAM bundle without another traversal. */
   ulong bundle_hint;
-  ulong skipped_bundle_txn_cnt;
   selected_meta = fd_pack_peek_bundle_meta_with_hint( pack,
                                                        1,
-                                                       &bundle_hint,
-                                                       &skipped_bundle_txn_cnt );
+                                                       &bundle_hint );
   FD_TEST( selected_meta && *selected_meta==22UL );
   FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack,
                                                                FD_PACK_TEST_MAX_COST_PER_BLOCK,
@@ -2021,10 +2019,19 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
                                                                0UL,
                                                                FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY,
                                                                bundle_hint,
-                                                               skipped_bundle_txn_cnt,
                                                                outcome.results )==1UL );
   FD_TEST( outcome.results[0].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
   fd_pack_microblock_complete( pack, 0UL );
+
+  selected_meta = fd_pack_peek_bundle_meta_with_hint( pack, 0, &bundle_hint );
+  FD_TEST( selected_meta && *selected_meta==11UL );
+  FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack,
+                                                               FD_PACK_TEST_MAX_COST_PER_BLOCK,
+                                                               0.0f,
+                                                               0UL,
+                                                               FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY,
+                                                               bundle_hint,
+                                                               outcome.results )==0UL );
 
   selected_meta = fd_pack_peek_bundle_meta( pack, 0 );
   FD_TEST( selected_meta && *selected_meta==11UL );
