@@ -544,11 +544,7 @@ pub struct MockBamNode {
 
 impl MockBamNode {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let builder_pubkey = args
-            .builder_pubkey
-            .clone()
-            .unwrap_or_default()
-            .to_string();
+        let builder_pubkey = args.builder_pubkey.clone().unwrap_or_default().to_string();
         let plan = if let Some(path) = args.scenario_file.as_ref() {
             ScenarioPlan::Scripted(load_scripted_scenario(path, args.cu_per_tx)?)
         } else {

@@ -60,8 +60,9 @@ fn main() -> Result<()> {
 
     let generated_from;
     let from = if let Some(path) = args.from_keypair.as_ref() {
-        read_keypair_file(path)
-            .map_err(|err| anyhow::anyhow!("failed to read keypair from {}: {}", path.display(), err))?
+        read_keypair_file(path).map_err(|err| {
+            anyhow::anyhow!("failed to read keypair from {}: {}", path.display(), err)
+        })?
     } else {
         generated_from = seeded_keypair(args.from_seed_index);
         generated_from
@@ -87,7 +88,9 @@ fn main() -> Result<()> {
     let to = seeded_keypair(args.to_seed_index);
     let nonce_hash = Hash::from_str(&args.nonce_hash).context("failed to parse --nonce-hash")?;
 
-    let mut instructions = vec![ComputeBudgetInstruction::set_compute_unit_limit(args.cu_limit)];
+    let mut instructions = vec![ComputeBudgetInstruction::set_compute_unit_limit(
+        args.cu_limit,
+    )];
     if let Some(cu_price) = args.cu_price {
         instructions.push(ComputeBudgetInstruction::set_compute_unit_price(cu_price));
     }
@@ -106,9 +109,13 @@ fn main() -> Result<()> {
         tx.sign(&[&from, &nonce_authority], nonce_hash);
     }
 
-    let packet = bincode::serialize(&tx).context("failed to serialize durable nonce transaction")?;
-    fs::write(&args.output, format!("{}\n", BASE64_STANDARD.encode(&packet)))
-        .with_context(|| format!("failed to write {}", args.output.display()))?;
+    let packet =
+        bincode::serialize(&tx).context("failed to serialize durable nonce transaction")?;
+    fs::write(
+        &args.output,
+        format!("{}\n", BASE64_STANDARD.encode(&packet)),
+    )
+    .with_context(|| format!("failed to write {}", args.output.display()))?;
 
     println!(
         "wrote durable nonce packet output={} from={} target={} nonce_account={} nonce_authority={} nonce_hash={} lamports={} cu_limit={} cu_price={} signature={}",
