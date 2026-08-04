@@ -158,18 +158,6 @@ fd_bundle_tile_sync_bam_override( fd_bundle_tile_t * ctx ) {
   }
 }
 
-static _Bool
-fd_bundle_tile_apply_pending_keyswitch( fd_bundle_tile_t * ctx ) {
-  if( FD_LIKELY( !ctx->keyswitch ||
-                 fd_keyswitch_state_query( ctx->keyswitch )!=FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) return 0;
-
-  fd_memcpy( ctx->auther.pubkey, ctx->keyswitch->bytes, 32UL );
-  fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
-  ctx->defer_reset = 1;
-  ctx->sleep_check_ns = 0;
-  return 1;
-}
-
 void
 fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
   long log_interval_ns = (long)30e9;
@@ -183,7 +171,12 @@ fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
     ctx->last_bundle_status_log_nanos = now_ns;
   }
 
-  fd_bundle_tile_apply_pending_keyswitch( ctx );
+  if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
+    fd_memcpy( ctx->auther.pubkey, ctx->keyswitch->bytes, 32UL );
+    fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
+    ctx->defer_reset = 1;
+    ctx->sleep_check_ns = 0;
+  }
 
   fd_bundle_tile_maybe_sleep( ctx, now_ns );
 }
@@ -271,8 +264,6 @@ before_credit( fd_bundle_tile_t *  ctx,
   if( FD_UNLIKELY( !ctx->stem ) ) {
     ctx->stem = stem;
   }
-
-  if( FD_UNLIKELY( fd_bundle_tile_apply_pending_keyswitch( ctx ) ) ) return;
 
   if( FD_UNLIKELY( ctx->sleep_mode ) ) {
     if( ctx->tcp_sock>=0 ) {
