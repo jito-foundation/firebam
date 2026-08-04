@@ -151,6 +151,9 @@ fd_topo_run_tile_t * TILES[] = {
 
 #undef STUB_TILE
 
+/* Exercise every BAM/bundle mode: missing shared crank/sign wiring breaks
+   BAM-only config and identity updates, while an unwanted source tile leaves
+   a disabled ingress path active. */
 static void
 test_topology( int bundle_enabled,
                int bam_enabled ) {
@@ -199,8 +202,8 @@ test_topology( int bundle_enabled,
   FD_TEST( (fd_topo_find_tile( topo, "bundle", 0UL )!=ULONG_MAX)==bundle_enabled );
   FD_TEST( (fd_topo_find_tile( topo, "bam",    0UL )!=ULONG_MAX)==bam_enabled );
 
-  /* Normal landed transactions refresh dedup and remove stale pack copies,
-     so this feedback link remains present even when BAM is disabled. */
+  /* Omitting executed_txn outside BAM leaves landed transactions in pack and
+     dedup, allowing stale copies to be scheduled again. */
   FD_TEST( fd_topo_find_link( topo, "executed_txn", 0UL )!=ULONG_MAX );
 
   fd_topo_obj_t const * accdb = fd_topo_find_obj( topo, "accdb", NULL, ULONG_MAX );

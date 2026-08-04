@@ -705,6 +705,8 @@ FD_UNIT_TEST( execle_seccomp ) {
   populate_allowed_seccomp( NULL, NULL, sock_filter_policy_fd_execle_tile_instr_cnt, filter );
 }
 
+/* Folding transaction or loaded-data costs into consumed_cus overcharges work
+   that did not execute.  Keep 150 execution CUs and 206 loaded bytes separate. */
 FD_UNIT_TEST( execle_bam_result_cus ) {
   fd_bam_bundle_result_t res[1];
   fd_txn_out_t           txn_out[1];
@@ -720,6 +722,18 @@ FD_UNIT_TEST( execle_bam_result_cus ) {
 
   FD_TEST( res->consumed_cus[ 0 ]==150U );
   FD_TEST( res->loaded_accounts_data_size[ 0 ]==206U );
+}
+
+/* Finalizing a transaction hash when every member failed invokes the bmtree
+   finalizer with zero leaves.  Skip finalization and return the zero hash. */
+FD_UNIT_TEST( execle_empty_transaction_hash ) {
+  fd_txn_p_t txns[ 2 ];
+  uchar      hash[ 32 ];
+  fd_memset( txns, 0, sizeof(txns) );
+  fd_memset( hash,  0xff, sizeof(hash) );
+
+  test_compute_expected_hash( txns, 2UL, hash );
+  FD_TEST( fd_memeq( hash, (uchar[32]){0}, sizeof(hash) ) );
 }
 
 FD_UNIT_TEST( execle_vote ) {

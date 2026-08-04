@@ -130,6 +130,8 @@ test_load_balance( void ) {
   FD_TEST( before_frag( ctx, IN_IDX_QUIC,   2UL, 0UL )==1 );
 }
 
+/* Publishing a verify failure directly races pack's batch result and produces
+   two terminal outcomes.  Verify must emit only a preprocessing marker. */
 static void
 test_bam_atomic_verify_failure_result_owner( void ) {
   fd_verify_ctx_t ctx[1];

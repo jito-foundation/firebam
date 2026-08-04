@@ -477,6 +477,8 @@ test_pack_tile_fill_sig( uchar sig[ static FD_ED25519_SIG_SZ ],
   for( ulong i=0UL; i<sizeof(fd_ed25519_sig_t); i++ ) sig[ i ] = (uchar)( seed + i );
 }
 
+/* Retaining selected initializer metadata across a mode switch can apply the
+   old source's fee configuration to new work.  Retire it at both mode edges. */
 static void
 test_pack_tile_bam_mode_edges_retire_pending_initializer( void ) {
   test_pack_tile_harness_t h[ 1 ];
@@ -660,6 +662,8 @@ test_pack_tile_assert_pending_duplicate_results( test_pack_tile_harness_t * h,
   FD_TEST( !h->ctx->bam_pending_result_cnt );
 }
 
+/* Ignoring landed or completed-unlanded feedback leaks scheduled BAM records
+   until slot end.  Retire either outcome exactly once. */
 static void
 test_pack_tile_bam_completion_outcomes( void ) {
   struct {
@@ -709,6 +713,8 @@ test_pack_tile_bam_completion_outcomes( void ) {
   }
 }
 
+/* Keeping completed BAM records consumes the fixed tracking table and rejects
+   later same-slot batches.  Completion must immediately free capacity. */
 static void
 test_pack_tile_bam_completion_tracking_reuses_capacity( void ) {
   test_pack_tile_harness_t h[1];
@@ -880,10 +886,8 @@ static void
 test_pack_tile_make_d18_poc_txns( fd_txn_p_t *,
                                   fd_txn_p_t * );
 
-/* Regression for D-36_FULLFD_JITO_DIFFERENTIAL_POC: BAM work that was
-   accepted by pack while the override was active used to become eligible
-   for ordinary scheduling when BAM disabled.  The ownership-generation
-   handshake must delete that pending work before BAM clears the override. */
+/* Clearing override before old BAM work is retired makes that work eligible
+   for ordinary scheduling.  Delete the generation and wait for pack's ack. */
 static void
 test_pack_tile_bam_disable_retires_pending_before_override_clear( void ) {
   fd_pack_limits_t limits = {
@@ -896,10 +900,8 @@ test_pack_tile_bam_disable_retires_pending_before_override_clear( void ) {
     .max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK,
   };
 
-  /* First demonstrate the POC precondition.  Clearing the override without
-     retiring the accepted BAM work makes the target bundle schedulable.  Then
-     replay the same setup with the retirement handshake and prove it cannot
-     schedule after the override clears. */
+  /* The control case demonstrates the leak without retirement; the guarded
+     case proves the same queued work remains unschedulable. */
   for( int retire_before_clear=0; retire_before_clear<2; retire_before_clear++ ) {
     fd_rng_t pack_rng[1];
     FD_TEST( fd_rng_join( fd_rng_new( pack_rng, 0U, (ulong)retire_before_clear ) ) );
@@ -1200,12 +1202,12 @@ test_pack_tile_bam_missing_builder_cfg_accepted( void ) {
 }
 
 static void
-test_pack_tile_d18_sign_and_parse( fd_txn_p_t * txnp,
-                                   uchar *      payload_end,
-                                   uchar const  public_key[ 32 ],
-                                   uchar const  private_key[ 32 ],
-                                   fd_sha512_t * sha,
-                                   ulong         expected_payload_sz ) {
+test_pack_tile_sign_and_parse( fd_txn_p_t * txnp,
+                               uchar *      payload_end,
+                               uchar const  public_key[ 32 ],
+                               uchar const  private_key[ 32 ],
+                               fd_sha512_t * sha,
+                               ulong         expected_payload_sz ) {
   uchar * message    = txnp->payload + 1UL + FD_TXN_SIGNATURE_SZ;
   ulong   message_sz = (ulong)( payload_end-message );
   fd_ed25519_sign( txnp->payload+1UL, message, message_sz, public_key, private_key, sha );
@@ -1216,8 +1218,8 @@ test_pack_tile_d18_sign_and_parse( fd_txn_p_t * txnp,
   FD_TEST( fd_txn_parse( txnp->payload, txnp->payload_sz, TXN( txnp ), NULL ) );
 }
 
-/* C port of D18_LIVE_VALIDATOR_POC.diff's build_d18_over_limit_packet
-   and valid control Transaction::new_signed_with_payer. */
+/* A 256-index instruction must fail sanitization before its valid sibling can
+   contribute a competing error, so construct both in the same batch. */
 static void
 test_pack_tile_make_d18_poc_txns( fd_txn_p_t * bad_txnp,
                                   fd_txn_p_t * control_txnp ) {
@@ -1257,7 +1259,7 @@ test_pack_tile_make_d18_poc_txns( fd_txn_p_t * bad_txnp,
   p += fd_cu16_enc( (ushort)sizeof(system_transfer_one_lamport), p );
   fd_memcpy( p, system_transfer_one_lamport, sizeof(system_transfer_one_lamport) );
   p += sizeof(system_transfer_one_lamport);
-  test_pack_tile_d18_sign_and_parse( bad_txnp, p, public_key, private_key, sha, 438UL );
+  test_pack_tile_sign_and_parse( bad_txnp, p, public_key, private_key, sha, 438UL );
 
   fd_txn_t const * bad_txn = TXN( bad_txnp );
   FD_TEST( bad_txn->signature_cnt==1U && bad_txn->acct_addr_cnt==2U && bad_txn->instr_cnt==1U );
@@ -1293,7 +1295,7 @@ test_pack_tile_make_d18_poc_txns( fd_txn_p_t * bad_txnp,
   p += fd_cu16_enc( (ushort)sizeof(system_transfer_one_lamport), p );
   fd_memcpy( p, system_transfer_one_lamport, sizeof(system_transfer_one_lamport) );
   p += sizeof(system_transfer_one_lamport);
-  test_pack_tile_d18_sign_and_parse( control_txnp, p, public_key, private_key, sha, 223UL );
+  test_pack_tile_sign_and_parse( control_txnp, p, public_key, private_key, sha, 223UL );
 
   fd_txn_t const * control_txn = TXN( control_txnp );
   FD_TEST( control_txn->signature_cnt==1U && control_txn->acct_addr_cnt==3U && control_txn->instr_cnt==2U );
@@ -1301,9 +1303,61 @@ test_pack_tile_make_d18_poc_txns( fd_txn_p_t * bad_txnp,
            control_txn->instr[ 0 ].data_sz==sizeof(set_compute_unit_limit) );
 }
 
-/* Regression for the overlapping-signature PoC: real pack accepts queued
-   BAM bundles [A,X], [B,X], and [C,X].  Landing X must delete all three
-   bundles and retire all three corresponding pack-tile tracking records. */
+/* Making the nonce authority a nonsigner distinguishes invalid-nonce handling
+   from ordinary transaction-signature verification. */
+static void
+test_pack_tile_make_d26_poc_txn( fd_txn_p_t * txnp ) {
+  uchar private_key[ 32 ] = {3U};
+  uchar public_key [ 32 ];
+  uchar blockhash  [ FD_TXN_BLOCKHASH_SZ ] = {4U};
+  uchar nonce_acct [ FD_TXN_ACCT_ADDR_SZ ] = {5U};
+  uchar nonce_auth [ FD_TXN_ACCT_ADDR_SZ ] = {6U};
+
+  fd_sha512_t sha[1];
+  FD_TEST( fd_sha512_join( fd_sha512_new( sha ) ) );
+  fd_ed25519_public_from_private( public_key, private_key, sha );
+
+  fd_memset( txnp, 0, sizeof(*txnp) );
+  uchar * p = txnp->payload;
+  *p++ = 1U; /* signature count: fee payer only */
+  p += FD_TXN_SIGNATURE_SZ;
+  *p++ = 1U; /* num_required_signatures */
+  *p++ = 0U; /* num_readonly_signed_accounts */
+  *p++ = 3U; /* recent blockhashes sysvar, nonce authority, system program */
+  p += fd_cu16_enc( 5U, p );
+  fd_memcpy( p, public_key, FD_TXN_ACCT_ADDR_SZ ); /* fee payer */
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memcpy( p, nonce_acct, FD_TXN_ACCT_ADDR_SZ );
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memcpy( p, (uchar const [ FD_TXN_ACCT_ADDR_SZ ]){ SYSVAR_RECENT_BLKHASH_ID }, FD_TXN_ACCT_ADDR_SZ );
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memcpy( p, nonce_auth, FD_TXN_ACCT_ADDR_SZ );
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memset( p, 0, FD_TXN_ACCT_ADDR_SZ ); /* System Program ID */
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memcpy( p, blockhash, sizeof(blockhash) );
+  p += sizeof(blockhash);
+  p += fd_cu16_enc( 1U, p ); /* instruction count */
+  *p++ = 4U; /* System Program */
+  p += fd_cu16_enc( 3U, p );
+  *p++ = 1U; /* nonce account */
+  *p++ = 2U; /* recent blockhashes sysvar */
+  *p++ = 3U; /* nonce authority: intentionally not a signer */
+  p += fd_cu16_enc( 4U, p );
+  FD_STORE( uint, p, 4U ); /* SystemInstruction::AdvanceNonceAccount */
+  p += sizeof(uint);
+  test_pack_tile_sign_and_parse( txnp, p, public_key, private_key, sha, 272UL );
+
+  fd_txn_t const * txn = TXN( txnp );
+  FD_TEST( txn->signature_cnt==1U && txn->acct_addr_cnt==5U && txn->instr_cnt==1U );
+  FD_TEST( txn->instr[ 0 ].program_id==4U && txn->instr[ 0 ].acct_cnt==3U && txn->instr[ 0 ].data_sz==4U );
+  FD_TEST( FD_LOAD( uint, txnp->payload+txn->instr[ 0 ].data_off )==4U );
+  FD_TEST( txnp->payload[ txn->instr[ 0 ].acct_off+2UL ]==3U );
+  FD_TEST( !fd_txn_is_signer( txn, 3U ) );
+}
+
+/* Cleanup that stops at the first bundle containing landed X leaves orphaned
+   records for [B,X] and [C,X]; following all overlaps must not delete X twice. */
 static void
 test_pack_tile_bam_overlapping_signature_poc_regression( void ) {
   fd_pack_limits_t limits = {
@@ -1717,6 +1771,8 @@ test_pack_tile_bam_overlapping_bundle_leading_sig_is_accepted( void ) {
   free( pack_mem );
 }
 
+/* Hardcoding reject index zero blames the wrong transaction when a later
+   member's blockhash expires.  Preserve the index through every pack stage. */
 static void
 test_pack_tile_bam_expired_blockhash_reports_member_idx( void ) {
   for( ulong stage=0UL; stage<3UL; stage++ ) {
@@ -1764,6 +1820,8 @@ test_pack_tile_bam_expired_blockhash_reports_member_idx( void ) {
   }
 }
 
+/* Dropping an expired marker during resolver handoff lets a sibling's later
+   error replace it.  Preserve its index and BLOCKHASH_NOT_FOUND reason. */
 static void
 test_pack_tile_bam_resolver_expired_member_reports_exact_idx( void ) {
   for( ulong revert_on_error=0UL; revert_on_error<2UL; revert_on_error++ ) {
@@ -1876,6 +1934,8 @@ test_pack_tile_bam_stale_results_drain_without_drop( void ) {
   test_pack_tile_harness_delete( h );
 }
 
+/* Reusing seq_id without clearing its old pending group carries stale indices
+   into the replacement and can overflow bundle_idx.  Reset before insertion. */
 static void
 test_pack_tile_bam_same_seq_pending_duplicate_replaces_before_insert( void ) {
   test_pack_tile_harness_t h[1];
@@ -2187,6 +2247,8 @@ test_pack_tile_bam_scheduled_work_does_not_consume_result_headroom( void ) {
   test_pack_tile_harness_delete( h );
 }
 
+/* If pack continues past transaction zero's 256 account indices, the valid
+   sibling can mask the real failure.  Serialize SANITIZE_ERROR at index zero. */
 static void
 test_pack_tile_bam_instr_acct_reject_serializes_exact_member( void ) {
   fd_pack_limits_t limits = {
@@ -2272,6 +2334,102 @@ test_pack_tile_bam_instr_acct_reject_serializes_exact_member( void ) {
   free( wksp_mem );
 }
 
+/* Classifying a nonsigner nonce authority as SIGNATURE_FAILURE emits the wrong
+   scheduler result.  Real pack must serialize BLOCKHASH_NOT_FOUND at index zero. */
+static void
+test_pack_tile_bam_invalid_nonce_poc_serializes_blockhash_not_found( void ) {
+  fd_pack_limits_t limits = {
+    .max_cost_per_block           = FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND,
+    .max_vote_cost_per_block      = FD_PACK_MAX_VOTE_COST_PER_BLOCK_LOWER_BOUND,
+    .max_write_cost_per_acct      = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND,
+    .max_data_bytes_per_block     = FD_PACK_MAX_DATA_PER_BLOCK,
+    .max_txn_per_microblock       = FD_PACK_MAX_TXN_PER_BUNDLE,
+    .max_microblocks_per_block    = 1UL,
+    .max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK,
+  };
+
+  fd_rng_t pack_rng[1];
+  FD_TEST( fd_rng_join( fd_rng_new( pack_rng, 0U, 0UL ) ) );
+
+  void * pack_mem = aligned_alloc( fd_pack_align(),
+                                   fd_ulong_align_up( fd_pack_footprint( FD_PACK_MAX_TXN_PER_BUNDLE, 1UL, 1UL, &limits ),
+                                                      fd_pack_align() ) );
+  FD_TEST( pack_mem );
+  fd_pack_t * pack = fd_pack_join( fd_pack_new( pack_mem, FD_PACK_MAX_TXN_PER_BUNDLE, 1UL, 1UL, &limits, NULL, 0UL, pack_rng ) );
+  FD_TEST( pack );
+
+  fd_txn_e_t * bundle[ 1 ];
+  FD_TEST( fd_pack_insert_bundle_init( pack, bundle, 1UL )==bundle );
+  test_pack_tile_make_d26_poc_txn( bundle[ 0 ]->txnp );
+
+  test_pack_tile_harness_t h[1];
+  test_pack_tile_harness_new( h );
+  h->ctx->pack                   = pack;
+  test_insert_fini_use_real_pack = 1;
+
+  test_pack_tile_complete_bam_bundle( h, bundle, 1U, 26U, 1UL, 0UL, 0U );
+
+  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+  fd_bam_bundle_result_t pack_result = *test_pack_tile_assert_last_result( h,
+                                                                           26U,
+                                                                           1UL,
+                                                                           1U,
+                                                                           FD_BAM_SCHED_ERR_NONE,
+                                                                           1U );
+  FD_TEST( pack_result.bundle_err         == FD_BAM_BUNDLE_ERR_NONE );
+  FD_TEST( pack_result.transaction_err[0] == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+  FD_TEST( pack_result.sanitize_success[0] == 1U );
+  test_pack_tile_harness_delete( h );
+
+  FD_TEST( fd_pack_delete( fd_pack_leave( pack ) )==pack_mem );
+  free( pack_mem );
+  FD_TEST( fd_rng_delete( fd_rng_leave( pack_rng ) )==pack_rng );
+
+  /* A correct internal reject is insufficient if wire mapping changes its
+     reason or index, so decode the emitted scheduler result as well. */
+  ulong wksp_footprint = 16UL<<20;
+  void * wksp_mem = aligned_alloc( FD_SHMEM_NORMAL_PAGE_SZ, wksp_footprint );
+  FD_TEST( wksp_mem );
+  ulong part_max = fd_wksp_part_max_est( wksp_footprint, 64UL<<10 );
+  fd_wksp_t * wksp = fd_wksp_join( fd_wksp_new( wksp_mem, "bam-d26-wire-test", 1U, part_max,
+                                                fd_wksp_data_max_est( wksp_footprint, part_max ) ) );
+  FD_TEST( wksp );
+  FD_TEST( !fd_shmem_join_anonymous( "bam-d26-wire-test",
+                                     FD_SHMEM_JOIN_MODE_READ_WRITE,
+                                     wksp,
+                                     wksp_mem,
+                                     FD_SHMEM_NORMAL_PAGE_SZ,
+                                     wksp_footprint>>FD_SHMEM_NORMAL_LG_PAGE_SZ ) );
+
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  test_bam_prepare_scheduler_stream( env->state );
+  test_bam_keepalive_sync( env->state, fd_bam_now() );
+  test_enqueue_bundle_result( env->state, &pack_result );
+
+  FD_TEST( fd_bam_test_flush_results( env->state )==1 );
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( env->state, &decoded );
+  FD_TEST( decoded.msg.versioned_msg.v0.which_msg==
+           bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+  FD_TEST( decoded.multi.result_cnt==1UL );
+  bam_types_AtomicTxnBatchResult const * wire_result = &decoded.multi.results[ 0 ];
+  FD_TEST( wire_result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+  FD_TEST( wire_result->result.not_committed.which_reason==
+           bam_types_NotCommitted_transaction_error_tag );
+  FD_TEST( wire_result->result.not_committed.reason.transaction_error.index==0U );
+  FD_TEST( wire_result->result.not_committed.reason.transaction_error.reason==
+           bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+
+  test_bam_env_destroy( env );
+  FD_TEST( !fd_shmem_leave_anonymous( wksp_mem, NULL ) );
+  FD_TEST( fd_wksp_delete( fd_wksp_leave( wksp ) )==wksp_mem );
+  free( wksp_mem );
+}
+
+/* Defaulting every pack reject to index zero misattributes later-member
+   failures.  Carry reject_txn_idx to the wire and cancel only unaffected peers. */
 static void
 test_pack_tile_bam_result_mapping_insert_reject( void ) {
   test_pack_tile_harness_t h[1];
@@ -2350,6 +2508,8 @@ test_pack_tile_bam_result_mapping_tracking_reject( void ) {
   test_pack_tile_harness_delete( h );
 }
 
+/* Reprocessing an abandoned partial batch can overwrite OUTSIDE_LEADER_SLOT
+   with deserialization failure or emit twice.  Pack must remain sole owner. */
 static void
 test_pack_tile_bam_atomic_abandon_result_mapping( void ) {
   pack_tile_bam_bundle_assembly_abandon_reason_t const reasons[] = {
@@ -2427,6 +2587,8 @@ test_pack_tile_bam_atomic_abandon_result_mapping( void ) {
   }
 }
 
+/* If verify or resolver publishes an incomplete-batch failure directly, pack
+   publishes a second terminal result.  Preprocessing stages must defer to pack. */
 static void
 test_pack_tile_bam_preprocess_marker_has_one_terminal_owner( void ) {
   for( ulong timeout_first=0UL; timeout_first<2UL; timeout_first++ ) {
@@ -2520,6 +2682,7 @@ main( int     argc,
   test_pack_tile_bam_pending_results_reserve_direct_result_headroom();
   test_pack_tile_bam_scheduled_work_does_not_consume_result_headroom();
   test_pack_tile_bam_instr_acct_reject_serializes_exact_member();
+  test_pack_tile_bam_invalid_nonce_poc_serializes_blockhash_not_found();
   test_pack_tile_bam_result_mapping_insert_reject();
   test_pack_tile_bam_result_mapping_tracking_reject();
   test_pack_tile_bam_atomic_abandon_result_mapping();

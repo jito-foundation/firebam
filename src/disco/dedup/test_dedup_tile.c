@@ -88,6 +88,8 @@ test_publish( test_env_t * env,
   after_frag( &env->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, &env->stem );
 }
 
+/* Treating equal BAM and Block Engine IDs as one group suppresses the reset and
+   can overflow bundle_idx.  Qualify IDs by source and reset at batch_idx zero. */
 static void
 test_bam_block_engine_namespace( void ) {
   test_env_t env[ 1 ];
@@ -100,16 +102,15 @@ test_bam_block_engine_namespace( void ) {
   test_publish( env, 1, 0UL, 18U, 1U, 0U, 0x40U, 0 );
   FD_TEST( env->mcache[ fd_mcache_line_idx( env->seqs[ 0 ]-1UL, env->depths[ 0 ] ) ].sig==1UL );
 
-  /* The Slack reproduction: a five-transaction BAM batch followed by a
-     block-engine bundle with the same raw numeric ID.  Also cover the
-     singleton BAM batch that previously retained a stale bundle index. */
+  /* Reusing a raw ID across sources or after a singleton must not carry the
+     prior source's bundle index into the next group. */
   struct {
     uint  seq_id;
     uchar bam_cnt;
     uchar be_cnt;
   } const cases[] = {
-    {  0U, 5U, 1U }, /* D-56 live PoC */
-    { 17U, 1U, 5U }, /* Singleton residual */
+    {  0U, 5U, 1U },
+    { 17U, 1U, 5U },
   };
   for( ulong case_idx=0UL; case_idx<sizeof(cases)/sizeof(cases[0]); case_idx++ ) {
     test_env_init( env );

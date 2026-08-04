@@ -1104,6 +1104,8 @@ test_gap( void ) {
   }
 }
 
+/* Accounting only compute cost lets low-CU, high-byte work exhaust shred
+   capacity.  Enforce the serialized-data budget and reset it per block. */
 static void
 test_limits( void ) {
   FD_LOG_NOTICE(( "TEST LIMITS" ));
@@ -1555,6 +1557,8 @@ test_duplicate_sig( void ) {
   FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
 }
 
+/* Bundle cleanup that follows duplicate signatures can delete the same pack
+   object twice and corrupt its maps.  Retire each object exactly once. */
 static void
 test_duplicate_sig_bam_bundle_delete( void ) {
   FD_LOG_NOTICE(( "TEST DUPLICATE SIGNATURE BAM BUNDLE DELETE" ));
@@ -1599,6 +1603,8 @@ test_duplicate_sig_bam_bundle_delete( void ) {
   FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
 }
 
+/* Treating a nonsigner nonce authority as a transaction-signature failure
+   reports the wrong BAM error.  Reject it as INVALID_NONCE for blockhash mapping. */
 static inline void
 test_nonce( void ) {
   FD_LOG_NOTICE(( "TEST DUPLICATE NONCE" ));
@@ -1897,6 +1903,8 @@ test_bam_nonrevert_seq_conflict_order( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
+/* Leaving atomic bundle flags on non-revert members makes one failure cancel
+   otherwise independent transactions.  Clear the flags before insertion. */
 static void
 test_bam_nonrevert_multi_clears_bundle_flag( void ) {
   pack_outcome_t outcome;
@@ -1936,6 +1944,8 @@ test_bam_nonrevert_multi_clears_bundle_flag( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
+/* If BAM override still admits ordinary or Block Engine queues, competing work
+   can displace the scheduler's selected order.  Admit BAM work only. */
 static void
 test_bam_only_schedule_filters_non_bam_work( void ) {
   pack_outcome_t outcome;
@@ -2056,9 +2066,8 @@ insert_mode_test_bundle( fd_pack_t *    pack,
                                        meta, &deleted, NULL )>=0 );
 }
 
-/* Initializers are mode-bound.  This reproduces the activation sequence
-   from the Slack report: a normal initializer is already queued ahead of a
-   finalized Block Engine bundle when BAM work arrives. */
+/* Selecting a queued Block Engine initializer in BAM mode applies the wrong
+   builder, recipient, and commission.  Initializers must remain source-bound. */
 static void
 test_initializer_bundle_mode_selection( void ) {
   typedef struct {
@@ -2128,8 +2137,9 @@ test_initializer_bundle_mode_selection( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
-/* BAM initializer maintenance is best-effort, while normal bundle
-   initializer semantics remain strict. */
+/* Treating BAM initializer failure as fatal blocks valid BAM work for the rest
+   of the leader slot.  Keep BAM maintenance best-effort without weakening the
+   normal Block Engine path. */
 static void
 test_bam_initializer_best_effort( void ) {
   pack_outcome_t outcome;

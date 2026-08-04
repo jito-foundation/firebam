@@ -1533,11 +1533,10 @@ test_bam_scheduler_v0_oneof_uses_last_field( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* Decoding a coalesced wrapper as one unit lets one malformed child suppress
+   valid siblings.  Isolate child failures and never invent an unknown identity. */
 static void
 test_bam_multiple_batches_isolate_nested_decode_failures( fd_wksp_t * wksp ) {
-  /* MultipleAtomicTxnBatch is only a coalescing wrapper. Malformed siblings
-     should not suppress valid siblings, and protobuf failures should not
-     produce a batch result regardless of field order. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
@@ -1691,6 +1690,8 @@ test_bam_multiple_batches_accept_message_limit( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* Using UINT_MAX as an internal sentinel collides with a valid sequence ID at
+   wraparound.  Preserve UINT_MAX-to-zero attribution for every overflow. */
 static void
 test_bam_multiple_batches_overflow_results_each_excess( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -1894,6 +1895,8 @@ test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
   }
 }
 
+/* Treating every multi-transaction batch as atomic rejects valid uniform
+   non-revert work.  Publish its members independently; reject only mixed flags. */
 static void
 test_bam_non_revert_multi_packet_forwarded( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -2001,6 +2004,8 @@ test_bam_validation_orders_revert_consistency_before_vote_rejection( fd_wksp_t *
   test_bam_env_destroy( env );
 }
 
+/* Skipping the BAM vote-only check lets a user vote payload reach a bank that
+   cannot accept it.  Reject the payload before publication. */
 static void
 test_bam_bundle_rejects_real_vote_payload( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -2139,6 +2144,8 @@ test_bam_bundle_rejects_excess_packet_count( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* Using max(data.size, meta.size) lets ignored legacy metadata reject valid
+   packet bytes.  Enforce the MTU from data.size alone. */
 static void
 test_bam_bundle_uses_data_length_for_size_check( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -2176,8 +2183,8 @@ test_bam_bundle_uses_data_length_for_size_check( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
-/* Ensure a scheduler batch containing zero packets is surfaced as an EMPTY
-   deserialization error while leaving bundle/txn metrics untouched. */
+/* Treating an empty child like an empty wrapper loses its real sequence or
+   invents seq_id zero.  Attribute EMPTY to the child without publishing work. */
 static void
 test_bam_bundle_rejects_empty_batch( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -2307,6 +2314,8 @@ test_bam_loopback_listener( struct sockaddr_in * addr ) {
   return listen_sock;
 }
 
+/* If queued work suppresses gRPC progress after END_STREAM, the client can
+   neither drain nor reconnect.  Clear transport state and keep stepping. */
 static void
 test_bam_stream_end_with_pending_txn_reconnects( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -2463,10 +2472,10 @@ test_bam_tcp_connect_completion_uses_so_error( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* Returning early for an incomplete END_STREAM leaves the scheduler stream
+   live and reconnect reuses stale resolution state.  Release and reset it. */
 static void
 test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
-  /* Scheduler stream closures should clear bam_stream state and force a reset so
-     the next connection attempt re-resolves DNS/load-balances like bundle. */
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -2960,6 +2969,9 @@ test_bam_publish_keyguard_signature( fd_keyguard_client_t * client,
                      0UL );
 }
 
+/* An eight-byte challenge creates an ambiguous keyguard payload, while an
+   identity switch can pair a new signer response with the cached public key.
+   Reject the short challenge and verify responses against the cached identity. */
 static void
 test_bam_auth_challenge_response_verifies_cached_identity( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -3189,6 +3201,8 @@ test_bam_scheduler_stream_starts_without_builder_info( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* Treating builder info alone as healthy can stop polling before BAM receiver
+   config arrives.  Keep the one-second repoll until both are present. */
 static void
 test_bam_missing_config_repolls_despite_valid_builder_info( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -4921,6 +4935,8 @@ test_bam_gossip_activity_update_stub( void *                           ctx,
   (void)ctx; (void)identity; (void)ci; (void)change_type;
 }
 
+/* Replacing the full contact record from BAM-derived ports corrupts gossip and
+   vote sockets.  Update only TPU_QUIC and TPU_FORWARDS_QUIC. */
 static void
 test_bam_gossip_tile_applies_contact_update( fd_wksp_t * wksp ) {
   fd_gossip_tile_ctx_t ctx;
@@ -5505,6 +5521,8 @@ test_bam_runtime_toggle_updates_gossip( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* An undersized decode array silently truncates valid scheduler destinations.
+   Decode and retain the protocol maximum of 32 shred receivers. */
 static void
 test_bam_config_accepts_max_shred_receivers( void ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
@@ -5534,6 +5552,8 @@ test_bam_config_accepts_max_shred_receivers( void ) {
   }
 }
 
+/* Passing IPv6 or malformed receivers into the IPv4-only shred path can abort
+   transmission.  Drop them during config parsing and retain valid IPv4 entries. */
 static void
 test_bam_shred_update_publishes_receiver_list( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -5558,15 +5578,17 @@ test_bam_shred_update_publishes_receiver_list( fd_wksp_t * wksp ) {
   resp.bam_config.has_tpu_fwd_sock = true;
   fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 3344U;
-  resp.bam_config.shred_sock_count = 4U;
+  resp.bam_config.shred_sock_count = 5U;
   fd_cstr_ncpy( resp.bam_config.shred_sock[ 0 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_sock[ 0 ].ip ) );
   resp.bam_config.shred_sock[ 0 ].port = 5001U;
   fd_cstr_ncpy( resp.bam_config.shred_sock[ 1 ].ip, "2.2.2.2", sizeof( resp.bam_config.shred_sock[ 1 ].ip ) );
   resp.bam_config.shred_sock[ 1 ].port = 5002U;
   fd_cstr_ncpy( resp.bam_config.shred_sock[ 2 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_sock[ 2 ].ip ) );
   resp.bam_config.shred_sock[ 2 ].port = 5001U;
-  fd_cstr_ncpy( resp.bam_config.shred_sock[ 3 ].ip, "bad-ip", sizeof( resp.bam_config.shred_sock[ 3 ].ip ) );
-  resp.bam_config.shred_sock[ 3 ].port = 0U;
+  fd_cstr_ncpy( resp.bam_config.shred_sock[ 3 ].ip, "::1", sizeof( resp.bam_config.shred_sock[ 3 ].ip ) );
+  resp.bam_config.shred_sock[ 3 ].port = 5003U;
+  fd_cstr_ncpy( resp.bam_config.shred_sock[ 4 ].ip, "bad-ip", sizeof( resp.bam_config.shred_sock[ 4 ].ip ) );
+  resp.bam_config.shred_sock[ 4 ].port = 0U;
 
   uchar pb_buf[ 1024 ];
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
@@ -5815,6 +5837,8 @@ test_bam_endpoint_change_forgets_cached_contact_before_incomplete_refresh( fd_wk
   test_bam_env_destroy( env );
 }
 
+/* Clearing BAM ownership before pack retires the old generation exposes stale
+   BAM work to normal scheduling.  Wait for pack's acknowledgement. */
 static void
 test_bam_ownership_generation_retirement_waits_for_pack( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -5911,12 +5935,17 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( state->prio_fee_recipient_set == 1U );
   FD_TEST( 0 == memcmp( state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
 
+  /* Clearing the recipient on an empty partial update loses the last valid fee
+     destination.  Preserve it while applying other fields. */
+  resp.bam_config.prio_fee_recipient_pubkey[ 0 ] = '\0';
   ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
   fd_bam_client_grpc_rx_msg( state,
                              pb_buf,
                              ostream.bytes_written,
                              FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+  FD_TEST( state->prio_fee_recipient_set == 1U );
+  FD_TEST( 0 == memcmp( state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
   FD_TEST( state->bam_tpu.addr == expected_tpu_addr );
   FD_TEST( fd_ushort_bswap( state->bam_tpu.port ) == 9000U );
   FD_TEST( state->bam_tpu_fwd.addr == expected_tpu_fwd_addr );
@@ -5955,6 +5984,8 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* Reading builder metadata from BamConfig lets an unrelated partial update
+   overwrite the active pubkey and commission.  Use BlockEngineBuilderConfig. */
 static void
 test_bam_builder_fee_cfg_uses_block_engine_config( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -6005,6 +6036,9 @@ test_bam_builder_fee_cfg_uses_block_engine_config( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* Coupled validation discards a valid commission when the new key is invalid,
+   while commission above 100 can partially replace the key.  Apply valid
+   partial updates and reject invalid ones before mutation. */
 static void
 test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -6042,7 +6076,8 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   FD_TEST( shared_cfg->builder_commission == 5U );
   FD_TEST( 0 == memcmp( shared_cfg->builder_pubkey, pubkey, sizeof( pubkey ) ) );
 
-  /* Commission and pubkey validation follow jito-solana partial-update semantics. */
+  /* Rejecting the whole update on an invalid pubkey also discards its valid
+     commission; retain the previous key and apply the commission. */
   long prev_builder_valid_until = state->builder_info_valid_until;
 
   bam_api_ConfigResponse bad_pubkey_resp = bam_api_ConfigResponse_init_default;

@@ -125,6 +125,8 @@ test_topology( int bundle_enabled,
 
   fd_topo_initialize( config );
 
+  /* Without the shared crank and keyswitch path, BAM-only mode stops refreshing
+     builder metadata and can leave setIdentity waiting indefinitely. */
   int crank_enabled = bundle_enabled || bam_enabled;
   fd_topo_t const * topo = &config->topo;
 

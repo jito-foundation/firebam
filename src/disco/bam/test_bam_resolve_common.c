@@ -201,6 +201,8 @@ test_no_bank_deser_marker( uchar batch_idx ) {
   test_harness_delete( h );
 }
 
+/* Dropping a later expired member lets pack replace its blockhash failure with
+   a sibling's sanitize result.  Forward the marker and every sibling intact. */
 static void
 test_later_expired_bam_member_and_siblings_forwarded( void ) {
   for( ulong revert_on_error=0UL; revert_on_error<2UL; revert_on_error++ ) {
@@ -257,6 +259,8 @@ main( int     argc,
 
   test_harness_t h[1];
   test_harness_new( h );
+  /* Round-robin routing can send later BAM members through a faster resolver
+     and reorder the batch.  Pin BAM traffic while leaving ordinary routing fair. */
   h->ctx->round_robin_cnt = 4UL;
   for( ulong resolver_idx=0UL; resolver_idx<4UL; resolver_idx++ ) {
     h->ctx->round_robin_idx = resolver_idx;

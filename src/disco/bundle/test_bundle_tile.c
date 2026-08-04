@@ -384,6 +384,8 @@ test_saturating_sub( void ) {
   free( wksp );
 }
 
+/* A stale ownership snapshot can publish queued Block Engine work after BAM
+   takes exclusive TPU control.  Recheck the override and discard that queue. */
 static void
 test_bam_override_sync_clears_pending( fd_wksp_t * wksp ) {
   FD_LOG_NOTICE(( "TEST BAM override sync clears pending transactions" ));

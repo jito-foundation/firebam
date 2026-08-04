@@ -20,6 +20,8 @@ test_bam_admin_rpc_setup( fd_bam_tile_t * ctx,
   fd_cstr_ncpy( ctx->admin_rpc_path, "/ignored/admin.rpc", sizeof(ctx->admin_rpc_path) );
 }
 
+/* Closing the admin RPC descriptor on a soft timeout makes restoration
+   permanently fail inside the sandbox.  Keep it open and drain any late reply. */
 static void
 test_bam_admin_rpc_soft_timeout_drains_late_response( void ) {
   int sock[ 2 ];

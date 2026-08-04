@@ -81,6 +81,8 @@ test_mcache_new( fd_wksp_t * wksp,
   return mcache;
 }
 
+/* Accepting a prior-slot microblock after PoH resets can acknowledge work that
+   PoH discarded.  Reject the stale microblock before reporting success. */
 static void
 test_reset_rejects_stale_bam_microblock( fd_wksp_t * wksp ) {
   ulong const depth      = 4UL;

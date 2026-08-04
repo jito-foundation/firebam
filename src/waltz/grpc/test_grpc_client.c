@@ -146,6 +146,8 @@ FD_UNIT_TEST( rx_stream_quota ) {
   FD_TEST( fd_uint_bswap( window_update.increment )==client->conn->self_settings.initial_window_size / 2 + 2 );
 }
 
+/* Bad active-ID compaction can retain a released stream or orphan a live one.
+   Release several array positions and verify every surviving ID. */
 FD_UNIT_TEST( stream_release ) {
   fd_grpc_client_reset( client );
   test_grpc_client_mock_conn( client );
@@ -215,6 +217,8 @@ FD_UNIT_TEST( rx_headers ) {
   FD_TEST( client->stream_cnt==0 );
 }
 
+/* Returning early on a sub-prefix error body leaves the stream and HTTP/2 quota
+   live until timeout.  END_STREAM must release both and invoke rx_end once. */
 FD_UNIT_TEST( error_data_end_stream_releases_stream ) {
   fd_grpc_client_reset( client );
   test_grpc_client_mock_conn( client );
