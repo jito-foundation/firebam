@@ -3710,7 +3710,7 @@ test_bam_seed_scheduler_work( fd_bam_tile_t * state,
 }
 
 static void
-test_bam_identity_switch_invalidates_leader_schedule_state( fd_wksp_t * wksp ) {
+test_bam_identity_switch_halts_signing_and_invalidates_leader_schedule_state( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -3742,6 +3742,7 @@ test_bam_identity_switch_invalidates_leader_schedule_state( fd_wksp_t * wksp ) {
 
   fd_bam_tile_housekeeping( state );
 
+  FD_TEST( state->halt_signing == 1U );
   FD_TEST( 0==memcmp( state->bam_identity_pubkey, keyswitch.bytes, 32UL ) );
   FD_TEST( 0==strcmp( state->bam_identity_pubkey_b58, expected_b58 ) );
   FD_TEST( fd_keyswitch_state_query( state->keyswitch ) == FD_KEYSWITCH_STATE_COMPLETED );
@@ -3761,11 +3762,25 @@ test_bam_identity_switch_invalidates_leader_schedule_state( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_leader_state.slot_end_ns == 0L );
   FD_TEST( state->bam_leader_state.current_slot_has_bam_work == 0U );
   FD_TEST( state->bam_leader_pending == 0U );
-  FD_TEST( state->backoff_until == 0L );
   FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
   FD_TEST( state->feedback_queue_depth == 0UL );
   FD_TEST( state->bam_results_head == state->bam_results_tail );
   FD_TEST( state->metrics.feedback_results_dropped_cnt == dropped_before+1UL );
+
+  /* Client progress, including keyguard signing, remains stopped until the
+     identity coordinator confirms that the sign tile has switched keys. */
+  state->defer_reset = 1U;
+  int charge_busy = 0;
+  fd_bam_test_before_credit( state, env->stem, &charge_busy );
+  FD_TEST( state->defer_reset == 1U );
+  FD_TEST( charge_busy == 0 );
+
+  state->defer_reset = 0U;
+  fd_keyswitch_state( state->keyswitch, FD_KEYSWITCH_STATE_UNHALT_PENDING );
+  fd_bam_tile_housekeeping( state );
+  FD_TEST( state->halt_signing == 0U );
+  FD_TEST( state->backoff_until == 0L );
+  FD_TEST( fd_keyswitch_state_query( state->keyswitch ) == FD_KEYSWITCH_STATE_COMPLETED );
 
   state->keyswitch = NULL;
   test_bam_env_destroy( env );
@@ -6261,7 +6276,7 @@ main( int     argc,
   test_bam_replay_schedule_recheck_slot_policy( wksp );
   test_bam_replay_wait_gate_policy( wksp );
   test_bam_replay_wait_gate_cleared_on_reset_or_disable( wksp );
-  test_bam_identity_switch_invalidates_leader_schedule_state( wksp );
+  test_bam_identity_switch_halts_signing_and_invalidates_leader_schedule_state( wksp );
   test_bam_replay_schedule_hint_does_not_disconnect( wksp );
   test_bam_pack_leader_channel_contract( wksp );
   test_bam_pack_leader_slot_change_flushes_immediately( wksp );

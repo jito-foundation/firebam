@@ -822,19 +822,25 @@ fd_bam_tile_housekeeping( fd_bam_tile_t * ctx ) {
   fd_bam_publish_active_state( ctx, ctx->stem, bam_active );
   ctx->bam_status_recent = status;
 
-  if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch ) == FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
-    fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
-    fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_identity_pubkey_b58 );
-    fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
+  if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
+    ctx->halt_signing = 1U;
     fd_bam_tile_begin_scheduler_generation( ctx );
     fd_bam_client_reset( ctx );
+    fd_memcpy( ctx->bam_identity_pubkey, ctx->keyswitch->bytes, 32UL );
+    fd_base58_encode_32( ctx->keyswitch->bytes, NULL, ctx->bam_identity_pubkey_b58 );
     ctx->next_leader_slot                 = ULONG_MAX;
     ctx->leader_schedule_gate_start_ns    = 0L;
     ctx->leader_schedule_recheck_slot     = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
     ctx->bam_leader_state                 = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
     ctx->bam_leader_pending               = 0U;
-    ctx->backoff_until                    = 0L;
+    fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
     FD_LOG_NOTICE(( "BAM identity pubkey updated to %s", ctx->bam_identity_pubkey_b58 ));
+  }
+
+  if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch )==FD_KEYSWITCH_STATE_UNHALT_PENDING ) ) {
+    ctx->backoff_until = 0L;
+    ctx->halt_signing  = 0U;
+    fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
   }
 }
 
@@ -967,6 +973,7 @@ before_credit( fd_bam_tile_t *    ctx,
                fd_stem_context_t * stem,
                int *               charge_busy ) {
   if( FD_UNLIKELY( !ctx->stem ) ) ctx->stem = stem;
+  if( FD_UNLIKELY( ctx->halt_signing ) ) return;
   /* Preserve receive backpressure during a healthy activation handoff, but
      keep stepping an inactive client that needs transport recovery. */
   if( FD_LIKELY( bam_pending_txn_empty( ctx->pending_txns ) ) ||
@@ -1443,6 +1450,7 @@ privileged_init( fd_topo_t const *      topo,
   ctx->replay_out_in_idx = ULONG_MAX;
   ctx->next_leader_slot = ULONG_MAX;
   ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
+  ctx->halt_signing = 0U;
 
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
   fd_memcpy( ctx->bam_identity_pubkey, public_key, 32UL );

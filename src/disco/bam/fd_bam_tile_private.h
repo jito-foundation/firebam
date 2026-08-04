@@ -241,6 +241,7 @@ struct fd_bam_tile {
   int  so_rcvbuf;                                 /* Desired receive buffer size */
   uchar tcp_sock_connected : 1;                   /* Set once connect handshake completes */
   uchar defer_reset : 1;                          /* Delay reset until after current iteration */
+  uchar halt_signing : 1;                         /* Block client progress while the sign tile switches identity */
 
   /* Keepalive via HTTP/2 PINGs (randomized) */
   long              keepalive_interval;           /* Target interval for PING dispatch */
