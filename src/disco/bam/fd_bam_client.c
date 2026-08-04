@@ -350,8 +350,9 @@ fd_bam_request_config( fd_bam_tile_t * ctx,
                                fd_bam_now() + FD_BAM_CLIENT_REQUEST_TIMEOUT );
 }
 
-/* Decodes bam_api.AuthChallengeResponse. Returns 1 on success, 0 on an invalid
-   response, and -1 when keyguard signed with a different identity. */
+/* Decodes bam_api.AuthChallengeResponse. Returns 1 after storing the challenge
+   and preparing the auth signature; returns 0 on protobuf or validation
+   failure (clearing inflight state so the caller can retry). */
 static int
 fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
                               void const *      data,
@@ -410,7 +411,7 @@ fd_bam_handle_auth_challenge( fd_bam_tile_t * ctx,
     fd_bam_clear_auth_state( ctx );
     FD_LOG_WARNING(( "AuthChallengeResponse signature does not verify against cached BAM identity (%s)",
                      fd_ed25519_strerror( verify_res ) ));
-    return -1;
+    return 1;
   }
 
   fd_base58_encode_64( signature, NULL, ctx->bam_auth_signature );
@@ -1160,20 +1161,12 @@ fd_bam_client_grpc_rx_msg(
   fd_bam_tile_t * ctx = app_ctx;
   long rx_ts_ns = fd_bam_now();
   switch( request_ctx ) {
-  case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge: {
-    int result = fd_bam_handle_auth_challenge( ctx, protobuf, protobuf_sz );
-    if( FD_UNLIKELY( !result ) ) {
+  case FD_BAM_CLIENT_REQ_BAM_GetAuthChallenge:
+    if( FD_UNLIKELY( !fd_bam_handle_auth_challenge( ctx, protobuf, protobuf_sz ) ) ) {
       ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_AUTH_CHALLENGE_DECODE_IDX ]++;
       fd_bam_tile_backoff( ctx, fd_bam_now() );
-    } else if( FD_UNLIKELY( result<0 ) ) {
-      if( FD_LIKELY( !ctx->keyswitch ||
-                     fd_keyswitch_state_query( ctx->keyswitch )!=FD_KEYSWITCH_STATE_SWITCH_PENDING ) )
-        fd_bam_tile_backoff( ctx, fd_bam_now() );
-      else
-        ctx->defer_reset = 1;
     }
     break;
-  }
   case FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig: {
     FD_LOG_INFO(( "GetBuilderConfig response received in %.3f ms",
       (double)(rx_ts_ns - ctx->bam_last_config_poll_ns) / 1e6 ));
