@@ -2334,67 +2334,18 @@ test_pack_tile_bam_instr_acct_reject_serializes_exact_member( void ) {
   free( wksp_mem );
 }
 
-/* Classifying a nonsigner nonce authority as SIGNATURE_FAILURE emits the wrong
-   scheduler result.  Real pack must serialize BLOCKHASH_NOT_FOUND at index zero. */
 static void
-test_pack_tile_bam_invalid_nonce_poc_serializes_blockhash_not_found( void ) {
-  fd_pack_limits_t limits = {
-    .max_cost_per_block           = FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND,
-    .max_vote_cost_per_block      = FD_PACK_MAX_VOTE_COST_PER_BLOCK_LOWER_BOUND,
-    .max_write_cost_per_acct      = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND,
-    .max_data_bytes_per_block     = FD_PACK_MAX_DATA_PER_BLOCK,
-    .max_txn_per_microblock       = FD_PACK_MAX_TXN_PER_BUNDLE,
-    .max_microblocks_per_block    = 1UL,
-    .max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK,
-  };
-
-  fd_rng_t pack_rng[1];
-  FD_TEST( fd_rng_join( fd_rng_new( pack_rng, 0U, 0UL ) ) );
-
-  void * pack_mem = aligned_alloc( fd_pack_align(),
-                                   fd_ulong_align_up( fd_pack_footprint( FD_PACK_MAX_TXN_PER_BUNDLE, 1UL, 1UL, &limits ),
-                                                      fd_pack_align() ) );
-  FD_TEST( pack_mem );
-  fd_pack_t * pack = fd_pack_join( fd_pack_new( pack_mem, FD_PACK_MAX_TXN_PER_BUNDLE, 1UL, 1UL, &limits, NULL, 0UL, pack_rng ) );
-  FD_TEST( pack );
-
-  fd_txn_e_t * bundle[ 1 ];
-  FD_TEST( fd_pack_insert_bundle_init( pack, bundle, 1UL )==bundle );
-  test_pack_tile_make_d26_poc_txn( bundle[ 0 ]->txnp );
-
-  test_pack_tile_harness_t h[1];
-  test_pack_tile_harness_new( h );
-  h->ctx->pack                   = pack;
-  test_insert_fini_use_real_pack = 1;
-
-  test_pack_tile_complete_bam_bundle( h, bundle, 1U, 26U, 1UL, 0UL, 0U );
-
-  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
-  fd_bam_bundle_result_t pack_result = *test_pack_tile_assert_last_result( h,
-                                                                           26U,
-                                                                           1UL,
-                                                                           1U,
-                                                                           FD_BAM_SCHED_ERR_NONE,
-                                                                           1U );
-  FD_TEST( pack_result.bundle_err         == FD_BAM_BUNDLE_ERR_NONE );
-  FD_TEST( pack_result.transaction_err[0] == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
-  FD_TEST( pack_result.sanitize_success[0] == 1U );
-  test_pack_tile_harness_delete( h );
-
-  FD_TEST( fd_pack_delete( fd_pack_leave( pack ) )==pack_mem );
-  free( pack_mem );
-  FD_TEST( fd_rng_delete( fd_rng_leave( pack_rng ) )==pack_rng );
-
-  /* A correct internal reject is insufficient if wire mapping changes its
-     reason or index, so decode the emitted scheduler result as well. */
+test_pack_tile_assert_wire_transaction_error( fd_bam_bundle_result_t const * pack_result,
+                                              uint                           expected_idx,
+                                              bam_types_TransactionErrorReason expected_reason ) {
   ulong wksp_footprint = 16UL<<20;
   void * wksp_mem = aligned_alloc( FD_SHMEM_NORMAL_PAGE_SZ, wksp_footprint );
   FD_TEST( wksp_mem );
   ulong part_max = fd_wksp_part_max_est( wksp_footprint, 64UL<<10 );
-  fd_wksp_t * wksp = fd_wksp_join( fd_wksp_new( wksp_mem, "bam-d26-wire-test", 1U, part_max,
+  fd_wksp_t * wksp = fd_wksp_join( fd_wksp_new( wksp_mem, "bam-nonce-wire-test", 1U, part_max,
                                                 fd_wksp_data_max_est( wksp_footprint, part_max ) ) );
   FD_TEST( wksp );
-  FD_TEST( !fd_shmem_join_anonymous( "bam-d26-wire-test",
+  FD_TEST( !fd_shmem_join_anonymous( "bam-nonce-wire-test",
                                      FD_SHMEM_JOIN_MODE_READ_WRITE,
                                      wksp,
                                      wksp_mem,
@@ -2406,7 +2357,7 @@ test_pack_tile_bam_invalid_nonce_poc_serializes_blockhash_not_found( void ) {
   test_bam_env_mock_conn( env );
   test_bam_prepare_scheduler_stream( env->state );
   test_bam_keepalive_sync( env->state, fd_bam_now() );
-  test_enqueue_bundle_result( env->state, &pack_result );
+  test_enqueue_bundle_result( env->state, pack_result );
 
   FD_TEST( fd_bam_test_flush_results( env->state )==1 );
   test_bam_decoded_message_t decoded;
@@ -2418,14 +2369,84 @@ test_pack_tile_bam_invalid_nonce_poc_serializes_blockhash_not_found( void ) {
   FD_TEST( wire_result->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
   FD_TEST( wire_result->result.not_committed.which_reason==
            bam_types_NotCommitted_transaction_error_tag );
-  FD_TEST( wire_result->result.not_committed.reason.transaction_error.index==0U );
-  FD_TEST( wire_result->result.not_committed.reason.transaction_error.reason==
-           bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+  FD_TEST( wire_result->result.not_committed.reason.transaction_error.index==expected_idx );
+  FD_TEST( wire_result->result.not_committed.reason.transaction_error.reason==expected_reason );
 
   test_bam_env_destroy( env );
   FD_TEST( !fd_shmem_leave_anonymous( wksp_mem, NULL ) );
   FD_TEST( fd_wksp_delete( fd_wksp_leave( wksp ) )==wksp_mem );
   free( wksp_mem );
+}
+
+/* A nonsigner nonce authority must map to BLOCKHASH_NOT_FOUND.  When it is the
+   second member, real pack and wire serialization must also retain index one. */
+static void
+test_pack_tile_bam_invalid_nonce_pocs_serialize_exact_member( void ) {
+  for( uchar bad_idx=0U; bad_idx<2U; bad_idx++ ) {
+    uchar txn_cnt = (uchar)(bad_idx+1U);
+    uint  seq_id  = bad_idx ? 12U : 26U;
+
+    fd_pack_limits_t limits = {
+      .max_cost_per_block           = FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND,
+      .max_vote_cost_per_block      = FD_PACK_MAX_VOTE_COST_PER_BLOCK_LOWER_BOUND,
+      .max_write_cost_per_acct      = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND,
+      .max_data_bytes_per_block     = FD_PACK_MAX_DATA_PER_BLOCK,
+      .max_txn_per_microblock       = FD_PACK_MAX_TXN_PER_BUNDLE,
+      .max_microblocks_per_block    = 1UL,
+      .max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK,
+    };
+
+    fd_rng_t pack_rng[1];
+    FD_TEST( fd_rng_join( fd_rng_new( pack_rng, 0U, (ulong)bad_idx ) ) );
+
+    void * pack_mem = aligned_alloc( fd_pack_align(),
+                                     fd_ulong_align_up( fd_pack_footprint( FD_PACK_MAX_TXN_PER_BUNDLE, 1UL, 1UL, &limits ),
+                                                        fd_pack_align() ) );
+    FD_TEST( pack_mem );
+    fd_pack_t * pack = fd_pack_join( fd_pack_new( pack_mem, FD_PACK_MAX_TXN_PER_BUNDLE, 1UL, 1UL, &limits, NULL, 0UL, pack_rng ) );
+    FD_TEST( pack );
+
+    fd_txn_e_t * bundle[ 2 ];
+    FD_TEST( fd_pack_insert_bundle_init( pack, bundle, txn_cnt )==bundle );
+    if( bad_idx ) {
+      fd_txn_p_t unused_bad[1];
+      test_pack_tile_make_d18_poc_txns( unused_bad, bundle[ 0 ]->txnp );
+    }
+    test_pack_tile_make_d26_poc_txn( bundle[ bad_idx ]->txnp );
+
+    test_pack_tile_harness_t h[1];
+    test_pack_tile_harness_new( h );
+    h->ctx->pack                   = pack;
+    test_insert_fini_use_real_pack = 1;
+
+    test_pack_tile_complete_bam_bundle( h, bundle, txn_cnt, seq_id, 1UL, 0UL, 0U );
+
+    FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+    fd_bam_bundle_result_t pack_result = *test_pack_tile_assert_last_result( h,
+                                                                             seq_id,
+                                                                             1UL,
+                                                                             txn_cnt,
+                                                                             FD_BAM_SCHED_ERR_NONE,
+                                                                             txn_cnt );
+    FD_TEST( pack_result.bundle_err == FD_BAM_BUNDLE_ERR_NONE );
+    for( uchar i=0U; i<txn_cnt; i++ ) {
+      FD_TEST( pack_result.sanitize_success[ i ]==1U );
+      FD_TEST( pack_result.transaction_err[ i ]==( i==bad_idx
+                                                  ? bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND
+                                                  : bam_types_TransactionErrorReason_COMMIT_CANCELLED ) );
+    }
+    test_pack_tile_harness_delete( h );
+
+    FD_TEST( fd_pack_delete( fd_pack_leave( pack ) )==pack_mem );
+    free( pack_mem );
+    FD_TEST( fd_rng_delete( fd_rng_leave( pack_rng ) )==pack_rng );
+
+    /* A correct internal result is insufficient if protobuf mapping changes
+       its reason or index. */
+    test_pack_tile_assert_wire_transaction_error( &pack_result,
+                                                  (uint)bad_idx,
+                                                  bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+  }
 }
 
 /* Defaulting every pack reject to index zero misattributes later-member
@@ -2446,14 +2467,6 @@ test_pack_tile_bam_result_mapping_insert_reject( void ) {
   FD_TEST( dup->transaction_err[ 1 ] == bam_types_TransactionErrorReason_COMMIT_CANCELLED );
   FD_TEST( dup->sanitize_success[ 0 ] == 1U );
   FD_TEST( dup->sanitize_success[ 1 ] == 1U );
-
-  h->ctx->bam_result_publish_cnt = 0UL;
-  pack_tile_publish_bam_insert_reject( h->ctx, 79U, 0U, 125UL, 2U, 1UL, FD_PACK_INSERT_REJECT_INVALID_NONCE );
-
-  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
-  fd_bam_bundle_result_t const * nonce = test_pack_tile_assert_last_result( h, 79U, 125UL, 2U, FD_BAM_SCHED_ERR_NONE, 2U );
-  FD_TEST( nonce->transaction_err[ 0 ] == bam_types_TransactionErrorReason_COMMIT_CANCELLED );
-  FD_TEST( nonce->transaction_err[ 1 ] == bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
 
   h->ctx->bam_result_publish_cnt = 0UL;
   pack_tile_publish_bam_insert_reject( h->ctx, 81U, 0U, 127UL, 2U, 1UL, FD_PACK_INSERT_REJECT_INSTR_ACCT_CNT );
@@ -2682,7 +2695,7 @@ main( int     argc,
   test_pack_tile_bam_pending_results_reserve_direct_result_headroom();
   test_pack_tile_bam_scheduled_work_does_not_consume_result_headroom();
   test_pack_tile_bam_instr_acct_reject_serializes_exact_member();
-  test_pack_tile_bam_invalid_nonce_poc_serializes_blockhash_not_found();
+  test_pack_tile_bam_invalid_nonce_pocs_serialize_exact_member();
   test_pack_tile_bam_result_mapping_insert_reject();
   test_pack_tile_bam_result_mapping_tracking_reject();
   test_pack_tile_bam_atomic_abandon_result_mapping();

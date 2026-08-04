@@ -127,6 +127,14 @@ test_bam_block_engine_namespace( void ) {
     FD_TEST( env->seqs[ 0 ]==(ulong)bam_cnt+(ulong)be_cnt );
   }
 
+  /* A scheduler can reuse seq_id after a five-member batch.  Carrying the old
+     index into the replacement makes its first member index five and aborts. */
+  test_env_init( env );
+  for( uchar i=0U; i<5U; i++ )
+    test_publish( env, 1, 43UL, 42U, 5U, i, (uchar)(0x50U+i), 0 );
+  test_publish( env, 1, 43UL, 42U, 1U, 0U, 0x60U, 0 );
+  FD_TEST( env->seqs[ 0 ]==6UL );
+
   /* Equal IDs and equal signatures across sources are not duplicates. */
   test_env_init( env );
   test_publish( env, 1, 18UL, 17U, 1U, 0U, 0x42U, 0 );
