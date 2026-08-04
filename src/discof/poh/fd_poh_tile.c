@@ -158,6 +158,28 @@ returnable_frag( fd_poh_tile_t *     ctx,
   if( FD_UNLIKELY( chunk<ctx->in[ in_idx ].chunk0 || chunk>ctx->in[ in_idx ].wmark || sz>ctx->in[ in_idx ].mtu ) )
     FD_LOG_ERR(( "chunk %lu %lu corrupt, not in range [%lu,%lu]", chunk, sz, ctx->in[ in_idx ].chunk0, ctx->in[ in_idx ].wmark ));
 
+  /* Replay can abandon a leader slot while an execle result for that
+     slot is still in flight.  Consume it before the leader-bank and
+     pack-order waits so it cannot later reach fd_poh1_mixin. */
+  if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EXECLE &&
+                   fd_disco_execle_sig_slot( sig )<ctx->poh->next_leader_slot ) ) {
+    uint pack_idx = (uint)fd_disco_execle_sig_pack_idx( sig );
+    if( FD_LIKELY( ((int)(pack_idx-ctx->expect_pack_idx))>=0 ) ) ctx->expect_pack_idx = pack_idx+1U;
+
+    fd_txn_p_t const * txns = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
+    fd_bam_microblock_view_t view[1];
+    FD_TEST( fd_bam_microblock_parse( txns, sz, view ) );
+    if( FD_UNLIKELY( view->result ) ) {
+      fd_bam_bundle_result_t result = *view->result;
+      fd_bam_result_resolve_at_poh( &result, 0 );
+      fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
+                             ctx->bam_out->chunk0, ctx->bam_out->wmark, &result );
+    }
+
+    ctx->idle_cnt = 0UL;
+    return 0;
+  }
+
   /* There's a race condition where we might receive microblocks from
      execles before we have learned what the leader bank is from replay
      (the become_leader message makes it from replay->pack->execle->poh)
