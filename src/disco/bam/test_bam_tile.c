@@ -33,6 +33,12 @@ fd_bam_test_before_credit( fd_bam_tile_t *    ctx,
                            fd_stem_context_t * stem,
                            int *               charge_busy );
 
+extern void
+after_credit( fd_gossip_tile_ctx_t * ctx,
+              fd_stem_context_t *    stem,
+              int *                  opt_poll_in,
+              int *                  charge_busy );
+
 __attribute__((weak)) char const fdctl_version_string[] = "0.0.0";
 __attribute__((weak)) ulong const firedancer_major_version = 0UL;
 __attribute__((weak)) ulong const firedancer_minor_version = 0UL;
@@ -4995,6 +5001,25 @@ test_bam_gossip_tile_applies_contact_update( fd_wksp_t * wksp ) {
   ctx.gossip = fd_gossip_join( shgossip );
   FD_TEST( ctx.gossip );
 
+  uchar new_identity[ 32UL ];
+  for( uchar i=0U; i<32U; i++ ) new_identity[ i ] = (uchar)(32U-i);
+  ulong identity_outset_nanos = (ulong)ctx.last_wallclock + 1000000UL;
+  ulong identity_outset       = (ulong)FD_NANOSEC_TO_MICRO( identity_outset_nanos );
+  fd_keyswitch_t keyswitch = { .param = identity_outset_nanos };
+  fd_memcpy( keyswitch.bytes, new_identity, sizeof(new_identity) );
+  ctx.keyswitch               = &keyswitch;
+  ctx.is_halting_signing      = 1;
+  ctx.is_pending_set_identity = 1;
+  int opt_poll_in = 1;
+  int charge_busy = 0;
+  after_credit( &ctx, env->stem, &opt_poll_in, &charge_busy );
+  FD_TEST( charge_busy );
+  FD_TEST( !ctx.is_halting_signing );
+  FD_TEST( !ctx.is_pending_set_identity );
+  FD_TEST( fd_keyswitch_state_query( &keyswitch )==FD_KEYSWITCH_STATE_COMPLETED );
+  FD_TEST( !memcmp( ctx.identity_key->uc, new_identity, sizeof(new_identity) ) );
+  FD_TEST( ctx.my_contact_info->outset == identity_outset );
+
   uint bam_tpu = 0U;
   FD_TEST( fd_cstr_to_ip4_addr( "9.8.7.6", &bam_tpu ) );
   uint bam_tpu_fwd = 0U;
@@ -5022,6 +5047,7 @@ test_bam_gossip_tile_applies_contact_update( fd_wksp_t * wksp ) {
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].ip4  == bam_tpu_fwd );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC ].port == fd_ushort_bswap( 6006 ) );
   FD_TEST( ctx.my_contact_info->version.client == FD_GOSSIP_CONTACT_INFO_CLIENT_BAM );
+  FD_TEST( ctx.my_contact_info->outset == identity_outset );
 
   uint default_tpu = 0U;
   FD_TEST( fd_cstr_to_ip4_addr( "1.2.3.4", &default_tpu ) );
@@ -5044,6 +5070,7 @@ test_bam_gossip_tile_applies_contact_update( fd_wksp_t * wksp ) {
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].ip4  == default_gossip.addr );
   FD_TEST( ctx.my_contact_info->sockets[ FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_VOTE_QUIC ].port == fd_ushort_bswap( 9006 ) );
   FD_TEST( ctx.my_contact_info->version.client == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
+  FD_TEST( ctx.my_contact_info->outset == identity_outset );
 
   free( gossip_mem );
   test_bam_env_destroy( env );
