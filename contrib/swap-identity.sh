@@ -38,7 +38,6 @@ Environment defaults and detection:
   STAKED_IDENTITY_KEYPAIR_PATH=/etc/solana/staked-identity.json
   DUMMY_IDENTITY_KEYPAIR_PATH=/etc/solana/unstaked-identity.json
   MIN_IDLE_TIME=2       # minimum idle minutes for wait-for-restart-window
-  SET_IDENTITY_FORCE=0  # set to 1 to add --force to set-identity
   ALLOW_NON_SYMLINK=0   # set to 1 to overwrite a non-symlink identity.json
   DUMMY_KEY_OWNER=      # optional owner for newly generated dummy key
   CLUSTER_RPC_URL=https://api.mainnet.solana.com
@@ -137,7 +136,6 @@ IDENTITY_LINK_PATH="${IDENTITY_LINK_PATH:-/etc/solana/identity.json}"
 STAKED_IDENTITY_KEYPAIR_PATH="${STAKED_IDENTITY_KEYPAIR_PATH:-/etc/solana/staked-identity.json}"
 DUMMY_IDENTITY_KEYPAIR_PATH="${DUMMY_IDENTITY_KEYPAIR_PATH:-/etc/solana/unstaked-identity.json}"
 MIN_IDLE_TIME="${MIN_IDLE_TIME:-2}"
-SET_IDENTITY_FORCE="${SET_IDENTITY_FORCE:-0}"
 ALLOW_NON_SYMLINK="${ALLOW_NON_SYMLINK:-0}"
 CLUSTER_RPC_URL="${CLUSTER_RPC_URL:-https://api.mainnet.solana.com}"
 SKIP_CLUSTER_CHECK="${SKIP_CLUSTER_CHECK:-0}"
@@ -216,9 +214,6 @@ else
   exit 1
 fi
 
-if [[ "$SET_IDENTITY_FORCE" -eq 1 ]]; then
-  cmd+=(--force)
-fi
 cmd+=("$TARGET_IDENTITY")
 
 if [[ "$SKIP_CLUSTER_CHECK" -ne 1 ]]; then
