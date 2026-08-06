@@ -39,6 +39,3 @@
 [tiles.bam]
     enabled = true
     url = "http://testnet.bam.jito.wtf:50055"
-
-[tiles.gui]
-    gui_listen_address = "0.0.0.0"
