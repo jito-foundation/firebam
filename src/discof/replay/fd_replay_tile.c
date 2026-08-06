@@ -684,7 +684,10 @@ publish_root_advanced( fd_replay_tile_t *  ctx,
                        fd_stem_context_t * stem,
                        fd_bank_t *         bank ) {
 
-  if( FD_UNLIKELY( bank->f.epoch>fd_slot_to_epoch( &bank->f.epoch_schedule, bank->f.parent_slot, NULL ) )) {
+  /* If the new consensus root is in the next epoch from the one the
+     replay tile currently holds, send the next epoch's leader schedule.
+     We can't use the new root's parent slot safely here. */
+  if( FD_UNLIKELY( bank->f.epoch>fd_slot_to_epoch( &bank->f.epoch_schedule, ctx->notified_root_slot, NULL ) ) ) {
     fd_runtime_update_next_leaders( bank, ctx->runtime_stack );
     publish_epoch_info( ctx, stem, bank, 1 );
   }
@@ -2339,6 +2342,11 @@ maybe_verify_shred_version( fd_replay_tile_t * ctx ) {
     }
   }
 
+  /* During a cluster restart, the configured shred version is the post-
+     restart value advertised by gossip.  Defer comparing it against the
+     snapshot's hard fork list until wait-for-supermajority completes. */
+  if( FD_UNLIKELY( ctx->wfs_enabled && !ctx->wfs_complete && ctx->expected_shred_version ) ) return;
+
   if( FD_LIKELY( ctx->has_genesis_hash && ctx->hard_fork_cnt!=ULONG_MAX && (ctx->expected_shred_version || ctx->ipecho_shred_version) ) ) {
     ushort expected_shred_version = ctx->expected_shred_version ? ctx->expected_shred_version : ctx->ipecho_shred_version;
 
@@ -2577,6 +2585,7 @@ returnable_frag( fd_replay_tile_t *  ctx,
     case IN_KIND_GOSSIP_OUT: {
       FD_TEST( sig==FD_GOSSIP_UPDATE_TAG_WFS_DONE );
       ctx->wfs_complete = 1;
+      maybe_verify_shred_version( ctx );
 
       /* Recalculate next_leader_tickcount relative to now.  The
          original value was computed at boot time (in boot_genesis or

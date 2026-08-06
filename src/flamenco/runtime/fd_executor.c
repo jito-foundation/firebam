@@ -531,9 +531,19 @@ fd_collect_loaded_account( fd_txn_out_t *   txn_out,
   }
   ulong programdata_sz;
   if( FD_LIKELY( programdata_ref ) ) {
-    if( FD_UNLIKELY( !programdata_ref->lamports ) ) return FD_RUNTIME_EXECUTE_SUCCESS;
+    /* Agave charges 64+len iff on the current fork the account is
+       lamports!=0.  The length used is also from the current fork.  So
+       liveness and length must come from the current fork.
+       executable[] holds the parent fork, so prefer the current fork
+       values from the probe whenever available. */
     ulong cur = txn_out->accounts.executable_cur_len[ pd_idx ];
-    programdata_sz = ( cur!=ULONG_MAX ) ? cur : programdata_ref->data_len;
+    if( cur!=ULONG_MAX ) {
+      if( FD_UNLIKELY( !txn_out->accounts.executable_cur_lamports[ pd_idx ] ) ) return FD_RUNTIME_EXECUTE_SUCCESS;
+      programdata_sz = cur;
+    } else {
+      if( FD_UNLIKELY( !programdata_ref->lamports ) ) return FD_RUNTIME_EXECUTE_SUCCESS;
+      programdata_sz = programdata_ref->data_len;
+    }
   } else {
     programdata_sz = 0UL;
     for( ushort i=0; i<txn_out->accounts.executable_skipped_cnt; i++ ) {
@@ -799,16 +809,34 @@ fd_executor_setup_txn_alut_account_keys( fd_runtime_t *      runtime,
       FD_LOG_DEBUG(( "fd_executor_setup_txn_alut_account_keys(): failed to get slot hashes" ));
       return FD_RUNTIME_TXN_ERR_ACCOUNT_NOT_FOUND;
     }
+    /* Resolve the ALT against the parent.  This is because the
+       scheduler does not treat the ALT itself as a dependency, so a
+       transaction resolving/reading a table can be scheduled
+       concurrently with one extending/writing it.  This would violate
+       the accdb acquire contract if they both used the same fork_id.
+       Similar to the case of implied loader v3 ProgramData reads, we
+       acquire from the parent.
+
+       Only the fork_id changes.  The slot stays this bank's slot, which
+       is always larger than the parent's last_extended_slot, and thus
+       revealing every address as of the end of the parent slot.  The
+       slot hashes sysvar also stays this bank's, since the deactivation
+       window is relative to the executing slot.
+
+       Unlike with implied loader v3 ProgramData, no special handling is
+       needed here for loaded account data size on the ALT.  ALT size
+       accounting is stateless. */
+    FD_TEST( bank->parent_accdb_fork_id.val!=USHORT_MAX );
     fd_acct_addr_t * accts_alt = fd_type_pun( &txn_out->accounts.keys[txn_out->accounts.cnt] );
     int err = fd_runtime_load_txn_address_lookup_tables( TXN( txn_in->txn ),
                                                          txn_in->txn->payload,
                                                          runtime->accdb,
-                                                         bank->accdb_fork_id,
+                                                         bank->parent_accdb_fork_id,
                                                          bank->f.slot,
                                                          slot_hashes_view,
                                                          accts_alt );
-    txn_out->accounts.cnt += TXN( txn_in->txn )->addr_table_adtl_cnt;
     if( FD_UNLIKELY( err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) return err;
+    txn_out->accounts.cnt += TXN( txn_in->txn )->addr_table_adtl_cnt;
 
   }
   return FD_RUNTIME_EXECUTE_SUCCESS;
@@ -1167,10 +1195,6 @@ fd_executor_setup_accounts_for_txn_bundle( fd_runtime_t *      runtime,
     if( !found ) txn_out->accounts.account_acquired[ i ] = 1U;
   }
 
-  /* The executable (programdata) accounts were bound for every txn
-     up-front by fd_runtime_prepare_bundle_accounts and are preserved
-     across fd_runtime_new_txn_out for bundle txns, so there is nothing
-     to do here. */
   txn_out->accounts.is_setup         = 1;
   txn_out->accounts.nonce_idx_in_txn = ULONG_MAX;
 }
@@ -1279,7 +1303,8 @@ fd_executor_setup_accounts_for_txn( fd_runtime_t *      runtime,
     if( FD_UNLIKELY( !fd_accdb_exists( runtime->accdb, bank->parent_accdb_fork_id, programdata_key->uc ) ) ) {
       int   skip_pd  = 0;
       ulong skip_len = 0UL;
-      if( fd_accdb_probe_pd_this_fork( runtime->accdb, bank->accdb_fork_id, programdata_key->uc, &skip_pd, &skip_len ) ) {
+      ulong skip_lamports = 0UL;
+      if( fd_accdb_probe_pd_this_fork( runtime->accdb, bank->accdb_fork_id, programdata_key->uc, &skip_pd, &skip_len, &skip_lamports ) ) {
         ushort s = txn_out->accounts.executable_skipped_cnt++;
         txn_out->accounts.executable_skipped_key[ s ] = *programdata_key;
         txn_out->accounts.executable_skipped_len[ s ] = skip_len;
@@ -1310,9 +1335,11 @@ fd_executor_setup_accounts_for_txn( fd_runtime_t *      runtime,
     txn_out->accounts.executable_from_parent[ exe_idx ] = acquired_from_parent;
     int   pd  = 0;
     ulong len = ULONG_MAX;
-    fd_accdb_probe_pd_this_fork( runtime->accdb, bank->accdb_fork_id, pubkeys[ i ], &pd, &len );
-    txn_out->accounts.executable_pd_write[ exe_idx ] = pd;
-    txn_out->accounts.executable_cur_len[ exe_idx ]  = len;
+    ulong lamports = 0UL;
+    fd_accdb_probe_pd_this_fork( runtime->accdb, bank->accdb_fork_id, pubkeys[ i ], &pd, &len, &lamports );
+    txn_out->accounts.executable_pd_write[ exe_idx ]     = pd;
+    txn_out->accounts.executable_cur_len[ exe_idx ]      = len;
+    txn_out->accounts.executable_cur_lamports[ exe_idx ] = lamports;
   }
   runtime->accounts.executable_cnt += executable_acquire_cnt;
 

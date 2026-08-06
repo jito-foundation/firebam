@@ -23,6 +23,7 @@
 #include "../../util/pod/fd_pod_format.h"
 #include "../../discof/restore/utils/fd_ssctrl.h"
 #include "../../discof/restore/utils/fd_ssmsg.h"
+#include "../../flamenco/accdb/fd_accdb_cache.h"
 #include "../../flamenco/capture/fd_solcap_writer.h"
 #include "../../flamenco/progcache/fd_progcache_admin.h"
 #include "../../flamenco/runtime/fd_cost_tracker.h"
@@ -196,49 +197,7 @@ setup_topo_accdb( fd_topo_t *  topo,
   ulong seed;
   FD_TEST( fd_rng_secure( &seed, sizeof( ulong ) ) );
 
-  /* cache_min_reserved must cover the worst-case requested_buckets
-     value that fd_accdb_acquire_a can compute for a SINGLE size class,
-     summed across all transactions whose reservations are live
-     simultaneously (a bundle of up to 5 transactions).
-
-     Per pubkey, per class j, the reservation loop in
-     fd_accdb_acquire_inner can contribute up to three slots to
-     requested_buckets[j]:
-       (1) +1 if the account already exists and lives in class j (the
-           cache-read line — see fd_accdb.c:1580).
-       (2) +1 if the pubkey is writable (the staging buffer
-           reservation runs across EVERY class — see
-           fd_accdb.c:1583-1588).
-       (3) +1 unconditionally per pubkey under MAYBE_PROGRAMDATA (the
-           programdata placeholder runs across EVERY class regardless
-           of writable/existence, refunded later by acquire_b — see
-           fd_accdb.c:1599-1603).
-
-     A naive worst case (all 64 writable + existing in the same class)
-     gives 64 * (1+1+1) = 192 slots per class per transaction.  But
-     Solana semantics force at least one read-only pubkey per
-     transaction: every transaction must invoke at least one program,
-     and program accounts referenced for invocation must be read-only.
-     A read-only pubkey contributes at most (1)+(3) = 2 in any class
-     (no writable +1 every class).  So one of the 64 contributions
-     drops from 3 to 2 in the worst-case class, giving:
-
-       63 * 3 + 1 * 2 = 191 slots per class per transaction.
-
-     (We do NOT also subtract for the fee payer cannot-be-programdata
-     constraint: the fee payer is still writable and still receives
-     the placeholder reservation at (3) — only an acquire_a code change
-     could exploit that.  Likewise, the read-only program likely lives
-     in a BPF size class (class 3+), but we do not assume which class:
-     we just deduct the writable (2) contribution that any read-only
-     pubkey can never provide.)
-
-     Bundle or BAM atomic batches enabled:  5 * 191 = 955 slots per class.
-     Atomic batches disabled:                   191 slots per class.
-
-     The caller gates this on block production and either bundle or BAM
-     ingestion being enabled. */
-  ulong cache_min_reserved = bundle_enabled ? (5UL*191UL) : 191UL;
+  ulong cache_min_reserved = fd_accdb_cache_min_reserved( bundle_enabled );
 
   FD_TEST( fd_pod_insertf_ulong( topo->props, max_accounts,       "obj.%lu.max_accounts",       obj->id ) );
   FD_TEST( fd_pod_insertf_ulong( topo->props, max_live_slots,     "obj.%lu.max_live_slots",     obj->id ) );
