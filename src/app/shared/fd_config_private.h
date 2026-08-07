@@ -48,6 +48,22 @@ fd_config_fill( fd_config_t * config,
 void
 fd_config_validate( fd_config_t const * config );
 
+/* Parses an IPv4 host:port endpoint.  Numeric IPv4 addresses are
+   parsed directly.  Hostnames are resolved through the system resolver
+   and the first IPv4 result is selected.  Returns 1 on success and 0
+   after logging a warning on failure. */
+
+int
+fd_config_resolve_ip4_endpoint( char const *       endpoint,
+                                fd_topo_ip_port_t * out );
+
+/* Resolves each configured additional shred destination once and copies
+   the resulting numeric endpoints into every shred tile in topo. */
+
+void
+fd_config_apply_shred_destinations( fd_config_t const * config,
+                                    fd_topo_t *         topo );
+
 FD_PROTOTYPES_END
 
 #endif /* HEADER_fd_src_app_shared_fd_config_private_h */

@@ -4,6 +4,7 @@ Constructed using a full topology which is pruned down. */
 #define _GNU_SOURCE
 #include "../../../firedancer/topology.h"
 #include "../../../shared/fd_action.h"
+#include "../../../shared/fd_config_private.h"
 #include "../../../shared/commands/configure/configure.h"
 #include "../../../shared/commands/run/run.h"
 #include "../../../shared/commands/watch/watch.h"
@@ -429,6 +430,7 @@ forktest_topo( config_t * config ) {
   for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
     fd_topo_configure_tile( &topo->tiles[ i ], config );
   }
+  fd_config_apply_shred_destinations( config, topo );
 
   fd_topob_finish( topo, CALLBACKS );
 }

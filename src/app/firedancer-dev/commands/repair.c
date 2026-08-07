@@ -12,6 +12,7 @@
 #include "../../shared/commands/configure/configure.h"
 #include "../../shared/commands/run/run.h" /* initialize_workspaces */
 #include "../../shared/fd_config.h" /* config_t */
+#include "../../shared/fd_config_private.h"
 #include "../../shared_dev/commands/dev.h"
 #include "../../../disco/tiles.h"
 #include "../../../disco/topo/fd_topob.h"
@@ -489,6 +490,7 @@ repair_topo( config_t * config ) {
     fd_topo_tile_t * tile = &topo->tiles[ i ];
     fd_topo_configure_tile( tile, config );
   }
+  fd_config_apply_shred_destinations( config, topo );
 
   if( FD_UNLIKELY( is_auto_affinity ) ) fd_topob_auto_layout( topo, 0 );
 

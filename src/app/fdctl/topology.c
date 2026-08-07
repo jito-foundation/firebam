@@ -1,4 +1,5 @@
 #include "../shared/fd_config.h"
+#include "../shared/fd_config_private.h"
 
 #include "../../disco/net/fd_net_tile.h"
 #include "../../disco/quic/fd_tpu.h"
@@ -14,24 +15,6 @@
 #include "../../util/net/fd_ip4.h"
 
 extern fd_topo_obj_callbacks_t * CALLBACKS[];
-
-static void
-parse_ip_port( const char * name, const char * ip_port, fd_topo_ip_port_t *parsed_ip_port) {
-  char buf[ sizeof( "255.255.255.255:65536" ) ];
-  memcpy( buf, ip_port, sizeof( buf ) );
-  char *ip_end = strchr( buf, ':' );
-  if( FD_UNLIKELY( !ip_end ) )
-    FD_LOG_ERR(( "[%s] must in the form ip:port", name ));
-  *ip_end = '\0';
-
-  if( FD_UNLIKELY( !fd_cstr_to_ip4_addr( buf, &( parsed_ip_port->ip ) ) ) ) {
-    FD_LOG_ERR(( "could not parse IP %s in [%s]", buf, name ));
-  }
-
-  parsed_ip_port->port = fd_cstr_to_ushort( ip_end+1 );
-  if( FD_UNLIKELY( !parsed_ip_port->port ) )
-    FD_LOG_ERR(( "could not parse port %s in [%s]", ip_end+1, name ));
-}
 
 void
 fd_topo_configure_tile( fd_topo_tile_t * tile,
@@ -518,6 +501,7 @@ fd_topo_initialize( config_t * config ) {
     fd_topo_configure_tile( tile, config );
     if( FD_UNLIKELY( !strcmp( tile->name, "guih" ) ) ) tile->gui.tile_cnt = topo->tile_cnt;
   }
+  fd_config_apply_shred_destinations( config, topo );
 
   if( FD_UNLIKELY( is_auto_affinity ) ) fd_topob_auto_layout( topo, 1 );
 
@@ -673,18 +657,6 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->shred.expected_shred_version        = config->consensus.expected_shred_version;
     tile->shred.shred_listen_port             = config->tiles.shred.shred_listen_port;
     tile->shred.larger_shred_limits_per_block = config->development.bench.larger_shred_limits_per_block;
-    for( ulong i=0UL; i<config->tiles.shred.additional_shred_destinations_retransmit_cnt; i++ ) {
-      parse_ip_port( "tiles.shred.additional_shred_destinations_retransmit",
-                      config->tiles.shred.additional_shred_destinations_retransmit[ i ],
-                      &tile->shred.adtl_dests_retransmit[ i ] );
-    }
-    tile->shred.adtl_dests_retransmit_cnt = config->tiles.shred.additional_shred_destinations_retransmit_cnt;
-    for( ulong i=0UL; i<config->tiles.shred.additional_shred_destinations_leader_cnt; i++ ) {
-      parse_ip_port( "tiles.shred.additional_shred_destinations_leader",
-                      config->tiles.shred.additional_shred_destinations_leader[ i ],
-                      &tile->shred.adtl_dests_leader[ i ] );
-    }
-    tile->shred.adtl_dests_leader_cnt = config->tiles.shred.additional_shred_destinations_leader_cnt;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "store" ) ) ) {
     tile->store.disable_blockstore_from_slot = config->development.bench.disable_blockstore_from_slot;

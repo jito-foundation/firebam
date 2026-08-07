@@ -1,4 +1,5 @@
 #include "topology.h"
+#include "../shared/fd_config_private.h"
 
 #include "../../discof/poh/fd_poh.h"
 #include "../../discof/replay/fd_execrp.h"
@@ -73,24 +74,6 @@ wire_event_links( fd_topo_t * topo ) {
 
     fd_topob_tile_in( topo, "event", 0UL, "metric_in", link_name, link->kind_id, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
   }
-}
-
-static void
-parse_ip_port( const char * name, const char * ip_port, fd_topo_ip_port_t *parsed_ip_port) {
-  char buf[ sizeof( "255.255.255.255:65536" ) ];
-  memcpy( buf, ip_port, sizeof( buf ) );
-  char *ip_end = strchr( buf, ':' );
-  if( FD_UNLIKELY( !ip_end ) )
-    FD_LOG_ERR(( "[%s] must in the form ip:port", name ));
-  *ip_end = '\0';
-
-  if( FD_UNLIKELY( !fd_cstr_to_ip4_addr( buf, &( parsed_ip_port->ip ) ) ) ) {
-    FD_LOG_ERR(( "could not parse IP %s in [%s]", buf, name ));
-  }
-
-  parsed_ip_port->port = fd_cstr_to_ushort( ip_end+1 );
-  if( FD_UNLIKELY( !parsed_ip_port->port ) )
-    FD_LOG_ERR(( "could not parse port %s in [%s]", ip_end+1, name ));
 }
 
 #define BAM_DUMP_MODE( config )                                                     \
@@ -1332,6 +1315,8 @@ fd_topo_initialize( config_t * config ) {
     if( FD_UNLIKELY( !strcmp( topo->tiles[ i ].name, "gui" ) ) ) topo->tiles[ i ].gui.tile_cnt = topo->tile_cnt;
   }
 
+  fd_config_apply_shred_destinations( config, topo );
+
   if( FD_LIKELY( telemetry_enabled ) ) wire_event_links( topo );
 
   FOR(net_tile_cnt) fd_topos_net_tile_finish( topo, i );
@@ -1757,18 +1742,6 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->shred.expected_shred_version        = config->consensus.expected_shred_version;
     tile->shred.shred_listen_port             = config->tiles.shred.shred_listen_port;
     tile->shred.larger_shred_limits_per_block = config->development.bench.larger_shred_limits_per_block;
-    for( ulong i=0UL; i<config->tiles.shred.additional_shred_destinations_retransmit_cnt; i++ ) {
-      parse_ip_port( "tiles.shred.additional_shred_destinations_retransmit",
-                      config->tiles.shred.additional_shred_destinations_retransmit[ i ],
-                      &tile->shred.adtl_dests_retransmit[ i ] );
-    }
-    tile->shred.adtl_dests_retransmit_cnt = config->tiles.shred.additional_shred_destinations_retransmit_cnt;
-    for( ulong i=0UL; i<config->tiles.shred.additional_shred_destinations_leader_cnt; i++ ) {
-      parse_ip_port( "tiles.shred.additional_shred_destinations_leader",
-                      config->tiles.shred.additional_shred_destinations_leader[ i ],
-                      &tile->shred.adtl_dests_leader[ i ] );
-    }
-    tile->shred.adtl_dests_leader_cnt = config->tiles.shred.additional_shred_destinations_leader_cnt;
 
   } else if( FD_UNLIKELY( !strcmp( tile->name, "sign" ) ) ) {
 

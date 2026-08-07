@@ -168,6 +168,13 @@ test_topology( int bundle_enabled,
   config->tiles.gui.enabled = 0;
   config->tiles.bundle.enabled = bundle_enabled;
   config->tiles.bam.enabled = bam_enabled;
+  config->layout.shred_tile_count = 2U;
+  config->tiles.shred.additional_shred_destinations_retransmit_cnt = 1UL;
+  fd_cstr_ncpy( config->tiles.shred.additional_shred_destinations_retransmit[ 0 ], "localhost:12000",
+                sizeof(config->tiles.shred.additional_shred_destinations_retransmit[ 0 ]) );
+  config->tiles.shred.additional_shred_destinations_leader_cnt = 1UL;
+  fd_cstr_ncpy( config->tiles.shred.additional_shred_destinations_leader[ 0 ], "198.51.100.42:13000",
+                sizeof(config->tiles.shred.additional_shred_destinations_leader[ 0 ]) );
 
   fd_cstr_ncpy( config->net.interface, "lo", sizeof(config->net.interface) );
   fd_cstr_ncpy( config->layout.affinity, "f128", sizeof(config->layout.affinity) );
@@ -209,7 +216,24 @@ test_topology( int bundle_enabled,
   fd_topo_obj_t const * accdb = fd_topo_find_obj( topo, "accdb", NULL, ULONG_MAX );
   FD_TEST( accdb );
   FD_TEST( fd_pod_queryf_ulong( topo->props, 0UL, "obj.%lu.cache_min_reserved", accdb->id )==
-           (crank_enabled ? 955UL : 191UL) );
+           (crank_enabled ? 960UL : 192UL) );
+
+  ulong shred0_id = fd_topo_find_tile( topo, "shred", 0UL );
+  ulong shred1_id = fd_topo_find_tile( topo, "shred", 1UL );
+  FD_TEST( shred0_id!=ULONG_MAX && shred1_id!=ULONG_MAX );
+  fd_topo_tile_t const * shred0 = &topo->tiles[ shred0_id ];
+  fd_topo_tile_t const * shred1 = &topo->tiles[ shred1_id ];
+
+  FD_TEST( shred0->shred.adtl_dests_retransmit_cnt==1UL && shred1->shred.adtl_dests_retransmit_cnt==1UL );
+  FD_TEST( shred0->shred.adtl_dests_leader_cnt==1UL && shred1->shred.adtl_dests_leader_cnt==1UL );
+  FD_TEST( fd_ip4_addr_is_loopback( shred0->shred.adtl_dests_retransmit[ 0 ].ip ) );
+  FD_TEST( shred0->shred.adtl_dests_retransmit[ 0 ].port==12000U );
+  FD_TEST( shred0->shred.adtl_dests_leader[ 0 ].ip==FD_IP4_ADDR( 198, 51, 100, 42 ) );
+  FD_TEST( shred0->shred.adtl_dests_leader[ 0 ].port==13000U );
+  FD_TEST( !memcmp( shred0->shred.adtl_dests_retransmit, shred1->shred.adtl_dests_retransmit,
+                    sizeof(shred0->shred.adtl_dests_retransmit) ) );
+  FD_TEST( !memcmp( shred0->shred.adtl_dests_leader, shred1->shred.adtl_dests_leader,
+                    sizeof(shred0->shred.adtl_dests_leader) ) );
 }
 
 int

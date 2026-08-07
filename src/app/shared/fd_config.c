@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <stdlib.h> /* strtoul */
+#include <netdb.h>
 #include <sys/utsname.h>
 #include <sys/mman.h>
 
@@ -37,6 +38,99 @@ replace( char *       in,
     ulong after_len = strlen( ( const char * ) after );
     fd_memcpy( replace + sub_len, after, after_len );
     in[ total_len ] = '\0';
+  }
+}
+
+int
+fd_config_resolve_ip4_endpoint( char const *       endpoint,
+                                fd_topo_ip_port_t * out ) {
+  char const * colon = strrchr( endpoint, ':' );
+  if( FD_UNLIKELY( !colon ) ) {
+    FD_LOG_WARNING(( "invalid additional shred destination `%s`: expected host:port", endpoint ));
+    return 0;
+  }
+
+  ulong host_len = (ulong)(colon-endpoint);
+  if( FD_UNLIKELY( !host_len ) ) {
+    FD_LOG_WARNING(( "invalid additional shred destination `%s`: host is empty", endpoint ));
+    return 0;
+  }
+  if( FD_UNLIKELY( host_len>255UL ) ) {
+    FD_LOG_WARNING(( "invalid additional shred destination `%s`: hostname is too long (max 255 bytes)", endpoint ));
+    return 0;
+  }
+
+  if( FD_UNLIKELY( !colon[ 1 ] || strspn( colon+1, "0123456789" )!=strlen( colon+1 ) ) ) {
+    FD_LOG_WARNING(( "invalid additional shred destination `%s`: port must be a decimal integer", endpoint ));
+    return 0;
+  }
+  ulong port = strtoul( colon+1, NULL, 10 );
+  if( FD_UNLIKELY( !port || port>USHORT_MAX ) ) {
+    FD_LOG_WARNING(( "invalid additional shred destination `%s`: port must be between 1 and 65535", endpoint ));
+    return 0;
+  }
+
+  char host[ 256UL ];
+  fd_memcpy( host, endpoint, host_len );
+  host[ host_len ] = '\0';
+
+  if( FD_LIKELY( host_len<=15UL && fd_cstr_to_ip4_addr( host, &out->ip ) ) ) {
+    out->port = (ushort)port;
+    return 1;
+  }
+
+  struct addrinfo hints = { .ai_family = AF_INET };
+  struct addrinfo * result = NULL;
+  int err = getaddrinfo( host, NULL, &hints, &result );
+  if( FD_UNLIKELY( err ) ) {
+    FD_LOG_WARNING(( "cannot resolve additional shred destination hostname `%s`: %i-%s", host, err, gai_strerror( err ) ));
+    return 0;
+  }
+
+  if( FD_UNLIKELY( !result || !result->ai_addr || result->ai_addrlen<sizeof(struct sockaddr_in) ) ) {
+    if( result ) freeaddrinfo( result );
+    FD_LOG_WARNING(( "cannot resolve additional shred destination hostname `%s`: no IPv4 address found", host ));
+    return 0;
+  }
+
+  out->ip   = ((struct sockaddr_in const *)result->ai_addr)->sin_addr.s_addr;
+  out->port = (ushort)port;
+  freeaddrinfo( result );
+  return 1;
+}
+
+void
+fd_config_apply_shred_destinations( fd_config_t const * config,
+                                    fd_topo_t *         topo ) {
+  if( FD_UNLIKELY( config->tiles.shred.additional_shred_destinations_retransmit_cnt>FD_TOPO_ADTL_DESTS_MAX ||
+                   config->tiles.shred.additional_shred_destinations_leader_cnt>FD_TOPO_ADTL_DESTS_MAX ) ) {
+    FD_LOG_ERR(( "at most %lu additional shred destinations are supported per list", FD_TOPO_ADTL_DESTS_MAX ));
+  }
+
+  fd_topo_ip_port_t retransmit[ FD_TOPO_ADTL_DESTS_MAX ] = {0};
+  fd_topo_ip_port_t leader[ FD_TOPO_ADTL_DESTS_MAX ] = {0};
+
+  for( ulong i=0UL; i<config->tiles.shred.additional_shred_destinations_retransmit_cnt; i++ ) {
+    if( FD_UNLIKELY( !fd_config_resolve_ip4_endpoint( config->tiles.shred.additional_shred_destinations_retransmit[ i ],
+                                                      &retransmit[ i ] ) ) ) {
+      FD_LOG_ERR(( "failed to resolve [tiles.shred.additional_shred_destinations_retransmit] entry %lu", i ));
+    }
+  }
+
+  for( ulong i=0UL; i<config->tiles.shred.additional_shred_destinations_leader_cnt; i++ ) {
+    if( FD_UNLIKELY( !fd_config_resolve_ip4_endpoint( config->tiles.shred.additional_shred_destinations_leader[ i ],
+                                                      &leader[ i ] ) ) ) {
+      FD_LOG_ERR(( "failed to resolve [tiles.shred.additional_shred_destinations_leader] entry %lu", i ));
+    }
+  }
+
+  for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
+    fd_topo_tile_t * tile = &topo->tiles[ i ];
+    if( FD_LIKELY( strcmp( tile->name, "shred" ) ) ) continue;
+    fd_memcpy( tile->shred.adtl_dests_retransmit, retransmit, sizeof(retransmit) );
+    tile->shred.adtl_dests_retransmit_cnt = config->tiles.shred.additional_shred_destinations_retransmit_cnt;
+    fd_memcpy( tile->shred.adtl_dests_leader, leader, sizeof(leader) );
+    tile->shred.adtl_dests_leader_cnt = config->tiles.shred.additional_shred_destinations_leader_cnt;
   }
 }
 

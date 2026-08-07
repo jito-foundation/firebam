@@ -13,6 +13,7 @@
 #define CONFIGURE_STAGE_COUNT       ( 24UL)
 #define GOSSIP_TILE_ENTRYPOINTS_MAX ( 16UL)
 #define IP4_PORT_STR_MAX            ( 22UL)
+#define SHRED_DESTINATION_STR_MAX   (262UL)
 
 struct fd_configh {
   char dynamic_port_range[ 32 ];
@@ -475,9 +476,9 @@ struct fd_config {
       uint   max_pending_shred_sets;
       ushort shred_listen_port;
       ulong  additional_shred_destinations_retransmit_cnt;
-      char   additional_shred_destinations_retransmit[ FD_TOPO_ADTL_DESTS_MAX ][ sizeof("255.255.255.255:65536") ];
+      char   additional_shred_destinations_retransmit[ FD_TOPO_ADTL_DESTS_MAX ][ SHRED_DESTINATION_STR_MAX ];
       ulong  additional_shred_destinations_leader_cnt;
-      char   additional_shred_destinations_leader[ FD_TOPO_ADTL_DESTS_MAX ][ sizeof("255.255.255.255:65536") ];
+      char   additional_shred_destinations_leader[ FD_TOPO_ADTL_DESTS_MAX ][ SHRED_DESTINATION_STR_MAX ];
     } shred;
 
     struct {
