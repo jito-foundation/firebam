@@ -506,7 +506,9 @@ main( int     argc,
 
   ulong cpu_idx = fd_tile_cpu_id( fd_tile_idx() );
   if( cpu_idx>fd_shmem_cpu_cnt() ) cpu_idx = 0UL;
-  fd_wksp_t * wksp = fd_wksp_new_anonymous( FD_SHMEM_NORMAL_PAGE_SZ, 256UL, fd_shmem_cpu_idx( fd_shmem_numa_idx( cpu_idx ) ), "wksp", 16UL );
+  /* Transaction V1 raises FD_TPU_PARSED_MTU enough that the 128-entry test
+     dcache and pending deque no longer fit in a 1 MiB workspace. */
+  fd_wksp_t * wksp = fd_wksp_new_anonymous( FD_SHMEM_NORMAL_PAGE_SZ, 512UL, fd_shmem_cpu_idx( fd_shmem_numa_idx( cpu_idx ) ), "wksp", 16UL );
   FD_TEST( wksp );
 
   test_replay_frag_ingest();

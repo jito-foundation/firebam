@@ -16,8 +16,12 @@
 #define TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH 0
 #endif
 
-#define TEST_MCACHE_DEPTH 16UL
-#define TEST_DCACHE_CHUNKS 64UL
+#define TEST_MCACHE_DEPTH  16UL
+#define TEST_DCACHE_CHUNKS 128UL
+
+/* Transaction V1 makes FD_TPU_PARSED_MTU larger than the old 64-chunk test
+   dcache.  Keep at least one complete parsed transaction in the ring. */
+FD_STATIC_ASSERT( TEST_DCACHE_CHUNKS*FD_CHUNK_SZ>=FD_TPU_PARSED_MTU, test_dcache_too_small );
 
 typedef struct {
   TEST_BAM_RESOLVE_CTX_T * ctx;

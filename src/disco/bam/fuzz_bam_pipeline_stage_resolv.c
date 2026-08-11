@@ -76,6 +76,8 @@ bam_fuzz_resolv_new( fd_wksp_t * wksp,
   h->ctx = FD_SCRATCH_ALLOC_APPEND( alloc, alignof(fd_resolv_ctx_t), sizeof(fd_resolv_ctx_t) );
   FD_TEST( h->ctx );
   fd_memset( h->ctx, 0, sizeof(fd_resolv_ctx_t) );
+  /* The standalone harness has no replay tile to gate startup on. */
+  h->ctx->startup_gate->started = 1;
 
   h->pool_mem = FD_SCRATCH_ALLOC_APPEND( alloc, pool_align(), pool_footprint( BAM_FUZZ_RESOLV_POOL_CNT ) );
   h->ctx->pool = pool_join( pool_new( h->pool_mem, BAM_FUZZ_RESOLV_POOL_CNT ) );

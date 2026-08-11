@@ -34,7 +34,7 @@ struct bam_fuzz_verify {
   void * tcache_mem;
   fd_tcache_t * tcache;
 
-  void * sha_mem[ FD_TXN_ACTUAL_SIG_MAX ];
+  void * sha_mem[ FD_TXN_SIG_MAX ];
 
   void *           verify_mcache_mem;
   fd_frag_meta_t * verify_mcache;
@@ -64,7 +64,7 @@ bam_fuzz_verify_new( fd_wksp_t * wksp,
   ulong l = FD_LAYOUT_INIT;
   l = FD_LAYOUT_APPEND( l, alignof(fd_verify_ctx_t), sizeof(fd_verify_ctx_t) );
   l = FD_LAYOUT_APPEND( l, fd_tcache_align(),        fd_tcache_footprint( BAM_FUZZ_VERIFY_TCACHE_DEPTH, 0UL ) );
-  for( ulong i=0UL; i<FD_TXN_ACTUAL_SIG_MAX; i++ )
+  for( ulong i=0UL; i<FD_TXN_SIG_MAX; i++ )
     l = FD_LAYOUT_APPEND( l, fd_sha512_align(), fd_sha512_footprint() );
   l = FD_LAYOUT_APPEND( l, fd_mcache_align(), fd_mcache_footprint( BAM_FUZZ_VERIFY_MCACHE_DEPTH, 0UL ) );
   l = FD_LAYOUT_APPEND( l, fd_dcache_align(), fd_dcache_footprint( fd_dcache_req_data_sz( FD_TPU_PARSED_MTU, BAM_FUZZ_VERIFY_MCACHE_DEPTH, 1UL, 1 ), 0UL ) );
@@ -83,7 +83,7 @@ bam_fuzz_verify_new( fd_wksp_t * wksp,
   h->tcache = fd_tcache_join( fd_tcache_new( h->tcache_mem, BAM_FUZZ_VERIFY_TCACHE_DEPTH, 0UL ) );
   FD_TEST( h->tcache );
 
-  for( ulong i=0UL; i<FD_TXN_ACTUAL_SIG_MAX; i++ ) {
+  for( ulong i=0UL; i<FD_TXN_SIG_MAX; i++ ) {
     h->sha_mem[ i ] = FD_SCRATCH_ALLOC_APPEND( alloc, fd_sha512_align(), fd_sha512_footprint() );
     h->ctx->sha[ i ] = fd_sha512_join( fd_sha512_new( h->sha_mem[ i ] ) );
     FD_TEST( h->ctx->sha[ i ] );
@@ -152,7 +152,7 @@ void
 bam_fuzz_verify_delete( bam_fuzz_verify_t * h ) {
   if( FD_UNLIKELY( !h ) ) return;
 
-  for( ulong i=0UL; i<FD_TXN_ACTUAL_SIG_MAX; i++ ) {
+  for( ulong i=0UL; i<FD_TXN_SIG_MAX; i++ ) {
     if( h->ctx && h->ctx->sha[ i ] ) {
       void * mem = fd_sha512_delete( fd_sha512_leave( h->ctx->sha[ i ] ) );
       FD_TEST( mem==h->sha_mem[ i ] );

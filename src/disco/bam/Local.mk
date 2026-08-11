@@ -12,6 +12,12 @@ ifdef FD_HAS_HOSTED
 $(call make-unit-test,test_bam_admin_rpc,test_bam_admin_rpc,fd_disco fd_util)
 $(call run-unit-test,test_bam_admin_rpc)
 $(call make-fuzz-test,fuzz_bam_client,fuzz_bam_client,fd_disco fd_waltz fd_flamenco fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))
+
+# fd_svm_mini targets roughly 2 GiB before sanitizer overhead, which exceeds
+# libFuzzer's 2 GiB default RSS limit even though the stateful corpus is healthy.
+BAM_PIPELINE_SAVED_FUZZFLAGS:=$(FUZZFLAGS)
+FUZZFLAGS:=$(FUZZFLAGS) -rss_limit_mb=3072
 $(call make-fuzz-test,fuzz_bam_pipeline_stateful,fuzz_bam_pipeline_stateful fuzz_bam_pipeline_stage_verify fuzz_bam_pipeline_stage_dedup fuzz_bam_pipeline_stage_resolv fuzz_bam_pipeline_stage_pack fuzz_bam_pipeline_stage_execle,fd_discof fd_disco fd_flamenco_test fd_waltz fd_flamenco fd_funk fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))
+FUZZFLAGS:=$(BAM_PIPELINE_SAVED_FUZZFLAGS)
 endif
 endif
