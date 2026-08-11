@@ -14,21 +14,21 @@ permissions:
 
 jobs:
   tests:
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'firedancer-io/firedancer' && github.event.pull_request.draft == false
     uses: ./.github/workflows/tests.yml
     secrets: inherit
   backtest:
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'firedancer-io/firedancer' && github.event.pull_request.draft == false
     uses: ./.github/workflows/backtest.yml
     secrets: inherit
   benchmark:
-    if: github.event.pull_request.draft == false && github.event_name == 'pull_request'
+    if: github.repository == 'firedancer-io/firedancer' && github.event.pull_request.draft == false && github.event_name == 'pull_request'
     uses: ./.github/workflows/benchmark.yml
     with:
       github-token: ${{ github.token }}
     secrets: inherit
   build_checks_1:
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'firedancer-io/firedancer' && github.event.pull_request.draft == false
     uses: ./.github/workflows/builds.yml
     with:
       cid: 1
@@ -54,7 +54,7 @@ jobs:
         ALL,linux_clang_zen4,ALL;
         ALL,linux_clang_zen5,ALL;
   build_checks_2:
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'firedancer-io/firedancer' && github.event.pull_request.draft == false
     uses: ./.github/workflows/builds.yml
     with:
       cid: 2
@@ -65,7 +65,7 @@ jobs:
       build_arm: false
       check_run: true
   build_checks_3:
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'firedancer-io/firedancer' && github.event.pull_request.draft == false
     uses: ./.github/workflows/builds.yml
     with:
       cid: 3

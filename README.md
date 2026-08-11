@@ -1,6 +1,8 @@
-# [Firedancer](https://jumpcrypto.com/firedancer/) 🔥💃
+# FireBAM 🔥💃
 
-Firedancer is a new validator client for Solana.
+FireBAM is a fork of [Firedancer](https://jumpcrypto.com/firedancer/) that adds
+validator support for [BAM (Blockspace Assembly Marketplace)](https://bam.dev/), 
+a next-generation transaction scheduling system for Solana.
 
 * **Fast** Designed from the ground up to be *fast*. The concurrency
 model draws from experience in the low latency trading space, and the code
