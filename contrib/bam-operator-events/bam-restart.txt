@@ -1,0 +1,9 @@
+# Wait for the first BAM scheduler handshake, restart the BAM controller, and
+# confirm the validator performs a fresh handshake to the relaunched server.
+wait_log bam 30000 InitSchedulerStream:
+wait_log bam 30000 scheduler<-validator auth proof
+restart_bam
+wait_log_count bam 45000 2 GetAuthChallenge:
+wait_log_count bam 45000 2 GetBuilderConfig:
+wait_log_count bam 45000 2 InitSchedulerStream:
+wait_log_count bam 45000 2 scheduler<-validator auth proof

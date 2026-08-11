@@ -164,6 +164,17 @@ metrics_write( fd_replay_tile_t * ctx ) {
   }
   FD_MGAUGE_SET( REPLAY, RESET_SLOT, ctx->reset_slot==ULONG_MAX ? 0UL : ctx->reset_slot );
 
+  ulong slot_duration_nanos = ctx->leader_bank ? ctx->leader_bank->f.slot_params.ns_per_slot_adjusted : 0UL;
+  if( FD_UNLIKELY( !slot_duration_nanos ) ) {
+    fd_block_id_ele_t * block_id_ele = fd_block_id_map_ele_query( ctx->block_id_map, &ctx->reset_block_id, NULL, ctx->block_id_arr );
+    if( FD_LIKELY( block_id_ele ) ) {
+      fd_bank_t * reset_bank = fd_banks_bank_query( ctx->banks, fd_block_id_ele_get_idx( ctx->block_id_arr, block_id_ele ) );
+      if( FD_LIKELY( reset_bank && reset_bank->bank_seq==block_id_ele->bank_seq && reset_bank->state!=FD_BANK_STATE_PRUNABLE ) )
+        slot_duration_nanos = reset_bank->f.slot_params.ns_per_slot_adjusted;
+    }
+  }
+  FD_MGAUGE_SET( REPLAY, SLOT_DURATION_NANOS, slot_duration_nanos );
+
   FD_MGAUGE_SET( REPLAY, BANK_LIVE, fd_banks_pool_used_cnt( ctx->banks ) );
 
   ulong reasm_free = fd_reasm_free( ctx->reasm );

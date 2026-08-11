@@ -11,6 +11,7 @@
 #define FD_TXN_M_TPU_SOURCE_GOSSIP (3UL)
 #define FD_TXN_M_TPU_SOURCE_BUNDLE (4UL)
 #define FD_TXN_M_TPU_SOURCE_TXSEND (5UL)
+#define FD_TXN_M_TPU_SOURCE_BAM    (6UL)
 
 struct fd_txn_m {
   /* The computed slot that this transaction is referencing, aka. the
@@ -28,8 +29,9 @@ struct fd_txn_m {
      source_ipv4 is in big endian. */
   uint     source_ipv4;
   uchar    source_tpu;
+  uint     scheduler_arrival_tspub; /* Compact local tickcount timestamp for when the scheduler-side source first published this txn. 0 means unknown. */
 
-  /* 7 bytes of padding here */
+  /* 3 bytes of padding here */
 
   struct {
     /* If the transaction is part of a bundle, the bundle_id will be
@@ -56,9 +58,20 @@ struct fd_txn_m {
     uchar commission;
     uchar commission_pubkey[ 32 ];
 
-    /* alignof is 8, so 7 bytes of padding here */
-
   } block_engine;
+
+  struct {
+    /* An 'atomic transaction batch' is a bundle of transactions that must be processed together */
+    ulong  max_schedule_slot; /* Solana slot for which this bundle is valid for (inclusive). eg if we're building slot 100, and max_schedule_slot == 100, process the txn */
+    uint   seq_id;            /* Unique for a single leader rotation, propagated so downstream stages can correlate execution results */
+    ushort scheduler_gen;     /* BAM scheduler identity generation, propagated to discard stale in-flight results after endpoint/key changes */
+    ushort ownership_gen;     /* BAM ownership generation, propagated so pack can reject work crossing a disable/disconnect boundary */
+    uchar  txn_cnt;           /* How many transactions are expected in the atomic transaction batch */
+    uchar  batch_idx;         /* Index of this transaction inside the atomic transaction batch */
+    uchar  revert_on_error   : 1; /* If true and any transaction in the batch fails, revert everything. otherwise commit errors */
+    uchar  blockhash_expired : 1; /* Set by resolv when a known blockhash is expired so pack can reject the complete batch with the correct index */
+    uchar  preprocess_failed : 1; /* Set when preprocessing failed so pack can terminate the complete batch */
+  } bam;
 
   /* There are three additional fields at the end here, which are
      variable length and not included in the size of this struct. txn_t
@@ -86,6 +99,30 @@ fd_txn_m_footprint( ulong payload_sz,
   l = FD_LAYOUT_APPEND( l, fd_txn_align(),          fd_txn_footprint( instr_cnt, addr_table_lookup_cnt ) );
   l = FD_LAYOUT_APPEND( l, alignof(fd_acct_addr_t), addr_table_adtl_cnt*sizeof(fd_acct_addr_t) );
   return FD_LAYOUT_FINI( l, fd_txn_m_align() );
+}
+
+static inline int
+fd_txn_m_use_prepack_sig_dedup( fd_txn_m_t const * txnm ) {
+  /* Early signature dedup is disabled for block-engine bundles, which
+     rely on bundle-aware handling downstream, and for BAM traffic,
+     which is sequenced by the BAM node and may intentionally resend a
+     transaction signature. */
+  return !( txnm->block_engine.bundle_id ||
+            txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+}
+
+static inline ulong
+fd_txn_m_failure_group_id( fd_txn_m_t const * txnm ) {
+  ulong group_id = txnm->block_engine.bundle_id;
+
+  /* BAM seq_ids and block-engine bundle_ids have independent namespaces.
+     Keep all BAM batches that require peer-failure tracking in a disjoint
+     namespace, including one-transaction atomic batches. */
+  if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                   (group_id || txnm->bam.txn_cnt>1U) ) )
+    group_id = (1UL<<63) | ((ulong)txnm->bam.seq_id+1UL);
+
+  return group_id;
 }
 
 static inline uchar *
