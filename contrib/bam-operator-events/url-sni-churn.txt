@@ -1,0 +1,15 @@
+# Exercise BAM runtime URL and SNI churn against a live validator.
+# 1. Wait until the initial scheduler stream is active.
+# 2. Switch to an unreachable BAM URL with a different SNI and wait for the
+#    validator-side connect failure.
+# 3. Restore the BAM URL while keeping the changed SNI and wait for a new
+#    scheduler stream.
+# 4. Restore the original SNI and wait for another fresh scheduler stream.
+
+wait_log bam 30000 InitSchedulerStream:
+set_bam --url http://127.0.0.1:50056 --sni churn.invalid
+wait_log fd 30000 BAM gRPC connect attempt failed .*50056
+set_bam --url http://127.0.0.1:50055 --sni churn.invalid
+wait_log_growth bam 30000 InitSchedulerStream:
+set_bam --sni 127.0.0.1
+wait_log_growth bam 30000 InitSchedulerStream:

@@ -509,6 +509,7 @@ struct fd_gui_txn_waterfall {
     ulong quic;
     ulong udp;
     ulong gossip;
+    ulong bam;
     ulong block_engine;
     ulong pack_cranked;
   } in;
@@ -1052,6 +1053,18 @@ fd_gui_align( void );
 
 ulong
 fd_gui_footprint( ulong tile_cnt );
+
+/* Snapshot helpers are exposed so metric-to-GUI accounting can be
+   regression tested independently of the GUI sampling timer. */
+void
+fd_gui_txn_waterfall_snap( fd_gui_t *               gui,
+                           fd_gui_txn_waterfall_t * waterfall );
+
+void
+fd_gui_tile_stats_snap( fd_gui_t *                     gui,
+                        fd_gui_txn_waterfall_t const * waterfall,
+                        fd_gui_tile_stats_t *          stats,
+                        long                           now );
 
 void *
 fd_gui_new( void *                   shmem,
