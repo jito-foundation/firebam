@@ -1056,6 +1056,7 @@ tx_pull_request( fd_gossip_t *       gossip,
   FD_TEST( num_bits>=1UL );
   FD_TEST( (num_bits+63UL)/64UL<=max_words ); /* verify bitvec fits */
   FD_TEST( fd_bloom_num_keys( (double)num_bits, max_items )==num_keys ); /* verify convergence */
+  FD_TEST( num_keys<=(ulong)BLOOM_NUM_KEYS );
 
   double _mask_bits     = ceil( log2( (double)num_items / max_items ) );
   uint   mask_bits      = _mask_bits >= 0.0 ? fd_uint_min( (uint)_mask_bits, 63U ) : 0U;
@@ -1063,7 +1064,7 @@ tx_pull_request( fd_gossip_t *       gossip,
 
   uchar payload[ FD_GOSSIP_MTU ] = {0};
 
-  ulong * keys_ptr, * bits_ptr, * bits_set;
+  uchar * keys_ptr, * bits_ptr, * bits_set;
   long payload_sz = fd_gossip_pull_request_init( payload,
                                                  FD_GOSSIP_MTU,
                                                  num_keys,
@@ -1077,8 +1078,17 @@ tx_pull_request( fd_gossip_t *       gossip,
                                                  &bits_set );
   FD_TEST( -1L!=payload_sz );
 
+  /* The bincode fields inside payload are not naturally aligned: the first
+     bloom key starts four bytes past an 8-byte boundary, and the bit vector
+     follows an optional byte.  Build the filter in aligned storage, then copy
+     it into the serialized packet.  Dereferencing keys_ptr/bits_ptr directly
+     as ulong pointers is undefined behavior even on machines that tolerate
+     unaligned accesses. */
+  ulong bloom_keys[ 8UL ];
+  ulong bloom_bits[ (FD_GOSSIP_MTU+sizeof(ulong)-1UL)/sizeof(ulong) ] = {0};
+  ulong bloom_word_cnt = (num_bits+63UL)/64UL;
   fd_bloom_t filter[1];
-  fd_bloom_init_inplace( keys_ptr, bits_ptr, num_keys, num_bits, 0, gossip->rng, BLOOM_FALSE_POSITIVE_RATE, filter );
+  fd_bloom_init_inplace( bloom_keys, bloom_bits, num_keys, num_bits, 0, gossip->rng, BLOOM_FALSE_POSITIVE_RATE, filter );
 
   uchar iter_mem[ 16UL ];
   for( fd_crds_mask_iter_t * it = fd_crds_mask_iter_init( gossip->crds, mask, mask_bits, iter_mem );
@@ -1094,8 +1104,10 @@ tx_pull_request( fd_gossip_t *       gossip,
   }
 
   int num_bits_set = 0;
-  for( ulong i=0UL; i<(num_bits+63)/64UL; i++ ) num_bits_set += fd_ulong_popcnt( bits_ptr[ i ] );
-  *bits_set = (ulong)num_bits_set;
+  for( ulong i=0UL; i<bloom_word_cnt; i++ ) num_bits_set += fd_ulong_popcnt( bloom_bits[ i ] );
+  fd_memcpy( keys_ptr, bloom_keys, num_keys*sizeof(ulong) );
+  fd_memcpy( bits_ptr, bloom_bits, bloom_word_cnt*sizeof(ulong) );
+  FD_STORE( ulong, bits_set, (ulong)num_bits_set );
 
   ulong idx = fd_gossip_wsample_sample_pull_request( gossip->wsample );
   fd_ip4_port_t peer_addr;

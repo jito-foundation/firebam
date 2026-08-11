@@ -753,26 +753,18 @@ bam_fuzz_deliver_specs( test_bam_env_t *              env,
   ushort depth_before = env->state->feedback_queue_depth;
   ushort tail_before  = env->state->bam_results_tail;
   ulong drops_before  = env->state->metrics.feedback_results_dropped_cnt;
-  uint require_outside_slot = 0U;
-  if( FD_LIKELY( f->leader_state.slot==f->current_slot ) ) {
-    ulong accept_capacity = (ulong)FD_BAM_MAX_PENDING_RESULTS - (ulong)depth_before;
-    for( ulong i=0UL; i<spec_cnt && i<accept_capacity; i++ ) {
-      if( FD_UNLIKELY( specs[ i ].max_schedule_slot<f->current_slot ) ) {
-        require_outside_slot = 1U;
-        break;
-      }
-    }
-  }
   fd_bam_client_grpc_rx_msg( env->state, pb, pb_sz, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( env->state->metrics.feedback_results_dropped_cnt>=drops_before );
   if( FD_UNLIKELY( env->state->metrics.feedback_results_dropped_cnt>drops_before ) ) {
     f->observed_result_drop = 1U;
   }
   bam_fuzz_mirror_queue_growth( f, env->state, depth_before, tail_before );
-  if( FD_UNLIKELY( require_outside_slot ) ) {
-    f->required_outside_slot = 1U;
-    FD_TEST( f->observed_outside_slot );
-  }
+  /* A stale replay does not necessarily append an OUTSIDE_SLOT result: the
+     durable result FIFO deliberately suppresses a second terminal result with
+     the same (generation, slot, seq_id) identity.  Do not infer an expected
+     result solely from max_schedule_slot here.  The explicit checkpoint in
+     bam_fuzz_require_outside_slot_path drains the FIFO, uses a fresh seq_id,
+     and validates the production OUTSIDE_SLOT path without that ambiguity. */
   bam_fuzz_drain_pending_txns( env, f, links, verify, dedup, resolv, pack, execle, drain_credit );
 }
 

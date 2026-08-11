@@ -7,6 +7,7 @@
 - Source baseline: `30902441f1fe990f994f4a2d961c82029cb214b2` (`v1.1.4`)
 - Port target branch: `codex/rebase-5748e0c9-main`
 - Port commit under audit: `ec265e2fdd5c4484c24589fc647e49c09f52150a`
+- Pre-hardening verified head: `0da52d75a2977dd94bba90d691e050d53054b9ad`
 - Target baseline: `45b9ece5217de3e3c058cfe02738fc5820dadabd` (`main` at port time)
 - Audit started: 2026-08-10 (America/Los_Angeles)
 
@@ -18,9 +19,10 @@ preserve the intended behavior, and that the resulting branch builds/tests.
 ## Status
 
 **COMPLETE — production, test, fuzz, and submodule publication issues are
-resolved.** The follow-up commit containing this journal adds the eight
-current-main harness adaptations and makes the Agave gitlink reproducible from
-the configured remote.
+resolved in the validated follow-up.** Commit `0da52d75a2` contains the eight
+current-main harness adaptations and reproducible Agave gitlink.  The
+additional sanitizer hardening documented below is the follow-up delta on top
+of that commit.
 
 ## Port lineage
 
@@ -44,15 +46,96 @@ Reflog evidence for the target:
 
 ## Evidence collected
 
+### Pre-hardening branch-head re-verification (2026-08-10)
+
+Commit `0da52d75a2` was re-audited independently after the corrective commit:
+
+- All 305 source paths are accounted for: 302 are shared with the target patch,
+  the two source-only gRPC files are byte-identical to the target baseline, and
+  the source-only URL validation is already present in the stricter target
+  baseline. `PORT_REBASE_JOURNAL.md` is the sole target-only path. There are
+  zero file-status or mode mismatches across the 302 shared paths.
+- All 20 focused GCC/`-Werror` binaries rebuilt and passed in a single fresh
+  execution sweep: the BAM tile/admin, Pack/tile, dedup, bundle, execle, PoH,
+  verify, topology, resolver, GUI, gRPC, URL, config, and genesis tests listed
+  below.
+- Both Clang/libFuzzer corpus gates rebuilt and passed: all 26 BAM-client inputs
+  and all 16 stateful-pipeline inputs ran ten times each.
+- `git diff --check` passed. Syntax/parse checks passed for all 20 changed shell
+  scripts, 10 Python files, 2 JSON files, 37 TOML files, and 5 YAML files. A
+  metrics regeneration produced 1,763 metrics for 47 tiles with no tracked
+  output change, and both Rust utility manifests passed `cargo metadata`.
+- The Agave four-commit `range-diff`, aggregate stable patch ID, seven changed
+  paths, and all seven per-file stable patch IDs were reproduced. The configured
+  Agave branch still advertises exact tip `e71292b417...`; a clean temporary
+  repository also fetched exact BAM protobuf pin `56973b61e8...` from its
+  configured public remote.
+- The native `firedancer` executable relinked at branch head and reports
+  `0da52d75a2...`. A fresh combined `fdctl` invocation again exhausted the
+  `/tmp` quota while Cargo wrote Agave metadata; it emitted no source diagnostic.
+  The already-linked `fdctl` reports `ec265e2fdd...`, and the branch-head delta
+  after that production snapshot contains only the submodule routing change,
+  journal, and test/fuzz harness changes. The earlier successful combined link
+  therefore remains valid production-link evidence for branch head.
+
+### Deep sanitizer and invariant validation (2026-08-10)
+
+A second correctness pass used a combined Clang AddressSanitizer and
+UndefinedBehaviorSanitizer build, extended libFuzzer exploration, Clang's
+static analyzer, and a fresh GCC rebuild.  It found and corrected three
+production undefined-behavior defects:
+
+- Ed25519 scalar reduction and multiply-add stored 64-bit output words through
+  potentially unaligned `uchar *` buffers.  The stores now use `FD_STORE`.
+- Gossip pull-request Bloom filters initialized `ulong` arrays directly inside
+  inherently unaligned serialized bincode fields.  The filter is now built in
+  aligned local storage and copied into the wire buffer; the serialized output
+  API now exposes byte pointers so consumers must use unaligned-safe copies or
+  stores, and the serialized `bits_set` field uses `FD_STORE`.
+- The empty gossip-purged iterator formed an out-of-range pool pointer before
+  testing its null index.  It now checks the sentinel first.
+
+The same pass corrected three validation defects: the stateful fuzzer no
+longer expects a duplicate terminal result for a stale replay, the Pack tile
+test now constructs a real dcache (including its private header), and the Pack
+nonce test uses a large finite priority that does not overflow through
+`pow(5, priority)`.
+
+Post-fix execution evidence:
+
+- The combined-sanitizer BAM-client fuzzer completed 968,128 generated inputs
+  in 121 seconds without a crash or sanitizer report.
+- The combined-sanitizer gossip verifier fuzzer completed 15,193 generated
+  inputs in 31 seconds after the serialized-output API correction.
+- The stateful pipeline fuzzer first exposed the stale-replay model defect on a
+  reproducible 61-byte trace.  After the harness correction, that exact trace,
+  all 16 tracked corpus inputs (ten runs each with the required 3 GiB RSS cap),
+  and a further 121-second/1,799-input exploratory run all passed.
+- Eighteen focused unit binaries passed with both sanitizers, including BAM,
+  Pack, bundle, execle, PoH, verify, resolver, gRPC, URL, Bloom, and Ed25519
+  coverage.  The large BAM tile fixture required a 128 MiB test-process stack;
+  this is sanitizer fixture overhead, not production stack usage.
+- Twenty-four focused GCC/`-Werror` binaries rebuilt and passed, adding the two
+  Ed25519 tests, Bloom test, and gossip weighted-sampler test to the original
+  20-test sweep.
+- Clang's static analyzer reported no findings in ten selected BAM, Pack,
+  gossip, and Ed25519 translation units.
+- Both `firedancer` and the combined `fdctl` relinked from the corrected
+  objects and executed `--version`.  The latter completed a fresh
+  `agave-validator` release-with-debug build in 12m07s and successfully copied
+  its static archive, so the earlier `/tmp` capacity limitation did not recur.
+  `git diff --check` passed.
+
 ### Changed-path inventory
 
 | Check | Result |
 |---|---:|
 | Source commit paths | 305 |
-| Initial cherry-pick paths | 302 |
-| Final target paths | 302 |
-| Target-only paths | 0 |
+| Initial/final port-commit paths | 302 |
+| Branch-head cumulative paths | 303 |
+| Shared source/branch-head paths | 302 |
 | Source-only paths | 3 |
+| Branch-head-only paths | 1 (`PORT_REBASE_JOURNAL.md`) |
 
 Source-only paths requiring baseline-equivalence review:
 
@@ -73,7 +156,7 @@ commits:
 
 Therefore these paths are baseline-supplied, not missing from the port.
 
-### Shared-path content comparison
+### Shared-path content comparison (source vs. port commit)
 
 All 302 shared changed paths retain the same add/modify status and file mode.
 
@@ -204,8 +287,8 @@ harness sizing assumptions, not production-code failures:
 - `test_resolh_tile_bam` used a 4096-byte dcache slot smaller than the current
   `FD_TPU_PARSED_MTU`, corrupting the test stack before the tile ran.
 
-Audit fixes currently in the worktree enlarge both bundle test workspaces and
-make the BAM resolver dcache 8192 bytes with a compile-time MTU assertion. Both
+The corrective commit enlarges both bundle test workspaces and makes the BAM
+resolver dcache 8192 bytes with a compile-time MTU assertion. Both
 bundle tests and both resolver variants were rebuilt and passed afterward. A
 subsequent clean execution sweep passed all 20 binaries in one run.
 
@@ -228,8 +311,8 @@ adaptations omitted from `ec265e2fdd`:
 After these fixes, `fuzz_bam_client_unit` passed all 26 corpus inputs ten times
 each and `fuzz_bam_pipeline_stateful_unit` passed all 16 inputs ten times each
 through its ordinary make target. These five edits and the three native-test
-edits are all test/fuzz-only, but they must be committed if the port is expected
-to preserve its validation functionality.
+edits are all test/fuzz-only and are included in corrective commit
+`0da52d75a2` so the port preserves its validation functionality.
 
 Additional completed checks:
 
@@ -270,8 +353,10 @@ byte/patch comparison proves their source deltas were carried.
 2. Agave tip `e71292b417` is published and `.gitmodules` points to its reachable
    repository and branch.
 
-`ec265e2fdd` alone remains the audited pre-fix snapshot; the branch head that
-contains this journal is the reproducible, fully testable port.
+`ec265e2fdd` alone remains the audited pre-fix snapshot.  Commit `0da52d75a2`
+contains the reproducible port and validation-harness fixes; the sanitizer
+hardening follow-up contains the additional production and harness corrections
+documented above.
 
 ## Verification checklist
 
@@ -303,7 +388,7 @@ git diff e31640e9fe..5f82da4fa0
 git diff 5f82da4fa0..ec265e2fdd
 git range-diff 30902441f1..6d0a4d36f8 45b9ece521..ec265e2fdd
 git -C agave range-diff f69787f493..91c0cc47ac 9d7e3c77ee..e71292b417
-python3 src/disco/metrics/gen_metrics.py
+(cd src/disco/metrics && python3 gen_metrics.py)
 make -j4 test_bam_tile test_bam_admin_rpc test_pack_tile_bam test_pack \
   test_dedup_tile test_bundle_tile test_bundle_client test_execle_tile \
   test_pohh_tile test_poh_tile test_verify_tile test_fdctl_topology_bam \

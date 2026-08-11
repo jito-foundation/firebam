@@ -230,6 +230,7 @@ test_fd_pack_insert_bundle_cancel( fd_pack_t *          pack,
 
 typedef struct {
   fd_frag_meta_t *  mcache;
+  void *            dcache_mem;
   uchar *           dcache;
   fd_frag_meta_t *  mcaches[ 1 ];
   ulong             seqs[ 1 ];
@@ -274,9 +275,12 @@ test_pack_tile_out_new( test_pack_tile_out_t * out ) {
   FD_TEST( out->mcache );
   fd_memset( out->mcache, 0, TEST_PACK_TILE_MCACHE_DEPTH * sizeof(fd_frag_meta_t) );
 
-  out->dcache = aligned_alloc( FD_CHUNK_ALIGN, TEST_PACK_TILE_DCACHE_CHUNKS * FD_CHUNK_SZ );
+  ulong dcache_data_sz   = TEST_PACK_TILE_DCACHE_CHUNKS * FD_CHUNK_SZ;
+  ulong dcache_footprint = fd_dcache_footprint( dcache_data_sz, 0UL );
+  out->dcache_mem = aligned_alloc( fd_dcache_align(), dcache_footprint );
+  FD_TEST( out->dcache_mem );
+  out->dcache = fd_dcache_join( fd_dcache_new( out->dcache_mem, dcache_data_sz, 0UL ) );
   FD_TEST( out->dcache );
-  fd_memset( out->dcache, 0, TEST_PACK_TILE_DCACHE_CHUNKS * FD_CHUNK_SZ );
 
   out->mcaches[ 0 ]      = out->mcache;
   out->seqs[ 0 ]         = 0UL;
@@ -297,7 +301,8 @@ test_pack_tile_out_new( test_pack_tile_out_t * out ) {
 
 static void
 test_pack_tile_out_delete( test_pack_tile_out_t * out ) {
-  free( out->dcache );
+  FD_TEST( fd_dcache_delete( fd_dcache_leave( out->dcache ) ) );
+  free( out->dcache_mem );
   free( out->mcache );
   fd_memset( out, 0, sizeof(*out) );
 }
