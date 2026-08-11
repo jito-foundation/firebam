@@ -15,9 +15,9 @@ diversity to the Solana network and helps it stay resilient to supply
 chain attacks in build tooling or dependencies.
 
 ## Documentation
-If you are an operator or looking to run the validator, see the Getting
-Started guide in the [Firedancer
-docs](https://docs.firedancer.io/)
+If you are an operator or looking to run the FireBAM validator, see the
+[FireBAM Setup Guide](https://jito-foundation.gitbook.io/mev/jito-solana/firebam-setup-guide)
+and the [FireBAM validator documentation](https://bam.dev/validators/#firebam).
 
 ## Releases
 If you are an operator looking to run the validator, see the [Releases
