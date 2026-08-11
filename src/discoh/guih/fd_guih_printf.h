@@ -26,6 +26,7 @@ void fd_guih_printf_late_votes_history( fd_guih_t * gui );
 void fd_guih_printf_tps_history( fd_guih_t * gui );
 void fd_guih_printf_startup_progress( fd_guih_t * gui );
 void fd_guih_printf_block_engine( fd_guih_t * gui );
+void fd_guih_printf_bam( fd_guih_t * gui );
 void fd_guih_printf_tiles( fd_guih_t * gui );
 void fd_guih_printf_schedule_strategy( fd_guih_t * gui );
 void fd_guih_printf_identity_balance( fd_guih_t * gui );

@@ -112,9 +112,12 @@ fd_url_parse_endpoint( fd_url_t *   url_,
       return -1;
     }
 
-    char port_cstr[6];
-    fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( port_cstr ), url->port, url->port_len ) );
-    ulong port_no = fd_cstr_to_ulong( port_cstr );
+    ulong port_no = 0UL;
+    for( ulong i=0UL; i<url->port_len; i++ ) {
+      uchar c = (uchar)url->port[ i ];
+      if( FD_UNLIKELY( c<(uchar)'0' || c>(uchar)'9' ) ) goto invalid_port;
+      port_no = 10UL*port_no + (ulong)(c-(uchar)'0');
+    }
     if( FD_UNLIKELY( !port_no || port_no>USHORT_MAX ) ) goto invalid_port;
 
     *tcp_port = (ushort)port_no;

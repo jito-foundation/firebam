@@ -1,0 +1,213 @@
+flowchart LR
+  classDef optional fill:#eef6ff,stroke:#4b77a8,color:#0c2d48
+  classDef external fill:#fff4e5,stroke:#ad6b00,color:#3b2400
+  classDef control fill:#f4f4f4,stroke:#777,color:#222
+  classDef bam fill:#f1ecff,stroke:#6b4bb8,color:#24124d
+
+  subgraph firedancer["Full Firedancer topology: src/app/firedancer/topology.c"]
+    net["net/sock tiles"]:::external
+    gossvf["gossvf"]
+    gossip["gossip"]
+    repair["repair"]
+    quic["quic"]
+    verify["verify tiles"]
+    dedup["dedup"]
+    resolv["resolv tiles"]
+    pack["pack"]
+    execle["execle tiles"]
+    poh["poh"]
+    shred["shred tiles"]
+    replay["replay"]
+    execrp["execrp tiles"]
+    tower["tower"]
+    txsend["txsend"]
+    sign["sign/keyguard"]
+    full_bam_ext["BAM scheduler gRPC/TLS"]:::external
+    full_bam["bam tile"]:::bam
+    bundle["bundle"]:::optional
+    gui["gui/event taps"]:::optional
+    snapshots["snapshot tiles"]:::optional
+
+    net -- net_gossvf --> gossvf
+    net -- net_quic --> quic
+    net -- net_shred --> shred
+    net -- net_repair --> repair
+    net -- net_txsend --> txsend
+
+    gossip -- gossip_net --> net
+    quic -- quic_net --> net
+    shred -- shred_net --> net
+    repair -- repair_net --> net
+    txsend -- txsend_net --> net
+
+    quic -- quic_verify --> verify
+    bundle -- bundle_verif --> verify
+    verify -- verify_dedup --> dedup
+    dedup -- dedup_resolv --> resolv
+    dedup -- dedup_resolv --> tower
+    resolv -- resolv_pack --> pack
+    pack -- pack_execle --> execle
+    execle -- execle_poh --> poh
+    pack -- pack_poh --> poh
+    poh -- poh_shred --> shred
+
+    replay -- replay_epoch --> gossip
+    replay -- replay_epoch --> gossvf
+    replay -- replay_out --> repair
+    replay -- replay_out --> tower
+    replay -- replay_epoch --> tower
+    replay -- replay_epoch --> txsend
+    replay -- replay_epoch --> shred
+    replay -- replay_out --> dedup
+    replay -- replay_out --> resolv
+    replay -- replay_out --> pack
+    replay -- replay_out --> poh
+    replay -- replay_execrp --> execrp
+    execrp -- execrp_replay --> replay
+    resolv -- resolv_replay --> replay
+    poh -- poh_replay --> replay
+    execle -- execle_pack --> pack
+
+    gossvf -- gossvf_gossip --> gossip
+    gossip -- gossip_gossvf/gossip_out --> gossvf
+    gossip -- gossip_out --> repair
+    gossip -- gossip_out --> replay
+    gossip -- gossip_out --> tower
+    gossip -- gossip_out --> txsend
+    gossip -- gossip_out --> verify
+    gossip -- gossip_out --> shred
+    gossip -- gossip_out snapshot source updates --> snapshots
+    repair -- repair_out --> replay
+    tower -- tower_out --> repair
+    tower -- tower_out --> replay
+    tower -- tower_out --> gossip
+    tower -- tower_out --> txsend
+    tower -- tower_out --> shred
+    txsend -- txsend_out --> verify
+    txsend -- txsend_out --> replay
+    txsend -- txsend_out --> gossip
+
+    gossip -- gossip_sign --> sign
+    sign -- sign_gossip --> gossip
+    shred -- shred_sign --> sign
+    sign -- sign_shred --> shred
+    repair -- repair_sign --> sign
+    sign -- sign_repair --> repair
+    txsend -- txsend_sign --> sign
+    sign -- sign_txsend --> txsend
+    bundle -- bundle_sign --> sign
+    sign -- sign_bundle --> bundle
+    pack -- pack_sign --> sign
+    sign -- sign_pack --> pack
+
+    full_bam_ext --> full_bam
+    full_bam -- bam_verif --> verify
+    full_bam -- bam_gossip contact update --> gossip
+    pack -- pack_bam_ldr latest snapshots --> full_bam
+    pack -- pack_bam_res durable results --> full_bam
+    execle -- bank_bam durable results --> full_bam
+    verify -- bank_bam verify failures --> full_bam
+    resolv -- bank_bam resolv failures --> full_bam
+    replay -- replay_out schedule hints --> full_bam
+    full_bam -- scheduler feedback stream --> full_bam_ext
+    full_bam -- bam_shred --> shred
+    full_bam -- bam_sign --> sign
+    sign -- sign_bam --> full_bam
+
+    bundle -- bundle_status --> gui
+    snapshots -- snapshot links --> replay
+    snapshots -- snapshot links --> gossip
+    snapshots -- snapshot links --> repair
+    snapshots -- snapshot links --> gui
+
+    execle_busy["execle_busy fseq"]:::control
+    rnonce["rnonce_ss"]:::control
+    full_bam_status["bam_status fseq"]:::control
+    full_bam_ctrl["bam_ctrl shared object"]:::control
+    full_bam_fee_cfg["bam_fee_cfg shared object"]:::control
+    full_bam_gossip_fseq["bam_gossip consumer fseq"]:::control
+    execle -- writes --> execle_busy
+    pack -- reads --> execle_busy
+    repair -- writes --> rnonce
+    shred -- reads --> rnonce
+    full_bam -- writes --> full_bam_status
+    pack -- reads --> full_bam_status
+    bundle -- reads --> full_bam_status
+    full_bam -- reads/writes --> full_bam_ctrl
+    full_bam -- writes --> full_bam_fee_cfg
+    pack -- reads --> full_bam_fee_cfg
+    gossip -- advances --> full_bam_gossip_fseq
+    full_bam -- reads --> full_bam_gossip_fseq
+  end
+
+  subgraph fdctl_bam["fdctl BAM overlay: src/app/fdctl/topology.c"]
+    bam_ext["BAM scheduler gRPC/TLS"]:::external
+    bam["bam tile"]:::bam
+    fd_quic["quic"]
+    fd_verify["verify tiles"]
+    fd_dedup["dedup"]
+    resolh["resolh tiles"]
+    fd_pack["pack"]
+    bank["bank tiles"]
+    pohh["pohh"]
+    fd_shred["shred tiles"]
+    store["store"]
+    fd_sign["sign/keyguard"]
+    plugin["plugin/gui"]:::optional
+    be["Block Engine gRPC/TLS"]:::external
+    fd_bundle["bundle"]:::optional
+
+    be --> fd_bundle
+    fd_bundle -- bundle_verif --> fd_verify
+    fd_quic -- quic_verify --> fd_verify
+    bam_ext --> bam
+    bam -- bam_verif --> fd_verify
+    fd_verify -- verify_dedup --> fd_dedup
+    pohh -- gossip_dedup --> fd_dedup
+    pohh -- executed_txn --> fd_dedup
+    fd_dedup -- dedup_resolh --> resolh
+    pohh -- replay_resol --> resolh
+    resolh -- resolh_pack --> fd_pack
+    pohh -- executed_txn --> fd_pack
+    fd_pack -- pack_bank --> bank
+    fd_pack -- pack_pohh --> pohh
+    bank -- bank_pohh --> pohh
+    bank -- bank_pack --> fd_pack
+    pohh -- pohh_pack --> fd_pack
+    pohh -- stake_out/crds_shred/replay_resol --> fd_shred
+    pohh -- plugin updates --> plugin
+    pohh -- pohh_shred --> fd_shred
+    fd_shred -- shred_store --> store
+
+    fd_pack -- pack_bam_ldr latest snapshots --> bam
+    fd_pack -- pack_bam_res durable results --> bam
+    bank -- bank_bam durable results --> bam
+    fd_verify -- bank_bam verify failures --> bam
+    resolh -- bank_bam resolv failures --> bam
+    pohh -- replay_out schedule hints --> bam
+    bam -- scheduler feedback stream --> bam_ext
+    bam -- bam_shred --> fd_shred
+    bam -- bam_plugi --> plugin
+    bam -- bam_sign --> fd_sign
+    fd_sign -- sign_bam --> bam
+    fd_bundle -- bundle_sign --> fd_sign
+    fd_sign -- sign_bundle --> fd_bundle
+    fd_pack -- pack_sign --> fd_sign
+    fd_sign -- sign_pack --> fd_pack
+
+    bam_status["bam_status fseq"]:::control
+    bam_ctrl["bam_ctrl shared object"]:::control
+    bam_fee_cfg["bam_fee_cfg shared object"]:::control
+    bank_busy["bank_busy fseq"]:::control
+    pohh_shred["pohh_shred fseq"]:::control
+    bam -- writes --> bam_status
+    fd_pack -- reads --> bam_status
+    fd_bundle -- reads --> bam_status
+    bam -- reads/writes --> bam_ctrl
+    bam -- writes --> bam_fee_cfg
+    fd_pack -- reads --> bam_fee_cfg
+    pohh -- writes --> bank_busy
+    fd_pack -- reads --> bank_busy
+    pohh -- writes --> pohh_shred
+    fd_shred -- reads --> pohh_shred
+  end

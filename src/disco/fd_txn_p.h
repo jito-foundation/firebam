@@ -42,6 +42,16 @@ struct __attribute__((aligned(64))) fd_txn_p {
      FD_TXN_P_FLAGS_* defined above.  The execle sets the high byte with
      the transaction result code. */
   uint  flags;
+
+  /* BAM metadata for transactions originating from BAM scheduling.
+     max_schedule_slot is not stored here on this branch; pack carries that
+     slot hint in sidecar state to preserve the fd_txn_p_t layout. */
+  struct {
+    uint  seq_id;
+    ushort scheduler_gen;
+    uchar batch_idx;
+    _Bool revert_on_error;
+  } bam;
   /* union {
     This would be ideal but doesn't work because of the flexible array member
     uchar _[FD_TXN_MAX_SZ];
