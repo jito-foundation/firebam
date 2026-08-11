@@ -168,6 +168,9 @@ struct fd_bundle_tile {
   fd_bundle_out_ctx_t       plugin_out;
   fd_bundle_pending_txn_t * pending_txns;
 
+  ulong * bam_status_fseq; /* Shared latch from bam tile (bit 0 = BAM override active) */
+  _Bool   bam_override_active; /* true if BAM overrides are currently active */
+
   /* App metrics */
   fd_bundle_metrics_t metrics;
 
@@ -181,6 +184,7 @@ struct fd_bundle_tile {
   ulong reset_slot;       /* from replay_out reset messages, or ULONG_MAX */
   int   sleep_mode;       /* 1 means sleeping, 0 means connecting/connected */
   long  sleep_check_ns;   /* next wallclock time to re-evaluate sleeping */
+  int   halt_signing;     /* 1 means signing is halted, 0 means signing is not halted */
 
   /* Staged values from during_frag, committed in after_frag */
   ulong next_leader_slot_staged;
@@ -308,7 +312,7 @@ fd_bundle_client_grpc_rx_timeout(
    - gRPC bundle and packet subscriptions are live
    - HTTP/2 PING exchange was done recently
 
-   Return codes are compatible with FD_PLUGIN_MSG_BLOCK_ENGINE_UPDATE_STATUS_{...}. */
+   Return codes are compatible with FD_BUNDLE_STATE_{...}. */
 
 int
 fd_bundle_client_status( fd_bundle_tile_t const * ctx );

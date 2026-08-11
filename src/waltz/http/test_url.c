@@ -155,6 +155,33 @@ test_url_parse( void ) {
   FD_LOG_NOTICE(( "test_url_parse: pass" ));
 }
 
+/* Base-0 or partial parsing accepts malformed ports such as 0x80 and 123x.
+   Require decimal 1..65535 and consistent HTTP/HTTPS defaults. */
+static void
+test_url_parse_endpoint( void ) {
+  fd_url_t url;
+  ushort   port;
+  _Bool    is_ssl;
+
+  FD_TEST( !fd_url_parse_endpoint( &url, "http://example.com:8080", 23UL, &port, &is_ssl, "test URL" ) );
+  FD_TEST( port==8080U && !is_ssl );
+
+  FD_TEST( !fd_url_parse_endpoint( &url, "https://example.com", 19UL, &port, &is_ssl, "test URL" ) );
+  FD_TEST( port==443U && is_ssl );
+
+  char const * invalid[] = {
+    "http://example.com:0",
+    "http://example.com:0x80",
+    "http://example.com:123x",
+    "http://example.com:65536",
+    "http://example.com:123456"
+  };
+  for( ulong i=0UL; i<sizeof(invalid)/sizeof(invalid[0]); i++ )
+    FD_TEST( fd_url_parse_endpoint( &url, invalid[ i ], strlen( invalid[ i ] ), &port, &is_ssl, "test URL" )==-1 );
+
+  FD_LOG_NOTICE(( "test_url_parse_endpoint: pass" ));
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -162,6 +189,7 @@ main( int     argc,
 
   test_url_unescape();
   test_url_parse();
+  test_url_parse_endpoint();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

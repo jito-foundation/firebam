@@ -1324,6 +1324,7 @@ write_node_info( config_t const *       config,
   }
 
   ulong replay_idx = fd_topo_find_tile( &config->topo, "replay", 0UL );
+  if( FD_UNLIKELY( replay_idx==ULONG_MAX ) ) return 0U;
   ulong const * replay_metrics = &cur_tile[ replay_idx*FD_METRICS_TOTAL_SZ ];
   ulong identity_balance = replay_metrics[ MIDX( GAUGE, REPLAY, IDENTITY_BALANCE_LAMPORTS     ) ];
   ulong stake_amount     = replay_metrics[ MIDX( GAUGE, REPLAY, ACTIVE_STAKE_LAMPORTS         ) ];
@@ -1392,7 +1393,8 @@ write_summary( config_t const *           config,
   if( FD_UNLIKELY( !snap_shutdown_time && shutdown  ) ) snap_shutdown_time = 2L; /* Was shutdown on boot */
   if( FD_UNLIKELY( snap_shutdown_time==1L && shutdown  ) ) snap_shutdown_time = fd_log_wallclock();
 
-  fd_node_info_t node_info[1]; fd_node_info_read( node_info, shinfo );
+  fd_node_info_t node_info[1] = {0};
+  if( FD_LIKELY( shinfo ) ) fd_node_info_read( node_info, shinfo );
   lines_printed += write_node_info( config, cur_tile, node_info );
 
   if( FD_UNLIKELY( write_bench( config, cur_tile, prev_tile ) ) ) lines_printed++;
@@ -1463,9 +1465,9 @@ run( config_t const * config,
   (void)drain_output_fd;
 
   ulong node_info_obj_id = fd_pod_query_ulong( config->topo.props, "node_info", ULONG_MAX );
-  FD_TEST( node_info_obj_id!=ULONG_MAX );
-  fd_node_info_box_t * node_info = fd_node_info_box_join( fd_topo_obj_laddr( &config->topo, node_info_obj_id ) );
-  FD_TEST( node_info );
+  fd_node_info_box_t * node_info = node_info_obj_id==ULONG_MAX ? NULL :
+  fd_node_info_box_join( fd_topo_obj_laddr( &config->topo, node_info_obj_id ) );
+  FD_TEST( node_info_obj_id==ULONG_MAX || node_info );
 
   ulong tile_cnt = config->topo.tile_cnt;
 
