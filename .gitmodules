@@ -1,7 +1,7 @@
 [submodule "agave"]
 	path = agave
-	url = https://github.com/firedancer-io/agave.git
-	branch = v1.18-fd
+	url = https://github.com/esemeniuc/agave.git
+	branch = eric/v0.11-bam-agave
 [submodule "src/disco/bam/proto/bam-protos"]
 	path = src/disco/bam/proto/bam-protos
 	url = https://github.com/jito-labs/bam-protos.git
