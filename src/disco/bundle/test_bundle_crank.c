@@ -1,8 +1,14 @@
 #include "fd_bundle_crank.h"
+#include "../keyguard/fd_keyguard.h"
 #include "../pack/fd_chkdup.h"
 #include "../../ballet/base64/fd_base64.h"
 
 #include <stddef.h>
+
+static const uchar fd_bundle_crank_3_vals[] = { FD_BUNDLE_CRANK_3_VALS };
+static const uchar fd_bundle_crank_3_mask[] = { FD_BUNDLE_CRANK_3_MASK };
+static const uchar fd_bundle_crank_2_vals[] = { FD_BUNDLE_CRANK_2_VALS };
+static const uchar fd_bundle_crank_2_mask[] = { FD_BUNDLE_CRANK_2_MASK };
 
 /* crank2:  */
 FD_IMPORT_BINARY( payload_2ni,
@@ -11,11 +17,11 @@ FD_IMPORT_BINARY( payload_2ni,
 FD_STATIC_ASSERT( sizeof(fd_bundle_crank_2_t)==FD_BUNDLE_CRANK_2_SZ, crank );
 FD_STATIC_ASSERT( sizeof(fd_bundle_crank_3_t)==FD_BUNDLE_CRANK_3_SZ, crank );
 
-FD_STATIC_ASSERT( offsetof(fd_bundle_crank_2_t, change_tip_receiver.ix_discriminator       )==FD_BUNDLE_CRANK_2_IX1_DISC_OFF, crank );
-FD_STATIC_ASSERT( offsetof(fd_bundle_crank_2_t, change_block_builder.ix_discriminator      )==FD_BUNDLE_CRANK_2_IX2_DISC_OFF, crank );
-FD_STATIC_ASSERT( offsetof(fd_bundle_crank_3_t, init_tip_distribution_acct.ix_discriminator)==FD_BUNDLE_CRANK_3_IX1_DISC_OFF, crank );
-FD_STATIC_ASSERT( offsetof(fd_bundle_crank_3_t, change_tip_receiver.ix_discriminator       )==FD_BUNDLE_CRANK_3_IX2_DISC_OFF, crank );
-FD_STATIC_ASSERT( offsetof(fd_bundle_crank_3_t, change_block_builder.ix_discriminator      )==FD_BUNDLE_CRANK_3_IX3_DISC_OFF, crank );
+FD_STATIC_ASSERT( offsetof(fd_bundle_crank_2_t, authorized_voter         )==FD_BUNDLE_CRANK_SIGNER_OFFSET,           crank );
+FD_STATIC_ASSERT( offsetof(fd_bundle_crank_3_t, authorized_voter         )==FD_BUNDLE_CRANK_SIGNER_OFFSET,           crank );
+FD_STATIC_ASSERT( offsetof(fd_bundle_crank_2_t, tip_payment_program      )==FD_BUNDLE_CRANK_TIP_PAYMENT_OFFSET,      crank );
+FD_STATIC_ASSERT( offsetof(fd_bundle_crank_3_t, tip_payment_program      )==FD_BUNDLE_CRANK_TIP_PAYMENT_OFFSET,      crank );
+FD_STATIC_ASSERT( offsetof(fd_bundle_crank_3_t, tip_distribution_program )==FD_BUNDLE_CRANK_TIP_DISTRIBUTION_OFFSET, crank );
 
 fd_acct_addr_t _3iPuTgpWaaC6jYEY7kd993QBthGsQTK3yPCrNJyPMhCD[1] = {{ .b={
             0x28,0x52,0x15,0xd0,0x34,0x59,0xfa,0xc3,0xaf,0xa0,0xa5,0x52,0xcf,0x8c,0xbb,0x79,
@@ -56,6 +62,38 @@ fd_acct_addr_t _T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt[1] = {{ .b={
 
 #define EXPAND_ARR8(arr, i)  arr[(i)], arr[(i)+1], arr[(i)+2], arr[(i)+3], arr[(i)+4], arr[(i)+5], arr[(i)+6], arr[(i)+7],
 #define EXPAND_ARR32(arr, i) EXPAND_ARR8(arr, (i)) EXPAND_ARR8(arr, (i)+8) EXPAND_ARR8(arr, (i)+16) EXPAND_ARR8(arr, (i)+24)
+
+ulong
+crank_generate_and_test( fd_bundle_crank_gen_t                       * gen,
+                         fd_bundle_crank_tip_payment_config_t const  * old_tip_payment_config,
+                         fd_acct_addr_t                       const  * new_block_builder,
+                         fd_acct_addr_t                       const  * identity,
+                         fd_acct_addr_t                       const  * tip_receiver_owner,
+                         ulong                                         epoch,
+                         ulong                                         block_builder_commission,
+                         uchar                                       * out_payload,
+                         fd_txn_t                                    * out_txn ) {
+  ulong retval = fd_bundle_crank_generate( gen, old_tip_payment_config, new_block_builder, identity, tip_receiver_owner, epoch, block_builder_commission, out_payload, out_txn );
+  if( FD_LIKELY( retval==FD_BUNDLE_CRANK_2_SZ ) ) {
+    for( ulong i=0UL; i<retval; i++ ) FD_TEST( (out_payload[i]&fd_bundle_crank_2_mask[i])==fd_bundle_crank_2_vals[i] );
+  }
+  else if( FD_LIKELY( retval==FD_BUNDLE_CRANK_3_SZ ) ) {
+    for( ulong i=0UL; i<retval; i++ ) FD_TEST( (out_payload[i]&fd_bundle_crank_3_mask[i])==fd_bundle_crank_3_vals[i] );
+  }
+  if( FD_LIKELY( retval==FD_BUNDLE_CRANK_2_SZ || retval==FD_BUNDLE_CRANK_3_SZ ) ) {
+    fd_keyguard_authority_t authority;
+    fd_memcpy( authority.identity_pubkey,          identity,                                32UL );
+    fd_memcpy( authority.tip_payment_program,      gen->crank3->tip_payment_program,         32UL );
+    fd_memcpy( authority.tip_distribution_program, gen->crank3->tip_distribution_program,    32UL );
+    FD_TEST( fd_keyguard_payload_authorize( &authority,
+                                            out_payload+out_txn->message_off,
+                                            fd_txn_msg_sz( out_txn, retval ),
+                                            FD_KEYGUARD_ROLE_BUNDLE_CRANK,
+                                            FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
+  }
+  /* Could be 0 or ULONG_MAX */
+  return retval;
+}
 
 static inline void
 test_repro_onchain( void ) {
@@ -221,8 +259,11 @@ test_crank_cnt( void ) {
   uchar _txn[ FD_TXN_MAX_SZ ];
   fd_txn_t * txn = (fd_txn_t *)_txn;
 
+  fd_acct_addr_t no_builder[1] = {{{ 0 }}};
   fd_acct_addr_t uncreated[1] = {{{ 0 }}};
-  FD_TEST( sizeof(fd_bundle_crank_3_t)==fd_bundle_crank_generate( g, tip_payment_config, _feeywn2ffX8DivmRvBJ9i9YZnss7WBouTmujfQcEdeY,
+  FD_TEST( ULONG_MAX==fd_bundle_crank_generate( g, tip_payment_config, no_builder,
+      _GwHH8ciFhR8vejWCqmg8FWZUCNtubPY2esALvy5tBvji, uncreated, 740UL, 5UL, payload, txn ) );
+  FD_TEST( sizeof(fd_bundle_crank_3_t)==crank_generate_and_test( g, tip_payment_config, _feeywn2ffX8DivmRvBJ9i9YZnss7WBouTmujfQcEdeY,
       _GwHH8ciFhR8vejWCqmg8FWZUCNtubPY2esALvy5tBvji, uncreated, 740UL, 5UL, payload, txn ) );
   FD_TEST( 0UL==fd_bundle_crank_generate( g, tip_payment_config, _feeywn2ffX8DivmRvBJ9i9YZnss7WBouTmujfQcEdeY,
       _GwHH8ciFhR8vejWCqmg8FWZUCNtubPY2esALvy5tBvji, _4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7, 740UL, 5UL, payload, txn ) );

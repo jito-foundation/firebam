@@ -144,13 +144,14 @@ unprivileged_init( fd_topo_t const *      topo,
 #define FD_SET_IDENTITY_STATE_LEADER_HALTED            (3UL)
 
 /* State 4: SIGNERS_HALT_REQUESTED
-     Repair, Gossip, Tower, and Bundle tiles will stop sending requests
+     Repair, Gossip, Tower, Bundle, Rserve, and BAM tiles will stop
+     sending requests
      downstream to the sign tile.  This is done to avoid any mismatches
      with the identity key.  Their identity keys will be switched during
      this step, except for Gossip, which switches during
      SIGNERS_UNHALT_REQUESTED.  These tiles all use the identity key to
      make forward progress on non-leader pipeline replay except for the
-     Bundle tile.
+     Bundle, Rserve, and BAM tiles.
 
      These tiles use the identity key to populate messages which are
      signed by the sign tile:
@@ -171,12 +172,14 @@ unprivileged_init( fd_topo_t const *      topo,
            authentication challenge from the bundle server.
        (e) Rserve.  The rserve tile uses the identity key to sign
            outgoing pings.
-        */
+       (f) BAM.  The BAM tile uses the identity key to sign an
+           authentication challenge from the BAM scheduler. */
 #define FD_SET_IDENTITY_STATE_SIGNERS_HALT_REQUESTED   (4UL)
 
 /* State 5: SIGNERS_HALTED
-     Repair, Gossip, Tower, and Bundle are no longer sending requests to
-     the sign tile.  Replay can keep progressing at this point.
+     Repair, Gossip, Tower, Bundle, Rserve, and BAM are no longer sending
+     requests
+     to the sign tile.  Replay can keep progressing at this point.
      However, the Tower tile may have an in-flight vote transaction to
      the TxSend tile that corresponds to the old identity key. */
 #define FD_SET_IDENTITY_STATE_SIGNERS_HALTED           (5UL)
@@ -235,8 +238,8 @@ unprivileged_init( fd_topo_t const *      topo,
 /* State 9: ALL_SWITCHED
      All remaining tiles that use the identity key have confirmed that
      they have switched to the new key.  Gossip has not yet updated its
-     identity key.  Repair, Gossip, Tower, TxSend, and Bundle remain
-     halted. */
+     identity key.  Repair, Gossip, Tower, TxSend, Bundle, Rserve, and
+     BAM remain halted. */
 #define FD_SET_IDENTITY_STATE_ALL_SWITCHED             (9UL)
 
 /* State 10: SIGNERS_UNHALT_REQUESTED
@@ -323,7 +326,8 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
             strcmp( tile->name, "gossip" ) &&
             strcmp( tile->name, "tower" ) &&
             strcmp( tile->name, "bundle" ) &&
-            strcmp( tile->name, "rserve" ) ) {
+            strcmp( tile->name, "rserve" ) &&
+            strcmp( tile->name, "bam" ) ) {
           continue;
         }
 
@@ -347,7 +351,8 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
             strcmp( tile->name, "gossip" ) &&
             strcmp( tile->name, "tower" ) &&
             strcmp( tile->name, "bundle" ) &&
-            strcmp( tile->name, "rserve" ) ) {
+            strcmp( tile->name, "rserve" ) &&
+            strcmp( tile->name, "bam" ) ) {
           continue;
         }
 
@@ -411,7 +416,8 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
                        !strcmp( tile->name, "txsend" ) ||
                        !strcmp( tile->name, "tower" ) ||
                        !strcmp( tile->name, "bundle" ) ||
-                       !strcmp( tile->name, "rserve" ) ) ) continue;
+                       !strcmp( tile->name, "rserve" ) ||
+                       !strcmp( tile->name, "bam" ) ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
         if( !strcmp( tile->name, "gossvf" ) ) tile_ks->param = identity_outset;
@@ -436,7 +442,8 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
                        !strcmp( tile->name, "txsend" ) ||
                        !strcmp( tile->name, "tower" ) ||
                        !strcmp( tile->name, "bundle" ) ||
-                       !strcmp( tile->name, "rserve" ) ) ) continue;
+                       !strcmp( tile->name, "rserve" ) ||
+                       !strcmp( tile->name, "bam" ) ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
         if( FD_LIKELY( tile_ks->state==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
@@ -471,7 +478,8 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
             strcmp( tile->name, "tower" ) &&
             strcmp( tile->name, "txsend" ) &&
             strcmp( tile->name, "bundle" ) &&
-            strcmp( tile->name, "rserve" ) ) {
+            strcmp( tile->name, "rserve" ) &&
+            strcmp( tile->name, "bam" ) ) {
           continue;
         }
 
@@ -495,7 +503,8 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
             strcmp( tile->name, "tower" ) &&
             strcmp( tile->name, "txsend" ) &&
             strcmp( tile->name, "bundle" ) &&
-            strcmp( tile->name, "rserve" ) ) {
+            strcmp( tile->name, "rserve" ) &&
+            strcmp( tile->name, "bam" ) ) {
           continue;
         }
 

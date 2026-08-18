@@ -4,6 +4,7 @@
 #include "fd_vote_tracker.h"
 #include "../../disco/topo/fd_wksp_mon.h"
 #include "../../disco/store/fd_store.h"
+#include "../../disco/bam/fd_bam_ctrl.h"
 #include "../../disco/bundle/fd_bundle_crank.h"
 #include "../../disco/keyguard/fd_keyswitch.h"
 #include "../../disco/node_info/fd_node_info.h"
@@ -77,6 +78,7 @@ struct fd_replay_tile {
   fd_txncache_t * txncache;
   fd_store_t *    store;
   fd_banks_t *    banks;
+  fd_bam_ctrl_t const * bam_ctrl;
 
   /* This flag is 1 If we have seen a vote signature that our node has
      sent out get rooted at least one time.  The value is 0 otherwise.
@@ -321,6 +323,8 @@ struct fd_replay_tile {
      these conditions are met, then we are free to unbecome leader. */
   uint        is_leader : 1;
   uint        supports_leader : 1;
+  /* Timing mode latched from BAM runtime state at reset boundaries. */
+  int         use_nominal_slot_duration;
   int         recv_poh;
   ulong       next_leader_slot;
   long        next_leader_tickcount;

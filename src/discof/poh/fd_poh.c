@@ -146,7 +146,6 @@ update_hashes_per_tick( fd_poh_t * poh,
     }
 
     /* Recompute derived information about the clock. */
-    poh->hashcnt_duration_ns = (double)poh->tick_duration_ns/(double)hashcnt_per_tick;
     poh->hashcnt_per_slot = poh->ticks_per_slot*hashcnt_per_tick;
     poh->hashcnt_per_tick = hashcnt_per_tick;
 
@@ -173,6 +172,10 @@ update_hashes_per_tick( fd_poh_t * poh,
     poh->hashcnt = 0UL;
     fd_memcpy( poh->hash, poh->reset_hash, 32UL );
   }
+
+  /* tick_duration_ns can change independently of hashcnt_per_tick when
+     BAM is toggled at runtime. */
+  poh->hashcnt_duration_ns = (double)poh->tick_duration_ns/(double)hashcnt_per_tick;
 }
 
 void

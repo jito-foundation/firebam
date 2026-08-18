@@ -1,0 +1,9 @@
+wait_log bam 30000 scheduler<-validator batch_result seq_id=4242301
+
+set_identity @ALTERNATE_IDENTITY@ --force
+wait_log_count fd 30000 2 BAM identity pubkey updated to
+wait_log_count bam 30000 2 InitSchedulerStream:
+
+set_identity @NODE_IDENTITY@ --force
+wait_log_count fd 30000 3 BAM identity pubkey updated to
+wait_log_count bam 30000 3 InitSchedulerStream:

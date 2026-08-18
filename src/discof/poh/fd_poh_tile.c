@@ -1,6 +1,9 @@
 #include "fd_poh.h"
 #include "fd_poh_tile.h"
 #include "../replay/fd_replay_tile.h"
+#include "../../disco/fd_txn_m.h"
+#include "../../disco/bam/fd_bam_microblock.h"
+#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/tiles.h"
 #include "../../disco/fd_clock_tile.h"
 #include "../../discof/fd_startup.h"
@@ -49,6 +52,8 @@ struct fd_poh_tile {
 
   fd_poh_out_t shred_out[ 1 ];
   fd_poh_out_t replay_out[ 1 ];
+  fd_poh_out_t executed_txn_out[ 1 ];
+  fd_poh_out_t bam_out[ 1 ];
 };
 
 typedef struct fd_poh_tile fd_poh_tile_t;
@@ -159,6 +164,28 @@ returnable_frag( fd_poh_tile_t *     ctx,
   if( FD_UNLIKELY( chunk<ctx->in[ in_idx ].chunk0 || chunk>ctx->in[ in_idx ].wmark || sz>ctx->in[ in_idx ].mtu ) )
     FD_LOG_ERR(( "chunk %lu %lu corrupt, not in range [%lu,%lu]", chunk, sz, ctx->in[ in_idx ].chunk0, ctx->in[ in_idx ].wmark ));
 
+  /* Replay can abandon a leader slot while an execle result for that
+     slot is still in flight.  Consume it before the leader-bank and
+     pack-order waits so it cannot later reach fd_poh1_mixin. */
+  if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EXECLE &&
+                   fd_disco_execle_sig_slot( sig )<ctx->poh->next_leader_slot ) ) {
+    uint pack_idx = (uint)fd_disco_execle_sig_pack_idx( sig );
+    if( FD_LIKELY( ((int)(pack_idx-ctx->expect_pack_idx))>=0 ) ) ctx->expect_pack_idx = pack_idx+1U;
+
+    fd_txn_p_t const * txns = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
+    fd_bam_microblock_view_t view[1];
+    FD_TEST( fd_bam_microblock_parse( txns, sz, view ) );
+    if( FD_UNLIKELY( view->result ) ) {
+      fd_bam_bundle_result_t result = *view->result;
+      fd_bam_result_resolve_at_poh( &result, 0 );
+      fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
+                             ctx->bam_out->chunk0, ctx->bam_out->wmark, &result );
+    }
+
+    ctx->idle_cnt = 0UL;
+    return 0;
+  }
+
   /* There's a race condition where we might receive microblocks from
      execles (or pack's done_packing, when pack ends the block on a
      reset) before we have learned what the leader bank is from replay
@@ -221,11 +248,27 @@ returnable_frag( fd_poh_tile_t *     ctx,
     }
     case IN_KIND_EXECLE: {
       ulong target_slot = fd_disco_execle_sig_slot( sig );
-      FD_TEST( sz>=sizeof(fd_microblock_trailer_t) && (sz-sizeof(fd_microblock_trailer_t))%sizeof(fd_txn_p_t)==0UL );
-      ulong txn_cnt = (sz-sizeof(fd_microblock_trailer_t))/sizeof(fd_txn_p_t);
       fd_txn_p_t const * txns = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
-      fd_microblock_trailer_t const * trailer = fd_type_pun_const( (uchar const*)txns+sz-sizeof(fd_microblock_trailer_t) );
-      fd_poh1_mixin( ctx->poh, stem, target_slot, trailer->hash, txn_cnt, txns );
+      fd_bam_microblock_view_t view[1];
+      FD_TEST( fd_bam_microblock_parse( txns, sz, view ) );
+      fd_poh1_mixin( ctx->poh, stem, target_slot, view->trailer->hash, view->txn_cnt, txns );
+      if( FD_UNLIKELY( view->result ) )
+        fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
+                               ctx->bam_out->chunk0, ctx->bam_out->wmark, view->result );
+
+      ulong txn_cnt = view->txn_cnt;
+      fd_poh_out_t * executed_txn_out = ctx->executed_txn_out;
+      for( ulong i=0UL; i<txn_cnt; i++ ) {
+        int landed = !!(txns[ i ].flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS);
+        if( FD_UNLIKELY( !landed && txns[ i ].source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
+        ulong event_kind = landed ? FD_EXECUTED_TXN_KIND_LANDED : FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED;
+
+        fd_memcpy( fd_chunk_to_laddr( executed_txn_out->mem, executed_txn_out->chunk ),
+                   fd_txn_get_signatures( TXN(txns+i), txns[ i ].payload ),
+                   FD_TXN_SIGNATURE_SZ );
+        fd_stem_publish( stem, executed_txn_out->idx, event_kind, executed_txn_out->chunk, FD_TXN_SIGNATURE_SZ, 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
+        executed_txn_out->chunk = fd_dcache_compact_next( executed_txn_out->chunk, FD_TXN_SIGNATURE_SZ, executed_txn_out->chunk0, executed_txn_out->wmark );
+      }
       break;
     }
     default: {
@@ -291,6 +334,10 @@ unprivileged_init( fd_topo_t const *      topo,
 
   *ctx->shred_out = out1( topo, tile, "poh_shred" );
   *ctx->replay_out = out1( topo, tile, "poh_replay" );
+  *ctx->executed_txn_out = out1( topo, tile, "executed_txn" );
+  *ctx->bam_out = (fd_poh_out_t){ .idx = ULONG_MAX };
+  if( FD_UNLIKELY( fd_topo_find_tile_out_link( topo, tile, "poh_bam", tile->kind_id )!=ULONG_MAX ) )
+    *ctx->bam_out = out1( topo, tile, "poh_bam" );
 
   FD_TEST( fd_poh_join( fd_poh_new( ctx->poh ), ctx->shred_out, ctx->replay_out ) );
 
@@ -332,8 +379,8 @@ populate_allowed_fds( fd_topo_t const *      topo,
   return out_cnt;
 }
 
-/* One tick, one microblock */
-#define STEM_BURST (2UL)
+/* Up to one executed signature per transaction and one BAM result. */
+#define STEM_BURST (MAX_TXN_PER_MICROBLOCK+1UL)
 
 /* See explanation in fd_pack */
 #define STEM_LAZY  (128L*3000L)

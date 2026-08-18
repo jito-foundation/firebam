@@ -56,6 +56,9 @@ typedef struct {
   uchar *           public_key;
   uchar *           private_key;
 
+  uchar tip_payment_program     [32];
+  uchar tip_distribution_program[32];
+
   ulong             authorized_voters_cnt;
   uchar             authorized_voter_pubkeys[ 16UL ][ 32UL ];
   uchar             authorized_voter_private_keys[ 16UL ][ 32UL ];
@@ -222,7 +225,9 @@ after_frag_sensitive( void *              _ctx,
   int role = ctx->in[ in_idx ].role;
 
   fd_keyguard_authority_t authority = {0};
-  memcpy( authority.identity_pubkey, ctx->public_key, 32 );
+  memcpy( authority.identity_pubkey,          ctx->public_key,                32UL );
+  memcpy( authority.tip_payment_program,      ctx->tip_payment_program,       32UL );
+  memcpy( authority.tip_distribution_program, ctx->tip_distribution_program, 32UL );
 
   if( FD_UNLIKELY( !fd_keyguard_payload_authorize( &authority, ctx->_data, sz, role, sign_type ) ) ) {
     FD_LOG_EMERG(( "fd_keyguard_payload_authorize failed (role=%d sign_type=%d)", role, sign_type ));
@@ -345,6 +350,9 @@ unprivileged_init_sensitive( fd_topo_t const *      topo,
     ctx->av_keyswitch = NULL;
   }
 
+  memcpy( ctx->tip_payment_program,      tile->sign.bundle.tip_payment_program_addr,      32UL );
+  memcpy( ctx->tip_distribution_program, tile->sign.bundle.tip_distribution_program_addr, 32UL );
+
   for( ulong i=0UL; i<MAX_IN; i++ ) ctx->in[ i ].role = -1;
 
   for( ulong i=0UL; i<tile->in_cnt; i++ ) {
@@ -386,6 +394,11 @@ unprivileged_init_sensitive( fd_topo_t const *      topo,
       ctx->in[ i ].role = FD_KEYGUARD_ROLE_BUNDLE;
       FD_TEST( !strcmp( out_link->name, "sign_bundle" ) );
       FD_TEST( in_link->mtu==9UL );
+      FD_TEST( out_link->mtu==64UL );
+    } else if( !strcmp(in_link->name, "bam_sign" ) ) {
+      ctx->in[ i ].role = FD_KEYGUARD_ROLE_BAM;
+      FD_TEST( !strcmp( out_link->name, "sign_bam" ) );
+      FD_TEST( in_link->mtu==256UL );
       FD_TEST( out_link->mtu==64UL );
     } else if( !strcmp(in_link->name, "event_sign" ) ) {
       ctx->in[ i ].role = FD_KEYGUARD_ROLE_EVENT;
