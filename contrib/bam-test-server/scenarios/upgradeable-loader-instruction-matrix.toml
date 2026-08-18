@@ -1,0 +1,137 @@
+description = "Exercise each upgradeable-loader instruction discriminator through paired live validators."
+heartbeat_interval_ms = 1000
+expected_terminal_results = 10
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200000
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "BPFLoaderUpgradeab1e11111111111111111111111", data_hex = "00000000", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200001
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "BPFLoaderUpgradeab1e11111111111111111111111", data_hex = "01000000000000000000000000000000", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 2
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200002
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "BPFLoaderUpgradeab1e11111111111111111111111", data_hex = "020000000000000000000000", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 3
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200003
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "BPFLoaderUpgradeab1e11111111111111111111111", data_hex = "03000000", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 4
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200004
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "BPFLoaderUpgradeab1e11111111111111111111111", data_hex = "04000000", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 5
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200005
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "BPFLoaderUpgradeab1e11111111111111111111111", data_hex = "05000000", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 6
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200006
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "BPFLoaderUpgradeab1e11111111111111111111111", data_hex = "0600000001000000", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 7
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200007
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "BPFLoaderUpgradeab1e11111111111111111111111", data_hex = "07000000", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 8
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200008
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "BPFLoaderUpgradeab1e11111111111111111111111", data_hex = "08000000", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 9
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200009
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "BPFLoaderUpgradeab1e11111111111111111111111", data_hex = "0900000001000000", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 10
+timeout_ms = 30000

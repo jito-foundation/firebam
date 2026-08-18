@@ -183,6 +183,8 @@ test_url_parse( void ) {
   FD_LOG_NOTICE(( "test_url_parse: pass" ));
 }
 
+/* Base-0 or partial parsing accepts malformed ports such as 0x80 and 123x.
+   Require decimal 1..65535 and consistent HTTP/HTTPS defaults. */
 static void
 test_url_parse_endpoint( void ) {
   fd_url_t url;
