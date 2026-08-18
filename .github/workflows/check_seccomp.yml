@@ -2,7 +2,8 @@ name: Check Generated Seccomp Files
 on:
   pull_request:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   check-seccomp:

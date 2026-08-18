@@ -1,0 +1,88 @@
+[net]
+provider = "socket"
+
+[tiles.bam]
+enabled = true
+url = "http://127.0.0.1:50055"
+tls_domain_name = ""
+keepalive_interval_millis = 5000
+tls_cert_verify = false
+
+[tiles.bundle]
+tip_distribution_program_addr = "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf"
+tip_payment_program_addr = "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
+tip_distribution_authority = "7T4inmPmtNBX3MhLwJ9hFsSMnGJYYkKioVABSNTWVRuS"
+
+[development]
+sandbox = false
+core_dump = "regular"
+bootstrap = true
+
+[development.bam]
+buffer_size_kib = 256
+ssl_heap_size_mib = 8
+dump_bam_txns = true
+dump_bam_slot_first_txn = false
+
+[tiles.gui]
+enabled = false
+max_http_connections = 8
+max_websocket_connections = 8
+send_buffer_size_mb = 8
+gui_listen_address = "0.0.0.0"
+
+[log]
+level_stderr = "INFO"
+
+[consensus]
+identity_path = "/home/{user}/.firedancer/fd1/identity.json"
+vote_account_path = "/home/{user}/.firedancer/fd1/vote-account.json"
+authorized_voter_paths = ["/home/{user}/.firedancer/fd1/identity.json" ]
+
+[development.gossip]
+allow_private_address = true
+
+[gossip]
+entrypoints = []
+port = 18001
+
+[rpc]
+port = 8899
+full_api = true
+private = true
+transaction_history = true
+
+[tiles.shred]
+shred_listen_port = 18003
+
+[layout]
+affinity = "1-14"
+agave_affinity = "15-30"
+verify_tile_count = 1
+bank_tile_count = 1
+
+[hugetlbfs]
+max_page_size = "huge"
+gigantic_page_threshold_mib = 1048576
+
+[net.socket]
+receive_buffer_size = 1048576
+send_buffer_size = 1048576
+
+[tiles.quic]
+max_concurrent_connections = 64
+txn_reassembly_count = 64
+max_concurrent_handshakes = 64
+
+[tiles.verify]
+signature_cache_size = 1024
+receive_buffer_size = 1024
+
+[tiles.dedup]
+signature_cache_size = 8192
+
+[tiles.pack]
+max_pending_transactions = 128
+
+[development.genesis]
+fund_initial_accounts = 16

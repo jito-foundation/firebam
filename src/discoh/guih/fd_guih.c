@@ -192,6 +192,7 @@ fd_guih_new( void *                shmem,
 
   gui->tower_cnt = 0UL;
 
+  memset( &gui->bam, 0, sizeof( gui->bam ) );
   gui->block_engine.has_block_engine = 0;
 
   gui->epoch.has_epoch[ 0 ] = 0;
@@ -278,6 +279,10 @@ fd_guih_ws_open( fd_guih_t * gui,
 
   if( FD_LIKELY( gui->block_engine.has_block_engine ) ) {
     fd_guih_printf_block_engine( gui );
+    FD_TEST( !fd_http_server_ws_send( gui->http, ws_conn_id ) );
+  }
+  if( FD_LIKELY( gui->bam.has_bam ) ) {
+    fd_guih_printf_bam( gui );
     FD_TEST( !fd_http_server_ws_send( gui->http, ws_conn_id ) );
   }
 
@@ -624,6 +629,13 @@ fd_guih_txn_waterfall_snap( fd_guih_t *               gui,
     cur->out.bank_nonce_wrong_blockhash  += execle_metrics[ MIDX( COUNTER, EXECLE, TXN_RESULT_NONCE_WRONG_BLOCKHASH ) ];
   }
 
+  ulong bam_tile_idx = fd_topo_find_tile( topo, "bam", 0UL );
+  if( FD_LIKELY( bam_tile_idx!=ULONG_MAX ) ) {
+    fd_topo_tile_t const * bam = &topo->tiles[ bam_tile_idx ];
+    volatile ulong const * bam_metrics = fd_metrics_tile( bam->metrics );
+    cur->in.bam = bam_metrics[ MIDX( COUNTER, BAM, TRANSACTION_PUBLISHED ) ];
+  }
+
   ulong pack_tile_idx = fd_topo_find_tile( topo, "pack", 0UL );
   if( pack_tile_idx!=ULONG_MAX ) {
     fd_topo_tile_t const * pack = &topo->tiles[ pack_tile_idx ];
@@ -856,7 +868,8 @@ fd_guih_tile_stats_snap( fd_guih_t *                     gui,
                            waterfall->out.verify_failed;
   stats->verify_total_cnt = waterfall->in.gossip +
                             waterfall->in.quic +
-                            waterfall->in.udp -
+                            waterfall->in.udp +
+                            waterfall->in.bam -
                             waterfall->out.net_overrun -
                             waterfall->out.tpu_quic_invalid -
                             waterfall->out.tpu_udp_invalid -
@@ -2258,6 +2271,31 @@ fd_guih_handle_block_engine_update( fd_guih_t *                              gui
   fd_http_server_ws_broadcast( gui->http );
 }
 
+static void
+fd_guih_handle_bam_update( fd_guih_t *    gui,
+                          uchar const * msg ) {
+  fd_plugin_msg_bam_update_t const * update = (fd_plugin_msg_bam_update_t const *)msg;
+
+  gui->bam.has_bam = 1;
+  gui->bam.status  = update->status_code;
+  gui->bam.enabled = update->enabled;
+
+  fd_cstr_ncpy( gui->bam.name,         update->name,         sizeof(gui->bam.name        ) );
+  fd_cstr_ncpy( gui->bam.url,          update->url,          sizeof(gui->bam.url         ) );
+  fd_cstr_ncpy( gui->bam.sni,          update->sni,          sizeof(gui->bam.sni         ) );
+  fd_cstr_ncpy( gui->bam.ip_cstr,      update->ip_cstr,      sizeof(gui->bam.ip_cstr     ) );
+  fd_cstr_ncpy( gui->bam.tpu_cstr,     update->tpu_cstr,     sizeof(gui->bam.tpu_cstr    ) );
+  fd_cstr_ncpy( gui->bam.tpu_fwd_cstr, update->tpu_fwd_cstr, sizeof(gui->bam.tpu_fwd_cstr) );
+
+  gui->bam.keepalive_rtt_sample    = update->keepalive_rtt_sample;
+  gui->bam.keepalive_rtt_smoothed  = update->keepalive_rtt_smoothed;
+  gui->bam.keepalive_rtt_deviation = update->keepalive_rtt_deviation;
+  gui->bam.feedback_queue_depth    = update->feedback_queue_depth;
+
+  fd_guih_printf_bam( gui );
+  fd_http_server_ws_broadcast( gui->http );
+}
+
 void
 fd_guih_plugin_message( fd_guih_t *   gui,
                        ulong        plugin_msg,
@@ -2318,6 +2356,10 @@ fd_guih_plugin_message( fd_guih_t *   gui,
     }
     case FD_PLUGIN_MSG_GENESIS_HASH_KNOWN: {
       fd_guih_handle_genesis_hash( gui, msg );
+      break;
+    }
+    case FD_PLUGIN_MSG_BAM_UPDATE: {
+      fd_guih_handle_bam_update( gui, msg );
       break;
     }
     default:

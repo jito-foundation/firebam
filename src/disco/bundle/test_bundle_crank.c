@@ -1,4 +1,5 @@
 #include "fd_bundle_crank.h"
+#include "../keyguard/fd_keyguard.h"
 #include "../pack/fd_chkdup.h"
 #include "../../ballet/base64/fd_base64.h"
 
@@ -80,6 +81,17 @@ crank_generate_and_test( fd_bundle_crank_gen_t                       * gen,
   }
   else if( FD_LIKELY( retval==FD_BUNDLE_CRANK_3_SZ ) ) {
     for( ulong i=0UL; i<retval; i++ ) FD_TEST( (out_payload[i]&fd_bundle_crank_3_mask[i])==fd_bundle_crank_3_vals[i] );
+  }
+  if( FD_LIKELY( retval==FD_BUNDLE_CRANK_2_SZ || retval==FD_BUNDLE_CRANK_3_SZ ) ) {
+    fd_keyguard_authority_t authority;
+    fd_memcpy( authority.identity_pubkey,          identity,                                32UL );
+    fd_memcpy( authority.tip_payment_program,      gen->crank3->tip_payment_program,         32UL );
+    fd_memcpy( authority.tip_distribution_program, gen->crank3->tip_distribution_program,    32UL );
+    FD_TEST( fd_keyguard_payload_authorize( &authority,
+                                            out_payload+out_txn->message_off,
+                                            fd_txn_msg_sz( out_txn, retval ),
+                                            FD_KEYGUARD_ROLE_BUNDLE_CRANK,
+                                            FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
   }
   /* Could be 0 or ULONG_MAX */
   return retval;
@@ -249,7 +261,10 @@ test_crank_cnt( void ) {
   uchar _txn[ FD_TXN_MAX_SZ ];
   fd_txn_t * txn = (fd_txn_t *)_txn;
 
+  fd_acct_addr_t no_builder[1] = {{{ 0 }}};
   fd_acct_addr_t uncreated[1] = {{{ 0 }}};
+  FD_TEST( ULONG_MAX==fd_bundle_crank_generate( g, tip_payment_config, no_builder,
+      _GwHH8ciFhR8vejWCqmg8FWZUCNtubPY2esALvy5tBvji, uncreated, 740UL, 5UL, payload, txn ) );
   FD_TEST( sizeof(fd_bundle_crank_3_t)==crank_generate_and_test( g, tip_payment_config, _feeywn2ffX8DivmRvBJ9i9YZnss7WBouTmujfQcEdeY,
       _GwHH8ciFhR8vejWCqmg8FWZUCNtubPY2esALvy5tBvji, uncreated, 740UL, 5UL, payload, txn ) );
   FD_TEST( 0UL==crank_generate_and_test( g, tip_payment_config, _feeywn2ffX8DivmRvBJ9i9YZnss7WBouTmujfQcEdeY,
