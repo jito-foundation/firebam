@@ -102,6 +102,8 @@
 #define FD_GOSSIP_CONTACT_INFO_SOCKET_ALPENGLOW         (13)
 #define FD_GOSSIP_CONTACT_INFO_SOCKET_CNT               (14)
 
+/* ContactInfo version.client ids are assigned in
+   https://github.com/solana-foundation/solana-validator-client-ids/blob/main/client-ids.csv */
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_SOLANA_LABS   (0)
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_JITO_LABS     (1)
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_FRANKENDANCER (2)
@@ -110,6 +112,7 @@
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER    (5)
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_AGAVE_BAM     (6)
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_SIG           (7)
+#define FD_GOSSIP_CONTACT_INFO_CLIENT_BAM           (12)
 
 #define FD_GOSSIP_MESSAGE_PULL_REQUEST  (0)
 #define FD_GOSSIP_MESSAGE_PULL_RESPONSE (1)
@@ -441,9 +444,9 @@ fd_gossip_pull_request_init( uchar *       payload,
                              uint          mask_bits,
                              uchar const * contact_info_crds,
                              ulong         contact_info_crds_sz,
-                             ulong **      out_bloom_keys,
-                             ulong **      out_bloom_bits,
-                             ulong **      out_bits_set );
+                             uchar **      out_bloom_keys,
+                             uchar **      out_bloom_bits,
+                             uchar **      out_bits_set );
 
 /* fd_gossip_version_cstr converts gossip version fields to a null
    terminated c-string.  Returns 1 on success and 0 on failure (e.g.

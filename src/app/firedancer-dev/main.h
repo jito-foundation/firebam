@@ -17,6 +17,8 @@ extern fd_topo_obj_callbacks_t fd_obj_cb_neigh4_hmap;
 extern fd_topo_obj_callbacks_t fd_obj_cb_keyswitch;
 extern fd_topo_obj_callbacks_t fd_obj_cb_node_info;
 extern fd_topo_obj_callbacks_t fd_obj_cb_leader_txn_timing;
+extern fd_topo_obj_callbacks_t fd_obj_cb_bam_ctrl;
+extern fd_topo_obj_callbacks_t fd_obj_cb_bam_fee_cfg;
 extern fd_topo_obj_callbacks_t fd_obj_cb_tile;
 extern fd_topo_obj_callbacks_t fd_obj_cb_store;
 extern fd_topo_obj_callbacks_t fd_obj_cb_fec_sets;
@@ -38,6 +40,8 @@ fd_topo_obj_callbacks_t * CALLBACKS[] = {
   &fd_obj_cb_keyswitch,
   &fd_obj_cb_node_info,
   &fd_obj_cb_leader_txn_timing,
+  &fd_obj_cb_bam_ctrl,
+  &fd_obj_cb_bam_fee_cfg,
   &fd_obj_cb_tile,
   &fd_obj_cb_store,
   &fd_obj_cb_fec_sets,
@@ -99,6 +103,7 @@ extern fd_topo_run_tile_t fd_tile_bencho;
 extern fd_topo_run_tile_t fd_tile_benchg;
 extern fd_topo_run_tile_t fd_tile_benchs;
 extern fd_topo_run_tile_t fd_tile_bundle;
+extern fd_topo_run_tile_t fd_tile_bam;
 extern fd_topo_run_tile_t fd_tile_pktgen;
 extern fd_topo_run_tile_t fd_tile_udpecho;
 extern fd_topo_run_tile_t fd_tile_genesi;
@@ -151,6 +156,7 @@ fd_topo_run_tile_t * TILES[] = {
   &fd_tile_benchg,
   &fd_tile_benchs,
   &fd_tile_bundle,
+  &fd_tile_bam,
   &fd_tile_gossvf,
   &fd_tile_gossip,
   &fd_tile_repair,
@@ -196,6 +202,8 @@ extern action_t fd_action_netconf;
 extern action_t fd_action_set_identity;
 extern action_t fd_action_get_identity;
 extern action_t fd_action_ps;
+extern action_t fd_action_set_bam;
+extern action_t fd_action_get_bam;
 extern action_t fd_action_version;
 extern action_t fd_action_bench;
 extern action_t fd_action_bundle_client;
@@ -240,6 +248,8 @@ action_t * ACTIONS[] = {
   &fd_action_set_identity,
   &fd_action_get_identity,
   &fd_action_ps,
+  &fd_action_set_bam,
+  &fd_action_get_bam,
   &fd_action_help,
   &fd_action_metrics,
   &fd_action_metrics_record,
