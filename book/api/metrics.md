@@ -28,6 +28,15 @@ tile_pid{kind="dedup",kind_id="0"} 1527365
 ...
 ```
 
+## Streaming Updates (Websocket)
+The GUI tile exposes data over its WebSocket at the `/websocket` endpoint. You can use a tool like [websocat](https://github.com/vi/websocat) to connect to it:
+
+```sh [bash]
+$ websocat ws://127.0.0.1:80/websocket | jq -c 'select(.topic=="slot")'
+{"topic":"slot","key":"update","value":{"publish":{"slot":4892,"mine":true,"start_timestamp_nanos":"1763952870737140785","target_end_timestamp_nanos":"1763952871087140864","skipped":false,"duration_nanos":349917888,"completed_time_nanos":"1763952871092165326","level":"optimistically_confirmed","success_nonvote_transaction_cnt":0,"failed_nonvote_transaction_cnt":0,"success_vote_transaction_cnt":1,"failed_vote_transaction_cnt":0,"max_compute_units":60000000,"compute_units":3428,"shreds": null,"transaction_fee":"2500","priority_fee":"0","tips":"0"}}}
+...
+```
+
 ::: warning WARNING
 
 Metrics are currently only provided for developer and diagnostic use,

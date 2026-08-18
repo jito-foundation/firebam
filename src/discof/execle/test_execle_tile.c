@@ -121,12 +121,15 @@ test_env_create( void ) {
   fd_topo_link_t * pack_execle = fd_topob_link( topo, "pack_execle", "execle", 4UL, MAX_MICROBLOCK_SZ, 1UL );
   fd_topo_link_t * execle_poh  = fd_topob_link( topo, "execle_poh",  "execle", 4UL, MAX_MICROBLOCK_SZ, 1UL );
   fd_topo_link_t * execle_pack = fd_topob_link( topo, "execle_pack", "execle", 4UL, MAX_MICROBLOCK_SZ, 1UL );
+  fd_topo_link_t * bank_bam    = fd_topob_link( topo, "bank_bam",    "execle", 4UL, sizeof(fd_bam_bundle_result_t), 1UL );
   test_topo_link_init( env, topo, pack_execle );
   test_topo_link_init( env, topo, execle_poh  );
   test_topo_link_init( env, topo, execle_pack );
+  test_topo_link_init( env, topo, bank_bam    );
   fd_topob_tile_in ( topo, "execle", 0UL, "execle", "pack_execle", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
   fd_topob_tile_out( topo, "execle", 0UL, "execle_poh",  0UL );
   fd_topob_tile_out( topo, "execle", 0UL, "execle_pack", 0UL );
+  fd_topob_tile_out( topo, "execle", 0UL, "bank_bam",    0UL );
 
   /* Share mini's accounts DB with the tile.  The tile re-joins the same
      accdb shmem (a second writer joiner) and opens it via the well-known
@@ -532,25 +535,29 @@ test_read_lamports( test_env_t *        env,
 static fd_stem_context_t *
 test_stem( fd_execle_tile_t * ctx,
            fd_stem_context_t * stem ) {
-  static fd_frag_meta_t * mcaches[2];
-  static ulong            seqs[2];
-  static ulong            depths[2];
-  static ulong            cr_avail[2];
+  static fd_frag_meta_t * mcaches[3];
+  static ulong            seqs[3];
+  static ulong            depths[3];
+  static ulong            cr_avail[3];
   static ulong            min_cr_avail;
-  static int              out_reliable[2];
+  static int              out_reliable[3];
 
   fd_topo_link_t const * execle_poh  = test_topo_link( "execle_poh"  );
   fd_topo_link_t const * execle_pack = test_topo_link( "execle_pack" );
+  fd_topo_link_t const * bank_bam    = test_topo_link( "bank_bam"    );
 
   mcaches[ ctx->out_poh->idx  ] = execle_poh->mcache;
   mcaches[ ctx->out_pack->idx ] = execle_pack->mcache;
+  mcaches[ ctx->out_bam->idx  ] = bank_bam->mcache;
   depths [ ctx->out_poh->idx  ] = execle_poh->depth;
   depths [ ctx->out_pack->idx ] = execle_pack->depth;
+  depths [ ctx->out_bam->idx  ] = bank_bam->depth;
   seqs   [ ctx->out_poh->idx  ] = fd_mcache_seq_query( fd_mcache_seq_laddr_const( mcaches[ ctx->out_poh->idx  ] ) );
   seqs   [ ctx->out_pack->idx ] = fd_mcache_seq_query( fd_mcache_seq_laddr_const( mcaches[ ctx->out_pack->idx ] ) );
-  cr_avail[0] = cr_avail[1] = ULONG_MAX;
+  seqs   [ ctx->out_bam->idx  ] = fd_mcache_seq_query( fd_mcache_seq_laddr_const( mcaches[ ctx->out_bam->idx  ] ) );
+  cr_avail[0] = cr_avail[1] = cr_avail[2] = ULONG_MAX;
   min_cr_avail = ULONG_MAX;
-  out_reliable[0] = out_reliable[1] = 0;
+  out_reliable[0] = out_reliable[1] = out_reliable[2] = 0;
 
   *stem = (fd_stem_context_t) {
     .mcaches             = mcaches,
@@ -603,6 +610,20 @@ test_execle_run( test_env_t *     env,
   FD_TEST( fd_fseq_query( env->execle->busy_fseq )==0UL );
 }
 
+static void
+test_mark_bam_batch( fd_txn_p_t * txns,
+                     ulong        txn_cnt,
+                     uint         seq_id,
+                     int          revert_on_error ) {
+  for( ulong i=0UL; i<txn_cnt; i++ ) {
+    txns[ i ].source_tpu          = FD_TXN_M_TPU_SOURCE_BAM;
+    txns[ i ].bam.seq_id          = seq_id;
+    txns[ i ].bam.scheduler_gen   = 0U;
+    txns[ i ].bam.batch_idx       = (uchar)i;
+    txns[ i ].bam.revert_on_error = !!revert_on_error;
+  }
+}
+
 static fd_frag_meta_t const *
 test_out_poh_meta( ulong seq ) {
   fd_topo_link_t const * execle_poh = test_topo_link( "execle_poh" );
@@ -651,8 +672,8 @@ static fd_microblock_trailer_t const *
 test_out_poh_trailer_bundle( test_env_t * env,
                              ulong        seq ) {
   fd_frag_meta_t const * meta = test_out_poh_meta( seq );
-  fd_txn_p_t const * txns = fd_chunk_to_laddr( env->execle->out_poh->mem, meta->chunk );
-  return (fd_microblock_trailer_t const *)( txns + 1UL );
+  uchar const * data = fd_chunk_to_laddr( env->execle->out_poh->mem, meta->chunk );
+  return (fd_microblock_trailer_t const *)(data+meta->sz-sizeof(fd_microblock_trailer_t));
 }
 
 static void
@@ -683,6 +704,203 @@ FD_UNIT_TEST( execle_seccomp ) {
 
   struct sock_filter filter[ sock_filter_policy_fd_execle_tile_instr_cnt ];
   populate_allowed_seccomp( NULL, NULL, sock_filter_policy_fd_execle_tile_instr_cnt, filter );
+}
+
+FD_UNIT_TEST( execle_rebate_deferred ) {
+  test_env_t * env = test_env_create();
+  fd_bank_t * bank = fd_svm_mini_bank( env->mini, env->bank_idx );
+
+  fd_pubkey_t missing_fee_payer = { .ul = { 0x1234UL } };
+  fd_pubkey_t writable_acct     = { .ul = { 0x5678UL } };
+  fd_txn_p_t txn[1];
+  test_build_empty_txn( txn, bank, missing_fee_payer, writable_acct, 1UL, 0 );
+  test_execle_run( env, txn, 1UL, 0U, 0UL, 0 );
+
+  FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==ULONG_MAX );
+
+  fd_stem_context_t stem[1];
+  int opt_poll_in = 1;
+  int charge_busy = 0;
+  after_credit( env->execle, test_stem( env->execle, stem ), &opt_poll_in, &charge_busy );
+  FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==ULONG_MAX );
+  FD_TEST( opt_poll_in );
+  FD_TEST( !charge_busy );
+
+  test_env_destroy( env );
+}
+
+FD_UNIT_TEST( execle_rebate_flushes_after_idle_loops ) {
+  test_env_t * env = test_env_create();
+  fd_bank_t * bank = fd_svm_mini_bank( env->mini, env->bank_idx );
+
+  fd_pubkey_t missing_fee_payer = { .ul = { 0x1234UL } };
+  fd_pubkey_t writable_acct     = { .ul = { 0x5678UL } };
+  fd_txn_p_t txn[1];
+  test_build_empty_txn( txn, bank, missing_fee_payer, writable_acct, 1UL, 0 );
+  test_execle_run( env, txn, 1UL, 0U, 0UL, 0 );
+
+  for( ulong i=0UL; i<REBATE_BATCH_IDLE_LOOPS; i++ ) {
+    fd_stem_context_t stem[1];
+    int opt_poll_in = 1;
+    int charge_busy = 0;
+    after_credit( env->execle, test_stem( env->execle, stem ), &opt_poll_in, &charge_busy );
+    FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==ULONG_MAX );
+    FD_TEST( opt_poll_in );
+    FD_TEST( !charge_busy );
+  }
+
+  fd_stem_context_t stem[1];
+  int opt_poll_in = 1;
+  int charge_busy = 0;
+  after_credit( env->execle, test_stem( env->execle, stem ), &opt_poll_in, &charge_busy );
+  FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==0UL );
+  FD_TEST( !opt_poll_in );
+  FD_TEST( charge_busy );
+
+  test_env_destroy( env );
+}
+
+FD_UNIT_TEST( execle_rebate_flushes_full_batch ) {
+  test_env_t * env = test_env_create();
+  fd_bank_t * bank = fd_svm_mini_bank( env->mini, env->bank_idx );
+  fd_pubkey_t writable_acct = { .ul = { 0x9876UL } };
+
+  for( ulong i=0UL; i<REBATE_BATCH_MAX_MICROBLOCKS; i++ ) {
+    fd_pubkey_t missing_fee_payer = { .ul = { 0x1000UL+i } };
+    fd_txn_p_t txn[1];
+    test_build_empty_txn( txn, bank, missing_fee_payer, writable_acct, 10UL+i, 0 );
+    test_execle_run( env, txn, 1UL, (uint)i, i, 0 );
+
+    fd_stem_context_t stem[1];
+    int opt_poll_in = 1;
+    int charge_busy = 0;
+    after_credit( env->execle, test_stem( env->execle, stem ), &opt_poll_in, &charge_busy );
+
+    if( i+1UL<REBATE_BATCH_MAX_MICROBLOCKS ) {
+      FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==ULONG_MAX );
+      FD_TEST( opt_poll_in );
+      FD_TEST( !charge_busy );
+    } else {
+      FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==0UL );
+      FD_TEST( !opt_poll_in );
+      FD_TEST( charge_busy );
+    }
+  }
+
+  fd_pack_rebate_t const * rebate = fd_chunk_to_laddr( env->execle->out_pack->mem, test_out_pack_meta( 0UL )->chunk );
+  FD_TEST( rebate->total_cost_rebate==REBATE_BATCH_MAX_MICROBLOCKS*301000UL );
+  FD_TEST( rebate->writer_cnt==(uint)(REBATE_BATCH_MAX_MICROBLOCKS+1UL) );
+
+  test_env_destroy( env );
+}
+
+FD_UNIT_TEST( execle_rebate_batch_counts_bundle_microblocks ) {
+  test_env_t * env = test_env_create();
+  fd_bank_t * bank = fd_svm_mini_bank( env->mini, env->bank_idx );
+  fd_pubkey_t writable_acct = { .ul = { 0xaaaaUL } };
+
+  fd_txn_p_t bundle[5];
+  for( ulong i=0UL; i<5UL; i++ ) {
+    fd_pubkey_t missing_fee_payer = { .ul = { 0x2000UL+i } };
+    test_build_empty_txn( bundle+i, bank, missing_fee_payer, writable_acct, 30UL+i, 0 );
+  }
+  test_execle_run( env, bundle, 5UL, 0U, 0UL, 1 );
+
+  fd_stem_context_t stem[1];
+  int opt_poll_in = 1;
+  int charge_busy = 0;
+  after_credit( env->execle, test_stem( env->execle, stem ), &opt_poll_in, &charge_busy );
+  FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==0UL );
+  FD_TEST( !opt_poll_in );
+  FD_TEST( charge_busy );
+
+  test_env_destroy( env );
+}
+
+FD_UNIT_TEST( execle_rebate_flushes_initializer_bundle ) {
+  test_env_t * env = test_env_create();
+
+  fd_txn_p_t txn[1] = {0};
+  txn->flags = FD_TXN_P_FLAGS_BUNDLE | FD_TXN_P_FLAGS_INITIALIZER_BUNDLE | FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
+  fd_acct_addr_t const * alt_ptr[1] = { NULL };
+  FD_TEST( !fd_pack_rebate_sum_add_txn( env->execle->rebater, txn, alt_ptr, 1UL ) );
+
+  env->execle->rebate_microblock_cnt = 1UL;
+
+  fd_stem_context_t stem[1];
+  int opt_poll_in = 1;
+  int charge_busy = 0;
+  after_credit( env->execle, test_stem( env->execle, stem ), &opt_poll_in, &charge_busy );
+
+  FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==0UL );
+  FD_TEST( !opt_poll_in );
+  FD_TEST( charge_busy );
+
+  fd_pack_rebate_t const * rebate = fd_chunk_to_laddr( env->execle->out_pack->mem, test_out_pack_meta( 0UL )->chunk );
+  FD_TEST( rebate->ib_result==1 );
+
+  test_env_destroy( env );
+}
+
+FD_UNIT_TEST( execle_rebate_slot_change_resets_batch ) {
+  test_env_t * env = test_env_create();
+  fd_bank_t * bank = fd_svm_mini_bank( env->mini, env->bank_idx );
+  fd_pubkey_t writable_acct = { .ul = { 0xabcdUL } };
+
+  fd_pubkey_t first_fee_payer = { .ul = { 0x1111UL } };
+  fd_txn_p_t first_txn[1];
+  test_build_empty_txn( first_txn, bank, first_fee_payer, writable_acct, 20UL, 0 );
+  test_execle_run( env, first_txn, 1UL, 0U, 0UL, 0 );
+
+  env->execle->rebate_microblock_cnt = REBATE_BATCH_MAX_MICROBLOCKS-1UL;
+
+  bank->f.slot++;
+  fd_pubkey_t second_fee_payer = { .ul = { 0x2222UL } };
+  fd_txn_p_t second_txn[1];
+  test_build_empty_txn( second_txn, bank, second_fee_payer, writable_acct, 21UL, 0 );
+  test_execle_run( env, second_txn, 1UL, 1U, 1UL, 0 );
+
+  fd_stem_context_t stem[1];
+  int opt_poll_in = 1;
+  int charge_busy = 0;
+  after_credit( env->execle, test_stem( env->execle, stem ), &opt_poll_in, &charge_busy );
+
+  FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==ULONG_MAX );
+  FD_TEST( opt_poll_in );
+  FD_TEST( !charge_busy );
+
+  test_env_destroy( env );
+}
+
+/* Folding transaction or loaded-data costs into consumed_cus overcharges work
+   that did not execute.  Keep 150 execution CUs and 206 loaded bytes separate. */
+FD_UNIT_TEST( execle_bam_result_cus ) {
+  fd_bam_bundle_result_t res[1];
+  fd_txn_out_t           txn_out[1];
+  fd_memset( res,     0, sizeof(res)     );
+  fd_memset( txn_out, 0, sizeof(txn_out) );
+
+  txn_out->details.compute_budget.compute_unit_limit = 200UL;
+  txn_out->details.compute_budget.compute_meter      = 50UL;
+  txn_out->details.txn_cost.transaction.loaded_accounts_data_size_cost = 8U;
+  txn_out->details.loaded_accounts_data_size = 206UL;
+
+  bam_fill_txn_result( res, 0UL, txn_out );
+
+  FD_TEST( res->consumed_cus[ 0 ]==150U );
+  FD_TEST( res->loaded_accounts_data_size[ 0 ]==206U );
+}
+
+/* Finalizing a transaction hash when every member failed invokes the bmtree
+   finalizer with zero leaves.  Skip finalization and return the zero hash. */
+FD_UNIT_TEST( execle_empty_transaction_hash ) {
+  fd_txn_p_t txns[ 2 ];
+  uchar      hash[ 32 ];
+  fd_memset( txns, 0, sizeof(txns) );
+  fd_memset( hash,  0xff, sizeof(hash) );
+
+  test_compute_expected_hash( txns, 2UL, hash );
+  FD_TEST( fd_memeq( hash, (uchar[32]){0}, sizeof(hash) ) );
 }
 
 FD_UNIT_TEST( execle_vote ) {
@@ -809,10 +1027,21 @@ FD_UNIT_TEST( execle_simple_ok ) {
 
   fd_txn_p_t txn[1];
   test_build_system_transfer_txn( txn, bank, fee_payer, recipient, transfer );
+  test_mark_bam_batch( txn, 1UL, 101U, 0 );
   test_execle_run( env, txn, 1UL, 3U, 17UL, 0 );
 
-  test_assert_nonbundle_out( env, 1UL, 3U );
-  fd_txn_p_t const * out_txn = fd_chunk_to_laddr( env->execle->out_poh->mem, test_out_poh_meta( 0UL )->chunk );
+  fd_frag_meta_t const * poh_meta = test_out_poh_meta( 0UL );
+  FD_TEST( fd_frag_meta_seq_query( poh_meta )==0UL );
+  FD_TEST( poh_meta->sig==fd_disco_execle_sig( bank->f.slot, 3U ) );
+  fd_txn_p_t const * out_txn = fd_chunk_to_laddr( env->execle->out_poh->mem, poh_meta->chunk );
+  fd_bam_microblock_view_t bam_view[1];
+  FD_TEST( fd_bam_microblock_parse( out_txn, poh_meta->sz, bam_view ) );
+  FD_TEST( bam_view->txn_cnt==1UL && bam_view->result );
+  fd_bam_bundle_result_t const * result = bam_view->result;
+  FD_TEST( result->seq_id==101U );
+  FD_TEST( result->execution_success );
+  FD_TEST( result->scheduling_error==FD_BAM_SCHED_ERR_NONE );
+  FD_TEST( test_topo_link( "bank_bam" )->mcache->sz==0UL );
   FD_TEST( env->execle->txn_out[0].err.is_committable );
   FD_TEST( env->execle->txn_out[0].err.txn_err==FD_RUNTIME_EXECUTE_SUCCESS );
   FD_TEST( out_txn->flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS );
@@ -826,7 +1055,7 @@ FD_UNIT_TEST( execle_simple_ok ) {
            txn->pack_cu.non_execution_cus + txn->pack_cu.requested_exec_plus_acct_data_cus );
   FD_TEST( out_txn->execle_cu.actual_consumed_cus >= txn->pack_cu.non_execution_cus );
 
-  fd_microblock_trailer_t const * trailer = test_out_poh_trailer_nonbundle( env, 1UL );
+  fd_microblock_trailer_t const * trailer = bam_view->trailer;
   FD_TEST( trailer->pack_txn_idx==17UL );
   FD_TEST( trailer->tips==0UL );
   fd_txn_p_t txn_copy = *out_txn;
@@ -853,9 +1082,16 @@ FD_UNIT_TEST( execle_simple_fee_payer_fail ) {
 
   fd_txn_p_t txn[1];
   test_build_empty_txn( txn, bank, missing_fee_payer, data_acct, 12UL, 0 );
+  test_mark_bam_batch( txn, 1UL, 102U, 0 );
   test_execle_run( env, txn, 1UL, 4U, 18UL, 0 );
 
   test_assert_nonbundle_out( env, 1UL, 4U );
+  fd_frag_meta_t const * bam_meta = test_topo_link( "bank_bam" )->mcache;
+  FD_TEST( fd_frag_meta_seq_query( bam_meta )==0UL );
+  FD_TEST( bam_meta->sz==sizeof(fd_bam_bundle_result_t) );
+  fd_bam_bundle_result_t const * result = fd_chunk_to_laddr( env->execle->out_bam->mem, bam_meta->chunk );
+  FD_TEST( result->seq_id==102U );
+  FD_TEST( !result->execution_success );
   fd_txn_p_t const * out_txn = fd_chunk_to_laddr( env->execle->out_poh->mem, test_out_poh_meta( 0UL )->chunk );
   FD_TEST( !env->execle->txn_out[0].err.is_committable );
   FD_TEST( env->execle->txn_out[0].err.txn_err==FD_RUNTIME_TXN_ERR_ACCOUNT_NOT_FOUND );
@@ -1015,9 +1251,19 @@ FD_UNIT_TEST( execle_bundle_ok ) {
   fd_txn_p_t txns[2];
   test_build_system_transfer_txn( &txns[0], bank, fee_payer, recipient0, transfer0 );
   test_build_system_transfer_txn( &txns[1], bank, fee_payer, recipient1, transfer1 );
+  test_mark_bam_batch( txns, 2UL, 103U, 1 );
   test_execle_run( env, txns, 2UL, 8U, 21UL, 1 );
 
-  test_assert_bundle_out( env, 2UL, 8U );
+  test_assert_bundle_out( env, 1UL, 8U );
+  fd_bam_microblock_view_t bam_view[1];
+  fd_frag_meta_t const * final_meta = test_out_poh_meta( 1UL );
+  FD_TEST( fd_bam_microblock_parse( fd_chunk_to_laddr( env->execle->out_poh->mem, final_meta->chunk ), final_meta->sz, bam_view ) );
+  FD_TEST( fd_frag_meta_seq_query( final_meta )==1UL );
+  FD_TEST( final_meta->sig==fd_disco_execle_sig( bank->f.slot, 9U ) );
+  FD_TEST( bam_view->txn_cnt==1UL && bam_view->result );
+  FD_TEST( bam_view->result->seq_id==103U );
+  FD_TEST( bam_view->result->execution_success );
+  FD_TEST( test_topo_link( "bank_bam" )->mcache->sz==0UL );
   FD_TEST( env->execle->txn_out[0].err.is_committable );
   FD_TEST( env->execle->txn_out[1].err.is_committable );
   for( ulong i=0UL; i<2UL; i++ ) {

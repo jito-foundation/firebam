@@ -1,0 +1,59 @@
+description = "Execute the same preloaded SPL Memo program through live Full Firedancer and Jito BAM validators."
+heartbeat_interval_ms = 1000
+expected_terminal_results = 3
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200001
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [
+  { program_id = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo" },
+  { program_id = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo", data_hex = "00" },
+  { program_id = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo", data_hex = "6669726562616d" },
+  { program_id = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo", data_hex = "e29883" },
+  { program_id = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo", data_hex = "30313233343536373839616263646566" },
+]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200002
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [
+  { program_id = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo", data_hex = "61" },
+  { program_id = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo", data_hex = "616263" },
+  { program_id = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo", data_hex = "f09f9880" },
+  { program_id = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo", data_hex = "6c6976652d646966666572656e7469616c2d66757a7a6572" },
+]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 2
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5200003
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [
+  { program_id = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo", data_hex = "ff" },
+]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 3
+timeout_ms = 30000

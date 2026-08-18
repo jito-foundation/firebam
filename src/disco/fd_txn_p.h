@@ -17,8 +17,12 @@ struct __attribute__((aligned(64))) fd_txn_p {
    } execle_cu; /* Populated by execle. */
    ulong blockhash_slot; /* Slot provided by resolv tile when txn arrives at the pack tile. Used when txn is in extra storage in pack. */
   };
-  /* The time that the transaction arrived to the pack tile in ticks. Set by pack and intended to be read from a transaction on a pack->execle link. */
+  /* Wallclock nanoseconds at which the transaction arrived to the pack tile. Set by pack and intended to be read from a transaction on a pack->execle link. */
   long scheduler_arrival_time_nanos;
+
+  /* Wallclock nanoseconds at which the validator first saw the
+     transaction. */
+  long first_seen_nanos;
 
   union {
     struct {
@@ -42,6 +46,16 @@ struct __attribute__((aligned(64))) fd_txn_p {
      FD_TXN_P_FLAGS_* defined above.  The execle sets the high byte with
      the transaction result code. */
   uint  flags;
+
+  /* BAM metadata for transactions originating from BAM scheduling.
+     max_schedule_slot is not stored here on this branch; pack carries that
+     slot hint in sidecar state to preserve the fd_txn_p_t layout. */
+  struct {
+    uint  seq_id;
+    ushort scheduler_gen;
+    uchar batch_idx;
+    _Bool revert_on_error;
+  } bam;
   /* union {
     This would be ideal but doesn't work because of the flexible array member
     uchar _[FD_TXN_MAX_SZ];

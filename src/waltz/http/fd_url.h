@@ -6,6 +6,7 @@
    This API is by no means compliant.  Works only for basic strings.  */
 
 #include "../../util/fd_util_base.h"
+#include "../fd_fqdn.h"
 
 /* fd_url_t holds a bunch of pointers into an URL string. */
 
@@ -29,6 +30,11 @@ typedef struct fd_url fd_url_t;
 #define FD_URL_ERR_SCHEME      1
 #define FD_URL_ERR_HOST_OVERSZ 2
 #define FD_URL_ERR_USERINFO    3
+
+/* Storage required for an HTTP(S) origin containing a maximum-sized
+   host and an explicit five-digit port, including the terminating NUL. */
+#define FD_URL_FORMAT_OVERHEAD (14UL)
+#define FD_URL_MAX             (FD_FQDN_BUF_MAX+FD_URL_FORMAT_OVERHEAD)
 
 FD_PROTOTYPES_BEGIN
 

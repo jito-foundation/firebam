@@ -17,6 +17,13 @@ struct fd_keyguard_sign_req {
 
 typedef struct fd_keyguard_sign_req fd_keyguard_sign_req_t;
 
+enum {
+  /* ContactInfo version.client ids are assigned in
+     https://github.com/solana-foundation/solana-validator-client-ids/blob/main/client-ids.csv */
+  FD_KEYGUARD_CONTACT_INFO_CLIENT_FIREDANCER = 5U,
+  FD_KEYGUARD_CONTACT_INFO_CLIENT_BAM        = 12U,
+};
+
 static int
 fd_keyguard_authorize_vote_txn( fd_keyguard_authority_t const * authority,
                                 uchar const *                   data,
@@ -156,7 +163,8 @@ fd_keyguard_authorize_gossip( fd_keyguard_authority_t const * authority,
       uchar client_id   = data[ off ];
       (void)commit; /* Checking commit introduces a circular dependency between disco and app :'( */
       if( feature_set!=FD_FEATURE_SET_ID ) return 0;
-      if( client_id  !=5                 ) return 0; /* FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER */
+      if( client_id!=FD_KEYGUARD_CONTACT_INFO_CLIENT_FIREDANCER &&
+          client_id!=FD_KEYGUARD_CONTACT_INFO_CLIENT_BAM        ) return 0;
 
       break;
     case FD_GOSSIP_VALUE_DUPLICATE_SHRED:
@@ -193,29 +201,35 @@ fd_keyguard_authorize_bundle_crank_txn( fd_keyguard_authority_t const * authorit
                                         uchar const *                   data,
                                         ulong                           sz,
                                         int                             sign_type ) {
-  (void)authority;
-
-  static const uchar disc1[ 8 ] = { FD_BUNDLE_CRANK_DISC_INIT_TIP_DISTR };
-  static const uchar disc2[ 8 ] = { FD_BUNDLE_CRANK_DISC_CHANGE_TIP_RCV };
-  static const uchar disc3[ 8 ] = { FD_BUNDLE_CRANK_DISC_CHANGE_BLK_BLD };
+  static const uchar crank_2_mask[ FD_BUNDLE_CRANK_2_SZ ] = { FD_BUNDLE_CRANK_2_MASK };
+  static const uchar crank_2_vals[ FD_BUNDLE_CRANK_2_SZ ] = { FD_BUNDLE_CRANK_2_VALS };
+  static const uchar crank_3_mask[ FD_BUNDLE_CRANK_3_SZ ] = { FD_BUNDLE_CRANK_3_MASK };
+  static const uchar crank_3_vals[ FD_BUNDLE_CRANK_3_SZ ] = { FD_BUNDLE_CRANK_3_VALS };
 
   if( sign_type != FD_KEYGUARD_SIGN_TYPE_ED25519 ) return 0;
 
-  /* We know that this check is not tight enough to prevent signing of
-     transactions with virtually arbitrary effect.  Currently, we take this
-     trade-off to avoid complex transaction parsing logic in keyguard. */
-
+  int matches_mask = 1;
   switch( sz ) {
     case (FD_BUNDLE_CRANK_2_SZ-65UL):
-      return fd_memeq( data+FD_BUNDLE_CRANK_2_IX1_DISC_OFF-65UL, disc2, 8UL ) &&
-             fd_memeq( data+FD_BUNDLE_CRANK_2_IX2_DISC_OFF-65UL, disc3, 8UL );
+      for( ulong i=0UL; i<FD_BUNDLE_CRANK_2_SZ-65UL; i++ ) {
+        if( crank_2_mask[i+65UL] ) matches_mask &= data[i]==crank_2_vals[i+65UL];
+      }
+      break;
     case (FD_BUNDLE_CRANK_3_SZ-65UL):
-      return fd_memeq( data+FD_BUNDLE_CRANK_3_IX1_DISC_OFF-65UL, disc1, 8UL ) &&
-             fd_memeq( data+FD_BUNDLE_CRANK_3_IX2_DISC_OFF-65UL, disc2, 8UL ) &&
-             fd_memeq( data+FD_BUNDLE_CRANK_3_IX3_DISC_OFF-65UL, disc3, 8UL );
+      for( ulong i=0UL; i<FD_BUNDLE_CRANK_3_SZ-65UL; i++ ) {
+        if( crank_3_mask[i+65UL] ) matches_mask &= data[i]==crank_3_vals[i+65UL];
+      }
+      if( !fd_memeq( data+FD_BUNDLE_CRANK_TIP_DISTRIBUTION_OFFSET-65UL, authority->tip_distribution_program, 32UL ) ) return 0;
+      break;
     default:
       return 0;
   }
+  if( !matches_mask ) return 0;
+
+  if( !fd_memeq( data+FD_BUNDLE_CRANK_SIGNER_OFFSET     -65UL, authority->identity_pubkey,     32UL ) ) return 0;
+  if( !fd_memeq( data+FD_BUNDLE_CRANK_TIP_PAYMENT_OFFSET-65UL, authority->tip_payment_program, 32UL ) ) return 0;
+
+  return 1;
 }
 
 static int
@@ -413,6 +427,13 @@ fd_keyguard_payload_authorize( fd_keyguard_authority_t const * authority,
     }
     return 1;
   }
+
+  case FD_KEYGUARD_ROLE_BAM:
+    if( FD_UNLIKELY( payload_mask != FD_KEYGUARD_PAYLOAD_BAM_AUTH ) ) {
+      FD_LOG_WARNING(( "unauthorized payload type for BAM auth (mask=%#lx)", payload_mask ));
+      return 0;
+    }
+    return 1;
 
   default:
     FD_LOG_WARNING(( "unsupported role=%#x", (uint)role ));
