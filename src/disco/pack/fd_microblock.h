@@ -59,6 +59,11 @@ typedef struct fd_entry_batch_header fd_entry_batch_header_t;
    contain up to five transactions. */
 #define MAX_TXN_PER_MICROBLOCK (5UL)
 
+/* executed_txn link event kinds.  The event kind is carried in the
+   mcache sig field and the payload is the transaction signature. */
+#define FD_EXECUTED_TXN_KIND_LANDED                  (0UL)
+#define FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED  (1UL)
+
 /* FD_POH_SHRED_MTU is the size of the raw transaction portion of the
    largest microblock the pack tile will produce, plus the 48B of
    microblock header (hash and 2 ulongs) plus the fd_entry_batch_meta_t

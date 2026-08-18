@@ -215,6 +215,45 @@ partial state and proceed with setting a new key.
 
 <<< @/snippets/commands/set-identity.ansi
 
+## `set-bam`
+Changes the BAM runtime configuration of a running validator. The BAM tile
+must have been enabled at startup with `[tiles.bam].enabled = true`; this
+command changes the live endpoint and enable state but cannot add the tile to
+an existing topology.
+
+Always pass the same configuration file used to start the validator so the
+command joins the correct BAM control workspace.
+
+| Arguments                | Description                                                   |
+|--------------------------|---------------------------------------------------------------|
+| `--config <path>`        | Configuration TOML used to start the validator                |
+| `--enable` / `--disable` | Turn BAM scheduling on or off                                 |
+| `--url <url>`            | Set the BAM gRPC endpoint; pass an empty string to clear it    |
+| `--sni <domain>`         | Set the TLS SNI override; pass an empty string to clear it     |
+
+At least one of `--enable`, `--disable`, `--url`, or `--sni` is required.
+`--enable` and `--disable` cannot be used together.
+
+Example: enable BAM and point a Frankendancer validator at the testnet
+endpoint:
+
+```bash
+$ fdctl set-bam --config ./src/app/fdctl/config/testnet-bam.toml \
+    --enable --url http://testnet.bam.jito.wtf:50055
+```
+
+## `get-bam`
+Prints the running validator's BAM enable state, URL, and SNI override. The BAM
+tile must have been enabled at startup, and `--config` must name the same file
+used to start the validator.
+
+```bash
+$ fdctl get-bam --config ./src/app/fdctl/config/testnet-bam.toml
+enabled=true
+url=http://testnet.bam.jito.wtf:50055
+sni=(default)
+```
+
 ## `keys`
 
 ### `keys pubkey <PATH>`
@@ -236,7 +275,7 @@ The user can be changed by specifying it in the TOML configuration file.
 
 | Arguments  | Description |
 |------------|-------------|
-| `--config` | Path to a configuration TOML file which determines the user creating the file.
+| `--config` | Path to a configuration TOML file which determines the user creating the file. |
 
 ::: code-group
 

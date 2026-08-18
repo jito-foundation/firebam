@@ -1155,7 +1155,7 @@ fd_gui_accounts_stats_snap( fd_gui_t *                gui,
    discrepancies where a later tile has "seen" more transactions than an
    earlier tile, which shouldn't typically happen. */
 
-static void
+void
 fd_gui_txn_waterfall_snap( fd_gui_t *               gui,
                            fd_gui_txn_waterfall_t * cur ) {
   memset( cur, 0, sizeof(fd_gui_txn_waterfall_t) );
@@ -1196,6 +1196,13 @@ fd_gui_txn_waterfall_snap( fd_gui_t *               gui,
     cur->out.bank_nonce_already_advanced += execle_metrics[ MIDX( COUNTER, EXECLE, TXN_RESULT_NONCE_ALREADY_ADVANCED ) ];
     cur->out.bank_nonce_advance_failed   += execle_metrics[ MIDX( COUNTER, EXECLE, TXN_RESULT_NONCE_ADVANCE_FAILED ) ];
     cur->out.bank_nonce_wrong_blockhash  += execle_metrics[ MIDX( COUNTER, EXECLE, TXN_RESULT_NONCE_WRONG_BLOCKHASH ) ];
+  }
+
+  ulong bam_tile_idx = fd_topo_find_tile( topo, "bam", 0UL );
+  if( FD_LIKELY( bam_tile_idx!=ULONG_MAX ) ) {
+    fd_topo_tile_t const * bam = &topo->tiles[ bam_tile_idx ];
+    volatile ulong const * bam_metrics = fd_metrics_tile( bam->metrics );
+    cur->in.bam = bam_metrics[ MIDX( COUNTER, BAM, TRANSACTION_PUBLISHED ) ];
   }
 
   ulong pack_tile_idx = fd_topo_find_tile( topo, "pack", 0UL );
@@ -1384,7 +1391,7 @@ fd_gui_txn_waterfall_snap( fd_gui_t *               gui,
   }
 }
 
-static void
+void
 fd_gui_tile_stats_snap( fd_gui_t *                     gui,
                         fd_gui_txn_waterfall_t const * waterfall,
                         fd_gui_tile_stats_t *          stats,
@@ -1433,7 +1440,8 @@ fd_gui_tile_stats_snap( fd_gui_t *                     gui,
                            waterfall->out.verify_failed;
   stats->verify_total_cnt = waterfall->in.gossip +
                             waterfall->in.quic +
-                            waterfall->in.udp -
+                            waterfall->in.udp +
+                            waterfall->in.bam -
                             waterfall->out.net_overrun -
                             waterfall->out.tpu_quic_invalid -
                             waterfall->out.tpu_udp_invalid -
@@ -1457,7 +1465,10 @@ fd_gui_tile_stats_snap( fd_gui_t *                     gui,
 
   stats->bank_txn_exec_cnt = waterfall->out.block_fail + waterfall->out.block_success;
 
-  fd_gui_hist_ts_append( gui, FD_GUI_HIST_TILE_STATS, now, now, stats );
+  /* Snapshot helpers are also used without a backing history store by
+     focused metric-accounting tests. */
+  if( FD_LIKELY( gui->hist ) )
+    fd_gui_hist_ts_append( gui, FD_GUI_HIST_TILE_STATS, now, now, stats );
 }
 
 static void

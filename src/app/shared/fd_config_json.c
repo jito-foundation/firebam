@@ -11,7 +11,7 @@
    or knowingly skipped) before the constant is bumped.  String keys of
    the user's own file are separately forced through the classification
    lists below. */
-FD_STATIC_ASSERT( sizeof(fd_config_t)==22964136UL, update_fd_config_to_json_for_the_layout_change );
+FD_STATIC_ASSERT( sizeof(fd_config_t)==22968800UL, update_fd_config_to_json_for_the_layout_change );
 
 #define REDACTED "[redacted]"
 
@@ -120,6 +120,7 @@ static char const * const jw_redacted_keys[] = {
   "net.bind_address",
   "tiles.quic.ssl_key_log_file",
   "tiles.bundle.url",
+  "tiles.bam.url",
   "tiles.event.url",
   "tiles.shred.additional_shred_destinations_retransmit",
   "tiles.shred.additional_shred_destinations_leader",
@@ -128,6 +129,7 @@ static char const * const jw_redacted_keys[] = {
   "tiles.gui.gui_listen_address",
   "tiles.rpc.rpc_listen_address",
   "development.bundle.ssl_key_log_file",
+  "development.bam.ssl_key_log_file",
   "development.ledger_input.path",
   "capture.dump_proto_dir",
   "capture.dump_syscall_name_filter",
@@ -161,6 +163,7 @@ static char const * const jw_reported_keys[] = {
   "net.xdp.listen_gre",
   "net.xdp.native_bond",
   "tiles.bundle.tls_domain_name",
+  "tiles.bam.tls_domain_name",
   "tiles.bundle.tip_distribution_program_addr",
   "tiles.bundle.tip_payment_program_addr",
   "tiles.bundle.tip_distribution_authority",
@@ -497,6 +500,13 @@ fd_config_to_json( fd_config_t const * config,
       jw_ulong( &w, "buffer_size_kib",   config->development.bundle.buffer_size_kib );
       jw_ulong( &w, "ssl_heap_size_mib", config->development.bundle.ssl_heap_size_mib );
     jw_obj_close( &w );
+    jw_obj_open( &w, "bam" );
+      jw_path ( &w, "ssl_key_log_file",       config->development.bam.ssl_key_log_file );
+      jw_ulong( &w, "buffer_size_kib",        config->development.bam.buffer_size_kib );
+      jw_ulong( &w, "ssl_heap_size_mib",       config->development.bam.ssl_heap_size_mib );
+      jw_bool ( &w, "dump_bam_txns",          config->development.bam.dump_bam_txns );
+      jw_bool ( &w, "dump_bam_slot_first_txn", config->development.bam.dump_bam_slot_first_txn );
+    jw_obj_close( &w );
     jw_obj_open( &w, "event" );
       jw_bool( &w, "report_shreds",            config->development.event.report_shreds );
       jw_bool( &w, "report_transactions",      config->development.event.report_transactions );
@@ -564,6 +574,13 @@ fd_config_to_json( fd_config_t const * config,
       jw_ulong( &w, "commission_bps",                config->tiles.bundle.commission_bps );
       jw_ulong( &w, "keepalive_interval_millis",     config->tiles.bundle.keepalive_interval_millis );
       jw_bool ( &w, "tls_cert_verify",               config->tiles.bundle.tls_cert_verify );
+    jw_obj_close( &w );
+    jw_obj_open( &w, "bam" );
+      jw_bool ( &w, "enabled",                   config->tiles.bam.enabled );
+      jw_url  ( &w, "url",                       config->tiles.bam.url );
+      jw_str  ( &w, "tls_domain_name",           config->tiles.bam.tls_domain_name );
+      jw_ulong( &w, "keepalive_interval_millis", config->tiles.bam.keepalive_interval_millis );
+      jw_bool ( &w, "tls_cert_verify",           config->tiles.bam.tls_cert_verify );
     jw_obj_close( &w );
     jw_obj_open( &w, "pack" );
       jw_ulong( &w, "max_pending_transactions", config->tiles.pack.max_pending_transactions );

@@ -6,6 +6,7 @@
 #include "../platform/fd_net_util.h"
 #include "../platform/fd_sys_util.h"
 #include "../../ballet/toml/fd_toml.h"
+#include "../../disco/bam/fd_bam_types.h"
 #include "../../disco/genesis/fd_genesis_cluster.h"
 #include "../../discof/genesis/fd_genesi_tile.h"
 #include "../../disco/net/fd_net_tile.h"
@@ -637,6 +638,11 @@ fd_config_validate( fd_config_t const * config ) {
     FD_LOG_ERR(( "`tiles.bundle.keepalive_interval_millis` must be in range [3000, 3,600,000]" ));
   }
 
+  if( FD_UNLIKELY( config->tiles.bam.keepalive_interval_millis <    3000 ||
+                   config->tiles.bam.keepalive_interval_millis > 3600000 ) ) {
+    FD_LOG_ERR(( "`tiles.bam.keepalive_interval_millis` must be in range [3000, 3,600,000]" ));
+  }
+
   CFG_HAS_NON_EMPTY( development.core_dump );
 
   CFG_HAS_NON_ZERO( development.genesis.target_tick_duration_micros );
@@ -649,6 +655,7 @@ fd_config_validate( fd_config_t const * config ) {
   CFG_HAS_NON_EMPTY( development.bench.affinity );
 
   CFG_HAS_NON_ZERO( development.bundle.ssl_heap_size_mib );
+  CFG_HAS_NON_ZERO( development.bam.ssl_heap_size_mib );
 }
 
 #undef CFG_HAS_NON_EMPTY
