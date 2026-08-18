@@ -200,6 +200,32 @@ key was changed, otherwise it will fail and print diagnostic messages to
 or load the tower, when `--require-tower` is specified, or being unable
 to load or verify the provided identity key.
 
+## `set-bam`
+Changes the BAM runtime configuration of a running validator. Supports
+toggling BAM on/off and changing the BAM gRPC endpoint (URL/SNI).
+
+::: warning WARNING
+`set-bam` must be called with the same configuration file the validator
+was started with, for example `fdctl set-bam --config <config.toml>`.
+Without `--config`, the request might not reach the BAM tile.
+:::
+
+Arguments:
+
+| Arguments                | Description                                                |
+|--------------------------|------------------------------------------------------------|
+| `--config <path>`        | Path to the configuration TOML used to start the validator |
+| `--enable` / `--disable` | Turn BAM on or off                                         |
+| `--url <url>`            | BAM gRPC endpoint, eg. `http://testnet.bam.jito.wtf:50055` |
+| `--sni <domain>`         | Optional SNI override for TLS endpoints                    |
+
+Example: enable BAM and point to a testnet node while the validator is
+running:
+
+```bash
+$ fddev set-bam --enable --url http://testnet.bam.jito.wtf:50055 --config ./src/app/fdctl/config/testnet-bam.toml
+```
+
 Currently due to implementation limitations, the key can be partially
 changed if the `set-identity` command is cancelled (for example with
 Ctrl+C) while running. The next call to `set-identity` might need to

@@ -452,6 +452,101 @@ drive_become_leader( fd_replay_tile_t * ctx,
 }
 
 static void
+test_poh_slot_timing_mode( fd_wksp_t * wksp ) {
+  static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL ) ] __attribute__((aligned(FD_METRICS_ALIGN)));
+  fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
+
+  static fd_replay_tile_t selector_ctx[1];
+  fd_memset( selector_ctx, 0, sizeof(selector_ctx) );
+
+  selector_ctx->use_nominal_slot_duration = 0;
+  FD_TEST( replay_poh_slot_duration_ns( selector_ctx, &FD_SLOT_PARAMS_400MS )==FD_SLOT_PARAMS_400MS.ns_per_slot_adjusted );
+  FD_TEST( replay_poh_slot_duration_ns( selector_ctx, &FD_SLOT_PARAMS_350MS )==FD_SLOT_PARAMS_350MS.ns_per_slot_adjusted );
+
+  selector_ctx->use_nominal_slot_duration = 1;
+  FD_TEST( replay_poh_slot_duration_ns( selector_ctx, &FD_SLOT_PARAMS_400MS )==FD_SLOT_PARAMS_400MS.ns_per_slot );
+  FD_TEST( replay_poh_slot_duration_ns( selector_ctx, &FD_SLOT_PARAMS_350MS )==FD_SLOT_PARAMS_350MS.ns_per_slot );
+
+  /* Compose the selector with the same future-slot lookup used by the
+     leader grace-period path.  The 350 ms feature activates at the
+     next epoch boundary (slot 128). */
+  static fd_replay_tile_t ctx[1];
+  setup_ctx( ctx, wksp );
+  fd_bank_t * root_bank = fd_banks_root( ctx->banks );
+  FD_TEST( root_bank );
+  fd_memset( &root_bank->f.features, 0xFF, sizeof(root_bank->f.features) );
+  root_bank->f.features.reduce_slot_time_to_350ms = 1UL;
+
+  fd_slot_params_t future_params = fd_slot_params_at_slot( root_bank, 128UL );
+  FD_TEST( future_params.ns_per_slot==FD_SLOT_PARAMS_350MS.ns_per_slot );
+  ctx->use_nominal_slot_duration = 0;
+  FD_TEST( replay_poh_slot_duration_ns( ctx, &future_params )==FD_SLOT_PARAMS_350MS.ns_per_slot_adjusted );
+  ctx->use_nominal_slot_duration = 1;
+  FD_TEST( replay_poh_slot_duration_ns( ctx, &future_params )==FD_SLOT_PARAMS_350MS.ns_per_slot );
+
+  /* Runtime changes are latched once when replay accepts a reset, so
+     the reset message and all subsequent leader timing agree. */
+  setup_ctx( ctx, wksp );
+  fd_hash_t runtime_root_id = { .ul = { 8999UL } };
+  init_root_fec( ctx, &runtime_root_id );
+  fd_bank_t * runtime_root_bank = fd_banks_root( ctx->banks );
+  FD_TEST( runtime_root_bank );
+
+  fd_bam_ctrl_t bam_ctrl = { .applied_enable = 0U };
+  ctx->bam_ctrl                     = &bam_ctrl;
+  ctx->use_nominal_slot_duration    = 1;
+  ctx->reset_block_id.ul[ 0 ]       = 8998UL; /* make the tower reset a new block on main */
+  fd_tower_slot_done_t tower_reset = {
+    .replay_slot     = runtime_root_bank->f.slot,
+    .replay_bank_idx = runtime_root_bank->idx,
+    .vote_slot       = ULONG_MAX,
+    .reset_slot      = runtime_root_bank->f.slot,
+    .reset_block_id  = runtime_root_id,
+    .root_slot       = ULONG_MAX,
+  };
+
+  runtime_root_bank->refcnt = 1UL;
+  ulong reset_chunk = ctx->replay_out->chunk;
+  process_tower_slot_done( ctx, test_stem, &tower_reset, 0UL );
+  fd_poh_reset_t const * runtime_reset = fd_chunk_to_laddr_const( ctx->replay_out->mem, reset_chunk );
+  FD_TEST( !ctx->use_nominal_slot_duration );
+  FD_TEST( runtime_reset->tick_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot_adjusted/runtime_reset->ticks_per_slot );
+
+  bam_ctrl.applied_enable   = 1U;
+  ctx->reset_block_id.ul[ 0 ] = 8997UL; /* exercise another accepted reset, not a duplicate */
+  runtime_root_bank->refcnt = 1UL;
+  reset_chunk = ctx->replay_out->chunk;
+  process_tower_slot_done( ctx, test_stem, &tower_reset, 1UL );
+  runtime_reset = fd_chunk_to_laddr_const( ctx->replay_out->mem, reset_chunk );
+  FD_TEST( ctx->use_nominal_slot_duration );
+  FD_TEST( runtime_reset->tick_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot/runtime_reset->ticks_per_slot );
+
+  /* Verify the effective duration is used consistently in the leader
+     and reset messages for both startup modes. */
+  for( int use_nominal=0; use_nominal<=1; use_nominal++ ) {
+    setup_ctx( ctx, wksp );
+    ctx->use_nominal_slot_duration = use_nominal;
+
+    fd_hash_t root_id = { .ul = { 9000UL+(ulong)use_nominal } };
+    init_root_fec( ctx, &root_id );
+
+    ulong leader_chunk = ctx->replay_out->chunk;
+    fd_bank_t * leader_bank = drive_become_leader( ctx, &root_id, 1UL );
+    fd_became_leader_t const * leader = fd_chunk_to_laddr_const( ctx->replay_out->mem, leader_chunk );
+    ulong expected_slot_duration_ns = replay_poh_slot_duration_ns( ctx, &leader_bank->f.slot_params );
+    FD_TEST( (ulong)(leader->slot_end_ns-leader->slot_start_ns)==expected_slot_duration_ns );
+    FD_TEST( leader->tick_duration_ns==expected_slot_duration_ns/leader->ticks_per_slot );
+
+    ulong reset_chunk = ctx->replay_out->chunk;
+    publish_reset( ctx, test_stem, leader_bank );
+    fd_poh_reset_t const * reset = fd_chunk_to_laddr_const( ctx->replay_out->mem, reset_chunk );
+    FD_TEST( reset->tick_duration_ns==expected_slot_duration_ns/reset->ticks_per_slot );
+  }
+
+  FD_LOG_NOTICE(( "pass: test_poh_slot_timing_mode" ));
+}
+
+static void
 start_fec_with_epoch_boundary_mode( fd_replay_tile_t * ctx,
                                     fd_reasm_fec_t *   fec,
                                     int                freeze_bank,
@@ -1721,18 +1816,20 @@ main( int     argc,
   fd_wksp_t * wksp      = fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ), page_cnt, fd_shmem_cpu_idx( numa_idx ), "wksp", 0UL );
   FD_TEST( wksp );
 
-  test_consensus_root_notification_handoff( wksp );
-  test_epoch_boundary_fork_width_evict( wksp );
-  test_banks_full_prune_leaf( wksp );
-  test_banks_evict_backfill( wksp );
-  test_backfill_partial_sched_capacity( wksp );
-  test_double_confirm_backfill( wksp );
-  test_partial_exec_evict( wksp );
-  test_eqvoc_mid_slot_evicted( wksp );
-  test_confirm( wksp );
-  test_eqvoc_last_fec( wksp );
-  test_eqvoc_first_fec( wksp );
-  test_stale_redeliver( wksp );
+  test_poh_slot_timing_mode( wksp );
+  fd_wksp_reset( wksp, 42U );
+  test_consensus_root_notification_handoff( wksp ); fd_wksp_reset( wksp, 42U );
+  test_epoch_boundary_fork_width_evict( wksp );     fd_wksp_reset( wksp, 42U );
+  test_banks_full_prune_leaf( wksp );               fd_wksp_reset( wksp, 42U );
+  test_banks_evict_backfill( wksp );                fd_wksp_reset( wksp, 42U );
+  test_backfill_partial_sched_capacity( wksp );     fd_wksp_reset( wksp, 42U );
+  test_double_confirm_backfill( wksp );             fd_wksp_reset( wksp, 42U );
+  test_partial_exec_evict( wksp );                  fd_wksp_reset( wksp, 42U );
+  test_eqvoc_mid_slot_evicted( wksp );              fd_wksp_reset( wksp, 42U );
+  test_confirm( wksp );                             fd_wksp_reset( wksp, 42U );
+  test_eqvoc_last_fec( wksp );                      fd_wksp_reset( wksp, 42U );
+  test_eqvoc_first_fec( wksp );                     fd_wksp_reset( wksp, 42U );
+  test_stale_redeliver( wksp );                     fd_wksp_reset( wksp, 42U );
   test_eqvoc_child_confirm( wksp );
 
   fd_halt();

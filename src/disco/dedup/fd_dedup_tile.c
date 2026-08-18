@@ -1,5 +1,6 @@
 
 #include "../fd_txn_m.h"
+#include "../pack/fd_microblock.h"
 #include "generated/fd_dedup_tile_seccomp.h"
 
 #include "../topo/fd_topo.h"
@@ -121,9 +122,10 @@ during_frag( fd_dedup_ctx_t * ctx,
       FD_TCACHE_INSERT( _is_dup, *ctx->tcache_sync, ctx->tcache_ring, ctx->tcache_depth, ctx->tcache_map, ctx->tcache_map_cnt, ha_dedup_tag );
       (void)_is_dup;
     }
-  } else if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EXECUTED_TXN ) ) { /* Frankendancer-only */
+  } else if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EXECUTED_TXN ) ) {
     if( FD_UNLIKELY( sz!=FD_TXN_SIGNATURE_SZ ) ) FD_LOG_ERR(( "received an executed transaction signature message with the wrong size %lu", sz ));
-    /* Executed txns just have their signature inserted into the tcache
+    if( FD_UNLIKELY( sig!=FD_EXECUTED_TXN_KIND_LANDED ) ) return;
+    /* Landed txns just have their signature inserted into the tcache
        so we can dedup them easily. */
     ulong ha_dedup_tag = fd_hash( ctx->hashmap_seed, src, FD_TXN_SIGNATURE_SZ );
     int _is_dup;
@@ -163,16 +165,27 @@ after_frag( fd_dedup_ctx_t *    ctx,
     FD_LOG_ERR(( "dedup: txn payload size %hu exceeds max %lu", txnm->payload_sz, FD_TPU_MTU ));
   }
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
+  int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  ulong failure_group_id = fd_txn_m_failure_group_id( txnm );
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  /* BAM derives bundle_id from seq_id; a repeated seq_id is still a new
+     BAM-batch boundary when batch_idx returns to zero. */
+  if( FD_UNLIKELY( failure_group_id &&
+                   ( (failure_group_id!=ctx->bundle_id) ||
+                     (is_bam && !txnm->bam.batch_idx) ) ) ) {
     ctx->bundle_failed = 0;
-    ctx->bundle_id     = txnm->block_engine.bundle_id;
+    ctx->bundle_id     = failure_group_id;
     ctx->bundle_idx    = 0UL;
   }
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && ctx->bundle_failed ) ) {
+  if( FD_UNLIKELY( failure_group_id && ctx->bundle_failed ) ) {
     ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_BUNDLE_PEER_FAILURE_IDX ]++;
     return;
+  }
+
+  if( FD_UNLIKELY( is_bam && txnm->bam.preprocess_failed ) ) {
+    if( FD_LIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+    goto publish;
   }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_GOSSIP ) ) {
@@ -188,12 +201,12 @@ after_frag( fd_dedup_ctx_t *    ctx,
   }
 
   int is_dup = 0;
-  if( FD_LIKELY( !txnm->block_engine.bundle_id ) ) {
+  if( FD_LIKELY( fd_txn_m_use_prepack_sig_dedup( txnm ) ) ) {
     /* Compute fd_hash(signature) for dedup. */
     ulong ha_dedup_tag = fd_hash( ctx->hashmap_seed, fd_txn_m_payload( txnm )+txn->signature_off, 64UL );
 
     FD_TCACHE_INSERT( is_dup, *ctx->tcache_sync, ctx->tcache_ring, ctx->tcache_depth, ctx->tcache_map, ctx->tcache_map_cnt, ha_dedup_tag );
-  } else {
+  } else if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) {
     /* Make sure bundles don't contain a duplicate transaction inside
        the bundle, which would not be valid. */
 
@@ -210,21 +223,22 @@ after_frag( fd_dedup_ctx_t *    ctx,
     else fd_memcpy( ctx->bundle_signatures[ ctx->bundle_idx++ ], fd_txn_m_payload( txnm )+txn->signature_off, 64UL );
   }
 
-  if( FD_LIKELY( is_dup ) ) {
-    if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-
+  if( is_dup ) {
+    if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
     ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_DEDUP_FAILURE_IDX ]++;
+    if( FD_LIKELY( !is_bam ) ) return;
+    txnm->bam.preprocess_failed = 1U;
   } else {
-    ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 0 );
-    ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
-    /* Mark bundle transactions with sig==1 so that downstream resolv
-       tiles can route all bundle traffic to resolv:0. */
-    ulong out_sig = !!txnm->block_engine.bundle_id;
-    fd_stem_publish( stem, 0UL, out_sig, ctx->out_chunk, realized_sz, 0UL, tsorig, tspub );
-    ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, realized_sz, ctx->out_chunk0, ctx->out_wmark );
-
     ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_SUCCESS_IDX ]++;
   }
+
+publish:;
+  ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 0 );
+  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
+  /* Route all BAM transactions through resolv:0 so batches remain ordered. */
+  ulong out_sig = is_bam || !!failure_group_id;
+  fd_stem_publish( stem, 0UL, out_sig, ctx->out_chunk, realized_sz, 0UL, tsorig, tspub );
+  ctx->out_chunk = fd_dcache_compact_next( ctx->out_chunk, realized_sz, ctx->out_chunk0, ctx->out_wmark );
 }
 
 static void
@@ -332,6 +346,7 @@ populate_allowed_fds( fd_topo_t const *      topo,
 
 #include "../stem/fd_stem.c"
 
+#ifndef FD_TILE_TEST
 fd_topo_run_tile_t fd_tile_dedup = {
   .name                     = "dedup",
   .populate_allowed_seccomp = populate_allowed_seccomp,
@@ -342,3 +357,4 @@ fd_topo_run_tile_t fd_tile_dedup = {
   .unprivileged_init        = unprivileged_init,
   .run                      = stem_run,
 };
+#endif
