@@ -1,0 +1,8 @@
+# Wait for the validator to finish the first BAM handshake, then restart it and
+# confirm a fresh BAM scheduler stream is established.
+wait_log bam 30000 InitSchedulerStream:
+wait_log fd 30000 BAM identity pubkey updated to
+restart_fd
+wait_log_count bam 45000 2 GetAuthChallenge:
+wait_log_count bam 45000 2 InitSchedulerStream:
+wait_log_count fd 45000 2 BAM identity pubkey updated to
