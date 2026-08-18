@@ -13,6 +13,7 @@
 #include "fd_stake_ci.h"
 #include "fd_rnonce_ss.h"
 #include "fd_shred_tile.h"
+#include "../bam/fd_bam_types.h"
 #include "../store/fd_store.h"
 #include "../keyguard/fd_keyload.h"
 #include "../keyguard/fd_keyguard.h"
@@ -101,6 +102,7 @@
 #define IN_KIND_ROOTED  ( 9UL)
 #define IN_KIND_ROOTEDH (10UL)
 #define IN_KIND_ROOTEDV (11UL) /* Alpenglow */
+#define IN_KIND_BAM_SHRED (12UL)
 
 #define NET_OUT_IDX     1
 #define SIGN_OUT_IDX    2
@@ -184,6 +186,16 @@ typedef struct {
   fd_shred_dest_weighted_t adtl_dests_leader    [ FD_TOPO_ADTL_DESTS_MAX ];
   ulong                    adtl_dests_retransmit_cnt;
   fd_shred_dest_weighted_t adtl_dests_retransmit[ FD_TOPO_ADTL_DESTS_MAX ];
+  uchar                    bam_dests_cnt;
+  fd_shred_dest_weighted_t bam_dests[ FD_BAM_SHRED_SOCK_MAX ];
+  /* Memoizes "is this validator leader in shred->slot+1..+4" for the BAM
+     retransmit forwarding check.  The answer only changes once per slot,
+     but the check sits in the per-shred retransmit path, so recomputing it
+     for every shred would cost four leader-schedule lookups each.
+     bam_leader_soon_slot is the shred->slot the cached answer applies to,
+     or ULONG_MAX when no answer is cached. */
+  ulong                    bam_leader_soon_slot;
+  int                      bam_leader_soon;
 
   fd_ip4_udp_hdrs_t data_shred_net_hdr  [1];
   fd_ip4_udp_hdrs_t parity_shred_net_hdr[1];
@@ -231,6 +243,7 @@ typedef struct {
   fd_store_t * store;
 
   fd_gossip_update_message_t gossip_upd_buf[1];
+  fd_bam_shred_update_t      bam_shred_upd_buf[1];
 
   struct {
     fd_histf_t contact_info_cnt[ 1 ];
@@ -360,6 +373,7 @@ during_housekeeping( fd_shred_ctx_t * ctx ) {
 
     memcpy( ctx->identity_key->uc, ctx->keyswitch->bytes, 32UL );
     fd_stake_ci_set_identity( ctx->stake_ci, ctx->identity_key );
+    ctx->bam_leader_soon_slot = ULONG_MAX; /* cached answer was for the old identity */
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
   }
 }
@@ -448,6 +462,7 @@ before_frag( fd_shred_ctx_t * ctx,
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_ROOTEDV ) ) {
     return sig!=FD_VOTOR_SIG_ROOTED; /* only care about rooted messages */
   }
+  if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BAM_SHRED ) ) return sig!=FD_BAM_STEM_SIG_SHRED_UPDATE;
   return 0;
 }
 
@@ -567,6 +582,22 @@ during_frag( fd_shred_ctx_t * ctx,
     ctx->features_activation->enforce_fixed_fec_set = fd_shred_get_feature_activation_slot0(
       epoch_msg->features.enforce_fixed_fec_set, ctx );
 
+    return;
+  }
+
+  if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BAM_SHRED ) ) {
+    if( FD_UNLIKELY( chunk<ctx->in[ in_idx ].chunk0 || chunk>ctx->in[ in_idx ].wmark || sz!=sizeof(fd_bam_shred_update_t) ) ) {
+      FD_LOG_WARNING(( "Malformed BAM shred update chunk=%lu sz=%lu range=[%lu,%lu]",
+                       chunk, sz, ctx->in[ in_idx ].chunk0, ctx->in[ in_idx ].wmark ));
+      ctx->skip_frag = 1;
+      return;
+    }
+    fd_memcpy( ctx->bam_shred_upd_buf, fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk ), sizeof(fd_bam_shred_update_t) );
+    if( FD_UNLIKELY( ctx->bam_shred_upd_buf->shred_sock_cnt>FD_BAM_SHRED_SOCK_MAX ) ) {
+      FD_LOG_WARNING(( "Malformed BAM shred update receiver count=%u max=%lu",
+                       (uint)ctx->bam_shred_upd_buf->shred_sock_cnt, FD_BAM_SHRED_SOCK_MAX ));
+      ctx->skip_frag = 1;
+    }
     return;
   }
 
@@ -947,6 +978,43 @@ send_shred( fd_shred_ctx_t                 * ctx,
   ctx->net_out_chunk = fd_dcache_compact_next( chunk, pkt_sz, ctx->net_out_chunk0, ctx->net_out_wmark );
 }
 
+static inline void
+fd_shred_send_bam_shred( fd_shred_ctx_t *    ctx,
+                         fd_stem_context_t * stem,
+                         fd_shred_t const *  shred,
+                         int                 is_retransmit ) {
+  if( FD_UNLIKELY( !ctx->bam_dests_cnt ) ) return;
+
+  int should_send = 0;
+  if( is_retransmit ) {
+    /* Stop forwarding older retransmits once local leader shredding starts. */
+    if( FD_UNLIKELY( ctx->slot!=ULONG_MAX && shred->slot<ctx->slot ) ) return;
+
+    if( FD_LIKELY( shred->slot==ctx->bam_leader_soon_slot ) ) {
+      should_send = ctx->bam_leader_soon;
+    } else {
+      for( ulong off=1UL; off<5UL; off++ ) {
+        ulong slot = shred->slot + off;
+        fd_epoch_leaders_t const * lsched = fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot );
+        if( FD_LIKELY( !lsched || (slot-lsched->slot0)%FD_EPOCH_SLOTS_PER_ROTATION ) ) continue;
+        fd_pubkey_t const * leader = fd_epoch_leaders_get( lsched, slot );
+        if( FD_LIKELY( !leader || !fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) ) ) continue;
+        should_send = 1;
+        break;
+      }
+      ctx->bam_leader_soon_slot = shred->slot;
+      ctx->bam_leader_soon      = should_send;
+    }
+  } else {
+    fd_pubkey_t const * leader = fd_epoch_leaders_get( fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, shred->slot ), shred->slot );
+    should_send = !!( leader && fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) );
+  }
+
+  if( FD_UNLIKELY( !should_send ) ) return;
+
+  for( ulong i=0UL; i<ctx->bam_dests_cnt; i++ ) send_shred( ctx, stem, shred, ctx->bam_dests + i, ctx->tsorig );
+}
+
 static void
 after_frag( fd_shred_ctx_t *    ctx,
             ulong               in_idx,
@@ -970,11 +1038,13 @@ after_frag( fd_shred_ctx_t *    ctx,
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EPOCH ) ) {
     fd_stake_ci_epoch_msg_fini( ctx->stake_ci );
+    ctx->bam_leader_soon_slot = ULONG_MAX; /* leader schedule changed */
     return;
   }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_STAKE ) ) {
     fd_stake_ci_stake_msg_fini( ctx->stake_ci );
+    ctx->bam_leader_soon_slot = ULONG_MAX; /* leader schedule changed */
     return;
   }
 
@@ -1005,6 +1075,15 @@ after_frag( fd_shred_ctx_t *    ctx,
       } else {
         fd_stake_ci_dest_remove( ctx->stake_ci, fd_type_pun_const( ctx->gossip_upd_buf->origin ) );
       }
+    }
+    return;
+  }
+
+  if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BAM_SHRED ) ) {
+    ctx->bam_dests_cnt = ctx->bam_shred_upd_buf->shred_sock_cnt;
+    for( ulong i=0UL; i<ctx->bam_dests_cnt; i++ ) {
+      ctx->bam_dests[ i ].ip4  = ctx->bam_shred_upd_buf->shred_sock[ i ].addr;
+      ctx->bam_dests[ i ].port = fd_ushort_bswap( ctx->bam_shred_upd_buf->shred_sock[ i ].port );
     }
     return;
   }
@@ -1118,6 +1197,7 @@ after_frag( fd_shred_ctx_t *    ctx,
         fd_shred_dest_idx_t * dests = fd_shred_dest_compute_children( sdest, &shred, 1UL, ctx->scratchpad_dests, 1UL, fanout, fanout, max_dest_cnt );
         if( FD_UNLIKELY( !dests ) ) break;
 
+        fd_shred_send_bam_shred( ctx, stem, *out_shred, 1 );
         for( ulong i=0UL; i<ctx->adtl_dests_retransmit_cnt; i++ ) send_shred( ctx, stem, *out_shred, ctx->adtl_dests_retransmit+i, ctx->tsorig );
         for( ulong j=0UL; j<*max_dest_cnt; j++ ) send_shred( ctx, stem, *out_shred, fd_shred_dest_idx_to_dest( sdest, dests[ j ] ), ctx->tsorig );
       } while( 0 );
@@ -1311,6 +1391,7 @@ after_frag( fd_shred_ctx_t *    ctx,
     fd_shred_dest_idx_t * dests;
     if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_NET ) ) {
       for( ulong i=0UL; i<k; i++ ) {
+        fd_shred_send_bam_shred( ctx, stem, new_shreds[ i ], 1 );
         for( ulong j=0UL; j<ctx->adtl_dests_retransmit_cnt; j++ ) send_shred( ctx, stem, new_shreds[ i ], ctx->adtl_dests_retransmit+j, ctx->tsorig );
       }
       out_stride = k;
@@ -1320,6 +1401,7 @@ after_frag( fd_shred_ctx_t *    ctx,
       dests = fd_shred_dest_compute_children( sdest, new_shreds, k, ctx->scratchpad_dests, k, fanout, fanout, max_dest_cnt );
     } else {
       for( ulong i=0UL; i<k; i++ ) {
+        fd_shred_send_bam_shred( ctx, stem, new_shreds[ i ], 0 );
         for( ulong j=0UL; j<ctx->adtl_dests_leader_cnt; j++ ) send_shred( ctx, stem, new_shreds[ i ], ctx->adtl_dests_leader+j, ctx->tsorig );
       }
       out_stride = 1UL;
@@ -1520,42 +1602,52 @@ unprivileged_init( fd_topo_t const *      topo,
     ctx->adtl_dests_leader[i].ip4  = tile->shred.adtl_dests_leader[i].ip;
     ctx->adtl_dests_leader[i].port = tile->shred.adtl_dests_leader[i].port;
   }
+  ctx->bam_dests_cnt        = 0U;
+  ctx->bam_leader_soon_slot = ULONG_MAX;
 
   uchar has_contact_info_in = 0;
+  ulong polled_in_idx = 0UL;
   for( ulong i=0UL; i<tile->in_cnt; i++ ) {
+    if( FD_UNLIKELY( !tile->in_link_poll[ i ] ) ) continue;
+
     fd_topo_link_t const * link = &topo->links[ tile->in_link_id[ i ] ];
-    fd_topo_wksp_t const * link_wksp = &topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ];
 
     if( FD_LIKELY(      !strcmp( link->name, "net_shred"    ) ) ) {
-      ctx->in_kind[ i ] = IN_KIND_NET;
-      fd_net_rx_bounds_init( &ctx->in[ i ].net_rx, link->dcache );
+      ctx->in_kind[ polled_in_idx ] = IN_KIND_NET;
+      fd_net_rx_bounds_init( &ctx->in[ polled_in_idx ].net_rx, link->dcache );
+      polled_in_idx++;
       continue; /* only net_rx needs to be set in this case. */
     }
-    else if( FD_LIKELY( !strcmp( link->name, "poh_shred"    ) ) )   ctx->in_kind[ i ] = IN_KIND_POH;   /* Firedancer */
-    else if( FD_LIKELY( !strcmp( link->name, "pohh_shred"   ) ) )   ctx->in_kind[ i ] = IN_KIND_POH;   /* Frankendancer */
-    else if( FD_LIKELY( !strcmp( link->name, "stake_out"    ) ) )   ctx->in_kind[ i ] = IN_KIND_STAKE; /* Frankendancer */
-    else if( FD_LIKELY( !strcmp( link->name, "replay_epoch" ) ) )   ctx->in_kind[ i ] = IN_KIND_EPOCH; /* Firedancer */
-    else if( FD_LIKELY( !strcmp( link->name, "sign_shred"   ) ) )   ctx->in_kind[ i ] = IN_KIND_SIGN;
-    else if( FD_LIKELY( !strcmp( link->name, "ipecho_out"   ) ) )   ctx->in_kind[ i ] = IN_KIND_IPECHO;
-    else if( FD_LIKELY( !strcmp( link->name, "tower_out"    ) ) )   ctx->in_kind[ i ] = IN_KIND_ROOTED;
-    else if( FD_LIKELY( !strcmp( link->name, "replay_resol" ) ) )   ctx->in_kind[ i ] = IN_KIND_ROOTEDH;
-    else if( FD_LIKELY( !strcmp( link->name, "votor_out"    ) ) )   ctx->in_kind[ i ] = IN_KIND_ROOTEDV;
-    else if( FD_LIKELY( !strcmp( link->name, "crds_shred"   ) ) ) { ctx->in_kind[ i ] = IN_KIND_CONTACT;
+    else if( FD_LIKELY( !strcmp( link->name, "poh_shred"    ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_POH;       /* Firedancer */
+    else if( FD_LIKELY( !strcmp( link->name, "pohh_shred"   ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_POH;       /* Frankendancer */
+    else if( FD_LIKELY( !strcmp( link->name, "stake_out"    ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_STAKE;     /* Frankendancer */
+    else if( FD_LIKELY( !strcmp( link->name, "replay_stake" ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_STAKE;     /* Firedancer */
+    else if( FD_LIKELY( !strcmp( link->name, "replay_epoch" ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_EPOCH;     /* Firedancer */
+    else if( FD_LIKELY( !strcmp( link->name, "sign_shred"   ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_SIGN;
+    else if( FD_LIKELY( !strcmp( link->name, "repair_shred" ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_REPAIR;
+    else if( FD_LIKELY( !strcmp( link->name, "ipecho_out"   ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_IPECHO;
+    else if( FD_LIKELY( !strcmp( link->name, "tower_out"    ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_ROOTED;
+    else if( FD_LIKELY( !strcmp( link->name, "replay_resol" ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_ROOTEDH;
+    else if( FD_LIKELY( !strcmp( link->name, "votor_out"    ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_ROOTEDV;
+    else if( FD_LIKELY( !strcmp( link->name, "crds_shred"   ) ) ) { ctx->in_kind[ polled_in_idx ] = IN_KIND_CONTACT;
       if( FD_UNLIKELY( has_contact_info_in ) ) FD_LOG_ERR(( "shred tile has multiple contact info in link types, can only be either gossip_out or crds_shred" ));
       has_contact_info_in = 1;
     }
-    else if( FD_LIKELY( !strcmp( link->name, "gossip_out"   ) ) ) { ctx->in_kind[ i ] = IN_KIND_GOSSIP;
+    else if( FD_LIKELY( !strcmp( link->name, "gossip_out"   ) ) ) { ctx->in_kind[ polled_in_idx ] = IN_KIND_GOSSIP;
       if( FD_UNLIKELY( has_contact_info_in ) ) FD_LOG_ERR(( "shred tile has multiple contact info in link types, can only be either gossip_out or crds_shred" ));
       has_contact_info_in = 1;
     }
+    else if( FD_LIKELY( !strcmp( link->name, "bam_shred"    ) ) )   ctx->in_kind[ polled_in_idx ] = IN_KIND_BAM_SHRED;
 
     else FD_LOG_ERR(( "shred tile has unexpected input link %lu %s", i, link->name ));
 
     if( FD_LIKELY( !!link->mtu ) ) {
-      ctx->in[ i ].mem    = link_wksp->wksp;
-      ctx->in[ i ].chunk0 = fd_dcache_compact_chunk0( ctx->in[ i ].mem, link->dcache );
-      ctx->in[ i ].wmark  = fd_dcache_compact_wmark ( ctx->in[ i ].mem, link->dcache, link->mtu );
+      fd_topo_wksp_t const * link_wksp = &topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ];
+      ctx->in[ polled_in_idx ].mem    = link_wksp->wksp;
+      ctx->in[ polled_in_idx ].chunk0 = fd_dcache_compact_chunk0( ctx->in[ polled_in_idx ].mem, link->dcache );
+      ctx->in[ polled_in_idx ].wmark  = fd_dcache_compact_wmark ( ctx->in[ polled_in_idx ].mem, link->dcache, link->mtu );
     }
+    polled_in_idx++;
   }
 
   fd_topo_link_t const * net_out = &topo->links[ tile->out_link_id[ NET_OUT_IDX ] ];

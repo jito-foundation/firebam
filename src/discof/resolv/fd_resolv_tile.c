@@ -125,6 +125,7 @@ typedef struct {
 } fd_resolv_in_ctx_t;
 
 typedef struct {
+  ulong       idx;
   fd_wksp_t * mem;
   ulong       chunk0;
   ulong       wmark;
@@ -504,17 +505,27 @@ after_frag( fd_resolv_ctx_t *   ctx,
     buffer.  If we later see the blockhash come to exist, we forward any
     buffered transactions to back. */
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  if( FD_UNLIKELY( is_bam ) ) txnm->bam.blockhash_expired = 0;
+  ulong failure_group_id = fd_txn_m_failure_group_id( txnm );
+
+  if( FD_UNLIKELY( failure_group_id &&
+                   ( (failure_group_id!=ctx->bundle_id) ||
+                     (is_bam && !txnm->bam.batch_idx) ) ) ) {
     ctx->bundle_failed = 0;
-    ctx->bundle_id     = txnm->block_engine.bundle_id;
+    ctx->bundle_id     = failure_group_id;
   }
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && ctx->bundle_failed ) ) {
+  if( FD_UNLIKELY( failure_group_id && ctx->bundle_failed ) ) {
     ctx->metrics.bundle_peer_failure++;
     return;
   }
 
   txnm->reference_slot = ctx->completed_slot;
+  if( FD_UNLIKELY( is_bam && txnm->bam.preprocess_failed ) ) {
+    if( FD_LIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+    goto publish;
+  }
 
   blockhash_t const * recent_blockhash = (blockhash_t const *)( fd_txn_m_payload( txnm )+txnt->recent_blockhash_off );
   blockhash_map_t const * blockhash = NULL;
@@ -524,16 +535,20 @@ after_frag( fd_resolv_ctx_t *   ctx,
   if( FD_LIKELY( blockhash ) ) {
     txnm->reference_slot = blockhash->slot;
     if( FD_UNLIKELY( txnm->reference_slot+151UL<ctx->completed_slot ) ) {
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-      ctx->metrics.blockhash_expired++;
-      return;
+      if( FD_UNLIKELY( is_bam ) ) {
+        txnm->bam.blockhash_expired = 1;
+      } else {
+        if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+        ctx->metrics.blockhash_expired++;
+        return;
+      }
     }
   }
 
   int is_bundle_member = !!txnm->block_engine.bundle_id;
   int is_durable_nonce = fd_resolv_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
 
-  if( FD_UNLIKELY( !is_bundle_member && !is_durable_nonce && !blockhash ) ) {
+  if( FD_UNLIKELY( !is_bundle_member && txnm->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM && !is_durable_nonce && !blockhash ) ) {
     ulong pool_idx;
     if( FD_UNLIKELY( !pool_free( ctx->pool ) ) ) {
       pool_idx = lru_list_idx_pop_tail( ctx->lru_list, ctx->pool );
@@ -564,19 +579,26 @@ after_frag( fd_resolv_ctx_t *   ctx,
   }
 
   if( FD_UNLIKELY( txnt->addr_table_adtl_cnt ) ) {
+    int failed = 0;
     if( FD_UNLIKELY( !ctx->bank ) ) {
       FD_MCNT_INC( RESOLV, TXN_NO_BANK, 1 );
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-      return;
+      failed = 1;
+    } else {
+      failed = !!peek_aluts( ctx, txnm );
     }
 
-    int result = peek_aluts( ctx, txnm );
-    if( FD_UNLIKELY( result ) ) {
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
+    if( FD_UNLIKELY( failed ) ) {
+      if( FD_UNLIKELY( is_bam ) ) {
+        txnm->bam.preprocess_failed = 1U;
+        if( FD_LIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+        goto publish;
+      }
+      if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
       return;
     }
   }
 
+publish:;
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
   fd_stem_publish( stem, 0UL, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, tsorig, tspub );
@@ -738,3 +760,19 @@ fd_topo_run_tile_t fd_tile_resolv = {
   .unprivileged_init        = unprivileged_init,
   .run                      = stem_run,
 };
+
+#ifdef FD_RESOLV_TILE_BAM_UNIT_TEST
+
+char const *
+fd_vinyl_strerror( int err ) {
+  (void)err;
+  return "test vinyl stub";
+}
+
+#define TEST_BAM_RESOLVE_CTX_T       fd_resolv_ctx_t
+#define TEST_BAM_RESOLVE_OUT_CNT     2UL
+#define TEST_BAM_RESOLVE_HAS_REPLAY  1
+#define TEST_BAM_RESOLVE_IN_KIND     IN_KIND_DEDUP
+#include "../../disco/bam/test_bam_resolve_common.c"
+
+#endif /* FD_RESOLV_TILE_BAM_UNIT_TEST */
