@@ -4297,6 +4297,7 @@ setup_ctrl_defaults( fd_bam_tile_t * ctx,
   ctx->server_tcp_port = 50055;
   ctx->is_ssl          = 0;
   ctrl->enable         = 1U;
+  ctrl->applied_enable = 1U;
   fd_cstr_ncpy( ctrl->url, "http://testnet.bam.jito.wtf:50055", sizeof( ctrl->url ) );
   fd_cstr_ncpy( ctrl->sni, host, sizeof( ctrl->sni ) );
   ctrl->state = FD_BAM_CTRL_STATE_IDLE;
@@ -4316,6 +4317,7 @@ setup_ctrl_dormant( fd_bam_tile_t * ctx,
   ctx->server_tcp_port  = 0U;
   ctx->is_ssl           = 0U;
   ctrl->enable          = 0U;
+  ctrl->applied_enable  = 0U;
   ctrl->url[0]          = '\0';
   ctrl->sni[0]          = '\0';
   ctrl->state           = FD_BAM_CTRL_STATE_IDLE;
@@ -4481,6 +4483,7 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
 
   FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
   FD_TEST( ctrl.enable == 0U );
+  FD_TEST( ctrl.applied_enable == 0U );
   FD_TEST( ctx->enabled == 0 );
   FD_TEST( fd_fseq_query( fseq ) == 0UL );
   FD_TEST( test_bam_admin_rpc_mock.request_cnt == 2UL );
@@ -4500,6 +4503,7 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
 
   FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
   FD_TEST( ctrl.enable == 1U );
+  FD_TEST( ctrl.applied_enable == 1U );
   FD_TEST( ctx->enabled == 1U );
   FD_TEST( fd_fseq_query( fseq ) == 0UL );
   FD_TEST( !strcmp( ctrl.url, "http://testnet.bam.jito.wtf:50055" ) );
@@ -4668,6 +4672,7 @@ test_bam_ctrl_invalid_url_sets_error_and_preserves_config( fd_wksp_t * wksp ) {
   FD_TEST( !strcmp( ctrl.url, "http://testnet.bam.jito.wtf:50055" ) );
   FD_TEST( !strcmp( ctx->server_fqdn, "testnet.bam.jito.wtf" ) );
   FD_TEST( ctx->enabled == 1 );
+  FD_TEST( ctrl.applied_enable == 1U );
 
   ctx->keyswitch = NULL;
   test_bam_env_destroy( env );
@@ -4699,6 +4704,7 @@ test_bam_ctrl_blank_url_clears_and_disables( fd_wksp_t * wksp ) {
 
   FD_TEST( ctrl.state == FD_BAM_CTRL_STATE_SUCCESS );
   FD_TEST( ctrl.enable == 0U );
+  FD_TEST( ctrl.applied_enable == 0U );
   FD_TEST( !strcmp( ctrl.url, "" ) );
   FD_TEST( !strcmp( ctrl.sni, "" ) );
   FD_TEST( ctx->enabled == 0 );
