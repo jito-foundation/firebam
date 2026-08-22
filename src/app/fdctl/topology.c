@@ -473,6 +473,7 @@ fd_topo_initialize( config_t * config ) {
 
     fd_topo_obj_t * bam_ctrl_obj = fd_topob_obj( topo, "bam_ctrl", "bam_ctrl" );
     fd_topob_tile_uses( topo, bam_tile, bam_ctrl_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+    fd_topob_tile_uses( topo, &topo->tiles[ fd_topo_find_tile( topo, "pohh", 0UL ) ], bam_ctrl_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
     FD_TEST( fd_pod_insertf_ulong( topo->props, bam_ctrl_obj->id, "bam_ctrl" ) );
 
     fd_topo_obj_t * bam_fee_cfg_obj = fd_topob_obj( topo, "bam_fee_cfg", "bam_fee_cfg" );

@@ -1125,6 +1125,7 @@ fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
   ctx->ctrl->url[0] = '\0';
   ctx->ctrl->sni[0] = '\0';
   ctx->ctrl->enable = ctx->enabled;
+  FD_VOLATILE( ctx->ctrl->applied_enable ) = ctx->enabled;
   if( FD_UNLIKELY( !ctx->server_fqdn_len || !ctx->server_tcp_port ) ) {
     return 0;
   }
@@ -1538,6 +1539,7 @@ privileged_init( fd_topo_t const *      topo,
   fd_memset( ctx->ctrl, 0, sizeof(fd_bam_ctrl_t) );
   ctx->ctrl->state          = FD_BAM_CTRL_STATE_IDLE;
   ctx->ctrl->enable = ctx->enabled;
+  ctx->ctrl->applied_enable = ctx->enabled;
   fd_cstr_ncpy( ctx->ctrl->url, tile->bam.url, sizeof( ctx->ctrl->url ) );
   fd_cstr_ncpy( ctx->ctrl->sni, tile->bam.sni, sizeof( ctx->ctrl->sni ) );
 }

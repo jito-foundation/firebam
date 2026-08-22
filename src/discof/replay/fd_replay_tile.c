@@ -113,6 +113,12 @@ fd_block_id_ele_get_idx( fd_block_id_ele_t * ele_arr, fd_block_id_ele_t * ele ) 
   return (ulong)(ele - ele_arr);
 }
 
+static inline ulong
+replay_poh_slot_duration_ns( fd_replay_tile_t const * ctx,
+                             fd_slot_params_t const * params ) {
+  return ctx->use_nominal_slot_duration ? params->ns_per_slot : params->ns_per_slot_adjusted;
+}
+
 FD_FN_CONST static inline ulong
 scratch_align( void ) {
   return 128UL;
@@ -179,16 +185,16 @@ metrics_write( fd_replay_tile_t * ctx ) {
   }
   FD_MGAUGE_SET( REPLAY, RESET_SLOT, ctx->reset_slot==ULONG_MAX ? 0UL : ctx->reset_slot );
 
-  ulong slot_duration_nanos = ctx->leader_bank ? ctx->leader_bank->f.slot_params.ns_per_slot_adjusted : 0UL;
-  if( FD_UNLIKELY( !slot_duration_nanos ) ) {
+  ulong slot_duration_ns = ctx->leader_bank ? replay_poh_slot_duration_ns( ctx, &ctx->leader_bank->f.slot_params ) : 0UL;
+  if( FD_UNLIKELY( !slot_duration_ns ) ) {
     fd_block_id_ele_t * block_id_ele = fd_block_id_map_ele_query( ctx->block_id_map, &ctx->reset_block_id, NULL, ctx->block_id_arr );
     if( FD_LIKELY( block_id_ele ) ) {
       fd_bank_t * reset_bank = fd_banks_bank_query( ctx->banks, fd_block_id_ele_get_idx( ctx->block_id_arr, block_id_ele ) );
       if( FD_LIKELY( reset_bank && reset_bank->bank_seq==block_id_ele->bank_seq && reset_bank->state!=FD_BANK_STATE_PRUNABLE ) )
-        slot_duration_nanos = reset_bank->f.slot_params.ns_per_slot_adjusted;
+        slot_duration_ns = replay_poh_slot_duration_ns( ctx, &reset_bank->f.slot_params );
     }
   }
-  FD_MGAUGE_SET( REPLAY, SLOT_DURATION_NANOS, slot_duration_nanos );
+  FD_MGAUGE_SET( REPLAY, SLOT_DURATION_NANOS, slot_duration_ns );
 
   FD_MGAUGE_SET( REPLAY, BANK_LIVE, fd_banks_pool_used_cnt( ctx->banks ) );
 
@@ -1157,7 +1163,7 @@ maybe_switch_identity( fd_replay_tile_t * ctx ) {
     if( FD_LIKELY( block_id_ele ) ) {
       fd_bank_t * reset_bank = fd_banks_bank_query( ctx->banks, fd_block_id_ele_get_idx( ctx->block_id_arr, block_id_ele ) );
       if( FD_LIKELY( reset_bank && reset_bank->bank_seq==block_id_ele->bank_seq && reset_bank->state!=FD_BANK_STATE_PRUNABLE ) ) {
-        double slot_duration_ticks = (double)reset_bank->f.slot_params.ns_per_slot_adjusted*ctx->tick_per_ns;
+        double slot_duration_ticks = (double)replay_poh_slot_duration_ns( ctx, &reset_bank->f.slot_params )*ctx->tick_per_ns;
         ctx->next_leader_tickcount = (long)((double)(ctx->next_leader_slot-ctx->reset_slot-1UL)*slot_duration_ticks) + fd_tickcount();
       }
     }
@@ -1407,8 +1413,9 @@ try_become_leader( fd_replay_tile_t *  ctx,
      slot duration at next_leader_slot. This only matters for epoch
      boundaries where a slot time reduction is taking effect, so either
      choice is defensible. */
-  ulong ns_per_slot_adjusted = fd_slot_params_at_slot( reset_bank, ctx->next_leader_slot ).ns_per_slot_adjusted;
-  double slot_duration_ticks = (double)ns_per_slot_adjusted*ctx->tick_per_ns;
+  fd_slot_params_t slot_params = fd_slot_params_at_slot( reset_bank, ctx->next_leader_slot );
+  ulong slot_duration_ns = replay_poh_slot_duration_ns( ctx, &slot_params );
+  double slot_duration_ticks = (double)slot_duration_ns*ctx->tick_per_ns;
   if( FD_UNLIKELY( now<ctx->next_leader_tickcount+(long)(3.0*slot_duration_ticks) ) ) {
     /* TODO: Make the max_active_descendant calculation more efficient
        by caching it in the bank structure and updating it as banks are
@@ -1500,13 +1507,13 @@ try_become_leader( fd_replay_tile_t *  ctx,
   fd_became_leader_t * msg = fd_chunk_to_laddr( ctx->replay_out->mem, ctx->replay_out->chunk );
   msg->slot                = ctx->next_leader_slot;
   msg->slot_start_ns       = now_nanos;
-  msg->slot_end_ns         = now_nanos+(long)bank->f.slot_params.ns_per_slot_adjusted;
+  msg->slot_end_ns         = now_nanos+(long)slot_duration_ns;
   msg->bank                = NULL;
   msg->bank_idx            = bank->idx;
   msg->bank_seq            = bank->bank_seq;
   msg->ticks_per_slot      = bank->f.ticks_per_slot;
   msg->hashcnt_per_tick    = bank->f.slot_params.hashes_per_tick;
-  msg->tick_duration_ns    = bank->f.slot_params.ns_per_slot_adjusted/msg->ticks_per_slot;
+  msg->tick_duration_ns    = slot_duration_ns/msg->ticks_per_slot;
   msg->bundle->config[0]   = config[0];
   memcpy( msg->bundle->last_blockhash,     bank->f.poh.hash,      sizeof(fd_hash_t)   );
   memcpy( msg->bundle->tip_receiver_owner, tip_receiver_owner.uc, sizeof(fd_pubkey_t) );
@@ -1603,13 +1610,14 @@ publish_reset( fd_replay_tile_t *  ctx,
   FD_TEST( block_hash );
 
   fd_poh_reset_t * reset = fd_chunk_to_laddr( ctx->replay_out->mem, ctx->replay_out->chunk );
+  ulong slot_duration_ns = replay_poh_slot_duration_ns( ctx, &bank->f.slot_params );
 
   reset->bank_idx         = bank->idx;
   reset->timestamp        = fd_clock_tile_now( ctx->clock );
   reset->completed_slot   = bank->f.slot;
   reset->hashcnt_per_tick = bank->f.slot_params.hashes_per_tick;
   reset->ticks_per_slot   = bank->f.ticks_per_slot;
-  reset->tick_duration_ns = bank->f.slot_params.ns_per_slot_adjusted/reset->ticks_per_slot;
+  reset->tick_duration_ns = slot_duration_ns/reset->ticks_per_slot;
   fd_memcpy( reset->completed_block_id, ctx->reset_block_id.uc, sizeof(fd_hash_t) );
   fd_memcpy( reset->completed_blockhash, block_hash->uc, sizeof(fd_hash_t) );
 
@@ -1707,7 +1715,7 @@ boot_genesis( fd_replay_tile_t *        ctx,
   ctx->reset_timestamp_nanos = fd_clock_tile_now( ctx->clock );
   ctx->next_leader_slot      = fd_multi_epoch_leaders_get_next_slot( ctx->mleaders, 1UL, ctx->identity_pubkey );
   if( FD_LIKELY( ctx->next_leader_slot != ULONG_MAX ) ) {
-    double slot_duration_ticks = (double)bank->f.slot_params.ns_per_slot_adjusted*ctx->tick_per_ns;
+    double slot_duration_ticks = (double)replay_poh_slot_duration_ns( ctx, &bank->f.slot_params )*ctx->tick_per_ns;
     ctx->next_leader_tickcount = (long)((double)(ctx->next_leader_slot-ctx->reset_slot-1UL)*slot_duration_ticks) + fd_tickcount();
   } else {
     ctx->next_leader_tickcount = LONG_MAX;
@@ -1858,7 +1866,7 @@ on_snapshot_message( fd_replay_tile_t *  ctx,
     init_after_snapshot( ctx, stem );
 
     if( FD_LIKELY( ctx->next_leader_slot != ULONG_MAX ) ) {
-      double slot_duration_ticks = (double)bank->f.slot_params.ns_per_slot_adjusted*ctx->tick_per_ns;
+      double slot_duration_ticks = (double)replay_poh_slot_duration_ns( ctx, &bank->f.slot_params )*ctx->tick_per_ns;
       ctx->next_leader_tickcount = (long)((double)(ctx->next_leader_slot-ctx->reset_slot-1UL)*slot_duration_ticks) + fd_tickcount();
     } else {
       ctx->next_leader_tickcount = LONG_MAX;
@@ -3094,10 +3102,22 @@ process_tower_slot_done( fd_replay_tile_t *           ctx,
   ctx->reset_timestamp_nanos = fd_clock_tile_now( ctx->clock );
   if( FD_LIKELY( msg->root_slot!=ULONG_MAX ) ) FD_TEST( msg->root_slot<=msg->reset_slot );
 
+  int const use_nominal_slot_duration = ctx->bam_ctrl
+                                       ? !!FD_VOLATILE_CONST( ctx->bam_ctrl->applied_enable )
+                                       : ctx->use_nominal_slot_duration;
+  if( FD_UNLIKELY( use_nominal_slot_duration!=ctx->use_nominal_slot_duration ) ) {
+    ctx->use_nominal_slot_duration = use_nominal_slot_duration;
+    FD_LOG_NOTICE(( "PoH slot timing mode: %s",
+                    use_nominal_slot_duration
+                      ? "nominal (BAM runtime enabled)"
+                      : "adjusted (BAM runtime disabled)" ));
+  }
+
   ulong min_leader_slot = fd_ulong_max( msg->reset_slot+1UL, fd_ulong_if( ctx->highwater_leader_slot==ULONG_MAX, 0UL, ctx->highwater_leader_slot+1UL ) );
   ctx->next_leader_slot = fd_multi_epoch_leaders_get_next_slot( ctx->mleaders, min_leader_slot, ctx->identity_pubkey );
+  ulong slot_duration_ns = replay_poh_slot_duration_ns( ctx, &bank->f.slot_params );
   if( FD_LIKELY( ctx->next_leader_slot != ULONG_MAX ) ) {
-    double slot_duration_ticks = (double)bank->f.slot_params.ns_per_slot_adjusted*ctx->tick_per_ns;
+    double slot_duration_ticks = (double)slot_duration_ns*ctx->tick_per_ns;
     ctx->next_leader_tickcount = (long)((double)(ctx->next_leader_slot-ctx->reset_slot-1UL)*slot_duration_ticks) + fd_tickcount();
   } else {
     ctx->next_leader_tickcount = LONG_MAX;
@@ -3111,7 +3131,7 @@ process_tower_slot_done( fd_replay_tile_t *           ctx,
     reset->completed_slot   = ctx->reset_slot;
     reset->hashcnt_per_tick = bank->f.slot_params.hashes_per_tick;
     reset->ticks_per_slot   = bank->f.ticks_per_slot;
-    reset->tick_duration_ns = bank->f.slot_params.ns_per_slot_adjusted/reset->ticks_per_slot;
+    reset->tick_duration_ns = slot_duration_ns/reset->ticks_per_slot;
 
     fd_memcpy( reset->completed_block_id, &block_id_ele->latest_mr, sizeof(fd_hash_t) );
 
@@ -3672,7 +3692,7 @@ returnable_frag( fd_replay_tile_t *  ctx,
         if( FD_LIKELY( block_id_ele ) ) {
           fd_bank_t * reset_bank = fd_banks_bank_query( ctx->banks, fd_block_id_ele_get_idx( ctx->block_id_arr, block_id_ele ) );
           if( FD_LIKELY( reset_bank && reset_bank->bank_seq==block_id_ele->bank_seq && reset_bank->state!=FD_BANK_STATE_PRUNABLE ) ) {
-            double slot_duration_ticks = (double)reset_bank->f.slot_params.ns_per_slot_adjusted*ctx->tick_per_ns;
+            double slot_duration_ticks = (double)replay_poh_slot_duration_ns( ctx, &reset_bank->f.slot_params )*ctx->tick_per_ns;
             ctx->next_leader_tickcount = (long)((double)(ctx->next_leader_slot-ctx->reset_slot-1UL)*slot_duration_ticks) + fd_tickcount();
           }
         }
@@ -3952,6 +3972,13 @@ unprivileged_init( fd_topo_t const *      topo,
 
   ctx->is_leader             = 0;
   ctx->supports_leader       = fd_topo_find_tile( topo, "pack", 0UL )!=ULONG_MAX;
+  ulong bam_ctrl_obj_id = fd_pod_query_ulong( topo->props, "bam_ctrl", ULONG_MAX );
+  ctx->bam_ctrl = bam_ctrl_obj_id==ULONG_MAX ? NULL : fd_topo_obj_laddr( topo, bam_ctrl_obj_id );
+  ctx->use_nominal_slot_duration = fd_topo_find_tile( topo, "bam", 0UL )!=ULONG_MAX;
+  if( FD_UNLIKELY( ctx->use_nominal_slot_duration ) )
+    FD_LOG_NOTICE(( "PoH slot timing mode: nominal (BAM startup mode)" ));
+  else
+    FD_LOG_NOTICE(( "PoH slot timing mode: adjusted (standard startup mode)" ));
   ctx->snapmk.active                = 0;
   ctx->snapmk.supported             = fd_topo_find_tile( topo, "snapmk", 0UL )!=ULONG_MAX;
   ctx->snapmk.scheduled_at          = ULONG_MAX;
