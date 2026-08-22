@@ -15,6 +15,7 @@ test_next_leader_slot( fd_multi_epoch_leaders_t const * mleaders,
 #undef fd_multi_epoch_leaders_get_next_slot
 
 #include "../../util/tmpl/fd_unit_test.c"
+#include <sys/wait.h>
 
 int volatile const fd_startup_skip_checks = 1; /* fd_startup.c */
 
@@ -79,6 +80,158 @@ test_mcache_new( fd_wksp_t * wksp,
   fd_frag_meta_t * mcache = fd_mcache_join( fd_mcache_new( mem, depth, 0UL, 0UL ) );
   FD_TEST( mcache );
   return mcache;
+}
+
+static void
+test_full_slot_timing( fd_wksp_t * wksp ) {
+  fd_slot_params_t const * regimes[] = {
+    &FD_SLOT_PARAMS_400MS,
+    &FD_SLOT_PARAMS_350MS,
+    &FD_SLOT_PARAMS_300MS,
+    &FD_SLOT_PARAMS_250MS,
+    &FD_SLOT_PARAMS_200MS,
+  };
+
+  for( ulong i=0UL; i<sizeof(regimes)/sizeof(regimes[0]); i++ ) {
+    fd_slot_params_t const * params = regimes[ i ];
+    FD_TEST( params->ns_per_slot-params->ns_per_slot_adjusted==FD_TARGET_SLOT_ADJUSTMENT_NS );
+
+    ulong adjusted_tick_ns = params->ns_per_slot_adjusted/64UL;
+    FD_TEST( pohh_effective_tick_duration_ns( adjusted_tick_ns, 64UL, 0 )==adjusted_tick_ns );
+    FD_TEST( pohh_effective_tick_duration_ns( adjusted_tick_ns, 64UL, 1 )==params->ns_per_slot/64UL );
+  }
+
+  ulong const custom_ticks_per_slot   = 63UL;
+  ulong const custom_nominal_tick_ns  = FD_SLOT_PARAMS_400MS.ns_per_slot/custom_ticks_per_slot;
+  ulong const custom_adjusted_tick_ns = fd_ulong_sat_sub( custom_nominal_tick_ns,
+                                                          FD_TARGET_SLOT_ADJUSTMENT_NS/custom_ticks_per_slot );
+  FD_TEST( pohh_effective_tick_duration_ns( custom_adjusted_tick_ns, custom_ticks_per_slot, 0 )==custom_adjusted_tick_ns );
+  FD_TEST( pohh_effective_tick_duration_ns( custom_adjusted_tick_ns, custom_ticks_per_slot, 1 )==custom_nominal_tick_ns );
+
+  /* The zero-tick guard is process-fatal, so exercise it in a child. */
+  pid_t pid = fork();
+  FD_TEST( pid>=0 );
+  if( FD_UNLIKELY( !pid ) ) {
+    fd_log_level_logfile_set( 6 );
+    (void)pohh_effective_tick_duration_ns( 1UL, 0UL, 1 );
+    _exit( 0 );
+  }
+  int status = 0;
+  FD_TEST( waitpid( pid, &status, 0 )==pid );
+  FD_TEST( ( WIFEXITED( status ) && WEXITSTATUS( status )==1 ) ||
+           ( WIFSIGNALED( status ) && WTERMSIG( status )==SIGABRT ) );
+
+  /* Exercise all three fresh-value boundaries.  Each receives the same
+     adjusted tick; BAM mode must restore it once, never cumulatively. */
+  static fd_pohh_tile_t ctx[1];
+  static fd_keyswitch_t keyswitch[1];
+  static fd_bam_ctrl_t bam_ctrl[1];
+  fd_memset( ctx, 0, sizeof(ctx) );
+  fd_memset( keyswitch, 0, sizeof(keyswitch) );
+  fd_memset( bam_ctrl, 0, sizeof(bam_ctrl) );
+  bam_ctrl->applied_enable          = 1U;
+  ctx->bam_ctrl                     = bam_ctrl;
+  ctx->use_nominal_slot_duration = 1;
+  ctx->highwater_leader_slot     = ULONG_MAX;
+  ctx->store_leader_bank_slot    = ULONG_MAX;
+  ctx->keyswitch                 = keyswitch;
+
+  fd_pohh_global_ctx   = ctx;
+  fd_poh_waiting_lock  = 0UL;
+  fd_poh_returned_lock = 1UL;
+  uchar initial_hash[32] = {0};
+  ulong adjusted_tick_ns = FD_SLOT_PARAMS_400MS.ns_per_slot_adjusted/64UL;
+  fd_ext_poh_initialize( adjusted_tick_ns, 62500UL, 64UL, 64UL, initial_hash, NULL );
+  FD_TEST( ctx->tick_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot/64UL );
+  FD_TEST( (ulong)ctx->slot_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot );
+
+  ulong const depth = 4UL;
+  fd_frag_meta_t * pack_mcache  = test_mcache_new( wksp, depth );
+  fd_frag_meta_t * shred_mcache = test_mcache_new( wksp, depth );
+  void * pack_dcache  = test_dcache_new( wksp, depth, sizeof(fd_became_leader_t) );
+  void * shred_dcache = test_dcache_new( wksp, depth, sizeof(void const *) );
+
+  *ctx->pack_out = (fd_pohh_out_t) {
+    .idx    = 0UL,
+    .mem    = wksp,
+    .chunk0 = fd_dcache_compact_chunk0( wksp, pack_dcache ),
+    .wmark  = fd_dcache_compact_wmark( wksp, pack_dcache, sizeof(fd_became_leader_t) ),
+    .chunk  = fd_dcache_compact_chunk0( wksp, pack_dcache ),
+  };
+  *ctx->shred_out = (fd_pohh_out_t) {
+    .idx    = 1UL,
+    .mem    = wksp,
+    .chunk0 = fd_dcache_compact_chunk0( wksp, shred_dcache ),
+    .wmark  = fd_dcache_compact_wmark( wksp, shred_dcache, sizeof(void const *) ),
+    .chunk  = fd_dcache_compact_chunk0( wksp, shred_dcache ),
+  };
+
+  fd_frag_meta_t * mcaches[2] = { pack_mcache, shred_mcache };
+  ulong seqs[2]                = { 0UL, 0UL };
+  ulong depths[2]              = { depth, depth };
+  ulong cr_avail[2]            = { ULONG_MAX, ULONG_MAX };
+  ulong min_cr_avail           = ULONG_MAX;
+  int out_reliable[2]          = { 0, 0 };
+  fd_stem_context_t stem[1] = {{
+    .mcaches             = mcaches,
+    .seqs                = seqs,
+    .depths              = depths,
+    .cr_avail            = cr_avail,
+    .min_cr_avail        = &min_cr_avail,
+    .cr_decrement_amount = 1UL,
+    .out_reliable        = out_reliable,
+  }};
+  ctx->stem = stem;
+
+  fd_histf_join( fd_histf_new( ctx->begin_leader_delay, FD_MHIST_SECONDS_MIN( POHH, BEGIN_LEADER_DELAY_SECONDS ),
+                                                       FD_MHIST_SECONDS_MAX( POHH, BEGIN_LEADER_DELAY_SECONDS ) ) );
+
+  ctx->slot                  = 2UL;
+  ctx->reset_slot            = 2UL;
+  ctx->last_slot             = 2UL;
+  ctx->last_hashcnt          = 0UL;
+  ctx->next_leader_slot      = 2UL;
+  ctx->reset_slot_start_ns   = fd_log_wallclock();
+  ctx->current_leader_bank   = NULL;
+
+  ulong leader_chunk = ctx->pack_out->chunk;
+  fd_poh_waiting_lock  = 0UL;
+  fd_poh_returned_lock = 1UL;
+  fd_ext_poh_begin_leader( (void const *)1UL, 2UL, 0UL, 62500UL, adjusted_tick_ns,
+                           48000000UL, 36000000UL, 12000000UL, 100000000UL, 32768UL );
+  FD_TEST( ctx->tick_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot/64UL );
+  FD_TEST( (ulong)ctx->slot_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot );
+
+  fd_became_leader_t const * leader = fd_chunk_to_laddr_const( wksp, leader_chunk );
+  FD_TEST( leader->tick_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot/64UL );
+  FD_TEST( (ulong)(leader->slot_end_ns-leader->slot_start_ns)==FD_SLOT_PARAMS_400MS.ns_per_slot );
+
+  uchar reset_hash[32] = {1};
+  ulong features_activation[ (sizeof(fd_shred_features_activation_t)+sizeof(ulong)-1UL)/sizeof(ulong) ] = {0};
+  ulong shred_slot_limits [ (sizeof(fd_shred_slot_limits_t)        +sizeof(ulong)-1UL)/sizeof(ulong) ] = {0};
+  fd_poh_waiting_lock  = 0UL;
+  fd_poh_returned_lock = 1UL;
+  fd_ext_poh_reset( 2UL, reset_hash, 62500UL, adjusted_tick_ns, NULL, features_activation, shred_slot_limits );
+  FD_TEST( ctx->tick_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot/64UL );
+  FD_TEST( (ulong)ctx->slot_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot );
+
+  bam_ctrl->applied_enable = 0U;
+  fd_poh_waiting_lock  = 0UL;
+  fd_poh_returned_lock = 1UL;
+  fd_ext_poh_reset( 3UL, reset_hash, 62500UL, adjusted_tick_ns, NULL, features_activation, shred_slot_limits );
+  FD_TEST( !ctx->use_nominal_slot_duration );
+  FD_TEST( ctx->tick_duration_ns==adjusted_tick_ns );
+  FD_TEST( (ulong)ctx->slot_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot_adjusted );
+
+  bam_ctrl->applied_enable = 1U;
+  fd_poh_waiting_lock  = 0UL;
+  fd_poh_returned_lock = 1UL;
+  fd_ext_poh_reset( 4UL, reset_hash, 62500UL, adjusted_tick_ns, NULL, features_activation, shred_slot_limits );
+  FD_TEST( ctx->use_nominal_slot_duration );
+  FD_TEST( ctx->tick_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot/64UL );
+  FD_TEST( (ulong)ctx->slot_duration_ns==FD_SLOT_PARAMS_400MS.ns_per_slot );
+
+  FD_LOG_NOTICE(( "pass: test_full_slot_timing" ));
 }
 
 /* Accepting a prior-slot microblock after PoH resets can acknowledge work that
@@ -224,6 +377,7 @@ main( int     argc,
                                              fd_shmem_cpu_idx( 0UL ), "pohh-test", 0UL );
   FD_TEST( wksp );
 
+  test_full_slot_timing( wksp );
   test_reset_rejects_stale_bam_microblock( wksp );
 
   FD_LOG_NOTICE(( "pass" ));

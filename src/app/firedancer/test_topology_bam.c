@@ -198,6 +198,7 @@ test_topology( int bundle_enabled,
   ulong replay_id = fd_topo_find_tile( topo, "replay", 0UL );
   FD_TEST( replay_id!=ULONG_MAX );
   FD_TEST( !!topo->tiles[ replay_id ].replay.bundle.enabled==crank_enabled );
+  FD_TEST( (fd_topo_find_tile_obj( topo, &topo->tiles[ replay_id ], "bam_ctrl" )!=NULL)==bam_enabled );
 
   FD_TEST( (fd_topo_find_tile( topo, "bundle", 0UL )!=ULONG_MAX)==bundle_enabled );
   FD_TEST( (fd_topo_find_tile( topo, "bam",    0UL )!=ULONG_MAX)==bam_enabled );

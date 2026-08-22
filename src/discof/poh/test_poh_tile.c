@@ -106,6 +106,13 @@ test_reset_rejects_stale_then_records_live_bam_microblock( fd_wksp_t * wksp ) {
   fd_poh_reset( ctx->poh, stem, 0L, 62500UL, 64UL, 6250UL, stale_slot,
                 completed_hash, live_slot, 1024UL, completed_id );
   FD_TEST( !fd_poh_have_leader_bank( ctx->poh ) );
+  FD_TEST( ctx->poh->hashcnt_duration_ns==(double)6250UL/(double)62500UL );
+
+  /* Runtime BAM changes alter tick duration without changing hashes per
+     tick.  Reset and leader-start must both refresh the derived clock. */
+  fd_poh_reset( ctx->poh, stem, 0L, 62500UL, 64UL, 5000UL, stale_slot,
+                completed_hash, live_slot, 1024UL, completed_id );
+  FD_TEST( ctx->poh->hashcnt_duration_ns==(double)5000UL/(double)62500UL );
 
   ctx->expect_pack_idx = UINT_MAX; /* stale consumption crosses the uint wrap */
   ctx->in_kind[ 0 ]    = IN_KIND_EXECLE;
@@ -136,6 +143,7 @@ test_reset_rejects_stale_then_records_live_bam_microblock( fd_wksp_t * wksp ) {
   FD_TEST( rejected->scheduling_error==FD_BAM_SCHED_ERR_POH_TIMEOUT );
 
   fd_poh_begin_leader( ctx->poh, live_slot, 62500UL, 64UL, 6250UL, 1024UL, 0L );
+  FD_TEST( ctx->poh->hashcnt_duration_ns==(double)6250UL/(double)62500UL );
   fd_bam_bundle_result_t live_result = fd_bam_result_base( 12346U, 7U, live_slot, 1U );
   live_result.execution_success = 1U;
   fd_bam_result_mark_sanitize_success_all( &live_result );
