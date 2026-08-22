@@ -310,6 +310,7 @@
 #include "../../disco/fd_txn_m.h"
 #include "../../disco/bam/fd_bam_microblock.h"
 #include "../../disco/bam/fd_bam_publish.h"
+#include "../../disco/bam/fd_bam_ctrl.h"
 #include "../../disco/bundle/fd_bundle_crank.h"
 #include "../../disco/pack/fd_pack.h"
 #include "../../disco/pack/fd_pack_cost.h"
@@ -322,6 +323,7 @@
 #include "../../discof/replay/fd_replay_tile.h"
 #include "../plugin/fd_plugin.h"
 #include "../../flamenco/leaders/fd_multi_epoch_leaders.h"
+#include "../../flamenco/runtime/fd_slot_params.h"
 
 #include <string.h>
 
@@ -378,6 +380,11 @@ typedef struct fd_pohh_out fd_pohh_out_t;
 
 struct fd_pohh_tile {
   fd_stem_context_t * stem;
+
+  fd_bam_ctrl_t const * bam_ctrl;
+
+  /* Timing mode latched from BAM runtime state at reset boundaries. */
+  int use_nominal_slot_duration;
 
   /* Static configuration determined at genesis creation time.  See
      long comment above for more information. */
@@ -598,6 +605,16 @@ struct fd_pohh_tile {
 };
 
 typedef struct fd_pohh_tile fd_pohh_tile_t;
+
+static inline ulong
+pohh_effective_tick_duration_ns( ulong adjusted_tick_duration_ns,
+                                 ulong ticks_per_slot,
+                                 int   use_nominal_slot_duration ) {
+  FD_TEST( ticks_per_slot );
+  if( FD_LIKELY( !use_nominal_slot_duration ) ) return adjusted_tick_duration_ns;
+
+  return fd_ulong_sat_add( adjusted_tick_duration_ns, FD_TARGET_SLOT_ADJUSTMENT_NS/ticks_per_slot );
+}
 
 /* The PoH recorder is implemented in Firedancer but for now needs to
    work with Agave, so we have a locking scheme for them to
@@ -843,6 +860,8 @@ fd_ext_poh_initialize( ulong         tick_duration_ns,    /* See clock comments 
     FD_SPIN_PAUSE();
   }
   fd_pohh_tile_t * ctx = fd_ext_poh_write_lock();
+
+  tick_duration_ns = pohh_effective_tick_duration_ns( tick_duration_ns, ticks_per_slot, ctx->use_nominal_slot_duration );
 
   ctx->slot                = tick_height/ticks_per_slot;
   ctx->hashcnt             = 0UL;
@@ -1119,7 +1138,9 @@ publish_became_leader( fd_pohh_tile_t * ctx,
 
   fd_became_leader_t * leader = (fd_became_leader_t *)dst;
   leader->slot_start_ns           = slot_start_ns;
-  leader->slot_end_ns             = (long)((double)slot_start_ns + ctx->slot_duration_ns);
+  /* Keep the wallclock integer-valued; converting its ~1e18 ns value to
+     double would round the advertised slot deadline. */
+  leader->slot_end_ns             = slot_start_ns+(long)ctx->slot_duration_ns;
   leader->bank                    = ctx->current_leader_bank;
   leader->max_microblocks_in_slot = ctx->max_microblocks_per_slot;
   leader->ticks_per_slot          = ctx->ticks_per_slot;
@@ -1188,6 +1209,8 @@ fd_ext_poh_begin_leader( void const * bank,
                          ulong        cus_allocated_data_size_limit,
                          ulong        max_data_shreds ) {
   fd_pohh_tile_t * ctx = fd_ext_poh_write_lock();
+
+  tick_duration_ns = pohh_effective_tick_duration_ns( tick_duration_ns, ctx->ticks_per_slot, ctx->use_nominal_slot_duration );
 
   FD_TEST( !ctx->current_leader_bank );
 
@@ -1402,6 +1425,19 @@ fd_ext_poh_reset( ulong         completed_bank_slot, /* The slot that successful
                   ulong const * features_activation, /* The activation slot of shred-tile features */
                   ulong const * shred_slot_limits    /* The shred slot limits for the epoch */ ) {
   fd_pohh_tile_t * ctx = fd_ext_poh_write_lock();
+
+  int const use_nominal_slot_duration = ctx->bam_ctrl
+                                       ? !!FD_VOLATILE_CONST( ctx->bam_ctrl->applied_enable )
+                                       : ctx->use_nominal_slot_duration;
+  if( FD_UNLIKELY( use_nominal_slot_duration!=ctx->use_nominal_slot_duration ) ) {
+    ctx->use_nominal_slot_duration = use_nominal_slot_duration;
+    FD_LOG_NOTICE(( "PoH slot timing mode: %s",
+                    use_nominal_slot_duration
+                      ? "nominal (BAM runtime enabled)"
+                      : "adjusted (BAM runtime disabled)" ));
+  }
+
+  tick_duration_ns = pohh_effective_tick_duration_ns( tick_duration_ns, ctx->ticks_per_slot, ctx->use_nominal_slot_duration );
 
   ulong slot_before_reset = ctx->slot;
   int leader_before_reset = ctx->slot>=ctx->next_leader_slot;
@@ -2510,6 +2546,14 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->next_leader_slot      = ULONG_MAX;
   ctx->reset_slot            = ULONG_MAX;
   ctx->parent_slot           = ULONG_MAX;
+
+  ulong bam_ctrl_obj_id = fd_pod_query_ulong( topo->props, "bam_ctrl", ULONG_MAX );
+  ctx->bam_ctrl = bam_ctrl_obj_id==ULONG_MAX ? NULL : fd_topo_obj_laddr( topo, bam_ctrl_obj_id );
+  ctx->use_nominal_slot_duration = fd_topo_find_tile( topo, "bam", 0UL )!=ULONG_MAX;
+  if( FD_UNLIKELY( ctx->use_nominal_slot_duration ) )
+    FD_LOG_NOTICE(( "PoH slot timing mode: nominal (BAM startup mode)" ));
+  else
+    FD_LOG_NOTICE(( "PoH slot timing mode: adjusted (standard startup mode)" ));
 
   ctx->lagged_consecutive_leader_start = tile->pohh.lagged_consecutive_leader_start;
   ctx->expect_sequential_leader_slot = ULONG_MAX;

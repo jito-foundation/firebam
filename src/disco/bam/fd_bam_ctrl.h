@@ -20,6 +20,7 @@ typedef struct fd_bam_ctrl {
   uchar state;                       /* FD_BAM_CTRL_STATE_* handoff between CLI (producer) and bam tile (consumer). */
   uchar command;                     /* FD_BAM_CTRL_CMD_* bitset of fields the CLI wants applied. */
   uchar enable;                      /* Desired enable state (0/1) when command includes ENABLE; otherwise ignored. */
+  uchar applied_enable;              /* Current enable state (0/1), written only by the BAM tile. */
   char url[ FD_URL_MAX ];            /* Desired gRPC endpoint; empty string clears URL when command includes URL. */
   char sni[ FD_SNI_BUF_MAX ];        /* (Optional) Desired TLS SNI override; empty string clears override when command includes SNI. */
   char error[ FD_BAM_CTRL_ERR_MAX ]; /* Error message when state==ERROR; cleared by CLI for new requests. */
