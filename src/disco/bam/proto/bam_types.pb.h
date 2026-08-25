@@ -149,7 +149,7 @@ typedef struct _bam_types_Meta {
     bam_types_PacketFlags flags;
 } bam_types_Meta;
 
-typedef PB_BYTES_ARRAY_T(1232) bam_types_Packet_data_t;
+typedef PB_BYTES_ARRAY_T(4096) bam_types_Packet_data_t;
 /* A Solana network packet */
 typedef struct _bam_types_Packet {
     bam_types_Packet_data_t data;
@@ -221,8 +221,8 @@ typedef struct _bam_types_BamConfig {
     bam_types_Socket tpu_sock; /* Socket for the TPU connection */
     bool has_tpu_fwd_sock;
     bam_types_Socket tpu_fwd_sock; /* Socket for the TPU forward connection */
-    pb_size_t shred_sock_count;
-    bam_types_Socket shred_sock[32]; /* Socket(s) for forwarding leader and near-leader shreds */
+    pb_size_t shred_socks_count;
+    bam_types_Socket shred_socks[32]; /* Socket(s) for forwarding leader and near-leader shreds */
 } bam_types_BamConfig;
 
 
@@ -365,7 +365,7 @@ extern "C" {
 #define bam_types_BamConfig_commission_bps_tag   2
 #define bam_types_BamConfig_tpu_sock_tag         3
 #define bam_types_BamConfig_tpu_fwd_sock_tag     4
-#define bam_types_BamConfig_shred_sock_tag       5
+#define bam_types_BamConfig_shred_socks_tag      5
 
 /* Struct field encoding specification for nanopb */
 #define bam_types_AuthProof_FIELDLIST(X, a) \
@@ -515,12 +515,12 @@ X(a, STATIC,   SINGULAR, STRING,   prio_fee_recipient_pubkey,   1) \
 X(a, STATIC,   SINGULAR, UINT32,   commission_bps,    2) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  tpu_sock,          3) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  tpu_fwd_sock,      4) \
-X(a, STATIC,   REPEATED, MESSAGE,  shred_sock,        5)
+X(a, STATIC,   REPEATED, MESSAGE,  shred_socks,       5)
 #define bam_types_BamConfig_CALLBACK NULL
 #define bam_types_BamConfig_DEFAULT NULL
 #define bam_types_BamConfig_tpu_sock_MSGTYPE bam_types_Socket
 #define bam_types_BamConfig_tpu_fwd_sock_MSGTYPE bam_types_Socket
-#define bam_types_BamConfig_shred_sock_MSGTYPE bam_types_Socket
+#define bam_types_BamConfig_shred_socks_MSGTYPE bam_types_Socket
 
 extern const pb_msgdesc_t bam_types_AuthProof_msg;
 extern const pb_msgdesc_t bam_types_BuilderHeartBeat_msg;
@@ -577,7 +577,7 @@ extern const pb_msgdesc_t bam_types_BamConfig_msg;
 /* bam_types_AtomicTxnBatchResult_size depends on runtime parameters */
 /* bam_types_MultipleAtomicTxnBatchResult_size depends on runtime parameters */
 /* bam_types_Committed_size depends on runtime parameters */
-#define BAM_TYPES_BAM_TYPES_PB_H_MAX_SIZE        bam_types_BamConfig_size
+#define BAM_TYPES_BAM_TYPES_PB_H_MAX_SIZE        bam_types_Packet_size
 #define bam_types_AuthProof_size                 325
 #define bam_types_BamConfig_size                 2553
 #define bam_types_BlockEngineBuilderConfig_size  71
@@ -588,7 +588,7 @@ extern const pb_msgdesc_t bam_types_BamConfig_msg;
 #define bam_types_Meta_size                      17
 #define bam_types_NotCommitted_size              261
 #define bam_types_PacketFlags_size               4
-#define bam_types_Packet_size                    1254
+#define bam_types_Packet_size                    4118
 #define bam_types_Ping_size                      6
 #define bam_types_PohTimeout_size                0
 #define bam_types_Pong_size                      6

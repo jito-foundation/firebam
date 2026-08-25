@@ -24,6 +24,7 @@ __attribute__((weak)) char const fdctl_version_string[] = "fuzz";
 FD_IMPORT_BINARY( bam_fuzz_txn1, "src/ballet/txn/fixtures/transaction1.bin" );
 FD_IMPORT_BINARY( bam_fuzz_txn4, "src/ballet/txn/fixtures/transaction4.bin" );
 FD_IMPORT_BINARY( bam_fuzz_txn6, "src/ballet/txn/fixtures/transaction6.bin" );
+FD_IMPORT_BINARY( bam_fuzz_v1_4096, "src/disco/bam/fixtures/bam_txn_v1_4096.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn1, "src/disco/pack/fixtures/txn1.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn3, "src/disco/pack/fixtures/txn3.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn4, "src/disco/pack/fixtures/txn4.bin" );
@@ -31,7 +32,8 @@ FD_IMPORT_BINARY( bam_fuzz_pack_txn5, "src/disco/pack/fixtures/txn5.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn6, "src/disco/pack/fixtures/txn6.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn7, "src/disco/pack/fixtures/txn7.bin" );
 
-#define BAM_FUZZ_FIXTURE_CNT (9U)
+#define BAM_FUZZ_FIXTURE_CNT    (9U)
+#define BAM_FUZZ_V1_FIXTURE_IDX BAM_FUZZ_FIXTURE_CNT
 
 /* Stateful BAM pipeline fuzzer, staged real-path conversion.
 
@@ -133,6 +135,7 @@ typedef struct {
   uint observed_outside_slot;
   uint observed_txn_error;
   uint observed_result_drop;
+  ulong execle_output_cnt;
 
   uint required_outside_slot;
   uint required_txn_error;
@@ -435,6 +438,7 @@ bam_fuzz_ingest_pack_outputs( test_bam_env_t *              env,
                                  MAX_MICROBLOCK_SZ );
     bam_fuzz_execle_result_t execle_res = bam_fuzz_execle_frag( execle, meta, seq );
     FD_TEST( execle_res.poh_after>=execle_res.poh_before );
+    f->execle_output_cnt += execle_res.poh_after-execle_res.poh_before;
     for( ulong bank_seq=execle_res.bank_bam_before; bank_seq<execle_res.bank_bam_after; bank_seq++ ) {
       bam_fuzz_ingest_result_link( env,
                                    f,
@@ -653,6 +657,8 @@ bam_fuzz_make_batch_specs( bam_fuzz_state_t *      f,
       specs[ i ].payload_seed[ j ] = (uint)c + 17U*(uint)i + 5U*(uint)j;
     }
   }
+  /* Reserved by 02_v1_4096_full_pipeline. */
+  if( FD_UNLIKELY( a==4U && !b && c==128U ) ) specs[ 0 ].payload_seed[ 0 ] = UINT_MAX;
 
   *spec_cnt = batch_cnt;
 }
@@ -688,7 +694,7 @@ bam_fuzz_deliver_specs( test_bam_env_t *              env,
 
   bam_fuzz_sync_pack_leader( env, f, links, resolv, pack, execle );
 
-  uchar const * const payloads[ BAM_FUZZ_FIXTURE_CNT ] = {
+  uchar const * const payloads[] = {
     bam_fuzz_txn1,
     bam_fuzz_txn4,
     bam_fuzz_pack_txn1,
@@ -698,8 +704,9 @@ bam_fuzz_deliver_specs( test_bam_env_t *              env,
     bam_fuzz_txn6,
     bam_fuzz_pack_txn6,
     bam_fuzz_pack_txn7,
+    bam_fuzz_v1_4096,
   };
-  ulong const sizes[ BAM_FUZZ_FIXTURE_CNT ] = {
+  ulong const sizes[] = {
     bam_fuzz_txn1_sz,
     bam_fuzz_txn4_sz,
     bam_fuzz_pack_txn1_sz,
@@ -709,6 +716,7 @@ bam_fuzz_deliver_specs( test_bam_env_t *              env,
     bam_fuzz_txn6_sz,
     bam_fuzz_pack_txn6_sz,
     bam_fuzz_pack_txn7_sz,
+    bam_fuzz_v1_4096_sz,
   };
   test_bam_packet_encode_ctx_t packet_ctx[ BAM_FUZZ_MAX_BATCHES ];
   bam_types_AtomicTxnBatch     batches   [ BAM_FUZZ_MAX_BATCHES ];
@@ -719,9 +727,11 @@ bam_fuzz_deliver_specs( test_bam_env_t *              env,
     FD_TEST( specs[ i ].txn_cnt<=FD_BAM_MAX_TXN_PER_ATOMIC_BATCH );
     for( uchar j=0U; j<specs[ i ].txn_cnt; j++ ) {
       bam_types_Packet * pkt = &packets[ i ][ j ];
-      ulong idx = (ulong)( specs[ i ].payload_seed[ j ] % BAM_FUZZ_FIXTURE_CNT );
+      ulong idx = specs[ i ].payload_seed[ j ]==UINT_MAX
+                ? BAM_FUZZ_V1_FIXTURE_IDX : (ulong)( specs[ i ].payload_seed[ j ] % BAM_FUZZ_FIXTURE_CNT );
       uchar const * payload    = payloads[ idx ];
       ulong         payload_sz = sizes[ idx ];
+      if( FD_UNLIKELY( specs[ i ].payload_seed[ j ]==UINT_MAX ) ) FD_TEST( payload_sz==FD_TXN_MTU && payload[0]==(0x80U|FD_TXN_V1) );
       FD_TEST( payload_sz <= sizeof(pkt->data.bytes) );
 
       uchar txn_buf[ FD_TXN_MAX_SZ ];
@@ -1277,6 +1287,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         size ) {
   if( FD_UNLIKELY( !size ) ) return 0;
   FD_TEST( g_bam_fuzz_wksp );
+  _Bool test_v1 = size==4UL && data[0]==BAM_EVT_SEND_BATCH && data[1]==4U && data[2]==0U && data[3]==128U;
 
   uint seed = 0xC0DEC0DEU;
   for( ulong i=0UL; i<fd_ulong_min( size, 4UL ); i++ ) seed = ( seed << 8 ) ^ data[ i ];
@@ -1368,6 +1379,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   bam_fuzz_sync_pack_leader( env, f, links, resolv, pack, execle );
   bam_fuzz_drain_pending_txns( env, f, links, verify, dedup, resolv, pack, execle, ULONG_MAX );
   bam_fuzz_pump_pack( env, f, links, pack, execle, 8UL );
+  if( FD_UNLIKELY( test_v1 ) ) FD_TEST( f->execle_output_cnt );
   bam_fuzz_drain_result_queue( env, f, ULONG_MAX );
   bam_fuzz_assert_invariants( env, f );
 

@@ -508,8 +508,8 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
     }
   }
 
-  for( ulong i=0UL; i<(ulong)cfg->shred_sock_count; i++ ) {
-    bam_types_Socket const * sock = &cfg->shred_sock[ i ];
+  for( ulong i=0UL; i<(ulong)cfg->shred_socks_count; i++ ) {
+    bam_types_Socket const * sock = &cfg->shred_socks[ i ];
     uint ip4;
     if( FD_LIKELY( fd_cstr_to_ip4_addr( sock->ip, &ip4 ) ) &&
         FD_LIKELY( sock->port > 0 && sock->port <= USHORT_MAX ) ) {

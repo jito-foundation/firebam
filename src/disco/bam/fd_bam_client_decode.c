@@ -114,6 +114,7 @@ fd_bam_dump_append_inbound_txn( char *                   msg,
                              txn_ord, (uint)batch_cnt,
                              (uint)batch_idx,
                              packet->data.size,
+                             txn->transaction_version==FD_TXN_V1 ? "v1" :
                              txn->transaction_version==FD_TXN_V0 ? "v0" : "legacy",
                              primary_sig,
                              fee_payer,
@@ -257,6 +258,30 @@ fd_bam_should_dump_batch( fd_bam_tile_t * ctx,
   return 1;
 }
 
+static ulong
+fd_bam_packet_data_oversize( pb_istream_t const * stream ) {
+  pb_istream_t scan = *stream;
+  uint32_t       tag;
+  pb_wire_type_t wire_type;
+  bool           eof = false;
+
+  while( pb_decode_tag( &scan, &wire_type, &tag, &eof ) ) {
+    if( FD_UNLIKELY( !tag ) ) return 0;
+    if( tag!=bam_types_Packet_data_tag ) {
+      if( FD_UNLIKELY( !pb_skip_field( &scan, wire_type ) ) ) return 0;
+      continue;
+    }
+    if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) return 0;
+
+    pb_istream_t data_stream;
+    if( FD_UNLIKELY( !pb_make_string_substream( &scan, &data_stream ) ) ) return 0;
+    size_t data_sz = data_stream.bytes_left;
+    if( FD_UNLIKELY( !pb_close_string_substream( &scan, &data_stream ) ) ) return 0;
+    if( FD_UNLIKELY( data_sz>sizeof(((bam_types_Packet *)0)->data.bytes) ) ) return (ulong)data_sz;
+  }
+  return 0;
+}
+
 /* Collects a single Packet from the protobuf stream. Returns true while the
    packet parsed and passed basic validation; returns false to abort the
    surrounding AtomicTxnBatch decode and surface the bundle error. */
@@ -274,9 +299,21 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     return false;
   }
 
+  ulong oversize_data_sz = fd_bam_packet_data_oversize( stream );
+  if( FD_UNLIKELY( oversize_data_sz ) ) {
+    state->ctx->metrics.ingress_packet_oversize_cnt++;
+    FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding protobuf payload capacity (%lu>%lu bytes)",
+                     oversize_data_sz,
+                     sizeof(((bam_types_Packet *)0)->data.bytes) ));
+    state->has_deser_err = true;
+    state->deser_reason  = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+    state->deser_index   = state->packet_cnt;
+    return false;
+  }
+
   /* Do not pre-initialize packet here.  pb_decode already sets every
      field to its default before decoding, and for the static bytes field
-     that means a memset of the full 1232 byte payload.  Initializing it
+     that means a memset of the full 4096 byte payload.  Initializing it
      again on this side doubles that cost, and at 5 packets per batch and
      128 batches per message it is the single largest memory write in the
      decode path. */
@@ -302,17 +339,6 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     return false;
   }
   state->revert_on_error = packet_revert_on_error;
-
-  ulong payload_sz = packet->data.size;
-  if( FD_UNLIKELY( payload_sz > FD_TXN_MTU ) ) {
-    state->ctx->metrics.ingress_packet_oversize_cnt++;
-    FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding MTU (%lu>%lu); dropping batch",
-                     payload_sz, FD_TXN_MTU ));
-    state->has_deser_err = true;
-    state->deser_reason = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
-    state->deser_index  = state->packet_cnt;
-    return false;
-  }
 
   state->packet_cnt++;
   return true;
@@ -759,11 +785,11 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
                          identity_err ? identity_err : "unknown" ));
       }
       fd_bam_bundle_result_t overflow_result =
-          fd_bam_deser_result_from_identity( ctx,
-                                             &identity,
-                                             &(fd_bam_batch_decode_err_t){
-                                               .deser_reason = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE
-                                             } );
+          fd_bam_result_base( identity.seq_id,
+                              ctx->scheduler_gen,
+                              identity.max_schedule_slot,
+                              0U );
+      overflow_result.scheduling_error = FD_BAM_SCHED_ERR_CONTAINER_FULL;
       fd_bam_enqueue_result( ctx, &overflow_result );
       seen_batch_count++;
       continue;

@@ -3,6 +3,7 @@
 #include "fd_bam_tile.h"
 #include "test_bam_common.c"
 #include "../../ballet/ed25519/fd_ed25519.h"
+#include "../../ballet/txn/fd_compact_u16.h"
 #include "../../third_party/nanopb/pb_encode.h"
 #include "../../third_party/nanopb/pb_decode.h"
 #include "../../discof/gossip/fd_gossip_tile.h"
@@ -14,6 +15,87 @@
 static uchar metrics_scratch[ FD_METRICS_FOOTPRINT( 0UL ) ] __attribute__((aligned( FD_METRICS_ALIGN )));
 
 FD_IMPORT_BINARY( bam_dump_txn_fixture, "src/ballet/txn/fixtures/transaction2.bin" );
+/* Encoded by BAM node commit 0b76a8c3d2 with prost::Message::encode_to_vec
+   through simple_forwarder::scheduler_response. */
+FD_IMPORT_BINARY( bam_scheduler_response_v1_1233, "src/disco/bam/fixtures/bam_scheduler_response_v1_1233.bin" );
+FD_IMPORT_BINARY( bam_scheduler_response_v1_4096, "src/disco/bam/fixtures/bam_scheduler_response_v1_4096.bin" );
+
+static ulong
+test_bam_build_v1_txn( uchar payload[ static FD_TXN_MTU ],
+                       ulong target_sz,
+                       uchar signature_seed ) {
+  FD_TEST( target_sz>=175UL && target_sz<=FD_TXN_MTU );
+  ulong data_sz = target_sz-175UL;
+  FD_TEST( data_sz<=USHORT_MAX );
+
+  uchar * p = payload;
+  *p++ = 0x80U | FD_TXN_V1;
+  *p++ = 1U; /* signature count */
+  *p++ = 0U; /* readonly signed accounts */
+  *p++ = 1U; /* readonly unsigned accounts: program */
+  fd_memset( p, 0, 4UL ); /* transaction config mask */
+  p += 4UL;
+  fd_memset( p, 3, FD_TXN_BLOCKHASH_SZ );
+  p += FD_TXN_BLOCKHASH_SZ;
+  *p++ = 1U; /* instruction count */
+  *p++ = 2U; /* account count */
+  fd_memset( p, 4, FD_TXN_ACCT_ADDR_SZ ); /* fee payer */
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memset( p, 5, FD_TXN_ACCT_ADDR_SZ ); /* program */
+  p += FD_TXN_ACCT_ADDR_SZ;
+  *p++ = 1U; /* program id index */
+  *p++ = 1U; /* instruction account count */
+  *p++ = (uchar)( data_sz       & 0xffUL );
+  *p++ = (uchar)((data_sz >> 8) & 0xffUL );
+  *p++ = 0U; /* fee payer account index */
+  fd_memset( p, 7, data_sz );
+  p += data_sz;
+  for( ulong i=0UL; i<FD_TXN_SIGNATURE_SZ; i++ ) *p++ = (uchar)( signature_seed+i );
+  FD_TEST( (ulong)(p-payload)==target_sz );
+
+  uchar txn_buf[ FD_TXN_MAX_SZ ];
+  FD_TEST( fd_txn_parse( payload, target_sz, txn_buf, NULL ) );
+  FD_TEST( ((fd_txn_t const *)txn_buf)->transaction_version==FD_TXN_V1 );
+  return target_sz;
+}
+
+static ulong
+test_bam_build_legacy_or_v0_txn( uchar payload[ static FD_TXN_MTU_V0 ],
+                                 _Bool v0 ) {
+  uchar * p = payload;
+  *p++ = 1U; /* signature count */
+  fd_memset( p, 9, FD_TXN_SIGNATURE_SZ );
+  p += FD_TXN_SIGNATURE_SZ;
+  if( FD_UNLIKELY( v0 ) ) *p++ = 0x80U | FD_TXN_V0;
+  *p++ = 1U; /* required signatures */
+  *p++ = 0U; /* readonly signed accounts */
+  *p++ = 1U; /* readonly unsigned accounts: program */
+  p += fd_cu16_enc( 2U, p );
+  fd_memset( p, 4, FD_TXN_ACCT_ADDR_SZ );
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memset( p, 5, FD_TXN_ACCT_ADDR_SZ );
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memset( p, 3, FD_TXN_BLOCKHASH_SZ );
+  p += FD_TXN_BLOCKHASH_SZ;
+  p += fd_cu16_enc( 1U, p ); /* instruction count */
+  *p++ = 1U;                 /* program id index */
+  p += fd_cu16_enc( 1U, p ); /* instruction account count */
+  *p++ = 0U;                 /* fee payer account index */
+
+  ulong const trailer_sz = (ulong)v0; /* V0 address table lookup count */
+  ulong data_sz = FD_TXN_MTU_V0 - (ulong)(p-payload) - 2UL - trailer_sz;
+  FD_TEST( data_sz>=128UL && data_sz<16384UL );
+  p += fd_cu16_enc( (ushort)data_sz, p );
+  fd_memset( p, 7, data_sz );
+  p += data_sz;
+  if( FD_UNLIKELY( v0 ) ) p += fd_cu16_enc( 0U, p );
+  FD_TEST( (ulong)(p-payload)==FD_TXN_MTU_V0 );
+
+  uchar txn_buf[ FD_TXN_MAX_SZ ];
+  FD_TEST( fd_txn_parse( payload, FD_TXN_MTU_V0, txn_buf, NULL ) );
+  FD_TEST( ((fd_txn_t const *)txn_buf)->transaction_version==( v0 ? FD_TXN_V0 : FD_TXN_VLEGACY ) );
+  return FD_TXN_MTU_V0;
+}
 
 /* Test-only shims implemented in fd_bam_tile.c so this unit test can
    drive internal BAM tile paths without exposing them through production
@@ -1740,9 +1822,9 @@ test_bam_multiple_batches_overflow_results_each_excess( fd_wksp_t * wksp ) {
     fd_bam_bundle_result_t const * result =
         &state->bam_results[ (ushort)(( state->bam_results_head + i ) % FD_BAM_MAX_PENDING_RESULTS) ];
     FD_TEST( result->seq_id == seq_base + FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE + (uint)i );
-    FD_TEST( result->bundle_err == FD_BAM_BUNDLE_ERR_DESER );
-    FD_TEST( result->deser_reason == bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
-    FD_TEST( result->deser_index == 0U );
+    FD_TEST( result->bundle_err == FD_BAM_BUNDLE_ERR_NONE );
+    FD_TEST( result->scheduling_error == FD_BAM_SCHED_ERR_CONTAINER_FULL );
+    FD_TEST( result->bundle_txn_cnt == 0U );
   }
 
   test_bam_env_destroy( env );
@@ -2147,8 +2229,145 @@ test_bam_bundle_rejects_excess_packet_count( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
-/* Using max(data.size, meta.size) lets ignored legacy metadata reject valid
-   packet bytes.  Enforce the MTU from data.size alone. */
+static void
+test_bam_generated_v1_protobuf_fixtures( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  struct {
+    uchar const * protobuf;
+    ulong         protobuf_sz;
+    ushort        payload_sz;
+    uint          seq_id;
+  } const fixtures[] = {
+    { bam_scheduler_response_v1_1233, bam_scheduler_response_v1_1233_sz, 1233U, 1233U },
+    { bam_scheduler_response_v1_4096, bam_scheduler_response_v1_4096_sz, 4096U, 4096U },
+  };
+
+  for( ulong i=0UL; i<sizeof(fixtures)/sizeof(*fixtures); i++ ) {
+    fd_bam_client_grpc_rx_msg( state,
+                               fixtures[ i ].protobuf,
+                               fixtures[ i ].protobuf_sz,
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    FD_TEST( bam_pending_txn_cnt( state->pending_txns )==1UL );
+
+    fd_bam_pending_txn_t const * pending = bam_pending_txn_peek_head_const( state->pending_txns );
+    FD_TEST( pending->seq_id==fixtures[ i ].seq_id );
+    FD_TEST( pending->max_schedule_slot==42UL );
+    FD_TEST( pending->payload_sz==fixtures[ i ].payload_sz );
+
+    uchar txn_buf[ FD_TXN_MAX_SZ ];
+    FD_TEST( fd_txn_parse( pending->payload, pending->payload_sz, txn_buf, NULL ) );
+    fd_txn_t const * txn = (fd_txn_t const *)txn_buf;
+    FD_TEST( txn->transaction_version==FD_TXN_V1 );
+    FD_TEST( (ulong)txn->signature_off+FD_TXN_SIGNATURE_SZ==pending->payload_sz );
+    FD_TEST( test_bam_env_drain_pending_txns( env )==1UL );
+  }
+
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_v1_packet_size_boundaries( fd_wksp_t * wksp ) {
+  FD_STATIC_ASSERT( sizeof(((bam_types_Packet *)0)->data.bytes)==FD_TXN_MTU,
+                    bam_packet_payload_holds_max_v1_transaction );
+
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  ulong const accepted_sz[] = { 1232UL, 1233UL, FD_TXN_MTU };
+  for( ulong i=0UL; i<sizeof(accepted_sz)/sizeof(*accepted_sz); i++ ) {
+    bam_types_Packet packet = bam_types_Packet_init_default;
+    packet.data.size = (pb_size_t)test_bam_build_v1_txn( packet.data.bytes,
+                                                         accepted_sz[ i ],
+                                                         (uchar)( 20U+i ) );
+    packet.has_meta = 1U;
+    packet.meta.size = accepted_sz[ i ];
+
+    uchar protobuf[ FD_TXN_MTU+256UL ];
+    size_t protobuf_sz = test_bam_encode_scheduler_response( &packet,
+                                                             1UL,
+                                                             (uint32_t)( 510U+i ),
+                                                             protobuf,
+                                                             sizeof(protobuf) );
+    fd_bam_client_grpc_rx_msg( state,
+                               protobuf,
+                               protobuf_sz,
+                               FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+    FD_TEST( bam_pending_txn_cnt( state->pending_txns )==1UL );
+    fd_bam_pending_txn_t const * pending = bam_pending_txn_peek_head_const( state->pending_txns );
+    FD_TEST( pending->payload_sz==accepted_sz[ i ] );
+    FD_TEST( !memcmp( pending->payload, packet.data.bytes, accepted_sz[ i ] ) );
+    FD_TEST( test_bam_env_drain_pending_txns( env )==1UL );
+  }
+  FD_TEST( state->metrics.ingress_packet_oversize_cnt==0UL );
+
+  /* The legacy and V0 parsers retain their original 1232-byte limit even
+     though the BAM protobuf container now has room for V1. */
+  uchar legacy_payload[ FD_TXN_MTU ];
+  uchar txn_buf[ FD_TXN_MAX_SZ ];
+  for( int v0=0; v0<2; v0++ ) {
+    FD_TEST( test_bam_build_legacy_or_v0_txn( legacy_payload, (_Bool)v0 )==FD_TXN_MTU_V0 );
+    FD_TEST( fd_txn_parse( legacy_payload, FD_TXN_MTU_V0, txn_buf, NULL ) );
+    legacy_payload[ FD_TXN_MTU_V0 ] = 0U;
+    FD_TEST( !fd_txn_parse( legacy_payload, FD_TXN_MTU_V0+1UL, txn_buf, NULL ) );
+  }
+
+  /* Encode the 4097-byte data field manually: the generated Packet type is
+     deliberately bounded at 4096 and therefore cannot represent this input. */
+  uchar oversized_payload[ FD_TXN_MTU+1UL ];
+  fd_memset( oversized_payload, 0, sizeof(oversized_payload) );
+
+  uchar raw_packet[ FD_TXN_MTU+32UL ];
+  pb_ostream_t packet_stream = pb_ostream_from_buffer( raw_packet, sizeof(raw_packet) );
+  test_bam_encode_string_field_raw( &packet_stream,
+                                    bam_types_Packet_data_tag,
+                                    oversized_payload,
+                                    sizeof(oversized_payload) );
+
+  uchar raw_batch[ FD_TXN_MTU+64UL ];
+  pb_ostream_t batch_stream = pb_ostream_from_buffer( raw_batch, sizeof(raw_batch) );
+  test_bam_encode_varint_field_raw( &batch_stream, bam_types_AtomicTxnBatch_seq_id_tag, 519U );
+  test_bam_encode_varint_field_raw( &batch_stream, bam_types_AtomicTxnBatch_max_schedule_slot_tag, 1UL );
+  test_bam_encode_string_field_raw( &batch_stream,
+                                    bam_types_AtomicTxnBatch_packets_tag,
+                                    raw_packet,
+                                    packet_stream.bytes_written );
+
+  uchar const * batches[] = { raw_batch };
+  size_t const batch_sz[] = { batch_stream.bytes_written };
+  uchar protobuf[ FD_TXN_MTU+128UL ];
+  size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response_raw( batches,
+                                                                           batch_sz,
+                                                                           1UL,
+                                                                           protobuf,
+                                                                           sizeof(protobuf) );
+  fd_bam_client_grpc_rx_msg( state,
+                             protobuf,
+                             protobuf_sz,
+                             FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+  FD_TEST( !bam_pending_txn_cnt( state->pending_txns ) );
+  FD_TEST( state->metrics.ingress_packet_oversize_cnt==1UL );
+  FD_TEST( state->metrics.ingress_batch_rejected_cnt[
+               FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]==1UL );
+  FD_TEST( state->feedback_queue_depth==1UL );
+  fd_bam_bundle_result_t const * result = &state->bam_results[ state->bam_results_head ];
+  FD_TEST( result->seq_id==519U );
+  FD_TEST( result->bundle_err==FD_BAM_BUNDLE_ERR_DESER );
+  FD_TEST( result->deser_reason==bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE );
+  FD_TEST( result->deser_index==0U );
+
+  test_bam_env_destroy( env );
+}
+
+/* Legacy metadata is advisory and must not reject otherwise valid packet
+   bytes, even when the reported size is nonsensical. */
 static void
 test_bam_bundle_uses_data_length_for_size_check( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -5551,14 +5770,14 @@ static void
 test_bam_config_accepts_max_shred_receivers( void ) {
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
-  resp.bam_config.shred_sock_count = FD_BAM_SHRED_SOCK_MAX;
+  resp.bam_config.shred_socks_count = FD_BAM_SHRED_SOCK_MAX;
   for( ulong i=0UL; i<FD_BAM_SHRED_SOCK_MAX; i++ ) {
-    FD_TEST( fd_cstr_printf( resp.bam_config.shred_sock[ i ].ip,
-                            sizeof(resp.bam_config.shred_sock[ i ].ip),
+    FD_TEST( fd_cstr_printf( resp.bam_config.shred_socks[ i ].ip,
+                            sizeof(resp.bam_config.shred_socks[ i ].ip),
                             NULL,
                             "192.0.2.%lu",
                             i+1UL ) );
-    resp.bam_config.shred_sock[ i ].port = (uint32_t)( 5000UL+i );
+    resp.bam_config.shred_socks[ i ].port = (uint32_t)( 5000UL+i );
   }
 
   uchar pb_buf[ bam_api_ConfigResponse_size ];
@@ -5569,10 +5788,10 @@ test_bam_config_accepts_max_shred_receivers( void ) {
   pb_istream_t istream = pb_istream_from_buffer( pb_buf, ostream.bytes_written );
   FD_TEST( pb_decode( &istream, bam_api_ConfigResponse_fields, &decoded ) );
   FD_TEST( decoded.has_bam_config );
-  FD_TEST( decoded.bam_config.shred_sock_count==FD_BAM_SHRED_SOCK_MAX );
+  FD_TEST( decoded.bam_config.shred_socks_count==FD_BAM_SHRED_SOCK_MAX );
   for( ulong i=0UL; i<FD_BAM_SHRED_SOCK_MAX; i++ ) {
-    FD_TEST( !strcmp( decoded.bam_config.shred_sock[ i ].ip, resp.bam_config.shred_sock[ i ].ip ) );
-    FD_TEST( decoded.bam_config.shred_sock[ i ].port==resp.bam_config.shred_sock[ i ].port );
+    FD_TEST( !strcmp( decoded.bam_config.shred_socks[ i ].ip, resp.bam_config.shred_socks[ i ].ip ) );
+    FD_TEST( decoded.bam_config.shred_socks[ i ].port==resp.bam_config.shred_socks[ i ].port );
   }
 }
 
@@ -5602,17 +5821,17 @@ test_bam_shred_update_publishes_receiver_list( fd_wksp_t * wksp ) {
   resp.bam_config.has_tpu_fwd_sock = true;
   fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 3344U;
-  resp.bam_config.shred_sock_count = 5U;
-  fd_cstr_ncpy( resp.bam_config.shred_sock[ 0 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_sock[ 0 ].ip ) );
-  resp.bam_config.shred_sock[ 0 ].port = 5001U;
-  fd_cstr_ncpy( resp.bam_config.shred_sock[ 1 ].ip, "2.2.2.2", sizeof( resp.bam_config.shred_sock[ 1 ].ip ) );
-  resp.bam_config.shred_sock[ 1 ].port = 5002U;
-  fd_cstr_ncpy( resp.bam_config.shred_sock[ 2 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_sock[ 2 ].ip ) );
-  resp.bam_config.shred_sock[ 2 ].port = 5001U;
-  fd_cstr_ncpy( resp.bam_config.shred_sock[ 3 ].ip, "::1", sizeof( resp.bam_config.shred_sock[ 3 ].ip ) );
-  resp.bam_config.shred_sock[ 3 ].port = 5003U;
-  fd_cstr_ncpy( resp.bam_config.shred_sock[ 4 ].ip, "bad-ip", sizeof( resp.bam_config.shred_sock[ 4 ].ip ) );
-  resp.bam_config.shred_sock[ 4 ].port = 0U;
+  resp.bam_config.shred_socks_count = 5U;
+  fd_cstr_ncpy( resp.bam_config.shred_socks[ 0 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_socks[ 0 ].ip ) );
+  resp.bam_config.shred_socks[ 0 ].port = 5001U;
+  fd_cstr_ncpy( resp.bam_config.shred_socks[ 1 ].ip, "2.2.2.2", sizeof( resp.bam_config.shred_socks[ 1 ].ip ) );
+  resp.bam_config.shred_socks[ 1 ].port = 5002U;
+  fd_cstr_ncpy( resp.bam_config.shred_socks[ 2 ].ip, "1.1.1.1", sizeof( resp.bam_config.shred_socks[ 2 ].ip ) );
+  resp.bam_config.shred_socks[ 2 ].port = 5001U;
+  fd_cstr_ncpy( resp.bam_config.shred_socks[ 3 ].ip, "::1", sizeof( resp.bam_config.shred_socks[ 3 ].ip ) );
+  resp.bam_config.shred_socks[ 3 ].port = 5003U;
+  fd_cstr_ncpy( resp.bam_config.shred_socks[ 4 ].ip, "bad-ip", sizeof( resp.bam_config.shred_socks[ 4 ].ip ) );
+  resp.bam_config.shred_socks[ 4 ].port = 0U;
 
   uchar pb_buf[ 1024 ];
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
@@ -5664,11 +5883,11 @@ test_bam_shred_update_disconnect_uses_empty_without_clearing_receivers( fd_wksp_
   resp.bam_config.has_tpu_fwd_sock = true;
   fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "11.12.13.14", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 3344U;
-  resp.bam_config.shred_sock_count = 2U;
-  fd_cstr_ncpy( resp.bam_config.shred_sock[ 0 ].ip, "3.3.3.3", sizeof( resp.bam_config.shred_sock[ 0 ].ip ) );
-  resp.bam_config.shred_sock[ 0 ].port = 7001U;
-  fd_cstr_ncpy( resp.bam_config.shred_sock[ 1 ].ip, "4.4.4.4", sizeof( resp.bam_config.shred_sock[ 1 ].ip ) );
-  resp.bam_config.shred_sock[ 1 ].port = 7002U;
+  resp.bam_config.shred_socks_count = 2U;
+  fd_cstr_ncpy( resp.bam_config.shred_socks[ 0 ].ip, "3.3.3.3", sizeof( resp.bam_config.shred_socks[ 0 ].ip ) );
+  resp.bam_config.shred_socks[ 0 ].port = 7001U;
+  fd_cstr_ncpy( resp.bam_config.shred_socks[ 1 ].ip, "4.4.4.4", sizeof( resp.bam_config.shred_socks[ 1 ].ip ) );
+  resp.bam_config.shred_socks[ 1 ].port = 7002U;
 
   uchar pb_buf[ 1024 ];
   pb_ostream_t ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
@@ -6281,6 +6500,8 @@ main( int     argc,
   test_bam_bundle_rejects_real_vote_payload( wksp );
   test_bam_stale_slot_rejects_before_vote_error( wksp );
   test_bam_bundle_rejects_excess_packet_count( wksp );
+  test_bam_generated_v1_protobuf_fixtures( wksp );
+  test_bam_v1_packet_size_boundaries( wksp );
   test_bam_bundle_uses_data_length_for_size_check( wksp );
   test_bam_bundle_rejects_empty_batch( wksp );
   test_bam_bundle_rejects_missing_batches( wksp );

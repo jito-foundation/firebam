@@ -202,7 +202,10 @@ test_fd_pack_insert_bundle_fini( fd_pack_t          * pack,
   /* A successful insert puts the bundle back into pack, so it must stop
      reading as evicted -- otherwise the model would keep reporting a
      transaction that is demonstrably there as missing. */
-  if( FD_LIKELY( bundle && txn_cnt ) ) test_pack_clear_evicted_sig( bundle[ 0 ]->txnp->payload+1UL );
+  if( FD_LIKELY( bundle && txn_cnt ) ) {
+    fd_txn_p_t const * txnp = bundle[ 0 ]->txnp;
+    test_pack_clear_evicted_sig( fd_txn_get_signatures( TXN(txnp), txnp->payload ) );
+  }
   if( FD_UNLIKELY( test_insert_fini_use_real_pack ) ) {
     return fd_pack_insert_bundle_fini( pack,
                                        bundle,
@@ -479,6 +482,40 @@ static void
 test_pack_tile_fill_sig( uchar sig[ static FD_ED25519_SIG_SZ ],
                          uchar seed ) {
   for( ulong i=0UL; i<sizeof(fd_ed25519_sig_t); i++ ) sig[ i ] = (uchar)( seed + i );
+}
+
+static void
+test_pack_tile_make_v1_txn( fd_txn_p_t * txnp,
+                            uchar        signature_seed ) {
+  fd_memset( txnp, 0, sizeof(*txnp) );
+
+  uchar * p = txnp->payload;
+  *p++ = 0x80U | FD_TXN_V1;
+  *p++ = 1U; /* signature count */
+  *p++ = 0U; /* readonly signed accounts */
+  *p++ = 1U; /* readonly unsigned accounts: program */
+  fd_memset( p, 0, 4UL ); /* transaction config mask */
+  p += 4UL;
+  fd_memset( p, 3, FD_TXN_BLOCKHASH_SZ );
+  p += FD_TXN_BLOCKHASH_SZ;
+  *p++ = 1U; /* instruction count */
+  *p++ = 2U; /* account count */
+  fd_memset( p, 4, FD_TXN_ACCT_ADDR_SZ ); /* fee payer */
+  p += FD_TXN_ACCT_ADDR_SZ;
+  fd_memset( p, 5, FD_TXN_ACCT_ADDR_SZ ); /* program */
+  p += FD_TXN_ACCT_ADDR_SZ;
+  *p++ = 1U; /* program id index */
+  *p++ = 1U; /* instruction account count */
+  *p++ = 0U; /* instruction data size, little endian */
+  *p++ = 0U;
+  *p++ = 0U; /* fee payer account index */
+  test_pack_tile_fill_sig( p, signature_seed );
+  p += FD_TXN_SIGNATURE_SZ;
+
+  txnp->payload_sz = (ushort)( p-txnp->payload );
+  FD_TEST( fd_txn_parse( txnp->payload, txnp->payload_sz, TXN(txnp), NULL ) );
+  FD_TEST( TXN(txnp)->transaction_version==FD_TXN_V1 );
+  FD_TEST( TXN(txnp)->signature_off>1U );
 }
 
 /* Retaining selected initializer metadata across a mode switch can apply the
@@ -1201,6 +1238,14 @@ test_pack_tile_complete_bam_bundle( test_pack_tile_harness_t * h,
   h->ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = FD_PACK_MAX_TXN_PER_BUNDLE;
 
   for( uchar i=0U; i<txn_cnt; i++ ) {
+    /* Several bookkeeping-only tests synthesize the payload/signature without
+       running the parser.  Production pack only receives parsed txns, so give
+       those synthetic legacy records the parsed signature offset explicitly. */
+    if( FD_UNLIKELY( !TXN(txns[ i ]->txnp)->signature_cnt ) ) {
+      TXN(txns[ i ]->txnp)->transaction_version = FD_TXN_VLEGACY;
+      TXN(txns[ i ]->txnp)->signature_cnt       = 1U;
+      TXN(txns[ i ]->txnp)->signature_off       = 1U;
+    }
     txns[ i ]->txnp->bam.seq_id        = seq_id;
     txns[ i ]->txnp->bam.scheduler_gen = h->ctx->current_bundle_bam->scheduler_gen;
     txns[ i ]->txnp->bam.batch_idx     = i;
@@ -1229,6 +1274,67 @@ test_pack_tile_bam_missing_builder_cfg_accepted( void ) {
   FD_TEST( h->ctx->bam_pending_result_cnt == 0UL );
   FD_TEST( h->ctx->blk_engine_cfg->is_bam );
   FD_TEST( h->ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_ACCEPTED_IDX ] == 1UL );
+  test_pack_tile_harness_delete( h );
+}
+
+/* V1 stores signatures after the message.  Exercise every BAM work transition
+   that keys ownership by sig0 so none can silently fall back to payload+1. */
+static void
+test_pack_tile_bam_v1_signature_lifecycle( void ) {
+  test_pack_tile_harness_t h[1];
+  fd_txn_e_t               first[1];
+  fd_txn_e_t               resend[1];
+  fd_txn_e_t               cleanup[1];
+
+  test_pack_tile_harness_new( h );
+  test_pack_tile_make_v1_txn( first->txnp,   31U );
+  test_pack_tile_make_v1_txn( resend->txnp,  31U );
+  test_pack_tile_make_v1_txn( cleanup->txnp, 91U );
+
+  fd_ed25519_sig_t const * first_sig = fd_txn_get_signatures( TXN(first->txnp), first->txnp->payload );
+  fd_ed25519_sig_t const * resend_sig = fd_txn_get_signatures( TXN(resend->txnp), resend->txnp->payload );
+  fd_ed25519_sig_t const * cleanup_sig = fd_txn_get_signatures( TXN(cleanup->txnp), cleanup->txnp->payload );
+  FD_TEST( !memcmp( first_sig, resend_sig, sizeof(fd_ed25519_sig_t) ) );
+  FD_TEST( memcmp( first_sig, first->txnp->payload+1UL, sizeof(fd_ed25519_sig_t) ) );
+
+  /* Initial insertion tracks the parsed tail signature. */
+  test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[1]){ first }, 1U, 41U, 100UL, 100UL, 0U );
+  ulong work_idx = pack_tile_bam_work_find_by_sig0( h->ctx, first_sig );
+  FD_TEST( work_idx<h->ctx->bam_work_cnt );
+  FD_TEST( h->ctx->bam_work[ work_idx ].state==PACK_BAM_WORK_STATE_PENDING );
+
+  /* A same-sequence resend replaces the pending copy before insertion. */
+  resend->txnp->first_seen_nanos = 20L;
+  test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[1]){ resend }, 1U, 41U, 100UL, 100UL, 0U );
+  test_pack_tile_assert_deleted_sig( resend_sig );
+  FD_TEST( test_insert_fini_call_cnt==2UL );
+  FD_TEST( h->ctx->bam_work_cnt==1UL );
+
+  /* Scheduling and execution feedback find the same parsed signature and
+     release the ownership record immediately on completion. */
+  pack_bam_work_t * scheduled = pack_tile_bam_work_mark_txn_scheduled( h->ctx, resend->txnp, 1200L );
+  FD_TEST( scheduled );
+  FD_TEST( scheduled->state==PACK_BAM_WORK_STATE_SCHEDULED );
+  test_pack_tile_send_executed_txn( h, resend_sig, FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED );
+  FD_TEST( !h->ctx->bam_work_cnt );
+  FD_TEST( !h->ctx->bam_pending_work_cnt );
+  FD_TEST( !h->ctx->bam_scheduled_work_cnt );
+
+  /* A generation barrier deletes pending V1 work by its parsed tail signature. */
+  test_delete_call_cnt = 0UL;
+  h->ctx->current_bundle_bam->ownership_gen = 7U;
+  h->ctx->bam_ownership_gen = 7U;
+  test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[1]){ cleanup }, 1U, 42U, 101UL, 101UL, 0U );
+  FD_TEST( pack_tile_bam_work_find_by_sig0( h->ctx, cleanup_sig )<h->ctx->bam_work_cnt );
+
+  ulong generation = (8UL<<1) | 1UL;
+  h->ctx->bam_gen_fseq = &generation;
+  pack_tile_sync_bam_ownership_generation( h->ctx );
+  FD_TEST( generation==(8UL<<1) );
+  test_pack_tile_assert_deleted_sig( cleanup_sig );
+  FD_TEST( !h->ctx->bam_work_cnt );
+  FD_TEST( !h->ctx->bam_pending_work_cnt );
+
   test_pack_tile_harness_delete( h );
 }
 
@@ -2713,6 +2819,7 @@ main( int     argc,
   test_pack_tile_bam_fee_meta_seqlock_keeps_last_snapshot();
   test_pack_tile_bam_mode_edges_retire_pending_initializer();
   test_pack_tile_bam_missing_builder_cfg_accepted();
+  test_pack_tile_bam_v1_signature_lifecycle();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

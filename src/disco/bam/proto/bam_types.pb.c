@@ -39,7 +39,7 @@ PB_BIND(bam_types_AtomicTxnBatchResult, bam_types_AtomicTxnBatchResult, 2)
 PB_BIND(bam_types_MultipleAtomicTxnBatchResult, bam_types_MultipleAtomicTxnBatchResult, AUTO)
 
 
-PB_BIND(bam_types_Packet, bam_types_Packet, 2)
+PB_BIND(bam_types_Packet, bam_types_Packet, 4)
 
 
 PB_BIND(bam_types_Meta, bam_types_Meta, AUTO)

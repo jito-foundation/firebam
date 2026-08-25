@@ -10,8 +10,8 @@ bam_types.AuthProof.signature max_size:128
 # IPv6 string max is 45 chars, 5 chars for port, and a colon
 bam_types.Socket.ip max_size:64
 
-# Solana PACKET_DATA_SIZE is 1232 bytes
-bam_types.Packet.data max_size:1232
+# Transaction V1 raises the Solana transaction wire limit to 4096 bytes.
+bam_types.Packet.data max_size:4096
 
 bam_types.GenericInvalid.message max_size:256
 
@@ -21,4 +21,4 @@ bam_types.BlockEngineBuilderConfig.builder_pubkey max_size:64
 # Base58 pubkeys are 44 chars
 bam_types.BamConfig.prio_fee_recipient_pubkey max_size:64
 
-bam_types.BamConfig.shred_sock max_count:32
+bam_types.BamConfig.shred_socks max_count:32

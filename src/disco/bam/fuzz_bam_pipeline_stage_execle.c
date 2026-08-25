@@ -13,6 +13,7 @@
 FD_IMPORT_BINARY( bam_fuzz_execle_txn1, "src/ballet/txn/fixtures/transaction1.bin" );
 FD_IMPORT_BINARY( bam_fuzz_execle_txn4, "src/ballet/txn/fixtures/transaction4.bin" );
 FD_IMPORT_BINARY( bam_fuzz_execle_txn6, "src/ballet/txn/fixtures/transaction6.bin" );
+FD_IMPORT_BINARY( bam_fuzz_execle_v1_4096, "src/disco/bam/fixtures/bam_txn_v1_4096.bin" );
 FD_IMPORT_BINARY( bam_fuzz_execle_pack_txn1, "src/disco/pack/fixtures/txn1.bin" );
 FD_IMPORT_BINARY( bam_fuzz_execle_pack_txn3, "src/disco/pack/fixtures/txn3.bin" );
 FD_IMPORT_BINARY( bam_fuzz_execle_pack_txn4, "src/disco/pack/fixtures/txn4.bin" );
@@ -73,6 +74,7 @@ static void
 bam_fuzz_execle_runtime_bind( bam_fuzz_execle_t * h ) {
   h->ctx->banks                    = h->mini->banks;
   h->ctx->accdb                    = h->mini->runtime->accdb;
+  h->ctx->progcache->metrics       = h->mini->progcache->metrics;
   h->ctx->runtime->accdb           = h->mini->runtime->accdb;
   h->ctx->runtime->progcache       = h->mini->progcache;
   h->ctx->runtime->status_cache    = h->txncache;
@@ -298,6 +300,7 @@ bam_fuzz_execle_reset_txncache( bam_fuzz_execle_t * h ) {
     bam_fuzz_execle_pack_txn5,
     bam_fuzz_execle_pack_txn6,
     bam_fuzz_execle_pack_txn7,
+    bam_fuzz_execle_v1_4096,
   };
   ulong const payload_szs[] = {
     bam_fuzz_execle_txn1_sz,
@@ -309,6 +312,7 @@ bam_fuzz_execle_reset_txncache( bam_fuzz_execle_t * h ) {
     bam_fuzz_execle_pack_txn5_sz,
     bam_fuzz_execle_pack_txn6_sz,
     bam_fuzz_execle_pack_txn7_sz,
+    bam_fuzz_execle_v1_4096_sz,
   };
 
   fd_txncache_fork_id_t parent = { .val = USHORT_MAX };
@@ -378,6 +382,7 @@ bam_fuzz_execle_prepare_slot( bam_fuzz_execle_t * h,
   }
 
   FD_TEST( h->bank->f.slot==slot );
+  h->bank->f.features.enable_tx_v1 = 0UL;
   h->active_slot = slot;
   bam_fuzz_execle_runtime_bind( h );
 

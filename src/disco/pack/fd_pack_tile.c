@@ -809,8 +809,7 @@ pack_tile_bam_work_mark_scheduled( fd_pack_ctx_t * ctx,
    Signatures are effectively random, so comparing the first 8 bytes
    rejects all but ~2^-64 of the non-matching entries with a single load,
    leaving the full 64 byte memcmp for the entry we are actually looking
-   for.  The needle is not necessarily aligned (it usually points into a
-   txn payload at offset 1), hence fd_ulong_load_8. */
+   for.  The needle is not necessarily aligned, hence fd_ulong_load_8. */
 
 static inline ulong
 pack_tile_bam_work_find_by_sig0_state( fd_pack_ctx_t const * ctx,
@@ -825,6 +824,32 @@ pack_tile_bam_work_find_by_sig0_state( fd_pack_ctx_t const * ctx,
     return i;
   }
   return ctx->bam_work_cnt;
+}
+
+static inline pack_bam_work_t *
+pack_tile_bam_work_mark_txn_scheduled( fd_pack_ctx_t *     ctx,
+                                       fd_txn_p_t const * txnp,
+                                       long               now_ns ) {
+  if( FD_LIKELY( txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) return NULL;
+  if( FD_UNLIKELY( txnp->bam.batch_idx ) ) return NULL;
+
+  if( FD_UNLIKELY( !ctx->bam_first_schedule_seen ) ) {
+    ctx->bam_first_schedule_seen = 1U;
+    ctx->bam_first_schedule_minus_slot_end_ns = now_ns - ctx->slot_end_ns;
+  }
+
+  ulong work_idx = pack_tile_bam_work_find_by_sig0_state( ctx,
+                                                          fd_txn_get_signatures( TXN(txnp), txnp->payload ),
+                                                          PACK_BAM_WORK_STATE_PENDING );
+  if( FD_UNLIKELY( work_idx>=ctx->bam_work_cnt ) ) return NULL;
+
+  pack_bam_work_t * item = pack_tile_bam_work_mark_scheduled( ctx, work_idx );
+  ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_SCHEDULED_IDX ]++;
+  pack_tile_note_bam_first_outcome( ctx,
+                                    FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_SCHEDULED_IDX,
+                                    item->first_rx_ts_ns,
+                                    now_ns );
+  return item;
 }
 
 static inline ulong
@@ -1318,7 +1343,8 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
   fd_ed25519_sig_t sig0[1] = {{0}};
   _Bool have_sig0 = !!ctx->current_bundle->bundle && !!ctx->current_bundle->txn_received;
   if( FD_LIKELY( have_sig0 ) ) {
-    fd_memcpy( sig0, ctx->current_bundle->_txn[ 0 ]->txnp->payload + 1UL, sizeof(fd_ed25519_sig_t) );
+    fd_txn_p_t const * txnp = ctx->current_bundle->_txn[ 0 ]->txnp;
+    fd_memcpy( sig0, fd_txn_get_signatures( TXN(txnp), txnp->payload ), sizeof(fd_ed25519_sig_t) );
   }
 
   uint  first_missing_idx = (uint)ctx->current_bundle->txn_received;
@@ -1828,10 +1854,15 @@ after_credit( fd_pack_ctx_t *     ctx,
         bundle[0]->txnp->first_seen_nanos = bundle[0]->txnp->scheduler_arrival_time_nanos;
         memcpy( bundle[0]->txnp->payload+TXN(bundle[0]->txnp)->recent_blockhash_off, ctx->crank->recent_blockhash, 32UL );
 
-        fd_keyguard_client_sign( ctx->crank->keyguard_client, bundle[0]->txnp->payload+1UL,
-            bundle[0]->txnp->payload+65UL, txn_sz-65UL, FD_KEYGUARD_SIGN_TYPE_ED25519 );
+        fd_txn_t const * crank_txn = TXN( bundle[ 0 ]->txnp );
+        uchar * crank_sig = (uchar *)fd_txn_get_signatures( crank_txn, bundle[ 0 ]->txnp->payload );
+        fd_keyguard_client_sign( ctx->crank->keyguard_client,
+                                 crank_sig,
+                                 bundle[ 0 ]->txnp->payload + crank_txn->message_off,
+                                 fd_txn_msg_sz( crank_txn, txn_sz ),
+                                 FD_KEYGUARD_SIGN_TYPE_ED25519 );
 
-        memcpy( ctx->crank->last_sig, bundle[0]->txnp->payload+1UL, 64UL );
+        memcpy( ctx->crank->last_sig, crank_sig, 64UL );
 
         ctx->crank->ib_inserted = 1;
         ulong deleted;
@@ -1960,25 +1991,7 @@ after_credit( fd_pack_ctx_t *     ctx,
       fd_long_store_if( ctx->use_consumed_cus, &(ctx->skip_cnt), (long)(ctx->execle_cnt + 1) );
       for( ulong j=0UL; j<schedule_cnt; j++ ) {
         fd_txn_p_t const * txnp = microblock_dst[ j ].txnp;
-        if( FD_LIKELY( txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
-        if( FD_UNLIKELY( txnp->bam.batch_idx ) ) continue;
-        if( FD_UNLIKELY( !ctx->bam_first_schedule_seen ) ) {
-          ctx->bam_first_schedule_seen = 1U;
-          ctx->bam_first_schedule_minus_slot_end_ns = now2_ns - ctx->slot_end_ns;
-        }
-
-        ulong work_idx = pack_tile_bam_work_find_by_sig0_state( ctx,
-                                                                (fd_ed25519_sig_t const *)(txnp->payload + 1UL),
-                                                                PACK_BAM_WORK_STATE_PENDING );
-        if( FD_UNLIKELY( work_idx>=ctx->bam_work_cnt ) ) continue;
-
-        pack_bam_work_t * item = pack_tile_bam_work_mark_scheduled( ctx, work_idx );
-
-        ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_SCHEDULED_IDX ]++;
-        pack_tile_note_bam_first_outcome( ctx,
-                                          FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_SCHEDULED_IDX,
-                                          item->first_rx_ts_ns,
-                                          now2_ns );
+        (void)pack_tile_bam_work_mark_txn_scheduled( ctx, txnp, now2_ns );
       }
 
       pack_tile_publish_bam_leader_state( ctx, stem );
@@ -2608,7 +2621,8 @@ after_frag( fd_pack_ctx_t *     ctx,
                                      txn_cnt,
                                      0U,
                                      0U,
-                                     ctx->current_bundle->bundle[ 0 ]->txnp->payload + 1UL );
+                                     fd_txn_get_signatures( TXN(ctx->current_bundle->bundle[ 0 ]->txnp),
+                                                            ctx->current_bundle->bundle[ 0 ]->txnp->payload ) );
           ctx->bam_work_rejected_pre_pending_cnt[ ( txn_cnt==1U ? 0UL : 2UL ) + (ulong)invalid_reason - 1UL ]++;
           pack_tile_note_bam_first_outcome( ctx,
                                             FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_REJECTED_PRE_PENDING_IDX,
@@ -2636,8 +2650,9 @@ after_frag( fd_pack_ctx_t *     ctx,
         fd_ed25519_sig_t bam_sig[ FD_PACK_MAX_TXN_PER_BUNDLE ];
         for( uchar i=0U; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {
           if( FD_UNLIKELY( i>=txn_cnt ) ) break;
+          fd_txn_p_t const * txnp = ctx->current_bundle->bundle[ i ]->txnp;
           fd_memcpy( &bam_sig[ i ],
-                     ctx->current_bundle->bundle[ i ]->txnp->payload + 1UL,
+                     fd_txn_get_signatures( TXN(txnp), txnp->payload ),
                      sizeof(fd_ed25519_sig_t) );
         }
 
