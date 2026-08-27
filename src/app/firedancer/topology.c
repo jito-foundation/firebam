@@ -519,7 +519,7 @@ fd_topo_initialize( config_t * config ) {
   }
 
   if( FD_UNLIKELY( bam_enabled ) ) {
-    /**/                   fd_topob_link( topo, "bam_verif",    "bam_verif",    config->tiles.verify.receive_buffer_size, FD_TPU_PARSED_MTU,          FD_BAM_STEM_BURST );
+    /**/                   fd_topob_link( topo, "bam_verif",    "bam_verif",    FD_BAM_VERIFY_OUT_DEPTH,                     FD_TPU_RAW_MTU,             FD_BAM_STEM_BURST );
     /**/                   fd_topob_link( topo, "bam_sign",     "bam_sign",     65536UL,                                  256UL,                     1UL );
     /**/                   fd_topob_link( topo, "sign_bam",     "sign_bam",     128UL,                                    64UL,                      1UL );
     /**/                   fd_topob_link( topo, "bam_gossip",   "bam_gossip",   128UL,                                    sizeof(fd_bam_contact_update_t), 1UL );
@@ -1778,7 +1778,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     fd_cstr_ncpy( tile->bam.identity_key_path, config->paths.identity_key, sizeof(tile->bam.identity_key_path) );
     fd_cstr_ncpy( tile->bam.key_log_path, config->development.bam.ssl_key_log_file, sizeof(tile->bam.key_log_path) );
     tile->bam.buf_sz = config->development.bam.buffer_size_kib<<10;
-    tile->bam.out_depth = config->tiles.verify.receive_buffer_size;
+    tile->bam.out_depth = FD_BAM_VERIFY_OUT_DEPTH;
     tile->bam.ssl_heap_sz = config->development.bam.ssl_heap_size_mib<<20;
     tile->bam.keepalive_interval_nanos = config->tiles.bam.keepalive_interval_millis * (ulong)1e6;
     tile->bam.tls_cert_verify = !!config->tiles.bam.tls_cert_verify;

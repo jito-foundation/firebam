@@ -16,18 +16,30 @@
    single MultipleAtomicTxnBatchResult.  The gRPC client only accepts one
    message per TX ring drain, so the drain rate is messages/second, not
    results/second; batching multiplies result throughput by this factor. */
-#define FD_BAM_RESULTS_PER_MESSAGE 4U
+#define FD_BAM_RESULTS_PER_MESSAGE 64U
 #define FD_BAM_MAX_TXN_PER_ATOMIC_BATCH             5U
 /* Stem burst sizing is independent from scheduler message decode capacity. */
 #define FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST   8U
-#define FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE       128U
+#define FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE       8U
 #define FD_BAM_MAX_TXN_PER_MESSAGE                  ((ulong)FD_BAM_MAX_TXN_PER_ATOMIC_BATCH * (ulong)FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE)
 #define FD_BAM_STEM_BURST                           ((ulong)FD_BAM_MAX_TXN_PER_ATOMIC_BATCH * (ulong)FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST)
+#define FD_BAM_GRPC_DEFAULT_BUF_SZ                  (256UL*1024UL)
+/* BAM owns a separate verify-output ring so its buffering does not inherit the
+   substantially larger TPU receive depth. */
+#define FD_BAM_VERIFY_OUT_DEPTH                     1024UL
 #define FD_BAM_BUNDLE_ERR_NONE            (0U)
 #define FD_BAM_BUNDLE_ERR_DESER           (1U)
 
 FD_STATIC_ASSERT( FD_BAM_MAX_TXN_PER_ATOMIC_BATCH <= FD_PACK_MAX_TXN_PER_BUNDLE,
                   bam_atomic_batch_limit_fits_pack_bundle );
+FD_STATIC_ASSERT( sizeof(((bam_types_Packet *)0)->data.bytes)==FD_TXN_MTU,
+                  bam_packet_payload_matches_txn_mtu );
+FD_STATIC_ASSERT( FD_BAM_MAX_TXN_PER_MESSAGE*FD_TXN_MTU<FD_BAM_GRPC_DEFAULT_BUF_SZ,
+                  bam_default_grpc_buffer_fits_max_payload_bytes );
+FD_STATIC_ASSERT( FD_BAM_VERIFY_OUT_DEPTH>=FD_BAM_MAX_TXN_PER_MESSAGE,
+                  bam_verify_out_depth_fits_max_message );
+FD_STATIC_ASSERT( !(FD_BAM_VERIFY_OUT_DEPTH & (FD_BAM_VERIFY_OUT_DEPTH-1UL)),
+                  bam_verify_out_depth_is_power_of_two );
 
 #define FD_BAM_SHRED_SOCK_MAX          32UL
 

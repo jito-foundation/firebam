@@ -1,5 +1,6 @@
 #include "fd_config_private.h"
 #include "../../ballet/toml/fd_toml.h"
+#include "../../disco/bam/fd_bam_types.h"
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -157,7 +158,14 @@ main( int     argc,
   pod = fd_pod_join( fd_pod_new( pod_mem, sizeof(pod_mem) ) );
   FD_TEST( fd_toml_parse( fdctl_default_config, fdctl_default_config_sz, pod, scratch, sizeof(scratch), NULL ) == FD_TOML_SUCCESS );
   FD_TEST( fd_config_extract_pod( pod, config ) == config );
+  FD_TEST( ((ulong)config->development.bam.buffer_size_kib<<10)==FD_BAM_GRPC_DEFAULT_BUF_SZ );
   fd_config_validate( config );  /* exits process with code 1 on failure */
+
+  /* BAM has a dedicated verify-output ring, independent of TPU receive depth. */
+  config->tiles.bam.enabled                = 1;
+  config->tiles.verify.receive_buffer_size = 1U;
+  fd_config_validate( config );
+  FD_TEST( fd_config_extract_pod( pod, config )==config );
 
   /* bzip2's avail_in and avail_out fields are uint. */
 

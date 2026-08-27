@@ -76,20 +76,20 @@ fd_bam_dump_append_inbound_txn( char *                   msg,
                                 ulong                    off,
                                 uchar                    batch_idx,
                                 uchar                    batch_cnt,
-                                bam_types_Packet const * packet ) {
-  uchar const * payload    = packet->data.bytes;
-  uint          txn_ord    = (uint)batch_idx + 1U;
+                                fd_bam_packet_view_t const * packet ) {
+  uchar const * payload = packet->payload;
+  uint          txn_ord = (uint)batch_idx + 1U;
 
   uchar txn_buf[ FD_TXN_MAX_SZ ];
-  if( FD_UNLIKELY( !fd_txn_parse( payload, packet->data.size, txn_buf, NULL ) ) ) {
+  if( FD_UNLIKELY( !fd_txn_parse( payload, packet->payload_sz, txn_buf, NULL ) ) ) {
     off = fd_bam_dump_appendf( msg, msg_sz, off,
                                "  txn[%u/%u]: batch_idx=%u payload_sz=%u parse=failed\n",
                                txn_ord, (uint)batch_cnt,
                                (uint)batch_idx,
-                               packet->data.size );
+                               (uint)packet->payload_sz );
     off = fd_bam_dump_appendf( msg, msg_sz, off, "    bytes: " );
     off = fd_bam_dump_append_hex_preview( msg, msg_sz, off,
-                                          payload, packet->data.size, FD_BAM_DUMP_HEX_PREVIEW_MAX );
+                                          payload, packet->payload_sz, FD_BAM_DUMP_HEX_PREVIEW_MAX );
     return fd_bam_dump_appendf( msg, msg_sz, off, "\n" );
   }
 
@@ -113,7 +113,7 @@ fd_bam_dump_append_inbound_txn( char *                   msg,
                              "  txn[%u/%u]: batch_idx=%u payload_sz=%u version=%s sig=%s fee_payer=%s recent_blockhash=%s instructions=%u accounts=%lu (static=%u loaded=%u signers=%lu writable=%lu readonly=%lu luts=%u)%s\n",
                              txn_ord, (uint)batch_cnt,
                              (uint)batch_idx,
-                             packet->data.size,
+                             (uint)packet->payload_sz,
                              txn->transaction_version==FD_TXN_V1 ? "v1" :
                              txn->transaction_version==FD_TXN_V0 ? "v0" : "legacy",
                              primary_sig,
@@ -258,33 +258,9 @@ fd_bam_should_dump_batch( fd_bam_tile_t * ctx,
   return 1;
 }
 
-static ulong
-fd_bam_packet_data_oversize( pb_istream_t const * stream ) {
-  pb_istream_t scan = *stream;
-  uint32_t       tag;
-  pb_wire_type_t wire_type;
-  bool           eof = false;
-
-  while( pb_decode_tag( &scan, &wire_type, &tag, &eof ) ) {
-    if( FD_UNLIKELY( !tag ) ) return 0;
-    if( tag!=bam_types_Packet_data_tag ) {
-      if( FD_UNLIKELY( !pb_skip_field( &scan, wire_type ) ) ) return 0;
-      continue;
-    }
-    if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) return 0;
-
-    pb_istream_t data_stream;
-    if( FD_UNLIKELY( !pb_make_string_substream( &scan, &data_stream ) ) ) return 0;
-    size_t data_sz = data_stream.bytes_left;
-    if( FD_UNLIKELY( !pb_close_string_substream( &scan, &data_stream ) ) ) return 0;
-    if( FD_UNLIKELY( data_sz>sizeof(((bam_types_Packet *)0)->data.bytes) ) ) return (ulong)data_sz;
-  }
-  return 0;
-}
-
 /* Collects a single Packet from the protobuf stream. Returns true while the
-   packet parsed and passed basic validation; returns false to abort the
-   surrounding AtomicTxnBatch decode and surface the bundle error. */
+   packet parsed and passed basic validation. Transaction bytes remain a view
+   into the receive buffer until the enclosing message commits. */
 static bool
 fd_bam_collect_packet( pb_istream_t *         stream,
                        pb_field_t const *     field,
@@ -299,38 +275,59 @@ fd_bam_collect_packet( pb_istream_t *         stream,
     return false;
   }
 
-  ulong oversize_data_sz = fd_bam_packet_data_oversize( stream );
-  if( FD_UNLIKELY( oversize_data_sz ) ) {
-    state->ctx->metrics.ingress_packet_oversize_cnt++;
-    FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding protobuf payload capacity (%lu>%lu bytes)",
-                     oversize_data_sz,
-                     sizeof(((bam_types_Packet *)0)->data.bytes) ));
-    state->has_deser_err = true;
-    state->deser_reason  = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
-    state->deser_index   = state->packet_cnt;
-    return false;
+  fd_bam_packet_view_t * packet = &state->packets[ state->packet_cnt ];
+  *packet = (fd_bam_packet_view_t){ .payload = (uchar const *)stream->state };
+  bam_types_Meta meta = bam_types_Meta_init_default;
+  _Bool has_meta = 0;
+
+  while( stream->bytes_left ) {
+    uint32_t       tag;
+    pb_wire_type_t wire_type;
+    bool           eof;
+    if( FD_UNLIKELY( !pb_decode_tag( stream, &wire_type, &tag, &eof ) ) ) goto malformed;
+    if( FD_UNLIKELY( !tag ) ) {
+      PB_SET_ERROR( stream, "zero tag" );
+      goto malformed;
+    }
+
+    if( tag==bam_types_Packet_data_tag ) {
+      if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+        PB_SET_ERROR( stream, "wrong wire type" );
+        goto malformed;
+      }
+      pb_istream_t data_stream;
+      if( FD_UNLIKELY( !pb_make_string_substream( stream, &data_stream ) ) ) goto malformed;
+      ulong const data_sz = (ulong)data_stream.bytes_left;
+      if( FD_UNLIKELY( data_sz>FD_TXN_MTU ) ) {
+        state->ctx->metrics.ingress_packet_oversize_cnt++;
+        state->has_deser_err = 1U;
+        state->deser_reason  = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
+        state->deser_index   = state->packet_cnt;
+        FD_LOG_WARNING(( "Received AtomicTxnBatch packet exceeding protobuf payload capacity (%lu>%lu bytes)",
+                         data_sz, FD_TXN_MTU ));
+        PB_SET_ERROR( stream, "bytes overflow" );
+        return false;
+      }
+      packet->payload    = (uchar const *)data_stream.state;
+      packet->payload_sz = (ushort)data_sz;
+      if( FD_UNLIKELY( !pb_close_string_substream( stream, &data_stream ) ) ) goto malformed;
+    } else if( tag==bam_types_Packet_meta_tag ) {
+      if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+        PB_SET_ERROR( stream, "wrong wire type" );
+        goto malformed;
+      }
+      pb_istream_t meta_stream;
+      if( FD_UNLIKELY( !pb_make_string_substream( stream, &meta_stream ) ) ) goto malformed;
+      _Bool const meta_ok = pb_decode_ex( &meta_stream, &bam_types_Meta_msg, &meta,
+                                          has_meta ? PB_DECODE_NOINIT : 0U );
+      if( FD_UNLIKELY( !pb_close_string_substream( stream, &meta_stream ) || !meta_ok ) ) goto malformed;
+      has_meta = 1;
+    } else if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) {
+      goto malformed;
+    }
   }
 
-  /* Do not pre-initialize packet here.  pb_decode already sets every
-     field to its default before decoding, and for the static bytes field
-     that means a memset of the full 4096 byte payload.  Initializing it
-     again on this side doubles that cost, and at 5 packets per batch and
-     128 batches per message it is the single largest memory write in the
-     decode path. */
-  bam_types_Packet * packet = &state->packets[ state->packet_cnt ];
-  if( FD_UNLIKELY( !pb_decode( stream, &bam_types_Packet_msg, packet ) ) ) {
-    state->has_deser_err        = true;
-    state->packet_decode_failed = true;
-    state->deser_reason         = bam_types_DeserializationErrorReason_INCONSISTENT_BUNDLE;
-    state->deser_index          = state->packet_cnt;
-    return false;
-  }
-
-  _Bool packet_revert_on_error = 0;
-  if( FD_LIKELY( packet->has_meta && packet->meta.has_flags ) ) {
-    packet_revert_on_error = !!packet->meta.flags.revert_on_error;
-  }
-
+  _Bool const packet_revert_on_error = has_meta && meta.has_flags && meta.flags.revert_on_error;
   if( FD_UNLIKELY( state->packet_cnt && state->revert_on_error != packet_revert_on_error ) ) {
     FD_LOG_WARNING(( "AtomicTxnBatch contains mixed revert_on_error flags" ));
     state->has_deser_err = true;
@@ -342,6 +339,10 @@ fd_bam_collect_packet( pb_istream_t *         stream,
 
   state->packet_cnt++;
   return true;
+
+malformed:
+  state->packet_decode_failed = true;
+  return false;
 }
 
 static fd_bam_slot_ingress_timing_t *
@@ -406,9 +407,9 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   int simple_vote_idx = -1;
   uchar txn_buf[ FD_TXN_MAX_SZ ];
   for( uchar i=0U; i<state->packet_cnt; i++ ) {
-    bam_types_Packet const * packet = &state->packets[ i ];
-    if( FD_UNLIKELY( !fd_txn_parse( packet->data.bytes, packet->data.size, txn_buf, NULL ) ) ) continue;
-    if( FD_UNLIKELY( fd_txn_is_simple_vote_transaction( (fd_txn_t const *)txn_buf, packet->data.bytes ) ) ) {
+    fd_bam_packet_view_t const * packet = &state->packets[ i ];
+    if( FD_UNLIKELY( !fd_txn_parse( packet->payload, packet->payload_sz, txn_buf, NULL ) ) ) continue;
+    if( FD_UNLIKELY( fd_txn_is_simple_vote_transaction( (fd_txn_t const *)txn_buf, packet->payload ) ) ) {
       simple_vote_idx = (int)i;
       break;
     }
@@ -549,9 +550,9 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
   }
 
   for( uchar i=0; i<packet_cnt; i++ ) {
-    bam_types_Packet const * packet = &state->packets[ i ];
+    fd_bam_packet_view_t const * packet = &state->packets[ i ];
     fd_bam_pending_txn_t * pending = bam_pending_txn_push_tail_nocopy( ctx->pending_txns );
-    pending->payload_sz                  = (ushort)packet->data.size;
+    pending->payload_sz                  = packet->payload_sz;
     pending->seq_id                      = batch->seq_id;
     pending->first_seen_nanos            = state->ingress_rx_ts_ns;
     pending->source_ipv4                 = 0U;
@@ -559,7 +560,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     pending->batch_idx                   = i;
     pending->batch_cnt                   = packet_cnt;
     pending->revert_on_error             = (uchar)state->revert_on_error;
-    fd_memcpy( pending->payload, packet->data.bytes, packet->data.size );
+    fd_memcpy( pending->payload, packet->payload, packet->payload_sz );
   }
 }
 
@@ -661,10 +662,8 @@ fd_bam_decode_batch( fd_bam_tile_t *          ctx,
                      fd_bam_batch_ctx_t *       state,
                      fd_bam_batch_decode_err_t * err ) {
   /* Reset the callback state needed while decoding.  packets[] is exempt
-     because the nanopb callback overwrites entry packet_cnt before advancing
-     it, so only [0,packet_cnt) is ever read -- and clearing all five
-     maximum-sized Packet objects is the bulk of what this function used to
-     spend its time on. */
+     because the callback overwrites each zero-copy view before advancing
+     packet_cnt, so only [0,packet_cnt) is ever read. */
   state->ctx                  = ctx;
   state->packet_cnt           = 0U;
   state->revert_on_error      = 0;
@@ -724,13 +723,16 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
   ushort const results_tail_before      = ctx->bam_results_tail;
   ushort const feedback_depth_before    = ctx->feedback_queue_depth;
 
-#define FD_BAM_MULTI_DECODE_FAIL() do {                                                                    \
+#define FD_BAM_MULTI_DECODE_ROLLBACK() do {                                                                \
     ctx->metrics.ingress_packet_oversize_cnt  = oversize_before;                                           \
     ctx->metrics.feedback_results_dropped_cnt = dropped_before;                                            \
     fd_memcpy( ctx->metrics.ingress_batch_rejected_cnt,   batch_rejected_before,   sizeof(batch_rejected_before)   ); \
     fd_memcpy( ctx->metrics.ingress_message_rejected_cnt, message_rejected_before, sizeof(message_rejected_before) ); \
     ctx->bam_results_tail     = results_tail_before;                                                       \
     ctx->feedback_queue_depth = feedback_depth_before;                                                     \
+  } while(0)
+#define FD_BAM_MULTI_DECODE_FAIL() do {                                                                    \
+    FD_BAM_MULTI_DECODE_ROLLBACK();                                                                        \
     return 0;                                                                                              \
   } while(0)
 
@@ -756,44 +758,21 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
 
     pb_istream_t substream;
     if( FD_UNLIKELY( !pb_make_string_substream( stream, &substream ) ) ) FD_BAM_MULTI_DECODE_FAIL();
-    uchar const * batch_data    = (uchar const *)substream.state;
-    size_t        batch_data_sz = substream.bytes_left;
 
     if( FD_UNLIKELY( seen_batch_count >= FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ) ) {
-      fd_bam_batch_identity_t identity;
-      char const *            identity_err;
-      pb_istream_t identity_stream = pb_istream_from_buffer( batch_data, batch_data_sz );
-      _Bool const identity_ok = fd_bam_decode_batch_identity( &identity_stream, &identity, &identity_err );
-      if( FD_UNLIKELY( !pb_close_string_substream( stream, &identity_stream ) ) ) FD_BAM_MULTI_DECODE_FAIL();
-
-      if( FD_UNLIKELY( seen_batch_count==FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ) ) {
-        FD_LOG_WARNING(( "MultipleAtomicTxnBatch exceeded max batch count (%u>%u)",
-                         seen_batch_count + 1U,
-                         FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ));
-        ctx->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
-      }
-      if( FD_UNLIKELY( !identity.has_seq_id && !identity_ok ) ) {
-        ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
-        FD_LOG_WARNING(( "Unable to attribute overflow AtomicTxnBatch (%s)",
-                         identity_err ? identity_err : "missing seq_id" ));
-        seen_batch_count++;
-        continue;
-      }
-      if( FD_UNLIKELY( !identity_ok ) ) {
-        ctx->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]++;
-        FD_LOG_WARNING(( "Overflow AtomicTxnBatch was malformed after seq_id (%s)",
-                         identity_err ? identity_err : "unknown" ));
-      }
-      fd_bam_bundle_result_t overflow_result =
-          fd_bam_result_base( identity.seq_id,
-                              ctx->scheduler_gen,
-                              identity.max_schedule_slot,
-                              0U );
-      overflow_result.scheduling_error = FD_BAM_SCHED_ERR_CONTAINER_FULL;
-      fd_bam_enqueue_result( ctx, &overflow_result );
-      seen_batch_count++;
-      continue;
+      /* Scheduler messages are atomic at the wrapper boundary.  Once a ninth
+         batch appears, roll back staged rejects and publish none of the first
+         eight batches.  Do not scan attacker-controlled overflow entries. */
+      FD_LOG_WARNING(( "MultipleAtomicTxnBatch exceeded max batch count (%u>%u)",
+                       seen_batch_count + 1U,
+                       FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ));
+      PB_SET_ERROR( stream, "too many batches" );
+      FD_BAM_MULTI_DECODE_ROLLBACK();
+      ctx->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]++;
+      return 0;
     }
+
+    pb_istream_t identity_stream = substream;
 
     fd_bam_batch_decode_err_t decode_err;
     _Bool const decode_ok =
@@ -817,7 +796,6 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
        the saved batch view, then close through that independent stream. */
     fd_bam_batch_identity_t identity;
     char const *            identity_err;
-    pb_istream_t identity_stream = pb_istream_from_buffer( batch_data, batch_data_sz );
     _Bool const identity_ok = fd_bam_decode_batch_identity( &identity_stream, &identity, &identity_err );
     if( FD_UNLIKELY( !pb_close_string_substream( stream, &identity_stream ) ) ) FD_BAM_MULTI_DECODE_FAIL();
 
@@ -844,6 +822,7 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
     ctx->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_EMPTY_MESSAGE_IDX ]++;
   }
 #undef FD_BAM_MULTI_DECODE_FAIL
+#undef FD_BAM_MULTI_DECODE_ROLLBACK
   return 1;
 }
 
