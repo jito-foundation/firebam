@@ -1092,7 +1092,8 @@ pack_tile_reconcile_pending_bam_work( fd_pack_ctx_t * ctx ) {
     if( FD_LIKELY( fd_pack_contains_bam_bundle( ctx->pack,
                                                (fd_ed25519_sig_t const *)(void const *)&work->sig[ 0 ],
                                                work->seq_id,
-                                               work->scheduler_gen ) ) ) {
+                                               work->scheduler_gen,
+                                               1 ) ) ) {
       if( FD_UNLIKELY( dst!=src ) ) ctx->bam_work[ dst ] = *work;
       dst++;
       continue;
@@ -1866,9 +1867,9 @@ after_credit( fd_pack_ctx_t *     ctx,
   *charge_busy = 1;
 
   if( FD_LIKELY( ctx->crank->enabled ) ) {
-    block_builder_info_t const * top_meta = fd_pack_peek_bundle_meta_with_hint( ctx->pack,
-                                                                                bam_override,
-                                                                                &bundle_hint );
+    block_builder_info_t const * top_meta = fd_pack_peek_bundle_meta( ctx->pack,
+                                                                      bam_override,
+                                                                      &bundle_hint );
     if( FD_UNLIKELY( top_meta ) ) {
       /* Have bundles, in a reasonable state to crank. */
 
@@ -2716,24 +2717,20 @@ after_frag( fd_pack_ctx_t *     ctx,
            invariant maintained immediately after deletion-producing pack
            inserts.  Scan only the compact scheduled prefix on the normal
            path, and scan the (potentially large) pending suffix only once
-           the map says sig0 is in pack at all.
+           the map says sig0 leads pending BAM work in pack.
 
-           A hit in the map is necessary but not sufficient.  Pack accepts
-           duplicate signatures, so sig0 can belong to an entry that is not
-           tracked BAM work: another bundle carrying that transaction in a
-           non-leading position, a vote, or a non-BAM transaction that
-           entered before the BAM override started refusing them and has
-           not expired or landed yet.  While the override is inactive a
-           mempool copy of a bundle's leading transaction is possible too,
-           since dedup deliberately does not filter BAM traffic.  None of
-           those are duplicate BAM work; rejecting over them would drop
-           valid bundles. */
+           The pack query deliberately filters unrelated transactions and
+           non-leading bundle members that happen to share sig0.  The tile
+           scan remains authoritative for work state and resend policy. */
         ulong duplicate_work_idx = pack_tile_bam_work_find_by_sig0_state( ctx,
                                                                           bam_sig[ 0 ],
                                                                           PACK_BAM_WORK_STATE_SCHEDULED );
         if( FD_LIKELY( duplicate_work_idx>=ctx->bam_work_cnt ) &&
-            FD_UNLIKELY( fd_pack_contains_transaction( ctx->pack,
-                                                       (fd_ed25519_sig_t const *)(void const *)bam_sig[ 0 ] ) ) ) {
+            FD_UNLIKELY( fd_pack_contains_bam_bundle( ctx->pack,
+                                                      (fd_ed25519_sig_t const *)(void const *)bam_sig[ 0 ],
+                                                      0U,
+                                                      0U,
+                                                      0 ) ) ) {
           duplicate_work_idx = pack_tile_bam_work_find_by_sig0_state( ctx,
                                                                       bam_sig[ 0 ],
                                                                       PACK_BAM_WORK_STATE_PENDING );

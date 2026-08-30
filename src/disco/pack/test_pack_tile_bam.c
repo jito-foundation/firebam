@@ -20,13 +20,11 @@ FD_IMPORT_BINARY( test_pack_tile_non_vote,    "src/ballet/txn/fixtures/transacti
 #define fd_pack_insert_txn_cancel test_fd_pack_insert_txn_cancel
 #define fd_pack_insert_bundle_fini test_fd_pack_insert_bundle_fini
 #define fd_pack_insert_bundle_cancel test_fd_pack_insert_bundle_cancel
-#define fd_pack_contains_transaction test_fd_pack_contains_transaction
 #define fd_pack_contains_bam_bundle test_fd_pack_contains_bam_bundle
 #define fd_pack_delete_bam_bundle test_fd_pack_delete_bam_bundle
 #include "fd_pack_tile.c"
 #undef fd_pack_delete_bam_bundle
 #undef fd_pack_contains_bam_bundle
-#undef fd_pack_contains_transaction
 #undef fd_pack_insert_bundle_cancel
 #undef fd_pack_insert_bundle_fini
 #undef fd_pack_insert_txn_cancel
@@ -37,8 +35,7 @@ FD_IMPORT_BINARY( test_pack_tile_non_vote,    "src/ballet/txn/fixtures/transacti
 int fd_pack_insert_bundle_fini( fd_pack_t *, fd_txn_e_t * const *, ulong, ulong,
                                 int, void const *, ulong *, ulong * );
 ulong fd_pack_delete_transaction( fd_pack_t *, fd_ed25519_sig_t const * );
-int fd_pack_contains_transaction( fd_pack_t const *, fd_ed25519_sig_t const * );
-int fd_pack_contains_bam_bundle( fd_pack_t const *, fd_ed25519_sig_t const *, uint, ushort );
+int fd_pack_contains_bam_bundle( fd_pack_t const *, fd_ed25519_sig_t const *, uint, ushort, int );
 ulong fd_pack_delete_bam_bundle( fd_pack_t *, fd_ed25519_sig_t const *, uint, ushort );
 
 #include "../bam/test_bam_common.c"
@@ -73,8 +70,7 @@ static fd_pack_ctx_t *    test_query_ctx;
 
    Occupancy the tile never tracked -- a mempool copy of a bundle's leading
    transaction, or another bundle carrying it in a non-leading position --
-   is covered by the tests that attach a real fd_pack, where
-   fd_pack_contains_transaction runs for real. */
+   is covered by the tests that attach a real fd_pack. */
 #define TEST_PACK_STAGED_SIG_CAP 8UL
 static fd_ed25519_sig_t  test_pack_evicted_sigs[ TEST_PACK_STAGED_SIG_CAP ];
 static ulong             test_pack_evicted_sig_cnt;
@@ -98,32 +94,21 @@ test_pack_clear_evicted_sig( void const * sig ) {
 #define TEST_D18_INSTR_ACCT_CNT       (FD_TXN_INSTR_ACCT_MAX+1UL)
 
 int
-test_fd_pack_contains_transaction( fd_pack_t const *        pack,
-                                   fd_ed25519_sig_t const * sig0 ) {
-  if( FD_UNLIKELY( test_insert_fini_use_real_pack ) )
-    return fd_pack_contains_transaction( pack, sig0 );
-  for( ulong i=0UL; i<test_pack_evicted_sig_cnt; i++ )
-    if( FD_UNLIKELY( !memcmp( test_pack_evicted_sigs[ i ], sig0, sizeof(fd_ed25519_sig_t) ) ) ) return 0;
-  if( FD_UNLIKELY( !test_query_ctx ) ) return 0;
-  return pack_tile_bam_work_find_by_sig0_state( test_query_ctx,
-                                                sig0,
-                                                PACK_BAM_WORK_STATE_PENDING )<test_query_ctx->bam_work_cnt;
-}
-
-int
 test_fd_pack_contains_bam_bundle( fd_pack_t const *        pack,
                                   fd_ed25519_sig_t const * sig0,
                                   uint                     seq_id,
-                                  ushort                   scheduler_gen ) {
+                                  ushort                   scheduler_gen,
+                                  int                      match_identity ) {
   if( FD_UNLIKELY( test_insert_fini_use_real_pack ) )
-    return fd_pack_contains_bam_bundle( pack, sig0, seq_id, scheduler_gen );
+    return fd_pack_contains_bam_bundle( pack, sig0, seq_id, scheduler_gen, match_identity );
   for( ulong i=0UL; i<test_pack_evicted_sig_cnt; i++ )
     if( FD_UNLIKELY( !memcmp( test_pack_evicted_sigs[ i ], sig0, sizeof(fd_ed25519_sig_t) ) ) ) return 0;
   if( FD_UNLIKELY( !test_query_ctx ) ) return 0;
   for( ulong i=test_query_ctx->bam_scheduled_work_cnt; i<test_query_ctx->bam_work_cnt; i++ ) {
     pack_bam_work_t const * work = &test_query_ctx->bam_work[ i ];
     if( FD_LIKELY( memcmp( work->sig[ 0 ], sig0, sizeof(fd_ed25519_sig_t) ) ) ) continue;
-    if( FD_LIKELY( work->seq_id==seq_id && work->scheduler_gen==scheduler_gen ) ) return 1;
+    if( FD_LIKELY( !match_identity ||
+                   ( work->seq_id==seq_id && work->scheduler_gen==scheduler_gen ) ) ) return 1;
   }
   return 0;
 }
@@ -1707,8 +1692,11 @@ test_pack_tile_bam_pack_evicted_bundle_is_reconciled( void ) {
   /* The invariant the duplicate check depends on holds again, and no sig0
      is tracked twice. */
   for( ulong i=0UL; i<h->ctx->bam_work_cnt; i++ ) {
-    FD_TEST( fd_pack_contains_transaction( pack,
-                                           (fd_ed25519_sig_t const *)(void const *)&h->ctx->bam_work[ i ].sig[ 0 ] ) );
+    FD_TEST( fd_pack_contains_bam_bundle( pack,
+                                         (fd_ed25519_sig_t const *)(void const *)&h->ctx->bam_work[ i ].sig[ 0 ],
+                                         h->ctx->bam_work[ i ].seq_id,
+                                         h->ctx->bam_work[ i ].scheduler_gen,
+                                         1 ) );
     for( ulong j=i+1UL; j<h->ctx->bam_work_cnt; j++ ) {
       FD_TEST( memcmp( h->ctx->bam_work[ i ].sig[ 0 ],
                        h->ctx->bam_work[ j ].sig[ 0 ],
@@ -1784,7 +1772,12 @@ test_pack_tile_bam_sig0_shared_with_untracked_pack_txn_is_accepted( void ) {
   fd_memcpy( untracked[ 0 ]->txnp->payload+1UL, shared_sig, sizeof(fd_ed25519_sig_t) );
   ulong deleted = 0UL;
   FD_TEST( fd_pack_insert_bundle_fini( pack, untracked, 1UL, 100UL, 0, NULL, &deleted, NULL )>=0 );
-  FD_TEST( fd_pack_contains_transaction( pack, (fd_ed25519_sig_t const *)(void const *)shared_sig ) );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
+  FD_TEST( !fd_pack_contains_bam_bundle( pack,
+                                        (fd_ed25519_sig_t const *)(void const *)shared_sig,
+                                        0U,
+                                        0U,
+                                        0 ) );
   FD_TEST( !h->ctx->bam_work_cnt );
 
   /* A BAM bundle whose sig0 collides with it must still be inserted. */
@@ -1842,7 +1835,11 @@ test_pack_tile_bam_overlapping_bundle_leading_sig_is_accepted( void ) {
   fd_memcpy( bundle_a[ 1 ]->txnp->payload+1UL, sig_y, sizeof(fd_ed25519_sig_t) );
   test_pack_tile_complete_bam_bundle( h, bundle_a, 2U, 910U, 104UL, 104UL, 0U );
   FD_TEST( h->ctx->bam_pending_work_cnt==1UL );
-  FD_TEST( fd_pack_contains_transaction( pack, (fd_ed25519_sig_t const *)(void const *)sig_y ) );
+  FD_TEST( !fd_pack_contains_bam_bundle( pack,
+                                        (fd_ed25519_sig_t const *)(void const *)sig_y,
+                                        0U,
+                                        0U,
+                                        0 ) );
   FD_TEST( pack_tile_bam_work_find_by_sig0( h->ctx, sig_y )==h->ctx->bam_work_cnt );
 
   /* Bundle B = [Y,Z] leads with Y. */
@@ -1874,25 +1871,27 @@ test_pack_tile_bam_overlapping_bundle_leading_sig_is_accepted( void ) {
   FD_TEST( fd_pack_contains_bam_bundle( pack,
                                         (fd_ed25519_sig_t const *)(void const *)sig_x,
                                         910U,
-                                        0U ) );
+                                        0U,
+                                        1 ) );
   FD_TEST( fd_pack_contains_bam_bundle( pack,
                                         (fd_ed25519_sig_t const *)(void const *)sig_y,
                                         911U,
-                                        0U ) );
+                                        0U,
+                                        1 ) );
 
-  /* Simulate pack having evicted B.  A still makes the generic signature
-     query for Y succeed, so reconciliation must use the exact BAM identity
-     and retire only B's work item. */
+  /* Simulate pack having evicted B.  A still carries Y as a non-leading
+     signature, so reconciliation must use the exact BAM identity and retire
+     only B's work item. */
   FD_TEST( fd_pack_delete_bam_bundle( pack,
                                       (fd_ed25519_sig_t const *)(void const *)sig_y,
                                       911U,
                                       0U )==2UL );
-  FD_TEST( fd_pack_contains_transaction( pack,
-                                         (fd_ed25519_sig_t const *)(void const *)sig_y ) );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==2UL );
   FD_TEST( !fd_pack_contains_bam_bundle( pack,
                                          (fd_ed25519_sig_t const *)(void const *)sig_y,
                                          911U,
-                                         0U ) );
+                                         0U,
+                                         1 ) );
 
   ulong pending_results_before = h->ctx->bam_pending_result_cnt;
   pack_tile_reconcile_pending_bam_work( h->ctx );
