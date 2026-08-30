@@ -1679,7 +1679,9 @@ unprivileged_init( fd_topo_t const *      topo,
 
   /* Set socket receive buffer size */
   ulong so_rcvbuf = tile->bam.buf_sz;
-  if( FD_UNLIKELY( so_rcvbuf < 2048UL  ) ) FD_LOG_ERR(( "Invalid [development.bam.buffer_size_kib]: too small" ));
+  if( FD_UNLIKELY( so_rcvbuf < FD_BAM_GRPC_MIN_BUF_SZ ) )
+    FD_LOG_ERR(( "Invalid [development.bam.buffer_size_kib]: must be at least %lu KiB",
+                 FD_BAM_GRPC_MIN_BUF_SZ>>10 ));
   if( FD_UNLIKELY( so_rcvbuf > INT_MAX ) ) FD_LOG_ERR(( "Invalid [development.bam.buffer_size_kib]: too large" ));
   ctx->so_rcvbuf = (int)so_rcvbuf;
 
