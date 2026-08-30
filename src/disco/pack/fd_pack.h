@@ -647,22 +647,17 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
    pointed to by the returned pointer are arbitrary, but it will be safe
    to read.
 
+   bundle_hint receives an opaque value that lets an immediately following
+   schedule avoid walking the pending bundle treap a second time.  On failure
+   it receives ULONG_MAX.  The hint has the same lifetime as the returned
+   metadata pointer.
+
    Pack doesn't do anything special to ensure the returned pointer
    points to memory with any particular alignment.  It will naturally
    have an alignment of at least GCD( 64, bundle_meta_sz ). */
 void const * fd_pack_peek_bundle_meta( fd_pack_t const * pack,
-                                       _Bool             bam_only );
-
-/* fd_pack_peek_bundle_meta_with_hint is fd_pack_peek_bundle_meta with an
-   opaque output that lets an immediately following schedule avoid walking
-   the pending bundle treap a second time.  On failure, *bundle_hint is
-   ULONG_MAX.
-
-   The hint has the same lifetime as the returned metadata pointer: it is
-   invalidated by the next pack insert, schedule, delete, or expire call. */
-void const * fd_pack_peek_bundle_meta_with_hint( fd_pack_t const * pack,
-                                                 _Bool             bam_only,
-                                                 ulong *           bundle_hint );
+                                       _Bool             bam_only,
+                                       ulong *           bundle_hint );
 
 /* fd_pack_set_initializer_bundles_ready sets the IB state machine state
    (see long initializer bundle comment above) to the [Ready] state.
@@ -749,8 +744,8 @@ fd_pack_schedule_next_microblock( fd_pack_t  * pack,
 
 /* fd_pack_schedule_next_microblock_with_bundle_hint is identical to
    fd_pack_schedule_next_microblock, except that it reuses a bundle candidate
-   returned by fd_pack_peek_bundle_meta_with_hint.  Pass ULONG_MAX to opt out of
-   the hint. */
+   returned through fd_pack_peek_bundle_meta's hint output.  Pass ULONG_MAX
+   to opt out of the hint. */
 ulong
 fd_pack_schedule_next_microblock_with_bundle_hint( fd_pack_t  * pack,
                                                    ulong        total_cus,
@@ -811,25 +806,21 @@ ulong fd_pack_expire_before( fd_pack_t * pack, ulong expire_before );
    might be >1 if a bundle was caused to be deleted. */
 ulong fd_pack_delete_transaction( fd_pack_t * pack, fd_ed25519_sig_t const * sig0 );
 
-/* fd_pack_contains_transaction returns 1 when a pending transaction with
-   first signature sig0 is present in pack and 0 otherwise.  This is a
-   read-only query backed by pack's existing signature map. */
-int fd_pack_contains_transaction( fd_pack_t const * pack, fd_ed25519_sig_t const * sig0 );
-
 /* fd_pack_contains_bam_bundle returns 1 when pack contains the pending
-   BAM bundle identified by its leading transaction signature, scheduler
-   generation, and sequence ID.  Unlike fd_pack_contains_transaction,
-   signatures belonging to unrelated transactions or bundles do not
-   count as a match. */
+   BAM bundle identified by its leading transaction signature.  When
+   match_identity is nonzero, the scheduler generation and sequence ID
+   must match as well.  Signatures belonging to unrelated transactions or
+   non-leading bundle members do not count as a match. */
 int fd_pack_contains_bam_bundle( fd_pack_t const *        pack,
                                  fd_ed25519_sig_t const * sig0,
                                  uint                     seq_id,
-                                 ushort                   scheduler_gen );
+                                 ushort                   scheduler_gen,
+                                 int                      match_identity );
 
-/* fd_pack_delete_bam_bundle deletes pending BAM bundles matching the exact
-   identity used by fd_pack_contains_bam_bundle.  Returns the number of
-   transactions deleted.  Unrelated transactions and overlapping bundles
-   that happen to carry sig0 are left intact. */
+/* fd_pack_delete_bam_bundle deletes pending BAM bundles matching the leading
+   signature, scheduler generation, and sequence ID exactly.  Returns the
+   number of transactions deleted.  Unrelated transactions and overlapping
+   bundles that happen to carry sig0 are left intact. */
 ulong fd_pack_delete_bam_bundle( fd_pack_t *              pack,
                                  fd_ed25519_sig_t const * sig0,
                                  uint                     seq_id,
