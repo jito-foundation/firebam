@@ -1216,7 +1216,7 @@ test_bam_multiple_batches_accept_full_txn_count( fd_wksp_t * wksp,
 }
 
 static void
-test_bam_max_wire_message_fits_default_grpc_buffer( fd_wksp_t * wksp ) {
+test_bam_max_wire_message_fits_min_grpc_buffer( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   fd_bam_tile_t * state = env->state;
@@ -1239,13 +1239,13 @@ test_bam_max_wire_message_fits_default_grpc_buffer( fd_wksp_t * wksp ) {
     }
   }
 
-  static uchar protobuf[ FD_BAM_GRPC_DEFAULT_BUF_SZ ];
+  static uchar protobuf[ FD_BAM_GRPC_MIN_BUF_SZ ];
   size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response(
       batches,
       FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE,
       protobuf,
       sizeof(protobuf) );
-  FD_TEST( protobuf_sz<FD_BAM_GRPC_DEFAULT_BUF_SZ );
+  FD_TEST( sizeof(fd_grpc_hdr_t)+protobuf_sz<=FD_BAM_GRPC_MIN_BUF_SZ );
 
   fd_bam_client_grpc_rx_msg( state,
                              protobuf,
@@ -6505,7 +6505,7 @@ main( int     argc,
   test_bam_queue_full_rejects_whole_batch_without_partial_enqueue( wksp );
   test_bam_multiple_batches_accept_full_txn_count( wksp, FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST, 700U, 100UL );
   test_bam_multiple_batches_accept_full_txn_count( wksp, FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE, 1500U, 500UL );
-  test_bam_max_wire_message_fits_default_grpc_buffer( wksp );
+  test_bam_max_wire_message_fits_min_grpc_buffer( wksp );
   test_bam_scheduler_truncated_message_dropped( wksp );
   test_bam_scheduler_trailing_corruption_does_not_publish( wksp );
   test_bam_scheduler_rejects_invalid_custom_decode_fields( wksp );
