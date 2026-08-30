@@ -23,7 +23,8 @@
 #define FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE       8U
 #define FD_BAM_MAX_TXN_PER_MESSAGE                  ((ulong)FD_BAM_MAX_TXN_PER_ATOMIC_BATCH * (ulong)FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE)
 #define FD_BAM_STEM_BURST                           ((ulong)FD_BAM_MAX_TXN_PER_ATOMIC_BATCH * (ulong)FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST)
-#define FD_BAM_GRPC_DEFAULT_BUF_SZ                  (256UL*1024UL)
+/* Must fit one maximum scheduler response.  test_bam_tile covers framing. */
+#define FD_BAM_GRPC_MIN_BUF_SZ                      (256UL*1024UL)
 /* BAM owns a separate verify-output ring so its buffering does not inherit the
    substantially larger TPU receive depth. */
 #define FD_BAM_VERIFY_OUT_DEPTH                     1024UL
@@ -34,8 +35,8 @@ FD_STATIC_ASSERT( FD_BAM_MAX_TXN_PER_ATOMIC_BATCH <= FD_PACK_MAX_TXN_PER_BUNDLE,
                   bam_atomic_batch_limit_fits_pack_bundle );
 FD_STATIC_ASSERT( sizeof(((bam_types_Packet *)0)->data.bytes)==FD_TXN_MTU,
                   bam_packet_payload_matches_txn_mtu );
-FD_STATIC_ASSERT( FD_BAM_MAX_TXN_PER_MESSAGE*FD_TXN_MTU<FD_BAM_GRPC_DEFAULT_BUF_SZ,
-                  bam_default_grpc_buffer_fits_max_payload_bytes );
+FD_STATIC_ASSERT( FD_BAM_MAX_TXN_PER_MESSAGE*FD_TXN_MTU<FD_BAM_GRPC_MIN_BUF_SZ,
+                  bam_min_grpc_buffer_fits_max_payload_bytes );
 FD_STATIC_ASSERT( FD_BAM_VERIFY_OUT_DEPTH>=FD_BAM_MAX_TXN_PER_MESSAGE,
                   bam_verify_out_depth_fits_max_message );
 FD_STATIC_ASSERT( !(FD_BAM_VERIFY_OUT_DEPTH & (FD_BAM_VERIFY_OUT_DEPTH-1UL)),
