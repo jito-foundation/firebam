@@ -253,13 +253,10 @@ bam_fill_txn_result( fd_bam_bundle_result_t * res,
   uint actual_execution_cus = 0U;
   if( FD_LIKELY( txn_out->details.compute_budget.compute_unit_limit>=txn_out->details.compute_budget.compute_meter ) )
     actual_execution_cus = (uint)(txn_out->details.compute_budget.compute_unit_limit - txn_out->details.compute_budget.compute_meter);
-  ulong feepayer_balance_lamports = 0UL;
-  if( FD_UNLIKELY( txn_out->err.is_fees_only ) )
-    feepayer_balance_lamports = txn_out->accounts.fee_payer_rollback_lamports;
-  else if( FD_LIKELY( txn_out->accounts.cnt && txn_out->accounts.account[ 0 ] ) )
+  /* Failed execution commits only the post-fee rollback balance. */
+  ulong feepayer_balance_lamports = txn_out->accounts.fee_payer_rollback_lamports;
+  if( FD_LIKELY( !txn_out->err.txn_err && txn_out->accounts.cnt && txn_out->accounts.account[ 0 ] ) )
     feepayer_balance_lamports = txn_out->accounts.account[ 0 ]->lamports;
-  else
-    feepayer_balance_lamports = txn_out->accounts.fee_payer_rollback_lamports;
 
   if( FD_LIKELY( txn_out->err.txn_err!=FD_RUNTIME_TXN_ERR_SANITIZE_FAILURE ) )
     fd_bam_result_mark_sanitize_success( res, idx );

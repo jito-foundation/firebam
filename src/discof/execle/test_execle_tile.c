@@ -326,36 +326,45 @@ test_build_empty_txn( fd_txn_p_t *    out,
 }
 
 static void
-test_build_system_transfer_txn( fd_txn_p_t * out,
-                                fd_bank_t *   bank,
-                                fd_pubkey_t   from,
-                                fd_pubkey_t   to,
-                                ulong         lamports ) {
-  fd_system_program_instruction_t instr = {
-    .discriminant   = FD_SYSTEM_PROGRAM_INSTR_TRANSFER,
-    .inner.transfer = lamports
-  };
-  uchar instr_data[ 16 ];
-  ulong instr_data_sz = 0UL;
-  FD_TEST( !fd_system_program_instruction_encode( &instr, instr_data, sizeof(instr_data), &instr_data_sz ) );
-
+test_build_system_transfer_txns( fd_txn_p_t *       out,
+                                 fd_bank_t *         bank,
+                                 fd_pubkey_t         from,
+                                 fd_pubkey_t const * to,
+                                 ulong const *       lamports,
+                                 ulong               transfer_cnt ) {
   fd_hash_t const * recent_blockhash = fd_blockhashes_peek_last_hash( &bank->f.block_hash_queue );
   FD_TEST( recent_blockhash );
 
   fd_txn_builder_t builder[1];
-  FD_TEST( fd_txn_builder_new( builder, 2UL ) );
+  FD_TEST( fd_txn_builder_new( builder, transfer_cnt+1UL ) );
   FD_TEST( fd_txn_builder_fee_payer_set( builder, &from ) );
   fd_txn_builder_blockhash_set( builder, recent_blockhash );
-  FD_TEST( fd_txn_builder_instr_open( builder, &fd_solana_system_program_id, instr_data, instr_data_sz ) );
-  FD_TEST( fd_txn_builder_instr_account_push( builder, &from, FD_TXN_ACCT_CAT_WRITABLE | FD_TXN_ACCT_CAT_SIGNER ) );
-  FD_TEST( fd_txn_builder_instr_account_push( builder, &to,   FD_TXN_ACCT_CAT_WRITABLE ) );
-  fd_txn_builder_instr_close( builder );
+  for( ulong i=0UL; i<transfer_cnt; i++ ) {
+    fd_system_program_instruction_t instr = { .discriminant = FD_SYSTEM_PROGRAM_INSTR_TRANSFER,
+                                              .inner.transfer = lamports[ i ] };
+    uchar instr_data[ 16 ];
+    ulong instr_data_sz = 0UL;
+    FD_TEST( !fd_system_program_instruction_encode( &instr, instr_data, sizeof(instr_data), &instr_data_sz ) );
+    FD_TEST( fd_txn_builder_instr_open( builder, &fd_solana_system_program_id, instr_data, instr_data_sz ) );
+    FD_TEST( fd_txn_builder_instr_account_push( builder, &from,  FD_TXN_ACCT_CAT_WRITABLE | FD_TXN_ACCT_CAT_SIGNER ) );
+    FD_TEST( fd_txn_builder_instr_account_push( builder, &to[i], FD_TXN_ACCT_CAT_WRITABLE ) );
+    fd_txn_builder_instr_close( builder );
+  }
 
   fd_memset( out, 0, sizeof(fd_txn_p_t) );
   FD_TEST( fd_txn_build_p( builder, out ) );
   out->pack_cu.non_execution_cus                 = 1000U;
   out->pack_cu.requested_exec_plus_acct_data_cus = 300000U;
   fd_txn_builder_delete( builder );
+}
+
+static void
+test_build_system_transfer_txn( fd_txn_p_t * out,
+                                fd_bank_t *   bank,
+                                fd_pubkey_t   from,
+                                fd_pubkey_t   to,
+                                ulong         lamports ) {
+  test_build_system_transfer_txns( out, bank, from, &to, &lamports, 1UL );
 }
 
 static void
@@ -1041,6 +1050,7 @@ FD_UNIT_TEST( execle_simple_ok ) {
   FD_TEST( result->seq_id==101U );
   FD_TEST( result->execution_success );
   FD_TEST( result->scheduling_error==FD_BAM_SCHED_ERR_NONE );
+  FD_TEST( result->feepayer_balance_lamports[0]==payer_start-fee-transfer );
   FD_TEST( test_topo_link( "bank_bam" )->mcache->sz==0UL );
   FD_TEST( env->execle->txn_out[0].err.is_committable );
   FD_TEST( env->execle->txn_out[0].err.txn_err==FD_RUNTIME_EXECUTE_SUCCESS );
@@ -1169,6 +1179,47 @@ FD_UNIT_TEST( execle_simple_error ) {
 
   FD_TEST( env->execle->metrics.txn_landed[ FD_METRICS_ENUM_TRANSACTION_LANDED_V_LANDED_FAILED_IDX ]==1UL );
   FD_TEST( env->execle->metrics.txn_result[ FD_METRICS_ENUM_TRANSACTION_RESULT_V_INSTRUCTION_ERROR_IDX ]==1UL );
+
+  test_env_destroy( env );
+}
+
+FD_UNIT_TEST( execle_bam_failed_txn_rollback_balance ) {
+  /* The first transfer mutates the execution snapshot and the second fails.
+     Only the fee is committed, so BAM must report the post-rollback balance. */
+  test_env_t * env = test_env_create();
+  fd_bank_t * bank = fd_svm_mini_bank( env->mini, env->bank_idx );
+
+  fd_pubkey_t fee_payer    = { .ul = { 0x5353UL } };
+  fd_pubkey_t recipient[2] = { { .ul = { 0x6464UL } }, { .ul = { 0x7575UL } } };
+  ulong const payer_start  = 50000000000UL;
+  ulong const fee          = 5000UL;
+  ulong const transfer[2]  = { 1000000000UL, payer_start };
+
+  fd_blockhash_info_t * blockhash_info = (fd_blockhash_info_t *)fd_blockhashes_peek_last( &bank->f.block_hash_queue );
+  FD_TEST( blockhash_info );
+  blockhash_info->lamports_per_signature = fee;
+  test_fund_account( env, &fee_payer, payer_start );
+
+  fd_txn_p_t txn[1];
+  test_build_system_transfer_txns( txn, bank, fee_payer, recipient, transfer, 2UL );
+  test_mark_bam_batch( txn, 1UL, 104U, 0 );
+  test_execle_run( env, txn, 1UL, 6U, 21UL, 0 );
+
+  fd_frag_meta_t const * poh_meta = test_out_poh_meta( 0UL );
+  fd_txn_p_t const * out_txn = fd_chunk_to_laddr( env->execle->out_poh->mem, poh_meta->chunk );
+  fd_bam_microblock_view_t bam_view[1];
+  FD_TEST( fd_bam_microblock_parse( out_txn, poh_meta->sz, bam_view ) );
+  FD_TEST( bam_view->txn_cnt==1UL && bam_view->result );
+  fd_bam_bundle_result_t const * result = bam_view->result;
+
+  FD_TEST( result->execution_success ); /* The non-revert batch committed. */
+  FD_TEST( result->transaction_err[0]==bam_types_TransactionErrorReason_INSTRUCTION_ERROR );
+  FD_TEST( result->feepayer_balance_lamports[0]==payer_start-fee );
+  FD_TEST( env->execle->txn_out[0].err.is_committable && !env->execle->txn_out[0].err.is_fees_only );
+  FD_TEST( out_txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
+  FD_TEST( test_read_lamports( env, &fee_payer     )==payer_start-fee );
+  FD_TEST( test_read_lamports( env, &recipient[0] )==0UL );
+  FD_TEST( test_read_lamports( env, &recipient[1] )==0UL );
 
   test_env_destroy( env );
 }
