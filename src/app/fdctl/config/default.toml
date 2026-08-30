@@ -1856,7 +1856,8 @@ dynamic_port_range = "8900-9000"
         #
         # This affects the size of various BAM gRPC-related buffers,
         # including socket buffer sizes, the TLS buffer, the HTTP/2
-        # frame buffer, and a Protobuf encode buffer.
+        # frame buffer, and a Protobuf encode buffer.  Must be at least
+        # 256 KiB so one maximum scheduler response fits.
         buffer_size_kib = 256
 
         # SSL library heap size in MiB.
