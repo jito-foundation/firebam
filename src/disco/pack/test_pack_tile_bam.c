@@ -2577,6 +2577,16 @@ test_pack_tile_bam_result_mapping_insert_reject( void ) {
   FD_TEST( dup->sanitize_success[ 1 ] == 1U );
 
   h->ctx->bam_result_publish_cnt = 0UL;
+  pack_tile_publish_bam_insert_reject( h->ctx, 82U, 0U, 128UL, 2U, 1UL, FD_PACK_INSERT_REJECT_ACCT_BLOCKLIST );
+
+  FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+  fd_bam_bundle_result_t acct_blocklist = *test_pack_tile_assert_last_result( h, 82U, 128UL, 2U, FD_BAM_SCHED_ERR_NONE, 2U );
+  FD_TEST( acct_blocklist.bundle_err           == FD_BAM_BUNDLE_ERR_NONE );
+  FD_TEST( acct_blocklist.transaction_err[ 0 ] == bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+  FD_TEST( acct_blocklist.transaction_err[ 1 ] == bam_types_TransactionErrorReason_SANITIZE_FAILURE );
+  FD_TEST( acct_blocklist.sanitize_success[ 0 ] && acct_blocklist.sanitize_success[ 1 ] );
+
+  h->ctx->bam_result_publish_cnt = 0UL;
   pack_tile_publish_bam_insert_reject( h->ctx, 81U, 0U, 127UL, 2U, 1UL, FD_PACK_INSERT_REJECT_INSTR_ACCT_CNT );
 
   FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
@@ -2593,6 +2603,9 @@ test_pack_tile_bam_result_mapping_insert_reject( void ) {
   test_pack_tile_assert_last_result( h, 78U, 124UL, 1U, FD_BAM_SCHED_ERR_CONTAINER_FULL, 0U );
 
   test_pack_tile_harness_delete( h );
+
+  test_pack_tile_assert_wire_transaction_error( &acct_blocklist, 1U,
+                                                bam_types_TransactionErrorReason_SANITIZE_FAILURE );
 }
 
 static void
