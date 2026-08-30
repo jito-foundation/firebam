@@ -661,6 +661,7 @@ pack_tile_bam_pack_insert_reason_cstr( int pack_rc ) {
   case FD_PACK_INSERT_REJECT_WRITES_SYSVAR:    return "insert_reject_writes_sysvar";
   case FD_PACK_INSERT_REJECT_INVALID_NONCE:    return "insert_reject_invalid_nonce";
   case FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST: return "insert_reject_bundle_blacklist";
+  case FD_PACK_INSERT_REJECT_ACCT_BLOCKLIST:    return "insert_reject_acct_blocklist";
   case FD_PACK_INSERT_REJECT_NONCE_CONFLICT:   return "insert_reject_nonce_conflict";
   case FD_PACK_INSERT_REJECT_PRIORITY:         return "insert_reject_container_full";
   case FD_PACK_INSERT_REJECT_NONCE_PRIORITY:   return "insert_reject_nonce_container_full";
