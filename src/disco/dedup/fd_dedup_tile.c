@@ -223,7 +223,7 @@ after_frag( fd_dedup_ctx_t *    ctx,
     else fd_memcpy( ctx->bundle_signatures[ ctx->bundle_idx++ ], fd_txn_m_payload( txnm )+txn->signature_off, 64UL );
   }
 
-  if( is_dup ) {
+  if( FD_LIKELY( is_dup ) ) {
     if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
     ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_DEDUP_FAILURE_IDX ]++;
     if( FD_LIKELY( !is_bam ) ) return;

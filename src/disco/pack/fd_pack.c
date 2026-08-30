@@ -1913,9 +1913,9 @@ fd_pack_bundle_candidate( fd_pack_t const * pack,
 }
 
 void const *
-fd_pack_peek_bundle_meta_with_hint( fd_pack_t const * pack,
-                                    _Bool             bam_only,
-                                    ulong *           bundle_hint ) {
+fd_pack_peek_bundle_meta( fd_pack_t const * pack,
+                          _Bool             bam_only,
+                          ulong *           bundle_hint ) {
   *bundle_hint = ULONG_MAX;
 
   int ib_state = pack->initializer_bundle_state;
@@ -1933,13 +1933,6 @@ fd_pack_peek_bundle_meta_with_hint( fd_pack_t const * pack,
      ushort.  Bit 32 binds the opaque hint to the lookup mode. */
   *bundle_hint = (ulong)_cur | (skipped<<16) | ((ulong)bam_only<<32);
   return (void const *)((uchar const *)pack->bundle_meta + (ulong)_cur * pack->bundle_meta_sz);
-}
-
-void const *
-fd_pack_peek_bundle_meta( fd_pack_t const * pack,
-                          _Bool             bam_only ) {
-  ulong bundle_hint;
-  return fd_pack_peek_bundle_meta_with_hint( pack, bam_only, &bundle_hint );
 }
 
 void
@@ -3276,26 +3269,17 @@ fd_pack_delete_transaction( fd_pack_t              * pack,
   return cnt;
 }
 
-int
-fd_pack_contains_transaction( fd_pack_t const *        pack,
-                              fd_ed25519_sig_t const * sig0 ) {
-  fd_txn_e_t query_e = {0};
-  fd_memcpy( query_e.txnp[0].payload, sig0, FD_TXN_SIGNATURE_SZ );
-  return !!sig2txn_ele_query_const( pack->signature_map,
-                                    &query_e,
-                                    NULL,
-                                    pack->pool );
-}
-
 /* Returns the pool index of the pending BAM bundle's leading transaction.
    sig2txn is a multimap, so every equal-signature entry must be checked:
    the same signature can also belong to an unrelated transaction or to a
-   non-leading member of another bundle. */
+   non-leading member of another bundle.  When match_identity is zero,
+   seq_id and scheduler_gen are ignored. */
 static ulong
 fd_pack_find_bam_bundle( fd_pack_t const *        pack,
                          fd_ed25519_sig_t const * sig0,
                          uint                     seq_id,
-                         ushort                   scheduler_gen ) {
+                         ushort                   scheduler_gen,
+                         int                      match_identity ) {
   fd_txn_e_t query_e = {0};
   fd_memcpy( query_e.txnp[0].payload, sig0, FD_TXN_SIGNATURE_SZ );
   ulong idx = sig2txn_idx_query_const( pack->signature_map,
@@ -3307,8 +3291,9 @@ fd_pack_find_bam_bundle( fd_pack_t const *        pack,
     if( FD_LIKELY( ord->root==FD_ORD_TXN_ROOT_PENDING_BUNDLE &&
                    ord->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
                    ord->txn->bam.batch_idx==0U &&
-                   ord->txn->bam.seq_id==seq_id &&
-                   ord->txn->bam.scheduler_gen==scheduler_gen ) ) return idx;
+                   ( !match_identity ||
+                     ( ord->txn->bam.seq_id==seq_id &&
+                       ord->txn->bam.scheduler_gen==scheduler_gen ) ) ) ) return idx;
     idx = sig2txn_idx_next_const( idx, ULONG_MAX, pack->pool );
   }
   return ULONG_MAX;
@@ -3318,8 +3303,9 @@ int
 fd_pack_contains_bam_bundle( fd_pack_t const *        pack,
                              fd_ed25519_sig_t const * sig0,
                              uint                     seq_id,
-                             ushort                   scheduler_gen ) {
-  return fd_pack_find_bam_bundle( pack, sig0, seq_id, scheduler_gen )!=ULONG_MAX;
+                             ushort                   scheduler_gen,
+                             int                      match_identity ) {
+  return fd_pack_find_bam_bundle( pack, sig0, seq_id, scheduler_gen, match_identity )!=ULONG_MAX;
 }
 
 ulong
@@ -3329,7 +3315,7 @@ fd_pack_delete_bam_bundle( fd_pack_t *              pack,
                            ushort                   scheduler_gen ) {
   ulong cnt = 0UL;
   for(;;) {
-    ulong idx = fd_pack_find_bam_bundle( pack, sig0, seq_id, scheduler_gen );
+    ulong idx = fd_pack_find_bam_bundle( pack, sig0, seq_id, scheduler_gen, 1 );
     if( FD_LIKELY( idx==ULONG_MAX ) ) return cnt;
     cnt += delete_transaction( pack, pack->pool+idx, 1, 1 );
   }
