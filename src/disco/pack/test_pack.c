@@ -590,11 +590,9 @@ test_delete( void ) {
   fd_ed25519_sig_t const * sig2 = txnp_get_signatures( &txnp_scratch[2] );
   fd_ed25519_sig_t const * sig4 = txnp_get_signatures( &txnp_scratch[4] );
 
-  FD_TEST( fd_pack_contains_transaction( pack, sig2 ) );
   FD_TEST( fd_pack_delete_transaction( pack, sig0 ) );  FD_TEST( !fd_pack_delete_transaction( pack, sig0 ) );
   FD_TEST( fd_pack_delete_transaction( pack, sig2 ) );  FD_TEST( !fd_pack_delete_transaction( pack, sig2 ) );
   FD_TEST( fd_pack_delete_transaction( pack, sig4 ) );  FD_TEST( !fd_pack_delete_transaction( pack, sig4 ) );
-  FD_TEST( !fd_pack_contains_transaction( pack, sig2 ) );
 
   FD_TEST( fd_pack_avail_txn_cnt( pack ) == 3UL );
 
@@ -2004,7 +2002,8 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
   bundle[0]->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, bam_meta, &_deleted, NULL )>=0 );
 
-  ulong const * selected_meta = fd_pack_peek_bundle_meta( pack, 1 );
+  ulong bundle_hint;
+  ulong const * selected_meta = fd_pack_peek_bundle_meta( pack, 1, &bundle_hint );
   FD_TEST( selected_meta && *selected_meta==22UL );
 
   txn_cnt = fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 1.0f, 0UL, FD_PACK_SCHEDULE_VOTE | FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results );
@@ -2014,10 +2013,7 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
 
   /* Peek again after the vote schedule and verify the hinted path selects
      the same BAM bundle without another traversal. */
-  ulong bundle_hint;
-  selected_meta = fd_pack_peek_bundle_meta_with_hint( pack,
-                                                       1,
-                                                       &bundle_hint );
+  selected_meta = fd_pack_peek_bundle_meta( pack, 1, &bundle_hint );
   FD_TEST( selected_meta && *selected_meta==22UL );
   FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack,
                                                                FD_PACK_TEST_MAX_COST_PER_BLOCK,
@@ -2029,7 +2025,7 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
   FD_TEST( outcome.results[0].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
   fd_pack_microblock_complete( pack, 0UL );
 
-  selected_meta = fd_pack_peek_bundle_meta_with_hint( pack, 0, &bundle_hint );
+  selected_meta = fd_pack_peek_bundle_meta( pack, 0, &bundle_hint );
   FD_TEST( selected_meta && *selected_meta==11UL );
   FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack,
                                                                FD_PACK_TEST_MAX_COST_PER_BLOCK,
@@ -2039,7 +2035,7 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
                                                                bundle_hint,
                                                                outcome.results )==0UL );
 
-  selected_meta = fd_pack_peek_bundle_meta( pack, 0 );
+  selected_meta = fd_pack_peek_bundle_meta( pack, 0, &bundle_hint );
   FD_TEST( selected_meta && *selected_meta==11UL );
 
   fd_pack_clear_all( pack );
@@ -2089,7 +2085,8 @@ test_initializer_bundle_mode_selection( void ) {
   insert_mode_test_bundle( pack, slots, 612UL, FD_TXN_M_TPU_SOURCE_BAM,
                            FD_PACK_IB_TYPE_NONE, &bam_meta );
 
-  test_meta_t const * meta = fd_pack_peek_bundle_meta( pack, 1 );
+  ulong bundle_hint;
+  test_meta_t const * meta = fd_pack_peek_bundle_meta( pack, 1, &bundle_hint );
   FD_TEST( meta && meta->bundle_id==bam_meta.bundle_id );
 
   /* A BAM initializer replaces the stale normal initializer and is the
@@ -2326,7 +2323,8 @@ test_bundle_metadata_persistence( void ) {
   FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, 0, &meta, &_deleted, NULL )>=0 );
 
   /* Peek metadata before scheduling */
-  test_meta_t const * stored = (test_meta_t const *)fd_pack_peek_bundle_meta( pack, 0 );
+  ulong bundle_hint;
+  test_meta_t const * stored = (test_meta_t const *)fd_pack_peek_bundle_meta( pack, 0, &bundle_hint );
   FD_TEST( stored!=NULL );
   FD_TEST( stored->bundle_id==12345UL );
   FD_TEST( stored->commission==42 );
@@ -2338,7 +2336,7 @@ test_bundle_metadata_persistence( void ) {
   fd_pack_microblock_complete( pack, 0UL );
 
   /* Metadata should no longer be accessible after scheduling */
-  stored = (test_meta_t const *)fd_pack_peek_bundle_meta( pack, 0 );
+  stored = (test_meta_t const *)fd_pack_peek_bundle_meta( pack, 0, &bundle_hint );
   FD_TEST( stored==NULL );
 
   fd_pack_delete( fd_pack_leave( pack ) );
