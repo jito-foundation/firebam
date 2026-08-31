@@ -354,7 +354,8 @@ fd_bam_record_batch_ingress_timing( fd_bam_tile_t *            ctx,
 static _Bool
 fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
                        fd_bam_batch_ctx_t *             state,
-                       bam_types_AtomicTxnBatch const * batch ) {
+                       bam_types_AtomicTxnBatch const * batch,
+                       fd_bam_parsed_batch_t *          parsed ) {
   if( FD_UNLIKELY( ctx->bam_leader_state.slot!=ULONG_MAX &&
                    batch->max_schedule_slot<ctx->bam_leader_state.slot ) ) {
     /* Stale scheduler work still contributes to slot-ingress timing for the
@@ -408,9 +409,9 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   int simple_vote_idx = -1;
   for( uchar i=0U; i<state->packet_cnt; i++ ) {
     fd_bam_packet_view_t * packet = &state->packets[ i ];
-    packet->txn_t_sz = (ushort)fd_txn_parse( packet->payload, packet->payload_sz, packet->txn_t, NULL );
-    if( FD_UNLIKELY( !packet->txn_t_sz ) ) continue;
-    if( FD_UNLIKELY( fd_txn_is_simple_vote_transaction( (fd_txn_t const *)packet->txn_t, packet->payload ) ) ) {
+    parsed->txn_t_sz[ i ] = (ushort)fd_txn_parse( packet->payload, packet->payload_sz, parsed->txn_t[ i ], NULL );
+    if( FD_UNLIKELY( !parsed->txn_t_sz[ i ] ) ) continue;
+    if( FD_UNLIKELY( fd_txn_is_simple_vote_transaction( (fd_txn_t const *)parsed->txn_t[ i ], packet->payload ) ) ) {
       simple_vote_idx = (int)i;
       break;
     }
@@ -482,7 +483,8 @@ fd_bam_record_batch_ingress_timing( fd_bam_tile_t *            ctx,
 void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
-                      bam_types_AtomicTxnBatch const * batch ) {
+                      bam_types_AtomicTxnBatch const * batch,
+                      fd_bam_parsed_batch_t const * parsed ) {
   ulong max_schedule_slot = batch->max_schedule_slot;
   uchar packet_cnt = state->packet_cnt;
   ulong leader_slot = ctx->bam_leader_state.slot;
@@ -554,7 +556,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     fd_bam_packet_view_t const * packet = &state->packets[ i ];
     fd_bam_pending_txn_t * pending = bam_pending_txn_push_tail_nocopy( ctx->pending_txns );
     pending->payload_sz                  = packet->payload_sz;
-    pending->txn_t_sz                    = packet->txn_t_sz;
+    pending->txn_t_sz                    = parsed->txn_t_sz[ i ];
     pending->seq_id                      = batch->seq_id;
     pending->first_seen_nanos            = state->ingress_rx_ts_ns;
     pending->source_ipv4                 = 0U;
@@ -563,7 +565,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     pending->batch_cnt                   = packet_cnt;
     pending->revert_on_error             = (uchar)state->revert_on_error;
     fd_memcpy( pending->payload, packet->payload, packet->payload_sz );
-    fd_memcpy( pending->txn_t, packet->txn_t, packet->txn_t_sz );
+    fd_memcpy( pending->txn_t, parsed->txn_t[ i ], parsed->txn_t_sz[ i ] );
   }
 }
 
@@ -957,12 +959,14 @@ fd_bam_handle_scheduler_response( fd_bam_tile_t * ctx,
     for( uint i=0U; i<decoded_multi->batch_cnt; i++ ) {
       if( FD_UNLIKELY( !fd_bam_validate_batch( ctx,
                                                &decoded_multi->states [ i ],
-                                               &decoded_multi->batches[ i ] ) ) ) {
+                                               &decoded_multi->batches[ i ],
+                                               decoded_multi->parsed ) ) ) {
         continue;
       }
       fd_bam_publish_batch( ctx,
                             &decoded_multi->states [ i ],
-                            &decoded_multi->batches[ i ] );
+                            &decoded_multi->batches[ i ],
+                            decoded_multi->parsed );
     }
     break;
   }
