@@ -217,26 +217,32 @@ fd_grpc_client_set_authority( fd_grpc_client_t * client,
    OpenSSL->h2 or h2->OpenSSL writes to directly place data into the
    target buffer.
 
-   Returns 0 on success and -1 if there is an unrecoverable SSL
-   error. */
+   If poll_rx is zero, skips SSL receive work while still servicing and
+   flushing pending transmit work.  Returns 0 on success and -1 if there is
+   an unrecoverable SSL error. */
 
 int
 fd_grpc_client_rxtx_ossl( fd_grpc_client_t * client,
                           SSL *              ssl,
-                          int *              charge_busy );
+                          int *              charge_busy,
+                          long               ts_nanos,
+                          int                poll_rx );
 
 #endif /* FD_HAS_OPENSSL */
 
 /* fd_grpc_client_rxtx_socket drives I/O against a TCP socket.
    (recvmsg(2) and sendmsg(2)).  Uses MSG_NOSIGNAL|MSG_DONTWAIT flags.
 
-   Returns -1 if an error was encountered, and errno will be set.
-   Otherwise, returns 0. */
+   If poll_rx is zero, skips recvmsg while still servicing and flushing
+   pending transmit work.  Returns -1 if an error was encountered, and errno will be set.
+   Returns 1 if send would block with EAGAIN.  Otherwise, returns 0. */
 
 int
 fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
                             int                sock_fd,
-                            int *              charge_busy );
+                            int *              charge_busy,
+                            long               ts_nanos,
+                            int                poll_rx );
 
 /* fd_grpc_client_request_start queues a gRPC request for send.  The
    request includes one Protobuf message (unary request).  The client

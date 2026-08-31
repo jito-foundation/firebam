@@ -1007,7 +1007,7 @@ after_credit( fd_bam_tile_t *  ctx,
       *txnm = (fd_txn_m_t) {
         .reference_slot = 0UL,
         .payload_sz     = pending->payload_sz,
-        .txn_t_sz       = 0U,
+        .txn_t_sz       = pending->txn_t_sz,
         .source_ipv4    = pending->source_ipv4,
         .source_tpu     = FD_TXN_M_TPU_SOURCE_BAM,
         .first_seen_nanos = pending->first_seen_nanos,
@@ -1028,8 +1028,9 @@ after_credit( fd_bam_tile_t *  ctx,
         },
       };
       fd_memcpy( fd_txn_m_payload( txnm ), pending->payload, pending->payload_sz );
+      fd_memcpy( fd_txn_m_txn_t( txnm ), pending->txn_t, pending->txn_t_sz );
 
-      ulong sz = fd_txn_m_realized_footprint( txnm, 0, 0 );
+      ulong sz = fd_txn_m_realized_footprint( txnm, !!pending->txn_t_sz, 0 );
       fd_stem_publish( stem,
                        ctx->verify_out.idx,
                        pending->revert_on_error ? 1UL : 0UL,

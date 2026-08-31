@@ -70,8 +70,9 @@ during_frag( fd_verify_ctx_t * ctx,
 
   ulong in_kind = ctx->in_kind[ in_idx ];
   if( FD_LIKELY( in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_BAM || in_kind==IN_KIND_QUIC || in_kind==IN_KIND_TXSEND ) ) {
-    if( FD_UNLIKELY( chunk<ctx->in[in_idx].chunk0 || chunk>ctx->in[in_idx].wmark || sz>FD_TPU_RAW_MTU ) )
-      FD_LOG_ERR(( "chunk %lu %lu corrupt, not in range [%lu,%lu,%lu]", chunk, sz, ctx->in[in_idx].chunk0, ctx->in[in_idx].wmark, FD_TPU_RAW_MTU ));
+    ulong max_sz = in_kind==IN_KIND_BAM ? FD_TPU_PARSED_MTU : FD_TPU_RAW_MTU;
+    if( FD_UNLIKELY( chunk<ctx->in[in_idx].chunk0 || chunk>ctx->in[in_idx].wmark || sz>max_sz ) )
+      FD_LOG_ERR(( "chunk %lu %lu corrupt, not in range [%lu,%lu,%lu]", chunk, sz, ctx->in[in_idx].chunk0, ctx->in[in_idx].wmark, max_sz ));
 
     uchar * src = fd_chunk_to_laddr( ctx->in[in_idx].mem, chunk );
     uchar * dst = fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
@@ -113,7 +114,8 @@ after_frag( fd_verify_ctx_t *   ctx,
     FD_LOG_ERR(( "verify: txn payload size %hu exceeds max %lu", txnm->payload_sz, FD_TPU_MTU ));
   }
   fd_txn_t *  txnt = fd_txn_m_txn_t( txnm );
-  txnm->txn_t_sz = (ushort)fd_txn_parse( fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, NULL );
+  if( FD_LIKELY( ctx->in_kind[ in_idx ]!=IN_KIND_BAM ) )
+    txnm->txn_t_sz = (ushort)fd_txn_parse( fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, NULL );
 
   int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
   if( FD_UNLIKELY( is_bam ) ) txnm->bam.preprocess_failed = 0U;
