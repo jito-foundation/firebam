@@ -27,6 +27,10 @@ fd_bam_now( void ) {
   return fd_log_wallclock();
 }
 
+static fd_plugin_bam_update_status_t
+fd_bam_client_status_at( fd_bam_tile_t const * ctx,
+                         long                  now );
+
 void
 fd_bam_tile_backoff( fd_bam_tile_t * ctx,
                      long            now ) {
@@ -165,6 +169,7 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_last_builder_activity_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
   ctx->bam_last_config_poll_ns    = 0L;
+  ctx->bam_last_empty_rx_poll_ns  = 0L;
   /* Preserve any buffered BAM results so they flush once the next
      scheduler stream comes up.  The server expects every dispatched
      atomic batch to eventually produce a result; dropping them here
@@ -276,14 +281,24 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
 
 static int
 fd_bam_client_drive_io( fd_bam_tile_t * ctx,
-                           int *              charge_busy ) {
-# if FD_HAS_OPENSSL
-  if( FD_LIKELY( ctx->is_ssl ) ) {
-    return fd_grpc_client_rxtx_ossl( ctx->grpc_client, ctx->ssl, charge_busy );
-  }
-# endif /* FD_HAS_OPENSSL */
+                        int *           charge_busy,
+                        long            now ) {
+  int poll_rx = !ctx->bam_last_empty_rx_poll_ns ||
+                (ulong)now-(ulong)ctx->bam_last_empty_rx_poll_ns>=(ulong)FD_BAM_GRPC_RX_POLL_INTERVAL_NS;
+  if( FD_LIKELY( !poll_rx && fd_h2_rbuf_is_empty( fd_grpc_client_rbuf_tx( ctx->grpc_client ) ) ) ) return 0;
 
-  return fd_grpc_client_rxtx_socket( ctx->grpc_client, ctx->tcp_sock, charge_busy );
+  ulong rx_bytes_before = ctx->grpc_metrics->stream_chunks_rx_bytes;
+  int   result;
+# if FD_HAS_OPENSSL
+  if( FD_LIKELY( ctx->is_ssl ) )
+    result = fd_grpc_client_rxtx_ossl( ctx->grpc_client, ctx->ssl, charge_busy, now, poll_rx );
+  else
+# endif /* FD_HAS_OPENSSL */
+    result = fd_grpc_client_rxtx_socket( ctx->grpc_client, ctx->tcp_sock, charge_busy, now, poll_rx );
+
+  if( FD_LIKELY( poll_rx ) ) ctx->bam_last_empty_rx_poll_ns =
+      ctx->grpc_metrics->stream_chunks_rx_bytes==rx_bytes_before ? now : 0L;
+  return result;
 }
 
 static bool
@@ -878,7 +893,8 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
 
 static void
 fd_bam_client_step1( fd_bam_tile_t * ctx,
-                       int *              charge_busy ) {
+                     int *           charge_busy,
+                     long            now ) {
 
   if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) ) {
     /* Admin can pause BAM, skip reconnect until re-enabled. */
@@ -911,7 +927,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   if( FD_LIKELY( !leader_schedule_gate_active ) ) {
     ctx->leader_schedule_gate_start_ns = 0L;
   } else if( FD_UNLIKELY( ctx->leader_schedule_recheck_slot!=FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT ) ) {
-    long gate_now = fd_bam_now();
+    long gate_now = now;
     if( FD_UNLIKELY( !ctx->leader_schedule_gate_start_ns ) ) ctx->leader_schedule_gate_start_ns = gate_now;
     if( FD_LIKELY( gate_now - ctx->leader_schedule_gate_start_ns < FD_BAM_LEADER_SCHEDULE_RECHECK_WALLCLOCK_NS ) ) return;
     ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
@@ -963,7 +979,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !ctx->grpc_client ) ) {
     long sleep_start;
   reconnect:
-    sleep_start = fd_bam_now();
+    sleep_start = now;
     if( FD_UNLIKELY( fd_bam_tile_should_stall( ctx, sleep_start ) ) ) {
       long wait_dur = ctx->backoff_until - sleep_start;
       fd_log_sleep( fd_long_min( wait_dur, 1e6 ) );
@@ -980,7 +996,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   }
 
   /* Did a HTTP/2 PING time out */
-  long check_ts = fd_bam_now();
+  long check_ts = now;
   if( FD_UNLIKELY( fd_keepalive_is_timeout( ctx->keepalive, check_ts ) ) ) {
     FD_LOG_WARNING(( "BAM gRPC timed out (HTTP/2 PING went unanswered for %.2f seconds); retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
                      (double)( check_ts - ctx->keepalive->ts_last_tx )/1e9,
@@ -1013,7 +1029,7 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
   }
 
   /* Drive I/O, SSL handshake, and any inflight requests */
-  if( FD_UNLIKELY( -1==fd_bam_client_drive_io( ctx, charge_busy ) ) ) {
+  if( FD_UNLIKELY( -1==fd_bam_client_drive_io( ctx, charge_busy, now ) ) ) {
     FD_LOG_WARNING(( "BAM client reset; retrying %s/" FD_IP4_ADDR_FMT ":%hu in %.3f ms",
                      ctx->server_fqdn,
                      FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
@@ -1045,13 +1061,14 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
 void
 fd_bam_client_step( fd_bam_tile_t * ctx,
                        int *              charge_busy ) {
+  long now = fd_bam_now();
   /* Edge-trigger logging with rate limiting */
-  fd_bam_client_step1( ctx, charge_busy );
-  fd_plugin_bam_update_status_t status = fd_bam_client_status( ctx );
+  fd_bam_client_step1( ctx, charge_busy, now );
+  fd_plugin_bam_update_status_t status = fd_bam_client_status_at( ctx, now );
   _Bool const healthy_now    = ( status == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   _Bool const healthy_before = ( ctx->bam_status_counted == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
   if( FD_UNLIKELY( status != ctx->bam_status_counted ) ) {
-    long ts_ns = fd_bam_now();
+    long ts_ns = now;
     for( ulong i=0UL; i<FD_BAM_LEADER_SLOT_END_TRACKER_CNT; i++ ) {
       fd_bam_leader_slot_end_tracker_t * tracker = &ctx->leader_slot_end[ i ];
       if( FD_UNLIKELY( !tracker->valid || tracker->counted || ts_ns>tracker->slot_end_ns ) ) continue;
@@ -1319,8 +1336,9 @@ fd_grpc_client_callbacks_t fd_bam_client_grpc_callbacks = {
   .ping_ack         = fd_bam_client_grpc_ping_ack,
 };
 
-fd_plugin_bam_update_status_t
-fd_bam_client_status( fd_bam_tile_t const * ctx ) {
+static fd_plugin_bam_update_status_t
+fd_bam_client_status_at( fd_bam_tile_t const * ctx,
+                         long                  now ) {
   if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) )
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED;
 
@@ -1356,8 +1374,6 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING; /* scheduler stream not live yet */
   }
 
-  long now = fd_bam_now();
-
   if( FD_UNLIKELY( fd_keepalive_is_timeout( ctx->keepalive, now ) ) ) {
     return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED; /* possible timeout */
   }
@@ -1377,6 +1393,11 @@ fd_bam_client_status( fd_bam_tile_t const * ctx ) {
   }
 
   return FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+}
+
+fd_plugin_bam_update_status_t
+fd_bam_client_status( fd_bam_tile_t const * ctx ) {
+  return fd_bam_client_status_at( ctx, fd_bam_now() );
 }
 
 FD_FN_CONST char const *

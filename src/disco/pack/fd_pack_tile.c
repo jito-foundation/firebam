@@ -374,6 +374,7 @@ struct fd_pack_ctx {
 
   /* Last leader-state message published to pack_bam_ldr. */
   fd_bam_leader_state_t last_bam_leader_state;
+  long                  bam_leader_state_next_publish_ticks;
 
   struct {
     int                   enabled;
@@ -420,6 +421,7 @@ FD_STATIC_ASSERT( sizeof(block_builder_info_t)==BUNDLE_META_SZ, blk_engine_cfg )
 #define PACK_TILE_BUNDLE_KIND_NONE         (0)
 #define PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE (1)
 #define PACK_TILE_BUNDLE_KIND_BAM          (2)
+#define PACK_BAM_LEADER_STATE_INTERVAL_NS  ((long)5e6)
 
 #define FD_PACK_METRIC_STATE_TRANSACTIONS 0
 #define FD_PACK_METRIC_STATE_EXECLES      1
@@ -449,11 +451,20 @@ pack_tile_wallclock_from_ticks( fd_pack_ctx_t const * ctx,
 
 static inline void
 pack_tile_publish_bam_leader_state( fd_pack_ctx_t *     ctx,
-                                    fd_stem_context_t * stem ) {
-  /* Leader snapshots are latest-value-wins, so pack only publishes when
-     the derived state actually changes. */
+                                    fd_stem_context_t * stem,
+                                    long                now_ticks ) {
   if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX || ctx->bam_leader_out.idx==ULONG_MAX ) ) return;
-  long now_ticks = fd_tickcount();
+
+  /* Slot and fresh-work transitions feed BAM's local health state and must be
+     visible immediately. All other updates are latest-value-wins and sampled
+     at the reference validator's 5 ms cadence. */
+  if( FD_LIKELY( ctx->leader_slot==ctx->last_bam_leader_state.slot &&
+                 ctx->bam_current_slot_has_bam_work==ctx->last_bam_leader_state.current_slot_has_bam_work &&
+                 now_ticks<ctx->bam_leader_state_next_publish_ticks ) ) return;
+
+  long interval_ticks = (long)((double)PACK_BAM_LEADER_STATE_INTERVAL_NS*ctx->clock->epoch->w)+1L;
+  ctx->bam_leader_state_next_publish_ticks = fd_long_sat_add( now_ticks, interval_ticks );
+
   /* The shared tile clock projects tickcount deltas into wallclock
      nanoseconds without calling fd_log_wallclock on this hot path. */
   long now_ns    = pack_tile_wallclock_from_ticks( ctx, now_ticks );
@@ -529,7 +540,7 @@ pack_tile_note_first_bam_insert( fd_pack_ctx_t *     ctx,
   }
   if( FD_LIKELY( ctx->bam_current_slot_has_bam_work || insert_minus_slot_end_ns>=0L || max_schedule_slot!=ctx->leader_slot ) ) return;
   ctx->bam_current_slot_has_bam_work = 1U;
-  pack_tile_publish_bam_leader_state( ctx, stem );
+  pack_tile_publish_bam_leader_state( ctx, stem, fd_tickcount() );
 }
 
 static inline ulong
@@ -1792,7 +1803,7 @@ after_credit( fd_pack_ctx_t *     ctx,
     return;
   }
 
-  pack_tile_publish_bam_leader_state( ctx, stem );
+  pack_tile_publish_bam_leader_state( ctx, stem, now );
 
   if( FD_UNLIKELY( pack_tile_drain_one_pending_bam_result( ctx, stem ) ) ) *charge_busy = 1;
   if( FD_UNLIKELY( ctx->pending_reduce_mb_bound ) ) {
@@ -1996,7 +2007,6 @@ after_credit( fd_pack_ctx_t *     ctx,
         (void)pack_tile_bam_work_mark_txn_scheduled( ctx, txnp, now2_ns );
       }
 
-      pack_tile_publish_bam_leader_state( ctx, stem );
     }
   }
 
@@ -2506,7 +2516,7 @@ after_frag( fd_pack_ctx_t *     ctx,
     fd_pack_pacing_update_consumed_cus( ctx->pacer, fd_pack_current_block_cost( ctx->pack ), now );
 
     if( FD_UNLIKELY( !ctx->crank->enabled ) ) fd_pack_set_initializer_bundles_ready( ctx->pack );
-    pack_tile_publish_bam_leader_state( ctx, stem );
+    pack_tile_publish_bam_leader_state( ctx, stem, fd_tickcount() );
 
     break;
   }

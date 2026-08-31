@@ -128,9 +128,11 @@ __attribute__((weak)) ulong const firedancer_patch_version = 0UL;
 __attribute__((weak)) uint  const firedancer_commit_ref    = 0U;
 
 static long g_clock = 1L;
+static ulong g_clock_read_cnt;
 
 __attribute__((weak)) long
 fd_bam_now( void ) {
+  g_clock_read_cnt++;
   return g_clock;
 }
 
@@ -626,6 +628,7 @@ test_bam_packets_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( first->bam.seq_id    == 0U );
   FD_TEST( first->bam.txn_cnt == 1UL );
   FD_TEST( first->bam.scheduler_gen == state->scheduler_gen );
+  FD_TEST( first->txn_t_sz == 0U );
   FD_TEST( first->block_engine.bundle_id == 0UL );
   FD_TEST( first->block_engine.bundle_txn_cnt == 0UL );
   FD_TEST( first->first_seen_nanos == g_clock );
@@ -2417,8 +2420,15 @@ test_bam_bundle_uses_data_length_for_size_check( fd_wksp_t * wksp ) {
   fd_bam_pending_txn_t const * pending = bam_pending_txn_peek_head_const( state->pending_txns );
   FD_TEST( pending->payload_sz == bam_dump_txn_fixture_sz );
   FD_TEST( !memcmp( pending->payload, bam_dump_txn_fixture, bam_dump_txn_fixture_sz ) );
+  ulong txn_t_sz = fd_txn_parse( bam_dump_txn_fixture, bam_dump_txn_fixture_sz, txn_buf, NULL );
+  FD_TEST( pending->txn_t_sz == txn_t_sz );
+  FD_TEST( !memcmp( pending->txn_t, txn_buf, txn_t_sz ) );
   FD_TEST( test_bam_env_drain_pending_txns( env ) == 1UL );
   FD_TEST( state->metrics.transaction_published_cnt == 1UL );
+
+  fd_txn_m_t const * forwarded = fd_chunk_to_laddr_const( state->verify_out.mem, env->out_mcache[ 0 ].chunk );
+  FD_TEST( forwarded->txn_t_sz == txn_t_sz );
+  FD_TEST( !memcmp( fd_txn_m_txn_t_const( forwarded ), txn_buf, txn_t_sz ) );
 
   test_bam_env_destroy( env );
 }
@@ -2709,6 +2719,63 @@ test_bam_tcp_connect_completion_uses_so_error( fd_wksp_t * wksp ) {
   FD_TEST( state->tcp_sock_connected == 1U );
 
   FD_TEST( 0 == close( server_sock ) );
+  test_bam_env_destroy( env );
+}
+
+static void
+test_bam_client_throttles_empty_receive_and_reuses_step_time( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+
+  /* Keep the protocol state machine idle so this isolates the empty socket
+     receive and status/deadline checks performed by one client step. */
+  state->bam_auth_inflight = 1U;
+
+  int charge_busy = 0;
+  g_clock_read_cnt = 0UL;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( g_clock_read_cnt==1UL );
+  FD_TEST( state->bam_last_empty_rx_poll_ns==g_clock );
+  FD_TEST( state->tcp_sock>=0 );
+
+  /* A receive throttle must not delay already-encoded results or leader
+     state.  Queue a frame and prove that the next same-time step flushes it
+     without moving the empty-receive timestamp. */
+  ulong tx_bytes_before = state->grpc_metrics->stream_chunks_tx_bytes;
+  FD_TEST( fd_h2_tx_ping( fd_grpc_client_h2_conn( state->grpc_client ),
+                          fd_grpc_client_rbuf_tx( state->grpc_client ) ) );
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( state->grpc_metrics->stream_chunks_tx_bytes==tx_bytes_before+sizeof(fd_h2_ping_t) );
+  FD_TEST( state->bam_last_empty_rx_poll_ns==g_clock );
+
+  /* Receive progress clears the gate, so the following loop can immediately
+     attempt another receive and establish a new empty-poll timestamp. A
+     partial HTTP/2 header is sufficient to exercise the transport read
+     without invoking a protocol callback. */
+  g_clock += FD_BAM_GRPC_RX_POLL_INTERVAL_NS;
+  uchar partial_h2 = 0U;
+  FD_TEST( 1L==write( env->server_sock, &partial_h2, 1UL ) );
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( state->bam_last_empty_rx_poll_ns==0L );
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( state->bam_last_empty_rx_poll_ns==g_clock );
+
+  FD_TEST( 0==close( env->server_sock ) );
+  env->server_sock = -1;
+
+  /* The peer close is intentionally not observed until the one-microsecond
+     empty-receive interval expires. */
+  g_clock += FD_BAM_GRPC_RX_POLL_INTERVAL_NS-1L;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( state->tcp_sock>=0 );
+
+  g_clock++;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( state->tcp_sock==-1 );
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_IO_IDX ]==1UL );
+
   test_bam_env_destroy( env );
 }
 
@@ -6529,6 +6596,7 @@ main( int     argc,
   /* Connection lifecycle and watchdog */
   test_bam_stream_end_with_pending_txn_reconnects( wksp );
   test_bam_tcp_connect_completion_uses_so_error( wksp );
+  test_bam_client_throttles_empty_receive_and_reuses_step_time( wksp );
   test_bam_grpc_end_handling( wksp );
   test_bam_grpc_timeout( wksp );
   test_bam_heartbeat_timeout_forces_disconnect( wksp );

@@ -833,10 +833,10 @@ fd_event_client_poll( fd_event_client_t * client,
     int rxtx_err;
 #   if FD_HAS_OPENSSL
     if( client->use_tls )
-      rxtx_err = fd_grpc_client_rxtx_ossl( client->grpc_client, client->ssl, charge_busy );
+      rxtx_err = fd_grpc_client_rxtx_ossl( client->grpc_client, client->ssl, charge_busy, now, 1 );
     else
 #   endif
-      rxtx_err = fd_grpc_client_rxtx_socket( client->grpc_client, client->sockfd, charge_busy );
+      rxtx_err = fd_grpc_client_rxtx_socket( client->grpc_client, client->sockfd, charge_busy, now, 1 );
     if( FD_UNLIKELY( -1==rxtx_err ) ) {
       disconnect( client, DISCONNECT_REASON_TRANSPORT_FAILED, errno, 1 );
       return;

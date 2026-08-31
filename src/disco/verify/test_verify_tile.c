@@ -174,6 +174,7 @@ test_bam_atomic_verify_failure_result_owner( void ) {
     ctx->out_chunk0 = 0UL;
     ctx->out_wmark  = sizeof(verify_dcache)/FD_CHUNK_SZ - 1UL;
     ctx->out_chunk  = 0UL;
+    ctx->in_kind[ IN_IDX_BAM ] = IN_KIND_BAM;
 
     fd_txn_m_t * txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
     *txnm = (fd_txn_m_t) {
