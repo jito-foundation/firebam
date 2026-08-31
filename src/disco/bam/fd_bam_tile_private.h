@@ -22,6 +22,7 @@ struct fd_bam_tile;
 typedef struct fd_bam_tile fd_bam_tile_t;
 
 #define FD_BAM_ACTIVITY_TIMEOUT_NS ((long)6e9) /* 6 seconds */
+#define FD_BAM_GRPC_RX_POLL_INTERVAL_NS ((long)1e3) /* 1 microsecond after an empty nonblocking receive */
 #define FD_BAM_LEADER_STATE_EXPIRY_GRACE_NS ((long)10e6) /* 10 ms */
 #define FD_BAM_LEADER_SCHEDULE_RECHECK_SLOT_DELTA 64UL
 #define FD_BAM_LEADER_SCHEDULE_RECHECK_WALLCLOCK_NS ((long)15e9)
@@ -31,6 +32,7 @@ typedef struct fd_bam_tile fd_bam_tile_t;
 struct fd_bam_pending_txn {
   uchar  payload[ FD_TXN_MTU ];
   ushort payload_sz;
+  ushort txn_t_sz;
   uint   seq_id;
   long   first_seen_nanos;
   uint   source_ipv4;
@@ -38,6 +40,7 @@ struct fd_bam_pending_txn {
   uchar  batch_idx;
   uchar  batch_cnt;
   uchar  revert_on_error;
+  uchar  txn_t[ FD_TXN_MAX_SZ ] __attribute__((aligned(alignof(fd_txn_t))));
 };
 
 typedef struct fd_bam_pending_txn fd_bam_pending_txn_t;
@@ -140,6 +143,8 @@ typedef struct {
 typedef struct {
   uchar const * payload;    /* View into the scheduler gRPC message; valid until the receive callback returns. */
   ushort        payload_sz; /* Number of payload bytes at payload. */
+  ushort        txn_t_sz;   /* Bytes of parsed fd_txn_t metadata in txn_t, or zero when parsing failed. */
+  uchar         txn_t[ FD_TXN_MAX_SZ ] __attribute__((aligned(alignof(fd_txn_t))));
 } fd_bam_packet_view_t;
 
 typedef struct {
@@ -301,6 +306,7 @@ struct fd_bam_tile {
   long                  bam_last_builder_activity_ns;    /* fd_bam_now() timestamp used by the BuilderHeartBeat watchdog; initialized at stream start (0 if no stream) */
   long                  bam_last_validator_heartbeat_ns; /* fd_bam_now() timestamp of last validator heartbeat (0 if never sent) */
   long                  bam_last_config_poll_ns;         /* fd_bam_now() timestamp of last config poll attempt (0 if never polled) */
+  long                  bam_last_empty_rx_poll_ns;       /* fd_bam_now() timestamp of the last empty gRPC receive attempt (0 disables throttling) */
   ushort                feedback_queue_depth;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_head;                /* Index of next result to flush (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
