@@ -715,6 +715,9 @@ FD_UNIT_TEST( execle_seccomp ) {
   populate_allowed_seccomp( NULL, NULL, sock_filter_policy_fd_execle_tile_instr_cnt, filter );
 }
 
+/* Rebate batching landed after the v26.08 branch.  Keep its tests with the
+   implementation when this test file is reused across release branches. */
+#ifdef REBATE_BATCH_IDLE_LOOPS
 FD_UNIT_TEST( execle_rebate_deferred ) {
   test_env_t * env = test_env_create();
   fd_bank_t * bank = fd_svm_mini_bank( env->mini, env->bank_idx );
@@ -880,6 +883,7 @@ FD_UNIT_TEST( execle_rebate_slot_change_resets_batch ) {
 
   test_env_destroy( env );
 }
+#endif
 
 /* Folding transaction or loaded-data costs into consumed_cus overcharges work
    that did not execute.  Keep 150 execution CUs and 206 loaded bytes separate. */
