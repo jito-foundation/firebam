@@ -62,7 +62,6 @@ test_bundle_env_create( test_bundle_env_t * env,
   env->server_sock = -1;
 
   fd_bundle_tile_t * state = env->state;
-  fd_clock_tile_init( state->clock );
   state->stem = env->stem;
   state->verify_out = (fd_bundle_out_ctx_t) {
     .mem    = dcache,
