@@ -20,6 +20,8 @@ FD_IMPORT_BINARY( bam_dump_txn_fixture, "src/ballet/txn/fixtures/transaction2.bi
 FD_IMPORT_BINARY( bam_scheduler_response_v1_1233, "src/disco/bam/fixtures/bam_scheduler_response_v1_1233.bin" );
 FD_IMPORT_BINARY( bam_scheduler_response_v1_4096, "src/disco/bam/fixtures/bam_scheduler_response_v1_4096.bin" );
 
+static fd_bam_parsed_batch_t const empty_parsed_batch;
+
 static ulong
 test_bam_build_v1_txn( uchar payload[ static FD_TXN_MTU ],
                        ulong target_sz,
@@ -856,14 +858,14 @@ test_bam_slot_ingress_timing_tracks_hash_collisions( fd_wksp_t * wksp ) {
   batch_a.max_schedule_slot = 100UL;
   batch_state.ingress_rx_ts_ns      = 3000L;
   g_clock = 3000L;
-  fd_bam_publish_batch( state, &batch_state, &batch_a );
+  fd_bam_publish_batch( state, &batch_state, &batch_a, &empty_parsed_batch );
 
   bam_types_AtomicTxnBatch batch_b = bam_types_AtomicTxnBatch_init_default;
   batch_b.seq_id = 124U;
   batch_b.max_schedule_slot = 100UL + FD_BAM_SLOT_INGRESS_TIMING_CNT;
   batch_state.ingress_rx_ts_ns      = 4444L;
   g_clock = 4444L;
-  fd_bam_publish_batch( state, &batch_state, &batch_b );
+  fd_bam_publish_batch( state, &batch_state, &batch_b, &empty_parsed_batch );
 
   fd_bam_slot_ingress_timing_t const * entry_a = fd_bam_slot_ingress_timing_query_const( state, 100UL );
   fd_bam_slot_ingress_timing_t const * entry_b = fd_bam_slot_ingress_timing_query_const( state, 100UL + FD_BAM_SLOT_INGRESS_TIMING_CNT );
@@ -899,7 +901,7 @@ test_bam_publish_batch_uses_captured_ingress_metadata( fd_wksp_t * wksp ) {
   state->bam_leader_state.slot        = 101UL;
   state->bam_leader_state.slot_end_ns = 2500L;
   g_clock = 2000L;
-  fd_bam_publish_batch( state, &batch_state, &batch );
+  fd_bam_publish_batch( state, &batch_state, &batch, &empty_parsed_batch );
   FD_TEST( test_bam_env_drain_pending_txns( env ) == 1UL );
 
   fd_bam_slot_ingress_timing_t const * entry = fd_bam_slot_ingress_timing_query_const( state, 100UL );
@@ -928,8 +930,8 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
 
   bam_types_Packet first_packets[1];
   fd_memset( first_packets, 0, sizeof(first_packets) );
-  first_packets[0].data.size     = 1U;
-  first_packets[0].data.bytes[0] = (uchar)'m';
+  first_packets[0].data.size = (pb_size_t)bam_dump_txn_fixture_sz;
+  fd_memcpy( first_packets[0].data.bytes, bam_dump_txn_fixture, bam_dump_txn_fixture_sz );
 
   test_bam_packet_encode_ctx_t first_ctx = {
       .packets    = first_packets,
@@ -964,7 +966,7 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
   batches[1].packets.funcs.encode = test_bam_encode_packets_cb;
   batches[1].packets.arg          = &second_ctx;
 
-  uchar protobuf[512];
+  uchar protobuf[1024];
   size_t protobuf_sz = test_bam_encode_scheduler_multi_batch_response( batches, 2UL, protobuf, sizeof(protobuf) );
 
   fd_bam_client_grpc_rx_msg( state,
@@ -1009,10 +1011,16 @@ test_bam_multiple_batches_forwarded( fd_wksp_t * wksp ) {
   FD_TEST( tx2->block_engine.bundle_id == 8UL );
   FD_TEST( tx2->block_engine.bundle_txn_cnt == 0UL );
 
+  uchar expected[ FD_TXN_MAX_SZ ] __attribute__((aligned(alignof(fd_txn_t))));
+  ulong expected_sz = fd_txn_parse( first_packets[0].data.bytes, first_packets[0].data.size, expected, NULL );
+  FD_TEST( expected_sz && tx0->txn_t_sz==expected_sz );
+  FD_TEST( !memcmp( fd_txn_m_txn_t_const( tx0 ), expected, expected_sz ) );
+  FD_TEST( !tx1->txn_t_sz && !tx2->txn_t_sz );
+
   uchar const * payload0 = fd_txn_m_payload( tx0 );
   uchar const * payload1 = fd_txn_m_payload( tx1 );
   uchar const * payload2 = fd_txn_m_payload( tx2 );
-  FD_TEST( payload0[0] == 'm' );
+  FD_TEST( !memcmp( payload0, bam_dump_txn_fixture, bam_dump_txn_fixture_sz ) );
   FD_TEST( payload1[0] == 'n' );
   FD_TEST( payload2[0] == 'o' );
 

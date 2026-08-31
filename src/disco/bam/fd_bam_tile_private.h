@@ -31,12 +31,12 @@ typedef struct fd_bam_tile fd_bam_tile_t;
 
 struct fd_bam_pending_txn {
   uchar  payload[ FD_TXN_MTU ];
+  long   first_seen_nanos;
+  ulong  max_schedule_slot;
+  uint   seq_id;
+  uint   source_ipv4;
   ushort payload_sz;
   ushort txn_t_sz;
-  uint   seq_id;
-  long   first_seen_nanos;
-  uint   source_ipv4;
-  ulong  max_schedule_slot;
   uchar  batch_idx;
   uchar  batch_cnt;
   uchar  revert_on_error;
@@ -143,9 +143,14 @@ typedef struct {
 typedef struct {
   uchar const * payload;    /* View into the scheduler gRPC message; valid until the receive callback returns. */
   ushort        payload_sz; /* Number of payload bytes at payload. */
-  ushort        txn_t_sz;   /* Bytes of parsed fd_txn_t metadata in txn_t, or zero when parsing failed. */
-  uchar         txn_t[ FD_TXN_MAX_SZ ] __attribute__((aligned(alignof(fd_txn_t))));
 } fd_bam_packet_view_t;
+
+/* Each decoded batch is validated and published before the next batch, so
+   all batches in a scheduler message can reuse this parse scratch. */
+typedef struct {
+  uchar  txn_t[ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ][ FD_TXN_MAX_SZ ] __attribute__((aligned(alignof(fd_txn_t))));
+  ushort txn_t_sz[ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
+} fd_bam_parsed_batch_t;
 
 typedef struct {
   fd_bam_tile_t *     ctx;                                      /* owning tile context; non-NULL while batch is processed */
@@ -164,6 +169,7 @@ typedef struct {
   bam_types_AtomicTxnBatch batches[ FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ];
   fd_bam_batch_ctx_t       states [ FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ];
   uint                   batch_cnt;
+  fd_bam_parsed_batch_t    parsed[1];
 } fd_bam_decoded_multi_batch_t;
 
 /* fd_bam_tpu_update_state_t tracks which TPU contact was last applied or still needs retry.
@@ -793,7 +799,8 @@ fd_bam_client_grpc_rx_timeout(
 void
 fd_bam_publish_batch( fd_bam_tile_t *            ctx,
                       fd_bam_batch_ctx_t *       state,
-                      bam_types_AtomicTxnBatch const * batch );
+                      bam_types_AtomicTxnBatch const * batch,
+                      fd_bam_parsed_batch_t const * parsed );
 
 int
 fd_bam_should_dump_batch( fd_bam_tile_t * ctx,
