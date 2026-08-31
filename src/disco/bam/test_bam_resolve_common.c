@@ -73,11 +73,11 @@ test_harness_new( test_harness_t * h ) {
   fd_memset( h, 0, sizeof(test_harness_t) );
 
   h->ctx           = test_alloc( alignof(TEST_BAM_RESOLVE_CTX_T), sizeof(TEST_BAM_RESOLVE_CTX_T) );
-  h->map_mem       = test_alloc( map_align(),       map_footprint( MAP_LG_SLOT_CNT ) );
+  h->map_mem       = test_alloc( map_align(),       map_footprint()                  );
   h->pool_mem      = test_alloc( pool_align(),      pool_footprint( 4UL )      );
   h->map_chain_mem = test_alloc( map_chain_align(), map_chain_footprint( 8UL ) );
 
-  h->ctx->blockhash_map = map_join( map_new( h->map_mem, MAP_LG_SLOT_CNT, 0UL ) );
+  h->ctx->blockhash_map = map_join( map_new( h->map_mem ) );
   h->ctx->pool          = pool_join( pool_new( h->pool_mem, 4UL ) );
   h->ctx->map_chain     = map_chain_join( map_chain_new( h->map_chain_mem, 8UL, 0UL ) );
   FD_TEST( h->ctx->blockhash_map );
