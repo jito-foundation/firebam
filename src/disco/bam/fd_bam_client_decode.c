@@ -276,7 +276,8 @@ fd_bam_collect_packet( pb_istream_t *         stream,
   }
 
   fd_bam_packet_view_t * packet = &state->packets[ state->packet_cnt ];
-  *packet = (fd_bam_packet_view_t){ .payload = (uchar const *)stream->state };
+  packet->payload    = (uchar const *)stream->state;
+  packet->payload_sz = 0U;
   bam_types_Meta meta = bam_types_Meta_init_default;
   _Bool has_meta = 0;
 
@@ -352,7 +353,7 @@ fd_bam_record_batch_ingress_timing( fd_bam_tile_t *            ctx,
 
 static _Bool
 fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
-                       fd_bam_batch_ctx_t const *       state,
+                       fd_bam_batch_ctx_t *             state,
                        bam_types_AtomicTxnBatch const * batch ) {
   if( FD_UNLIKELY( ctx->bam_leader_state.slot!=ULONG_MAX &&
                    batch->max_schedule_slot<ctx->bam_leader_state.slot ) ) {
@@ -405,11 +406,11 @@ fd_bam_validate_batch( fd_bam_tile_t *                  ctx,
   }
 
   int simple_vote_idx = -1;
-  uchar txn_buf[ FD_TXN_MAX_SZ ];
   for( uchar i=0U; i<state->packet_cnt; i++ ) {
-    fd_bam_packet_view_t const * packet = &state->packets[ i ];
-    if( FD_UNLIKELY( !fd_txn_parse( packet->payload, packet->payload_sz, txn_buf, NULL ) ) ) continue;
-    if( FD_UNLIKELY( fd_txn_is_simple_vote_transaction( (fd_txn_t const *)txn_buf, packet->payload ) ) ) {
+    fd_bam_packet_view_t * packet = &state->packets[ i ];
+    packet->txn_t_sz = (ushort)fd_txn_parse( packet->payload, packet->payload_sz, packet->txn_t, NULL );
+    if( FD_UNLIKELY( !packet->txn_t_sz ) ) continue;
+    if( FD_UNLIKELY( fd_txn_is_simple_vote_transaction( (fd_txn_t const *)packet->txn_t, packet->payload ) ) ) {
       simple_vote_idx = (int)i;
       break;
     }
@@ -553,6 +554,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     fd_bam_packet_view_t const * packet = &state->packets[ i ];
     fd_bam_pending_txn_t * pending = bam_pending_txn_push_tail_nocopy( ctx->pending_txns );
     pending->payload_sz                  = packet->payload_sz;
+    pending->txn_t_sz                    = packet->txn_t_sz;
     pending->seq_id                      = batch->seq_id;
     pending->first_seen_nanos            = state->ingress_rx_ts_ns;
     pending->source_ipv4                 = 0U;
@@ -561,6 +563,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     pending->batch_cnt                   = packet_cnt;
     pending->revert_on_error             = (uchar)state->revert_on_error;
     fd_memcpy( pending->payload, packet->payload, packet->payload_sz );
+    fd_memcpy( pending->txn_t, packet->txn_t, packet->txn_t_sz );
   }
 }
 

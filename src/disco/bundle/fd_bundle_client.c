@@ -191,11 +191,11 @@ fd_bundle_client_drive_io( fd_bundle_tile_t * ctx,
                            int *              charge_busy ) {
 # if FD_HAS_OPENSSL
   if( ctx->is_ssl ) {
-    return fd_grpc_client_rxtx_ossl( ctx->grpc_client, ctx->ssl, charge_busy );
+    return fd_grpc_client_rxtx_ossl( ctx->grpc_client, ctx->ssl, charge_busy, ctx->cached_ts, 1 );
   }
 # endif /* FD_HAS_OPENSSL */
 
-  return fd_grpc_client_rxtx_socket( ctx->grpc_client, ctx->tcp_sock, charge_busy );
+  return fd_grpc_client_rxtx_socket( ctx->grpc_client, ctx->tcp_sock, charge_busy, ctx->cached_ts, 1 );
 }
 
 static void

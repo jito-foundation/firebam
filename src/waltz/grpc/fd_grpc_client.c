@@ -317,8 +317,11 @@ fd_ossl_log_error( char const * str,
 int
 fd_grpc_client_rxtx_ossl( fd_grpc_client_t * client,
                           SSL *              ssl,
-                          int *              charge_busy ) {
+                          int *              charge_busy,
+                          long               ts_nanos,
+                          int                poll_rx ) {
   if( FD_UNLIKELY( !client->ssl_hs_done ) ) {
+    if( FD_LIKELY( !poll_rx ) ) return 0;
     int res = SSL_do_handshake( ssl );
     if( res<=0 ) {
       int error = SSL_get_error( ssl, res );
@@ -337,7 +340,7 @@ fd_grpc_client_rxtx_ossl( fd_grpc_client_t * client,
 
   fd_h2_conn_t * conn = client->conn;
   int ssl_err = 0;
-  ulong read_sz = fd_h2_rbuf_ssl_read( client->frame_rx, ssl, &ssl_err );
+  ulong read_sz = poll_rx ? fd_h2_rbuf_ssl_read( client->frame_rx, ssl, &ssl_err ) : 0UL;
   if( FD_UNLIKELY( ssl_err && ssl_err!=SSL_ERROR_WANT_READ ) ) {
     if( ssl_err==SSL_ERROR_ZERO_RETURN ) {
       FD_LOG_WARNING(( "gRPC server closed connection" ));
@@ -349,7 +352,7 @@ fd_grpc_client_rxtx_ossl( fd_grpc_client_t * client,
   }
   if( FD_UNLIKELY( conn->flags ) ) fd_h2_tx_control( conn, client->frame_tx, &fd_grpc_client_h2_callbacks );
   fd_h2_rx( conn, client->frame_rx, client->frame_tx, client->frame_scratch, client->frame_scratch_max, &fd_grpc_client_h2_callbacks );
-  fd_grpc_client_service_streams( client, fd_log_wallclock() );
+  fd_grpc_client_service_streams( client, ts_nanos );
   ulong write_sz = fd_h2_rbuf_ssl_write( client->frame_tx, ssl );
   client->metrics->stream_chunks_rx_bytes += read_sz;
   client->metrics->stream_chunks_tx_bytes += write_sz;
@@ -365,14 +368,16 @@ fd_grpc_client_rxtx_ossl( fd_grpc_client_t * client,
 int
 fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
                             int                sock_fd,
-                            int *              charge_busy ) {
+                            int *              charge_busy,
+                            long               ts_nanos,
+                            int                poll_rx ) {
   fd_h2_conn_t * conn = client->conn;
   ulong const frame_rx_lo_0 = client->frame_rx->lo_off;
   ulong const frame_rx_hi_0 = client->frame_rx->hi_off;
   ulong const frame_tx_lo_1 = client->frame_tx->lo_off;
   ulong const frame_tx_hi_1 = client->frame_tx->hi_off;
 
-  int rx_err = fd_h2_rbuf_recvmsg( client->frame_rx, sock_fd, MSG_NOSIGNAL|MSG_DONTWAIT );
+  int rx_err = poll_rx ? fd_h2_rbuf_recvmsg( client->frame_rx, sock_fd, MSG_NOSIGNAL|MSG_DONTWAIT ) : 0;
   if( FD_UNLIKELY( rx_err ) ) {
     FD_LOG_INFO(( "Disconnected: recvmsg error (%i-%s)", rx_err, fd_io_strerror( rx_err ) ));
     errno = rx_err;
@@ -381,7 +386,7 @@ fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
 
   if( FD_UNLIKELY( conn->flags ) ) fd_h2_tx_control( conn, client->frame_tx, &fd_grpc_client_h2_callbacks );
   fd_h2_rx( conn, client->frame_rx, client->frame_tx, client->frame_scratch, client->frame_scratch_max, &fd_grpc_client_h2_callbacks );
-  fd_grpc_client_service_streams( client, fd_log_wallclock() );
+  fd_grpc_client_service_streams( client, ts_nanos );
 
   int tx_err = fd_h2_rbuf_sendmsg( client->frame_tx, sock_fd, MSG_NOSIGNAL|MSG_DONTWAIT );
   if( FD_LIKELY( tx_err && tx_err==EAGAIN ) ) return 1;
