@@ -380,6 +380,74 @@ test_pack_tile_harness_delete( test_pack_tile_harness_t * h ) {
   fd_memset( h, 0, sizeof(*h) );
 }
 
+static void
+test_pack_tile_bam_leader_state_is_rate_limited( void ) {
+  test_pack_tile_harness_t h[1];
+  test_pack_tile_harness_new( h );
+
+  test_pack_tile_out_t * out = h->out;
+  fd_wksp_t * mem    = (fd_wksp_t *)out->dcache;
+  ulong       chunk0 = fd_dcache_compact_chunk0( mem, out->dcache );
+  h->ctx->bam_leader_out = (pack_bam_out_ctx_t){
+    .idx    = 0UL,
+    .mem    = mem,
+    .chunk0 = chunk0,
+    .wmark  = fd_dcache_compact_wmark( mem, out->dcache, sizeof(fd_bam_leader_state_t) ),
+    .chunk  = chunk0,
+  };
+
+  long now_ticks = fd_tickcount();
+  long now_ns    = pack_tile_wallclock_from_ticks( h->ctx, now_ticks );
+  h->ctx->leader_slot = 42UL;
+  h->ctx->slot_end_ns = now_ns + (long)1280e6;
+  h->ctx->limits.slot_max_cost = 1000UL;
+  h->ctx->_became_leader->slot_start_ns    = now_ns;
+  h->ctx->_became_leader->tick_duration_ns = (ulong)20e6;
+  h->ctx->_became_leader->ticks_per_slot   = 64UL;
+
+  pack_tile_publish_bam_leader_state( h->ctx, &out->stem, now_ticks );
+  FD_TEST( out->seqs[ 0 ]==1UL );
+  FD_TEST( h->ctx->last_bam_leader_state.slot==42UL );
+  FD_TEST( h->ctx->last_bam_leader_state.tick==0U );
+  FD_TEST( h->ctx->last_bam_leader_state.slot_cu_budget_remaining==1000U );
+  long next_sample = h->ctx->bam_leader_state_next_publish_ticks;
+  FD_TEST( next_sample>now_ticks );
+
+  /* The internal fresh-work transition bypasses the rate gate. */
+  h->ctx->limits.slot_max_cost = 900UL;
+  h->ctx->bam_current_slot_has_bam_work = 1U;
+  pack_tile_publish_bam_leader_state( h->ctx, &out->stem, now_ticks );
+  FD_TEST( out->seqs[ 0 ]==2UL );
+  FD_TEST( h->ctx->last_bam_leader_state.current_slot_has_bam_work==1U );
+  FD_TEST( h->ctx->last_bam_leader_state.slot_cu_budget_remaining==900U );
+
+  h->ctx->limits.slot_max_cost = 800UL;
+  next_sample = h->ctx->bam_leader_state_next_publish_ticks;
+  pack_tile_publish_bam_leader_state( h->ctx, &out->stem, next_sample-1L );
+  FD_TEST( out->seqs[ 0 ]==2UL );
+
+  /* The 5 ms deadline publishes the latest cost even within the same
+     20 ms test tick. */
+  pack_tile_publish_bam_leader_state( h->ctx, &out->stem, next_sample );
+  FD_TEST( out->seqs[ 0 ]==3UL );
+  FD_TEST( h->ctx->last_bam_leader_state.tick==0U );
+  FD_TEST( h->ctx->last_bam_leader_state.slot_cu_budget_remaining==800U );
+
+  /* An unchanged sample advances the deadline without publishing. */
+  long unchanged_sample = h->ctx->bam_leader_state_next_publish_ticks;
+  pack_tile_publish_bam_leader_state( h->ctx, &out->stem, unchanged_sample );
+  FD_TEST( out->seqs[ 0 ]==3UL );
+  FD_TEST( h->ctx->bam_leader_state_next_publish_ticks>unchanged_sample );
+
+  /* A slot transition also remains immediate. */
+  h->ctx->leader_slot = 43UL;
+  pack_tile_publish_bam_leader_state( h->ctx, &out->stem, unchanged_sample );
+  FD_TEST( out->seqs[ 0 ]==4UL );
+  FD_TEST( h->ctx->last_bam_leader_state.slot==43UL );
+
+  test_pack_tile_harness_delete( h );
+}
+
 /* Searches all of bam_work regardless of state.  The tile itself always
    knows which half of the partition it wants and so uses the state-scoped
    lookup; tests use this to assert across both halves at once. */
@@ -2795,6 +2863,7 @@ main( int     argc,
   fd_boot( &argc, &argv );
   fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
 
+  test_pack_tile_bam_leader_state_is_rate_limited();
   test_pack_tile_bam_work_partition_mutations();
   test_pack_tile_bam_signature_prefix_collision();
   test_pack_tile_bam_pack_evicted_bundle_is_reconciled();
