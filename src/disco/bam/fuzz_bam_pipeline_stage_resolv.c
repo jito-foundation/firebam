@@ -63,7 +63,7 @@ bam_fuzz_resolv_new( fd_wksp_t * wksp,
   l = FD_LAYOUT_APPEND( l, alignof(fd_resolv_ctx_t), sizeof(fd_resolv_ctx_t) );
   l = FD_LAYOUT_APPEND( l, pool_align(),             pool_footprint( BAM_FUZZ_RESOLV_POOL_CNT ) );
   l = FD_LAYOUT_APPEND( l, map_chain_align(),        map_chain_footprint( BAM_FUZZ_RESOLV_MAP_CHAIN_CNT ) );
-  l = FD_LAYOUT_APPEND( l, map_align(),              map_footprint( MAP_LG_SLOT_CNT ) );
+  l = FD_LAYOUT_APPEND( l, map_align(),              map_footprint() );
   l = FD_LAYOUT_APPEND( l, fd_mcache_align(),        fd_mcache_footprint( BAM_FUZZ_RESOLV_MCACHE_DEPTH, 0UL ) );
   l = FD_LAYOUT_APPEND( l, fd_dcache_align(),        fd_dcache_footprint( fd_dcache_req_data_sz( FD_TPU_RESOLVED_MTU, BAM_FUZZ_RESOLV_MCACHE_DEPTH, 1UL, 1 ), 0UL ) );
   ulong storage_footprint = FD_LAYOUT_FINI( l, fd_dcache_align() );
@@ -87,8 +87,8 @@ bam_fuzz_resolv_new( fd_wksp_t * wksp,
   h->ctx->map_chain = map_chain_join( map_chain_new( h->map_chain_mem, BAM_FUZZ_RESOLV_MAP_CHAIN_CNT, 0UL ) );
   FD_TEST( h->ctx->map_chain );
 
-  h->map_mem = FD_SCRATCH_ALLOC_APPEND( alloc, map_align(), map_footprint( MAP_LG_SLOT_CNT ) );
-  h->ctx->blockhash_map = map_join( map_new( h->map_mem, MAP_LG_SLOT_CNT, 0UL ) );
+  h->map_mem = FD_SCRATCH_ALLOC_APPEND( alloc, map_align(), map_footprint() );
+  h->ctx->blockhash_map = map_join( map_new( h->map_mem ) );
   FD_TEST( h->ctx->blockhash_map );
 
   FD_TEST( h->ctx->lru_list==lru_list_join( lru_list_new( h->ctx->lru_list ) ) );

@@ -276,7 +276,9 @@ bam_fuzz_pack_new( fd_wksp_t * wksp,
   h->ctx->larger_shred_limits_per_block = 0;
   h->ctx->drain_execle                  = 0;
   h->ctx->rng                           = h->rng;
-  fd_clock_tile_init( h->ctx->clock );
+  h->ctx->approx_wallclock_ns           = fd_log_wallclock();
+  h->ctx->approx_tickcount              = fd_tickcount();
+  h->ctx->ticks_per_ns                  = fd_tempo_tick_per_ns( NULL );
   h->ctx->last_successful_insert        = 0L;
   h->ctx->highest_observed_slot         = 0UL;
   h->ctx->bam_pending_check_slot        = 0UL;
@@ -293,21 +295,15 @@ bam_fuzz_pack_new( fd_wksp_t * wksp,
   h->ctx->execle_expect[0]              = ULONG_MAX;
   h->ctx->execle_ready_at[0]            = 0L;
 
-  h->ctx->execle_out[ 0 ] = (fd_pack_out_ctx_t) {
-    .mem     = (fd_wksp_t *)h->execle_dcache,
-    .chunk0  = fd_dcache_compact_chunk0( h->execle_dcache, h->execle_dcache ),
-    .wmark   = fd_dcache_compact_wmark ( h->execle_dcache, h->execle_dcache, MAX_MICROBLOCK_SZ ),
-    .chunk   = fd_dcache_compact_chunk0( h->execle_dcache, h->execle_dcache ),
-    .out_idx = BAM_FUZZ_PACK_OUT_EXECLE_IDX,
-  };
+  h->ctx->execle_out_mem    = (fd_wksp_t *)h->execle_dcache;
+  h->ctx->execle_out_chunk0 = fd_dcache_compact_chunk0( h->execle_dcache, h->execle_dcache );
+  h->ctx->execle_out_wmark  = fd_dcache_compact_wmark ( h->execle_dcache, h->execle_dcache, MAX_MICROBLOCK_SZ );
+  h->ctx->execle_out_chunk  = h->ctx->execle_out_chunk0;
 
-  h->ctx->poh_out = (fd_pack_out_ctx_t) {
-    .mem     = (fd_wksp_t *)h->poh_dcache,
-    .chunk0  = fd_dcache_compact_chunk0( h->poh_dcache, h->poh_dcache ),
-    .wmark   = fd_dcache_compact_wmark ( h->poh_dcache, h->poh_dcache, sizeof(fd_done_packing_t) ),
-    .chunk   = fd_dcache_compact_chunk0( h->poh_dcache, h->poh_dcache ),
-    .out_idx = BAM_FUZZ_PACK_OUT_POH_IDX,
-  };
+  h->ctx->poh_out_mem    = (fd_wksp_t *)h->poh_dcache;
+  h->ctx->poh_out_chunk0 = fd_dcache_compact_chunk0( h->poh_dcache, h->poh_dcache );
+  h->ctx->poh_out_wmark  = fd_dcache_compact_wmark ( h->poh_dcache, h->poh_dcache, sizeof(fd_done_packing_t) );
+  h->ctx->poh_out_chunk  = h->ctx->poh_out_chunk0;
 
   h->ctx->bam_leader_out = (pack_bam_out_ctx_t) {
     .idx    = BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX,
@@ -364,8 +360,8 @@ bam_fuzz_pack_new( fd_wksp_t * wksp,
     *execle_out = (bam_fuzz_link_t) {
       .mem    = (fd_wksp_t *)h->execle_dcache,
       .mcache = h->execle_mcache,
-      .chunk0 = h->ctx->execle_out[ 0 ].chunk0,
-      .wmark  = h->ctx->execle_out[ 0 ].wmark,
+      .chunk0 = h->ctx->execle_out_chunk0,
+      .wmark  = h->ctx->execle_out_wmark,
       .depth  = BAM_FUZZ_PACK_MCACHE_DEPTH,
     };
   }
@@ -447,7 +443,8 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
 
   if( FD_UNLIKELY( slot==ULONG_MAX ) ) {
     if( FD_LIKELY( h->ctx->leader_slot!=ULONG_MAX ) ) {
-      fd_clock_tile_set( h->ctx->clock, h->ctx->slot_end_ns );
+      h->ctx->approx_wallclock_ns = h->ctx->slot_end_ns;
+      h->ctx->approx_tickcount    = fd_tickcount();
       int opt_poll_in = 1;
       int charge_busy = 0;
       after_credit( h->ctx, h->stem, &opt_poll_in, &charge_busy );
@@ -489,7 +486,8 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
   became->limits.slot_max_write_cost_per_acct = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND;
   became->limits.slot_max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK;
   became->limits.slot_max_data_shreds              = FD_SLOT_PARAMS_400MS.max_shred_idx;
-  fd_clock_tile_set( h->ctx->clock, now_ns );
+  h->ctx->approx_wallclock_ns = now_ns;
+  h->ctx->approx_tickcount    = fd_tickcount();
 
   ulong sig = fd_disco_poh_sig( slot, POH_PKT_TYPE_BECAME_LEADER, 0UL );
   during_frag( h->ctx,
