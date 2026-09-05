@@ -67,7 +67,7 @@ fd_solfuzz_pb_instr_ctx_create( fd_solfuzz_runner_t *                runner,
   fd_txn_t *   txn_descriptor = TXN( txn );
   if( test_ctx->data ) {
     memcpy( txn->payload, test_ctx->data->bytes, test_ctx->data->size );
-    txn->payload_sz = test_ctx->data->size;
+    txn->payload_sz = (ushort)(test_ctx->data->size);
   } else {
     txn->payload_sz = 0;
   }

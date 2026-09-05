@@ -114,6 +114,8 @@ bam_fuzz_pack_new( fd_wksp_t * wksp,
   l = FD_LAYOUT_APPEND( l, extra_txn_deq_align(),  extra_txn_deq_footprint() );
 #endif
   l = FD_LAYOUT_APPEND( l, alignof(pack_bam_work_t), BAM_FUZZ_PACK_PENDING_TXN_MAX*sizeof(pack_bam_work_t) );
+  l = FD_LAYOUT_APPEND( l, alignof(pack_bam_sig_ele_t), BAM_FUZZ_PACK_PENDING_TXN_MAX*FD_PACK_MAX_TXN_PER_BUNDLE*sizeof(pack_bam_sig_ele_t) );
+  l = FD_LAYOUT_APPEND( l, pack_bam_sig_map_align(), pack_bam_sig_map_footprint( pack_tile_bam_sig_map_chain_cnt( BAM_FUZZ_PACK_PENDING_TXN_MAX ) ) );
   l = FD_LAYOUT_APPEND( l, alignof(fd_bam_bundle_result_t), 2UL*BAM_FUZZ_PACK_PENDING_TXN_MAX*sizeof(fd_bam_bundle_result_t) );
   l = FD_LAYOUT_APPEND( l, fd_fseq_align(),        fd_fseq_footprint() );
   l = FD_LAYOUT_APPEND( l, fd_fseq_align(),        fd_fseq_footprint() );
@@ -176,6 +178,17 @@ bam_fuzz_pack_new( fd_wksp_t * wksp,
                                               alignof(pack_bam_work_t),
                                               BAM_FUZZ_PACK_PENDING_TXN_MAX*sizeof(pack_bam_work_t) );
   FD_TEST( h->ctx->bam_work );
+  h->ctx->bam_work_max = BAM_FUZZ_PACK_PENDING_TXN_MAX;
+  h->ctx->bam_sig_pool = FD_SCRATCH_ALLOC_APPEND( alloc,
+                                                  alignof(pack_bam_sig_ele_t),
+                                                  BAM_FUZZ_PACK_PENDING_TXN_MAX*FD_PACK_MAX_TXN_PER_BUNDLE*sizeof(pack_bam_sig_ele_t) );
+  FD_TEST( h->ctx->bam_sig_pool );
+  {
+    ulong chain_cnt = pack_tile_bam_sig_map_chain_cnt( BAM_FUZZ_PACK_PENDING_TXN_MAX );
+    void * map_mem = FD_SCRATCH_ALLOC_APPEND( alloc, pack_bam_sig_map_align(), pack_bam_sig_map_footprint( chain_cnt ) );
+    h->ctx->bam_sig_map = pack_bam_sig_map_join( pack_bam_sig_map_new( map_mem, chain_cnt, 0UL ) );
+    FD_TEST( h->ctx->bam_sig_map );
+  }
   h->ctx->bam_result_queue = FD_SCRATCH_ALLOC_APPEND( alloc,
                                                       alignof(fd_bam_bundle_result_t),
                                                       2UL*BAM_FUZZ_PACK_PENDING_TXN_MAX*sizeof(fd_bam_bundle_result_t) );

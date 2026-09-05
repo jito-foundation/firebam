@@ -5,7 +5,20 @@
 
 struct __attribute__((aligned(64))) fd_txn_p {
   uchar payload[FD_TPU_MTU];
-  ulong payload_sz;
+
+  /* Keep metadata within 40 bytes to preserve the 4992-byte transaction
+     size and avoid increasing copy costs and ring-buffer footprints. */
+
+  /* Size of payload in bytes, at most FD_TPU_MTU. */
+  ushort payload_sz;
+
+  /* Ingress pipeline (FD_TXN_M_TPU_SOURCE_*). */
+  uchar  source_tpu;
+  uchar  _pad0;
+
+  /* Source ipv4 address for this transaction. */
+  uint  source_ipv4;
+
   union {
    struct {
      uint non_execution_cus;
@@ -19,10 +32,6 @@ struct __attribute__((aligned(64))) fd_txn_p {
   };
   /* Wallclock nanoseconds at which the transaction arrived to the pack tile. Set by pack and intended to be read from a transaction on a pack->execle link. */
   long scheduler_arrival_time_nanos;
-
-  /* Wallclock nanoseconds at which the validator first saw the
-     transaction. */
-  long first_seen_nanos;
 
   union {
     struct {
@@ -38,18 +47,13 @@ struct __attribute__((aligned(64))) fd_txn_p {
     uint pack_alloc;
   };
 
-  /* Source ipv4 address and tpu pipeline for this transaction. TPU is one of FD_TXN_M_TPU_SOURCE_* */
-  uchar source_tpu;
-  uint  source_ipv4;
-
   /* Populated by pack, execle.  A combination of the bitfields
      FD_TXN_P_FLAGS_* defined above.  The execle sets the high byte with
      the transaction result code. */
   uint  flags;
 
-  /* BAM metadata for transactions originating from BAM scheduling.
-     max_schedule_slot is not stored here on this branch; pack carries that
-     slot hint in sidecar state to preserve the fd_txn_p_t layout. */
+  /* BAM execution metadata. Pack keeps max_schedule_slot and
+     first_seen_nanos in sidecar state to preserve the transaction size. */
   struct {
     uint  seq_id;
     ushort scheduler_gen;
@@ -66,6 +70,8 @@ struct __attribute__((aligned(64))) fd_txn_p {
 };
 
 typedef struct fd_txn_p fd_txn_p_t;
+
+FD_STATIC_ASSERT( sizeof(fd_txn_p_t)==4992UL, fd_txn_p_layout );
 
 #define TXN(txn_p) ((fd_txn_t *)( (txn_p)->_ ))
 

@@ -235,6 +235,8 @@ typedef struct {
   ulong          bundle_evicted_cnt;
   pack_bam_work_t bam_work[ TEST_PACK_TILE_BAM_WORK_CAP ];
   fd_bam_bundle_result_t bam_result_queue[ 2UL*TEST_PACK_TILE_BAM_WORK_CAP ];
+  pack_bam_sig_ele_t bam_sig_pool[ TEST_PACK_TILE_BAM_WORK_CAP*FD_PACK_MAX_TXN_PER_BUNDLE ];
+  uchar bam_sig_map_mem[ 1024UL ] __attribute__((aligned(128)));
 } test_fake_pack_t;
 
 FD_STATIC_ASSERT( offsetof( test_fake_pack_t, pending_txn_cnt )==FD_PACK_PENDING_TXN_CNT_OFF,
@@ -361,6 +363,14 @@ test_pack_tile_harness_new( test_pack_tile_harness_t * h ) {
 
   h->ctx->pack                     = fd_type_pun( h->fake_pack );
   h->ctx->bam_work                 = h->fake_pack->bam_work;
+  h->ctx->bam_work_max             = TEST_PACK_TILE_BAM_WORK_CAP;
+  h->ctx->bam_sig_pool             = h->fake_pack->bam_sig_pool;
+  {
+    ulong chain_cnt = pack_tile_bam_sig_map_chain_cnt( TEST_PACK_TILE_BAM_WORK_CAP );
+    FD_TEST( pack_bam_sig_map_footprint( chain_cnt )<=sizeof(h->fake_pack->bam_sig_map_mem) );
+    h->ctx->bam_sig_map = pack_bam_sig_map_join( pack_bam_sig_map_new( h->fake_pack->bam_sig_map_mem, chain_cnt, 0UL ) );
+    FD_TEST( h->ctx->bam_sig_map );
+  }
   h->ctx->bam_result_queue         = h->fake_pack->bam_result_queue;
   h->ctx->max_pending_transactions = TEST_PACK_TILE_BAM_WORK_CAP;
   h->ctx->approx_wallclock_ns      = fd_log_wallclock();
@@ -914,7 +924,6 @@ test_pack_tile_preserves_first_seen_and_stamps_pack_arrival( void ) {
   long after_arrival = pack_tile_wallclock_from_ticks( h->ctx, fd_tickcount() );
 
   FD_TEST( h->ctx->cur_spot );
-  FD_TEST( h->ctx->cur_spot->txnp->first_seen_nanos==123L );
   FD_TEST( h->ctx->cur_spot->txnp->scheduler_arrival_time_nanos>=before_arrival );
   FD_TEST( h->ctx->cur_spot->txnp->scheduler_arrival_time_nanos<=after_arrival );
 
@@ -1359,7 +1368,7 @@ test_pack_tile_bam_v1_signature_lifecycle( void ) {
   FD_TEST( h->ctx->bam_work[ work_idx ].state==PACK_BAM_WORK_STATE_PENDING );
 
   /* A same-sequence resend replaces the pending copy before insertion. */
-  resend->txnp->first_seen_nanos = 20L;
+  h->ctx->current_bundle_bam->first_seen_nanos[ 0 ] = 20L;
   test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[1]){ resend }, 1U, 41U, 100UL, 100UL, 0U );
   test_pack_tile_assert_deleted_sig( resend_sig );
   FD_TEST( test_insert_fini_call_cnt==2UL );
@@ -1405,7 +1414,7 @@ test_pack_tile_sign_and_parse( fd_txn_p_t * txnp,
   fd_ed25519_sign( txnp->payload+1UL, message, message_sz, public_key, private_key, sha );
   FD_TEST( fd_ed25519_verify( message, message_sz, txnp->payload+1UL, public_key, sha )==FD_ED25519_SUCCESS );
 
-  txnp->payload_sz = (ulong)( payload_end-txnp->payload );
+  txnp->payload_sz = (ushort)((ulong)( payload_end-txnp->payload ));
   FD_TEST( txnp->payload_sz==expected_payload_sz );
   FD_TEST( fd_txn_parse( txnp->payload, txnp->payload_sz, TXN( txnp ), NULL ) );
 }
@@ -1456,7 +1465,7 @@ test_pack_tile_make_d18_poc_txns( fd_txn_p_t * bad_txnp,
   ulong   message_sz = (ulong)( p-message );
   fd_ed25519_sign( bad_txnp->payload+1UL, message, message_sz, public_key, private_key, sha );
   FD_TEST( fd_ed25519_verify( message, message_sz, bad_txnp->payload+1UL, public_key, sha )==FD_ED25519_SUCCESS );
-  bad_txnp->payload_sz = (ulong)( p-bad_txnp->payload );
+  bad_txnp->payload_sz = (ushort)((ulong)( p-bad_txnp->payload ));
   FD_TEST( bad_txnp->payload_sz==438UL );
   FD_TEST( !fd_txn_parse( bad_txnp->payload, bad_txnp->payload_sz, TXN( bad_txnp ), NULL ) );
 
@@ -2156,7 +2165,7 @@ test_pack_tile_bam_same_seq_pending_duplicate_replaces_before_insert( void ) {
   test_pack_tile_fill_sig( old_sigs + 0UL, 21U );
   test_pack_tile_fill_sig( old_sigs + sizeof(fd_ed25519_sig_t), 31U );
   fd_memcpy( new_txn[ 0 ].txnp->payload + 1UL, old_sigs, sizeof(fd_ed25519_sig_t) );
-  new_txn[ 0 ].txnp->first_seen_nanos = 20L;
+  h->ctx->current_bundle_bam->first_seen_nanos[ 0 ] = 20L;
 
   FD_TEST( pack_tile_track_bam_work( h->ctx, old_sigs, 10L, 10U, 0U, 100UL, 100UL, 100UL, 0U, 2U ) );
   FD_TEST( h->ctx->bam_work_cnt == 1UL );
@@ -2200,7 +2209,7 @@ test_pack_tile_bam_pending_duplicate_rejected_before_insert( uint  new_seq_id,
   test_pack_tile_fill_sig( old_sigs + 0UL, 21U );
   test_pack_tile_fill_sig( old_sigs + sizeof(fd_ed25519_sig_t), 31U );
   fd_memcpy( new_txn[ 0 ].txnp->payload + 1UL, old_sigs, sizeof(fd_ed25519_sig_t) );
-  new_txn[ 0 ].txnp->first_seen_nanos = 20L;
+  h->ctx->current_bundle_bam->first_seen_nanos[ 0 ] = 20L;
 
   FD_TEST( pack_tile_track_bam_work( h->ctx, old_sigs, 10L, 10U, 0U, 100UL, 100UL, 100UL, 0U, 2U ) );
   FD_TEST( h->ctx->bam_work_cnt == 1UL );
@@ -2268,8 +2277,8 @@ test_pack_tile_bam_scheduled_duplicate_rejected_before_insert( void ) {
 
   fd_memcpy( new_txns[ 0 ].txnp->payload + 1UL, sig, sizeof(fd_ed25519_sig_t) );
   test_pack_tile_fill_sig( new_txns[ 1 ].txnp->payload + 1UL, 51U );
-  new_txns[ 0 ].txnp->first_seen_nanos = 20L;
-  new_txns[ 1 ].txnp->first_seen_nanos = 21L;
+  h->ctx->current_bundle_bam->first_seen_nanos[ 0 ] = 20L;
+  h->ctx->current_bundle_bam->first_seen_nanos[ 1 ] = 21L;
   test_pack_tile_complete_bam_bundle( h, (fd_txn_e_t *[2]){ new_txns, new_txns+1 },
                                       2U, 21U, 101UL, 101UL, 0U );
 
@@ -2733,8 +2742,8 @@ test_pack_tile_bam_atomic_abandon_result_mapping( void ) {
 
     test_pack_tile_fill_sig( old_txns[ 0 ].txnp->payload + 1UL, 1U );
     test_pack_tile_fill_sig( old_txns[ 1 ].txnp->payload + 1UL, 2U );
-    old_txns[ 0 ].txnp->first_seen_nanos = 0L;
-    old_txns[ 1 ].txnp->first_seen_nanos = 0L;
+    h->ctx->current_bundle_bam->first_seen_nanos[ 0 ] = 0L;
+    h->ctx->current_bundle_bam->first_seen_nanos[ 1 ] = 0L;
 
     h->ctx->current_bundle->id                 = (ulong)seq_id + 1UL;
     h->ctx->current_bundle->txn_cnt            = 3UL;

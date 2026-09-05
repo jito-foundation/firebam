@@ -799,6 +799,7 @@ EXAMPLES
     <counter name="Failure" enum="BamFailure" summary="Cumulative number of BAM control-plane or session failures by class. Scheduler payload and AtomicTxnBatch rejects are counted separately in bam_ingress_batch_rejected." />
     <gauge name="HeapSize" summary="Total workspace capacity reserved for the BAM tile (bytes). Sampled at most once per second to avoid repeated workspace scans." />
     <gauge name="HeapFreeBytes" summary="Estimated free capacity in the BAM tile workspace heap (bytes). Sampled at most once per second to avoid repeated workspace scans." />
+    <counter name="SslAllocFailed" summary="Cumulative number of OpenSSL allocation failures in the BAM tile heap. Any nonzero value means the SSL heap (development.bam.ssl_heap_size_mib) is too small." />
     <counter name="KeepaliveAcks" summary="Cumulative number of HTTP/2 keepalive PING acknowledgments received from the BAM node" />
     <counter name="HealthyConnects" summary="Cumulative number of transitions into BAM CONNECTED_HEALTHY state" />
     <counter name="HealthyDisconnects" summary="Cumulative number of transitions out of BAM CONNECTED_HEALTHY state" />

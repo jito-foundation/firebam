@@ -71,6 +71,11 @@ struct fd_bam_in_ctx {
 
 typedef struct fd_bam_in_ctx fd_bam_in_ctx_t;
 
+/* One bank_bam input per execution tile, plus poh_bam.
+   Must cover FD_PACK_MAX_EXECLE_TILES + 1. */
+
+#define FD_BAM_BANK_IN_MAX (64UL)
+
 /* fd_bam_metrics_t contains private metric counters.  These get
    published to fd_metrics periodically.
    Counters are cumulative over the BAM tile lifetime and are not reset
@@ -221,7 +226,7 @@ struct fd_bam_tile {
   ulong            pack_bam_leader_in_idx;        /* Polled input index for pack_bam_ldr snapshot/control updates */
   ulong            pack_bam_result_in_idx;        /* Polled input index for pack_bam_res durable bundle feedback */
   ulong            replay_out_in_idx;             /* Optional replay_out input index for local leader schedule hints */
-  fd_bam_in_ctx_t  bank_in[ FD_TILE_MAX ];        /* Result ingress dcache contexts */
+  fd_bam_in_ctx_t  bank_in[ FD_BAM_BANK_IN_MAX ]; /* Execution and PoH result inputs */
   fd_bam_in_ctx_t  pack_leader_in;                /* Pack->BAM latest-value-wins leader-state ingress */
   fd_bam_in_ctx_t  pack_result_in;                /* Pack->BAM durable result ingress */
   fd_bam_in_ctx_t  replay_in;                     /* Replay reset ingress used to track next leader slot */

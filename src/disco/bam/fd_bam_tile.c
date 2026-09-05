@@ -222,6 +222,9 @@ metrics_write( fd_bam_tile_t * ctx ) {
   }
   FD_MGAUGE_SET( BAM, HEAP_SIZE,       ctx->heap_size_cached       );
   FD_MGAUGE_SET( BAM, HEAP_FREE_BYTES, ctx->heap_free_bytes_cached );
+#if FD_HAS_OPENSSL
+  FD_MCNT_SET( BAM, SSL_ALLOC_FAILED, fd_ossl_alloc_errors );
+#endif
 
 }
 
@@ -1610,7 +1613,7 @@ unprivileged_init( fd_topo_t const *      topo,
     fd_topo_link_t const * link = &topo->links[ tile->in_link_id[ raw_in_idx ] ];
     if( FD_UNLIKELY( strcmp( link->name, "bank_bam" ) && strcmp( link->name, "poh_bam" ) ) ) break;
     if( FD_UNLIKELY( !tile->in_link_poll[ raw_in_idx ] ) ) FD_LOG_ERR(( "BAM result link must be polled" ));
-    if( FD_UNLIKELY( ctx->bank_bam_in_cnt >= FD_TILE_MAX ) ) FD_LOG_ERR(( "too many BAM result links" ));
+    if( FD_UNLIKELY( ctx->bank_bam_in_cnt >= FD_BAM_BANK_IN_MAX ) ) FD_LOG_ERR(( "too many BAM result links" ));
     ctx->bank_in[ ctx->bank_bam_in_cnt++ ] = bam_in_link( topo, link );
   }
 
