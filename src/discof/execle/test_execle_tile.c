@@ -608,6 +608,7 @@ test_execle_run( test_env_t *     env,
   for( ulong i=0UL; i<txn_cnt; i++ ) {
     fd_memset( &in_txn[i], 0, sizeof(fd_txn_e_t) );
     fd_memcpy( in_txn[i].txnp, &txns[i], sizeof(fd_txn_p_t) );
+    in_txn[i].first_seen_nanos = 1000L+(long)pack_txn_idx+(long)i;
     if( is_bundle ) in_txn[i].txnp->flags |= FD_TXN_P_FLAGS_BUNDLE;
   }
 
@@ -628,6 +629,17 @@ test_execle_run( test_env_t *     env,
   fd_stem_context_t stem[1];
   after_frag( env->execle, 0UL, 0UL, sig, sz, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ), test_stem( env->execle, stem ) );
   FD_TEST( fd_fseq_query( env->execle->busy_fseq )==0UL );
+
+  /* Ordinary microblocks retain every member's ingress time; atomic
+     bundles split into one output per member without losing its time. */
+  fd_topo_link_t const * out = test_topo_link( "execle_poh" );
+  for( ulong i=0UL; i<(is_bundle ? txn_cnt : 1UL); i++ ) {
+    fd_frag_meta_t const * meta = out->mcache + fd_mcache_line_idx( i, out->depth );
+    uchar const * data = fd_chunk_to_laddr_const( env->execle->out_poh->mem, meta->chunk );
+    fd_microblock_trailer_t const * trailer = (fd_microblock_trailer_t const *)(data+meta->sz-sizeof(fd_microblock_trailer_t));
+    for( ulong j=0UL; j<(is_bundle ? 1UL : txn_cnt); j++ )
+      FD_TEST( trailer->first_seen_nanos[j]==1000L+(long)pack_txn_idx+(long)i+(long)j );
+  }
 }
 
 static void

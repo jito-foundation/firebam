@@ -50,6 +50,7 @@ struct fd_execle_tile {
   ulong _txn_idx;
   int _is_bundle;
   fd_acct_addr_t _alt_accts[MAX_TXN_PER_MICROBLOCK][FD_TXN_ACCT_ADDR_MAX];
+  long _first_seen_nanos[MAX_TXN_PER_MICROBLOCK];
 
   ulong * busy_fseq;
 
@@ -243,6 +244,7 @@ during_frag( fd_execle_tile_t * ctx,
   fd_txn_p_t       * dst_txn_p = (fd_txn_p_t       *)dst;
   for( ulong i=0UL; i<txn_cnt; i++ ) {
     fd_memcpy( dst_txn_p + i, src_txn_e[i].txnp, sizeof(fd_txn_p_t) );
+    ctx->_first_seen_nanos[i] = src_txn_e[i].first_seen_nanos;
     ulong alt_cnt = fd_ulong_min( (ulong)TXN(src_txn_e[i].txnp)->addr_table_adtl_cnt, FD_TXN_ACCT_ADDR_MAX );
     fd_memcpy( ctx->_alt_accts[i], src_txn_e[i].alt_accts, alt_cnt * sizeof(fd_acct_addr_t) );
   }
@@ -333,6 +335,8 @@ handle_microblock( fd_execle_tile_t *  ctx,
   trailer->bank_seq         = bank->bank_seq;
   trailer->exec_start_ticks = exec_start_ticks;
   trailer->exec_end_ticks   = LONG_MAX;
+  fd_memset( trailer->first_seen_nanos, 0, sizeof(trailer->first_seen_nanos) );
+  fd_memcpy( trailer->first_seen_nanos, ctx->_first_seen_nanos, txn_cnt*sizeof(long) );
 
   fd_txn_p_t * txns = (fd_txn_p_t *)dst;
   _Bool bam_nonrevert = !!( txn_cnt &&
@@ -789,6 +793,8 @@ handle_bundle( fd_execle_tile_t *  ctx,
     trailer->bank_seq         = bank->bank_seq;
     trailer->exec_start_ticks = bundle_start_ticks;
     trailer->exec_end_ticks   = txn_end_ticks[ i ];
+    fd_memset( trailer->first_seen_nanos, 0, sizeof(trailer->first_seen_nanos) );
+    trailer->first_seen_nanos[0] = ctx->_first_seen_nanos[i];
 
     ulong execle_sig = fd_disco_execle_sig( slot, ctx->_pack_idx+i );
 

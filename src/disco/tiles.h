@@ -144,6 +144,10 @@ struct fd_microblock_trailer {
      (LONG_MAX if nothing committed). */
   long exec_start_ticks;
   long exec_end_ticks;
+
+  /* Per-transaction ingress times for leader telemetry.  Kept outside
+     fd_txn_p_t so the compact transaction remains 4992 bytes. */
+  long first_seen_nanos[ MAX_TXN_PER_MICROBLOCK ];
 };
 typedef struct fd_microblock_trailer fd_microblock_trailer_t;
 

@@ -37,6 +37,7 @@ typedef struct {
   int _is_bundle;
 
   fd_acct_addr_t _alt_accts[MAX_TXN_PER_MICROBLOCK][FD_TXN_ACCT_ADDR_MAX];
+  long _first_seen_nanos[MAX_TXN_PER_MICROBLOCK];
 
   ulong * busy_fseq;
 
@@ -226,6 +227,7 @@ during_frag( fd_bank_ctx_t * ctx,
   fd_txn_p_t       * dst_txn_p = (fd_txn_p_t       *)dst;
   for( ulong i=0UL; i<txn_cnt; i++ ) {
     fd_memcpy( dst_txn_p + i, src_txn_e[i].txnp, sizeof(fd_txn_p_t) );
+    ctx->_first_seen_nanos[i] = src_txn_e[i].first_seen_nanos;
     ulong alt_cnt = fd_ulong_min( (ulong)TXN(src_txn_e[i].txnp)->addr_table_adtl_cnt, FD_TXN_ACCT_ADDR_MAX );
     fd_memcpy( ctx->_alt_accts[i], src_txn_e[i].alt_accts, alt_cnt * sizeof(fd_acct_addr_t) );
   }
@@ -472,6 +474,8 @@ handle_microblock( fd_bank_ctx_t *     ctx,
      it shards / scales horizontally here, while PoH does not. */
   int attach_bam_result = bam_nonrevert && fd_bam_result_is_provisional( bam_res );
   fd_microblock_trailer_t * trailer = fd_bam_microblock_prepare_trailer( dst, txn_cnt, attach_bam_result ? bam_res : NULL );
+  fd_memset( trailer->first_seen_nanos, 0, sizeof(trailer->first_seen_nanos) );
+  fd_memcpy( trailer->first_seen_nanos, ctx->_first_seen_nanos, txn_cnt*sizeof(long) );
   hash_transactions( ctx->bmtree, (fd_txn_p_t*)dst, txn_cnt, trailer->hash );
   trailer->pack_txn_idx = ctx->_txn_idx;
   trailer->tips = 0;
@@ -684,6 +688,8 @@ handle_bundle( fd_bank_ctx_t *     ctx,
 
     int attach_bam_result = bam_revert && fd_bam_result_is_provisional( &res ) && i==txn_cnt-1UL;
     fd_microblock_trailer_t * trailer = fd_bam_microblock_prepare_trailer( dst, 1UL, attach_bam_result ? &res : NULL );
+    fd_memset( trailer->first_seen_nanos, 0, sizeof(trailer->first_seen_nanos) );
+    trailer->first_seen_nanos[0] = ctx->_first_seen_nanos[i];
     hash_transactions( ctx->bmtree, (fd_txn_p_t*)dst, 1UL, trailer->hash );
     trailer->pack_txn_idx = ctx->_txn_idx + i;
     trailer->tips = tips[ i ];

@@ -248,14 +248,25 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
 
 # if FD_HAS_OPENSSL
   if( FD_LIKELY( ctx->is_ssl ) ) {
+    /* Retry BIO/SSL allocation failures with transport backoff. Check
+       bam_ssl_alloc_failed and development.bam.ssl_heap_size_mib. */
     BIO * bio = fd_openssl_bio_new_socket( ctx->tcp_sock, BIO_NOCLOSE );
     if( FD_UNLIKELY( !bio ) ) {
-      FD_LOG_ERR(( "fd_openssl_bio_new_socket failed" ));
+      fd_bam_client_reset( ctx );
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ]++;
+      FD_LOG_WARNING(( "fd_openssl_bio_new_socket failed (SSL heap exhausted?); retrying in %.3f ms",
+                       fd_bam_client_retry_ms( ctx ) ));
+      return;
     }
 
     SSL * ssl = SSL_new( ctx->ssl_ctx );
     if( FD_UNLIKELY( !ssl ) ) {
-      FD_LOG_ERR(( "SSL_new failed" ));
+      BIO_free( bio );
+      fd_bam_client_reset( ctx );
+      ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_IDX ]++;
+      FD_LOG_WARNING(( "SSL_new failed (SSL heap exhausted?); retrying in %.3f ms",
+                       fd_bam_client_retry_ms( ctx ) ));
+      return;
     }
 
     SSL_set_bio( ssl, bio, bio ); /* moves ownership of bio */

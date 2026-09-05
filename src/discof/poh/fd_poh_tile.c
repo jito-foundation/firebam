@@ -265,7 +265,7 @@ returnable_frag( fd_poh_tile_t *     ctx,
         .dispatched_ticks = view->trailer->exec_start_ticks,
         .replayed_ticks   = view->trailer->exec_end_ticks,
       };
-      fd_poh1_mixin( ctx->poh, stem, target_slot, view->trailer->hash, view->txn_cnt, txns, &timing );
+      fd_poh1_mixin( ctx->poh, stem, target_slot, view->trailer->hash, view->txn_cnt, txns, view->trailer->first_seen_nanos, &timing );
       if( FD_UNLIKELY( view->result ) )
         fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
                                ctx->bam_out->chunk0, ctx->bam_out->wmark, view->result );

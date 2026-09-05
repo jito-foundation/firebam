@@ -62,6 +62,8 @@ test_microblock( void *                         fragment,
   fd_microblock_trailer_t * trailer = fd_bam_microblock_prepare_trailer( fragment, 1UL, result );
   fd_memset( trailer, 0, sizeof(fd_microblock_trailer_t) );
   trailer->hash[ 0 ] = (uchar)slot;
+  trailer->first_seen_nanos[0] = 123456789L;
+  txn->scheduler_arrival_time_nanos = 987654321L;
   return fd_bam_microblock_footprint( 1UL, !!result );
 }
 
@@ -99,7 +101,9 @@ test_reset_rejects_stale_then_records_live_bam_microblock( fd_wksp_t * wksp ) {
   *ctx->replay_out       = test_out_new( wksp, 1UL, depth, sizeof(fd_poh_leader_slot_ended_t) );
   *ctx->executed_txn_out = test_out_new( wksp, 2UL, depth, FD_TXN_SIGNATURE_SZ );
   *ctx->bam_out          = test_out_new( wksp, 3UL, depth, sizeof(fd_bam_bundle_result_t) );
-  FD_TEST( fd_poh_join( fd_poh_new( ctx->poh ), ctx->shred_out, ctx->replay_out, NULL ) );
+  static fd_leader_txn_timing_table_t timing_tables[ FD_LEADER_TXN_TIMING_TABLE_CNT ];
+  fd_memset( timing_tables, 0, sizeof(timing_tables) );
+  FD_TEST( fd_poh_join( fd_poh_new( ctx->poh ), ctx->shred_out, ctx->replay_out, timing_tables ) );
 
   uchar completed_hash[ 32 ] = {0};
   uchar completed_id  [ 32 ] = {1};
@@ -156,6 +160,9 @@ test_reset_rejects_stale_then_records_live_bam_microblock( fd_wksp_t * wksp ) {
   FD_TEST( seqs[ 0 ]==1UL ); /* live microblock recorded */
   FD_TEST( seqs[ 2 ]==1UL );
   FD_TEST( seqs[ 3 ]==2UL );
+  fd_leader_txn_timing_table_t const * timing_table = &timing_tables[ ctx->poh->timing_table_idx ];
+  FD_TEST( timing_table->cnt==1UL );
+  FD_TEST( timing_table->rec[0].received_ns==123456789L );
 
   fd_frag_meta_t const * live_meta = mcaches[ 3 ] + fd_mcache_line_idx( 1UL, depth );
   fd_bam_bundle_result_t const * accepted = fd_chunk_to_laddr_const( wksp, live_meta->chunk );
