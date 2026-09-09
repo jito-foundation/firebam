@@ -1,0 +1,42 @@
+[net]
+provider = "socket"
+
+[tiles.bam]
+enabled = true
+url = "http://64.130.37.166:50055"
+tls_domain_name = ""
+keepalive_interval_millis = 5000
+tls_cert_verify = false
+
+[development]
+sandbox = false
+core_dump = "regular"
+
+[development.bam]
+dump_bam_txns = true
+dump_bam_slot_first_txn = false
+
+[tiles.gui]
+enabled = true
+max_http_connections = 8
+max_websocket_connections = 8
+send_buffer_size_mb = 128
+gui_listen_address = "0.0.0.0"
+
+[log]
+level_stderr = "INFO"
+
+[consensus]
+identity_path = "/home/{user}/.firedancer/fd1/identity.json"
+vote_account_path = "/home/{user}/.firedancer/fd1/vote-account.json"
+authorized_voter_paths = ["/home/{user}/.firedancer/fd1/vote-account.json" ]
+
+[development.gossip]
+allow_private_address = true
+
+[gossip]
+entrypoints = ["64.130.37.166:8001", ]
+port = 18001 # 8001 used by validator 1
+
+[tiles.shred]
+shred_listen_port = 18003 # 8003 used by local cluster

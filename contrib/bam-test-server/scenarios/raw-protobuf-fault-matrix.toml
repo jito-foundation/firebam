@@ -1,0 +1,129 @@
+description = "Exercise malformed scheduler envelope, nested response, batch wrapper, identity, and packet wire encodings."
+heartbeat_interval_ms = 1000
+expected_terminal_results = 1
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_raw_response"
+name = "outer_zero_tag"
+hex = "00"
+
+[[events]]
+type = "send_raw_response"
+name = "outer_wrong_wire"
+hex = "0801"
+
+[[events]]
+type = "send_raw_response"
+name = "outer_truncated_len"
+hex = "0a80"
+
+[[events]]
+type = "send_raw_response"
+name = "v0_zero_tag"
+hex = "0a0100"
+
+[[events]]
+type = "send_raw_response"
+name = "v0_unexpected_tag"
+hex = "0a022200"
+
+[[events]]
+type = "send_raw_response"
+name = "v0_wrong_wire"
+hex = "0a020801"
+
+[[events]]
+type = "send_raw_response"
+name = "v0_truncated_len"
+hex = "0a020a80"
+
+[[events]]
+type = "send_raw_response"
+name = "heartbeat_truncated_varint"
+hex = "0a040a020880"
+
+[[events]]
+type = "send_raw_response"
+name = "ping_truncated_varint"
+hex = "0a041a020880"
+
+[[events]]
+type = "send_raw_response"
+name = "multi_zero_tag"
+hex = "0a03120100"
+
+[[events]]
+type = "send_raw_response"
+name = "multi_unexpected_tag"
+hex = "0a0412020801"
+
+[[events]]
+type = "send_raw_response"
+name = "multi_wrong_wire"
+hex = "0a0412021801"
+
+[[events]]
+type = "send_raw_response"
+name = "multi_truncated_len"
+hex = "0a0412021a80"
+
+[[events]]
+type = "send_raw_response"
+name = "atomic_zero_tag"
+hex = "0a0512031a0100"
+
+[[events]]
+type = "send_raw_response"
+name = "atomic_seq_wrong_wire"
+hex = "0a0612041a020a00"
+
+[[events]]
+type = "send_raw_response"
+name = "atomic_seq_truncated"
+hex = "0a0612041a020880"
+
+[[events]]
+type = "send_raw_response"
+name = "atomic_seq_too_large"
+hex = "0a0a12081a06088080808010"
+
+[[events]]
+type = "send_raw_response"
+name = "atomic_max_slot_wrong_wire"
+hex = "0a0812061a0408071200"
+
+[[events]]
+type = "send_raw_response"
+name = "atomic_unknown_truncated"
+hex = "0a0812061a0408072280"
+
+[[events]]
+type = "send_raw_response"
+name = "packet_wrong_data_wire"
+hex = "0a0a12081a0608071a020801"
+
+[[events]]
+type = "send_raw_response"
+name = "packet_truncated_data"
+hex = "0a0a12081a0608081a020a80"
+
+[[events]]
+type = "sleep"
+ms = 500
+
+[[events]]
+type = "send_batch"
+seq_id = 5500
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
