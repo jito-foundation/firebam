@@ -1,6 +1,8 @@
-# [Firedancer](https://jumpcrypto.com/firedancer/) 🔥💃
+# FireBAM 🔥💃
 
-Firedancer is a new validator client for Solana.
+FireBAM is a fork of [Firedancer](https://jumpcrypto.com/firedancer/) that adds
+validator support for [BAM (Blockspace Assembly Marketplace)](https://bam.dev/),
+a next-generation transaction scheduling system for Solana.
 
 * **Fast** Designed from the ground up to be *fast*. The concurrency
 model draws from experience in the low latency trading space, and the code
@@ -13,9 +15,9 @@ diversity to the Solana network and helps it stay resilient to supply
 chain attacks in build tooling or dependencies.
 
 ## Documentation
-If you are an operator or looking to run the validator, see the Getting
-Started guide in the [Firedancer
-docs](https://docs.firedancer.io/)
+If you are an operator or looking to run the FireBAM validator, see the
+[FireBAM Setup Guide](https://jito-foundation.gitbook.io/mev/jito-solana/firebam-setup-guide)
+and the [FireBAM validator documentation](https://bam.dev/validators/#firebam).
 
 ## Releases
 If you are an operator looking to run the validator, see the [Releases
@@ -38,11 +40,12 @@ Firedancer currently only supports Linux and requires a relatively new
 kernel, at least v4.18 to build.
 
 ```console
-$ git clone https://github.com/firedancer-io/firedancer.git
-$ cd firedancer
+$ git clone --branch v26.09 --recurse-submodules https://github.com/jito-foundation/firebam.git
+$ cd firebam
 $ ./deps.sh
+$ if [ -f "$HOME/.cargo/env" ]; then source "$HOME/.cargo/env"; fi
 $ source activate  # enter build environment
-$ make -j
+$ make -j all fdctl firedancer
 
 # Run a new development cluster
 $ firedancer-dev
@@ -50,6 +53,13 @@ $ firedancer-dev
 # Join Solana testnet
 $ firedancer-dev --testnet
 ```
+
+The build includes both the full Firedancer validator and Frankendancer
+(`fdctl`), which compiles the BAM-patched Agave runtime. Agave and the BAM wire
+schema are pinned submodules fetched from the URLs in `.gitmodules`; a fresh
+clone does not need sibling checkouts or local patches. After changing branches,
+run `git submodule sync --recursive` and
+`git submodule update --init --recursive` to use that branch's pinned commits.
 
 `firedancer-dev` (without args) configures your system for validator
 operation and creates a new lcoal development cluster. First it creates
