@@ -4,6 +4,7 @@ on:
 
 jobs:
   check-cbmc:
+    if: github.repository == 'firedancer-io/firedancer'
     runs-on: [self-hosted, X64]
 
     steps:
