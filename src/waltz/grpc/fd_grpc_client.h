@@ -256,14 +256,16 @@ fd_grpc_client_set_authority( fd_grpc_client_t * client,
    OpenSSL->h2 or h2->OpenSSL writes to directly place data into the
    target buffer.
 
-   Returns 0 on success and -1 if there is an unrecoverable SSL
-   error. */
+   If poll_rx is zero, skips SSL receive work while still servicing and
+   flushing pending transmit work.  Returns 0 on success and -1 if there is
+   an unrecoverable SSL error. */
 
 int
 fd_grpc_client_rxtx_ossl( fd_grpc_client_t * client,
                           SSL *              ssl,
                           long               now,
-                          int *              charge_busy );
+                          int *              charge_busy,
+                          int                poll_rx );
 
 /* fd_grpc_client_tx_flush_ossl writes pending frame bytes to the SSL
    object (no-op before the TLS handshake completes). */
@@ -277,14 +279,16 @@ fd_grpc_client_tx_flush_ossl( fd_grpc_client_t * client,
 /* fd_grpc_client_rxtx_socket drives I/O against a TCP socket.
    (recvmsg(2) and sendmsg(2)).  Uses MSG_NOSIGNAL|MSG_DONTWAIT flags.
 
-   Returns -1 if an error was encountered, and errno will be set.
+   If poll_rx is zero, skips recvmsg while still servicing and flushing
+   pending transmit work.  Returns -1 if an error was encountered, and errno will be set.
    Returns 1 if send would block with EAGAIN.  Otherwise, returns 0. */
 
 int
 fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
                             int                sock_fd,
                             long               now,
-                            int *              charge_busy );
+                            int *              charge_busy,
+                            int                poll_rx );
 
 /* fd_grpc_client_tx_flush_socket writes pending frame bytes to the
    socket.  Returns -1 (errno set) on a hard send error, else 0. */

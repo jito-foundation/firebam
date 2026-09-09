@@ -1,0 +1,35 @@
+[net.socket]
+receive_buffer_size = 16777216
+send_buffer_size = 16777216
+
+[gossip]
+entrypoints = [
+    "entrypoint.testnet.solana.com:8001",
+    "entrypoint2.testnet.solana.com:8001",
+]
+
+[paths]
+identity_key = "/etc/solana/identity.json"
+vote_account = "/etc/solana/vote-account.json"
+authorized_voter_paths = ["/etc/solana/staked-identity.json"]
+genesis = "/solana/ledger/genesis.bin"
+accounts = "/solana/accounts/accounts.db"
+
+[consensus]
+expected_genesis_hash = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
+
+[snapshots]
+max_retry_abort = 100
+min_download_speed_mibs = 50
+
+[tiles.bundle]
+enabled = true
+url = "https://testnet.block-engine.jito.wtf"
+tip_distribution_program_addr = "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf"
+tip_payment_program_addr = "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
+tip_distribution_authority = "7T4inmPmtNBX3MhLwJ9hFsSMnGJYYkKioVABSNTWVRuS"
+commission_bps = 1000
+
+[tiles.bam]
+enabled = true
+url = "http://testnet.bam.jito.wtf:50055"

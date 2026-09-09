@@ -163,6 +163,13 @@ FD_UNIT_TEST( conn_ssl_lifecycle ) {
   grpc->h2_hs_done         = 1;
   grpc->conn->flags        = 0;
 
+  /* Suppressing SSL reads must not suppress an already-encoded write. */
+  FD_TEST( fd_h2_tx_ping( grpc->conn, grpc->frame_tx ) );
+  int charge_busy = 0;
+  FD_TEST( fd_grpc_client_rxtx_ossl( grpc, tls->client_ssl, fd_log_wallclock(), &charge_busy, 0 )==0 );
+  FD_TEST( charge_busy );
+  FD_TEST( fd_h2_rbuf_used_sz( grpc->frame_tx )==0UL );
+
   fd_h2_ping_t ping = {
     .hdr = {
       .typlen      = fd_h2_frame_typlen( FD_H2_FRAME_TYPE_PING, 8UL ),
@@ -188,8 +195,8 @@ FD_UNIT_TEST( conn_ssl_lifecycle ) {
   test_tls_server_write( tls->server_ssl, h2, sizeof(h2) );
 
   /* rxtx must flush the ACK without conn_dead freeing the active SSL object. */
-  int charge_busy = 0;
-  int rc = fd_grpc_client_rxtx_ossl( grpc, tls->client_ssl, fd_log_wallclock(), &charge_busy );
+  charge_busy = 0;
+  int rc = fd_grpc_client_rxtx_ossl( grpc, tls->client_ssl, fd_log_wallclock(), &charge_busy, 1 );
 
   FD_TEST( rc==0 );
   FD_TEST( client->ssl==tls->client_ssl );
@@ -496,9 +503,9 @@ FD_UNIT_TEST( stream_deadline_clock ) {
   long now = 1000L;
   fd_grpc_client_deadline_set( client->event_stream, FD_GRPC_DEADLINE_HEADER, now+1L );
   int charge_busy = 0;
-  FD_TEST( 0==fd_grpc_client_rxtx_socket( grpc, sv[0], now, &charge_busy ) );
+  FD_TEST( 0==fd_grpc_client_rxtx_socket( grpc, sv[0], now, &charge_busy, 1 ) );
   FD_TEST( client->event_stream && client->defer_disconnect==INT_MAX );
-  FD_TEST( 0==fd_grpc_client_rxtx_socket( grpc, sv[0], now+2L, &charge_busy ) );
+  FD_TEST( 0==fd_grpc_client_rxtx_socket( grpc, sv[0], now+2L, &charge_busy, 1 ) );
   FD_TEST( !client->event_stream && client->defer_disconnect==DISCONNECT_REASON_TRANSPORT_FAILED );
 
   close( sv[0] ); close( sv[1] );

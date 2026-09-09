@@ -7,6 +7,7 @@
 #include "../../disco/fd_txn_m.h"
 #include "../../disco/metrics/fd_metrics.h"
 #include "../../disco/topo/fd_topob.h"
+#include "../../discoh/plugin/fd_plugin.h"
 #include "../../util/fd_version.h"
 
 static void
@@ -626,6 +627,32 @@ fd_guih_printf_block_engine( fd_guih_t * gui ) {
 }
 
 void
+fd_guih_printf_bam( fd_guih_t * gui ) {
+  jsonp_open_envelope( gui->http, "bam", "update" );
+    jsonp_open_object( gui->http, "value" );
+      jsonp_string( gui->http, "name",   gui->bam.name );
+      jsonp_string( gui->http, "url",    gui->bam.url );
+      jsonp_string( gui->http, "sni",    gui->bam.sni );
+      jsonp_string( gui->http, "ip",     gui->bam.ip_cstr );
+      jsonp_string( gui->http, "tpu",    gui->bam.tpu_cstr );
+      jsonp_string( gui->http, "tpu_fwd",gui->bam.tpu_fwd_cstr );
+      jsonp_ulong(  gui->http, "enabled", gui->bam.enabled );
+      if( FD_UNLIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED ) )      jsonp_string( gui->http, "status", "disabled" );
+      else if( FD_UNLIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED ) ) jsonp_string( gui->http, "status", "disconnected" );
+      else if( FD_UNLIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) ) jsonp_string( gui->http, "status", "connecting" );
+      else if( FD_UNLIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY ) ) jsonp_string( gui->http, "status", "connected-unhealthy" );
+      else if( FD_LIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) jsonp_string( gui->http, "status", "connected-healthy" );
+      else                                                                               jsonp_string( gui->http, "status", "unexpected" );
+
+      jsonp_double( gui->http, "keepalive_rtt_sample",     (double)gui->bam.keepalive_rtt_sample );
+      jsonp_double( gui->http, "keepalive_rtt_smoothed",   (double)gui->bam.keepalive_rtt_smoothed );
+      jsonp_double( gui->http, "keepalive_rtt_deviation",  (double)gui->bam.keepalive_rtt_deviation );
+      jsonp_ulong(  gui->http, "feedback_queue_depth", gui->bam.feedback_queue_depth );
+    jsonp_close_object( gui->http );
+  jsonp_close_envelope( gui->http );
+}
+
+void
 fd_guih_printf_tiles( fd_guih_t * gui ) {
   jsonp_open_envelope( gui->http, "summary", "tiles" );
     jsonp_open_array( gui->http, "value" );
@@ -772,6 +799,7 @@ fd_guih_printf_waterfall( fd_guih_t *               gui,
       jsonp_ulong( gui->http, "udp",             cur->in.udp    - prev->in.udp );
       jsonp_ulong( gui->http, "gossip",          cur->in.gossip - prev->in.gossip );
       jsonp_ulong( gui->http, "block_engine",    cur->in.block_engine - prev->in.block_engine );
+      jsonp_ulong( gui->http, "bam",             cur->in.bam    - prev->in.bam );
     jsonp_close_object( gui->http );
 
     jsonp_open_object( gui->http, "out" );
@@ -1978,6 +2006,10 @@ fd_guih_printf_slot_transactions_request( fd_guih_t * gui,
                 case FD_TXN_M_TPU_SOURCE_TXSEND: {
                   jsonp_string( gui->http, NULL, "send");
                   break;
+                }
+                case FD_TXN_M_TPU_SOURCE_BAM: {
+                      jsonp_string( gui->http, NULL, "bam");
+                      break;
                 }
                 default: FD_LOG_ERR(("unknown tpu"));
               }

@@ -1,5 +1,8 @@
 # Security
 
+The FireBAM bug bounty program is managed by Immunefi. More details can be
+found [here](https://immunefi.com/bug-bounty/jito/information/).
+
 The following document describes various aspects of the Firedancer security program.
 
 ## Table of Contents
