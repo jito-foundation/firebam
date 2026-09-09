@@ -575,6 +575,7 @@ fd_poh1_mixin( fd_poh_t *                         poh,
                uchar const *                      hash,
                ulong                              txn_cnt,
                fd_txn_p_t const *                 txns,
+               long const *                       first_seen_nanos,
                fd_leader_txn_timing_rec_t const * timing );
 
 void

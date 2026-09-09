@@ -1,0 +1,199 @@
+description = "Exercise malformed, boundary, and valid native precompile inputs through paired live validators."
+heartbeat_interval_ms = 1000
+expected_terminal_results = 16
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300000
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Ed25519SigVerify111111111111111111111111111", data_hex = "", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300001
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Ed25519SigVerify111111111111111111111111111", data_hex = "00", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 2
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300002
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Ed25519SigVerify111111111111111111111111111", data_hex = "0000", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 3
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300003
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Ed25519SigVerify111111111111111111111111111", data_hex = "00000000000000000000000000000000", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 4
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300004
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Ed25519SigVerify111111111111111111111111111", data_hex = "01000000000000000000000000000000", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 5
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300005
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Ed25519SigVerify111111111111111111111111111", data_hex = "01001000ffff5000ffff70001c00ffffe99c78955cc93c88009819e3efc0199777593731226625c9270076f29c2237c355e0d025eebebbf09af12b9599c9b8e5623cd8ee63037a3125d11e785471430179b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad0496646c6976652d646966666572656e7469616c2d707265636f6d70696c65", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 6
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300006
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "KeccakSecp256k11111111111111111111111111111", data_hex = "", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 7
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300007
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "KeccakSecp256k11111111111111111111111111111", data_hex = "00", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 8
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300008
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "KeccakSecp256k11111111111111111111111111111", data_hex = "0000", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 9
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300009
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "KeccakSecp256k11111111111111111111111111111", data_hex = "010000000000000000000000", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 10
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300010
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "KeccakSecp256k11111111111111111111111111111", data_hex = "010c00004d0000610000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 11
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300011
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Secp256r1SigVerify1111111111111111111111111", data_hex = "", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 12
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300012
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Secp256r1SigVerify1111111111111111111111111", data_hex = "00000000000000000000000000000000", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 13
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300013
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Secp256r1SigVerify1111111111111111111111111", data_hex = "09000000000000000000000000000000", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 14
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300014
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Secp256r1SigVerify1111111111111111111111111", data_hex = "01000000000000000000000000000000", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 15
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5300015
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "Secp256r1SigVerify1111111111111111111111111", data_hex = "01001000ffff5000ffff71001c00ffffca8309a0aab69409b91684d07a3fdb9ae213f6d553416b6d1fdb3eb0046fdf6975a27285dae2811e5d34029eed417e89f1af0ffbd41d6aa472371d2b15644454036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2966c6976652d646966666572656e7469616c2d707265636f6d70696c65", account_count = 0 }]
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 16
+timeout_ms = 30000

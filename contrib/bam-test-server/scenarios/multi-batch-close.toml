@@ -1,0 +1,40 @@
+description = "Send several distinct batches in one scheduler message, then close the stream to force reconnect."
+heartbeat_interval_ms = 1000
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_multi_batch"
+
+[[events.batches]]
+seq_id = 100
+packet_count = 5
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events.batches]]
+seq_id = 101
+packet_count = 5
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events.batches]]
+seq_id = 102
+packet_count = 5
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events]]
+type = "sleep"
+ms = 750
+
+[[events]]
+type = "close_stream"
