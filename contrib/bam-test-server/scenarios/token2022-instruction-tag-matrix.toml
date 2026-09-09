@@ -1,0 +1,631 @@
+description = "Exercise every Token-2022 top-level instruction tag through paired live validators."
+heartbeat_interval_ms = 1000
+expected_terminal_results = 48
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400000
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "00", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400001
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "01", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 2
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400002
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "02", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 3
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400003
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "03", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 4
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400004
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "04", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 5
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400005
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "05", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 6
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400006
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "06", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 7
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400007
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "07", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 8
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400008
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "08", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 9
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400009
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "09", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 10
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400010
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "0a", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 11
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400011
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "0b", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 12
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400012
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "0c", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 13
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400013
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "0d", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 14
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400014
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "0e", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 15
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400015
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "0f", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 16
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400016
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "10", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 17
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400017
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "11", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 18
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400018
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "12", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 19
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400019
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "13", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 20
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400020
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "14", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 21
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400021
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "15", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 22
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400022
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "16", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 23
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400023
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "17", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 24
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400024
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "18", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 25
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400025
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "19", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 26
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400026
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "1a", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 27
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400027
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "1b", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 28
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400028
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "1c", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 29
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400029
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "1d", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 30
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400030
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "1e", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 31
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400031
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "1f", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 32
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400032
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "20", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 33
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400033
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "21", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 34
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400034
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "22", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 35
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400035
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "23", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 36
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400036
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "24", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 37
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400037
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "25", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 38
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400038
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "26", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 39
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400039
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "27", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 40
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400040
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "28", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 41
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400041
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "29", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 42
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400042
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "2a", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 43
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400043
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "2b", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 44
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400044
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "2c", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 45
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400045
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "2d", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 46
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400046
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "2e", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 47
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400047
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [{ program_id = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", data_hex = "ff", account_count = 0 }]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 48
+timeout_ms = 30000
