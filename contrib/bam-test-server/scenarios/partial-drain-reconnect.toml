@@ -1,0 +1,52 @@
+description = "Send several batches as separate scheduler messages, wait for the first batch result, close the stream, and observe remaining durable results after reconnect without replaying the scenario."
+heartbeat_interval_ms = 1000
+replay_on_reconnect = false
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 200
+packet_count = 5
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events]]
+type = "send_batch"
+seq_id = 201
+packet_count = 5
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events]]
+type = "send_batch"
+seq_id = 202
+packet_count = 5
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events]]
+type = "send_batch"
+seq_id = 203
+packet_count = 5
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
+
+[[events]]
+type = "close_stream"

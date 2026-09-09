@@ -5,7 +5,20 @@
 
 struct __attribute__((aligned(64))) fd_txn_p {
   uchar payload[FD_TPU_MTU];
-  ulong payload_sz;
+
+  /* Keep metadata within 40 bytes to preserve the 4992-byte transaction
+     size and avoid increasing copy costs and ring-buffer footprints. */
+
+  /* Size of payload in bytes, at most FD_TPU_MTU. */
+  ushort payload_sz;
+
+  /* Ingress pipeline (FD_TXN_M_TPU_SOURCE_*). */
+  uchar  source_tpu;
+  uchar  _pad0;
+
+  /* Source ipv4 address for this transaction. */
+  uint  source_ipv4;
+
   union {
    struct {
      uint non_execution_cus;
@@ -19,10 +32,6 @@ struct __attribute__((aligned(64))) fd_txn_p {
   };
   /* Wallclock nanoseconds at which the transaction arrived to the pack tile. Set by pack and intended to be read from a transaction on a pack->execle link. */
   long scheduler_arrival_time_nanos;
-
-  /* Wallclock nanoseconds at which the validator first saw the
-     transaction. */
-  long first_seen_nanos;
 
   union {
     struct {
@@ -38,14 +47,19 @@ struct __attribute__((aligned(64))) fd_txn_p {
     uint pack_alloc;
   };
 
-  /* Source ipv4 address and tpu pipeline for this transaction. TPU is one of FD_TXN_M_TPU_SOURCE_* */
-  uchar source_tpu;
-  uint  source_ipv4;
-
   /* Populated by pack, execle.  A combination of the bitfields
      FD_TXN_P_FLAGS_* defined above.  The execle sets the high byte with
      the transaction result code. */
   uint  flags;
+
+  /* BAM execution metadata. Pack keeps max_schedule_slot and
+     first_seen_nanos in sidecar state to preserve the transaction size. */
+  struct {
+    uint  seq_id;
+    ushort scheduler_gen;
+    uchar batch_idx;
+    _Bool revert_on_error;
+  } bam;
   /* union {
     This would be ideal but doesn't work because of the flexible array member
     uchar _[FD_TXN_MAX_SZ];
@@ -57,12 +71,17 @@ struct __attribute__((aligned(64))) fd_txn_p {
 
 typedef struct fd_txn_p fd_txn_p_t;
 
+FD_STATIC_ASSERT( sizeof(fd_txn_p_t)==4992UL, fd_txn_p_layout );
+
 #define TXN(txn_p) ((fd_txn_t *)( (txn_p)->_ ))
 
 /* fd_txn_e_t: An fd_txn_p_t with expanded address lookup tables */
 struct __attribute__((aligned(64))) fd_txn_e {
    fd_txn_p_t     txnp[1];
    fd_acct_addr_t alt_accts[FD_TXN_ACCT_ADDR_MAX]; /* The used account is in the fd_txn_t*/
+   /* Ingress timestamp carried alongside pack's expanded transaction.
+      Execution moves it to the microblock trailer for leader telemetry. */
+   long          first_seen_nanos;
 };
 
 typedef struct fd_txn_e fd_txn_e_t;
