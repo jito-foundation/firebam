@@ -162,7 +162,6 @@ update_hashes_per_tick( fd_poh_t * poh,
     }
 
     /* Recompute derived information about the clock. */
-    poh->hashcnt_duration_ns = (double)poh->tick_duration_ns/(double)hashcnt_per_tick;
     poh->hashcnt_per_slot = poh->ticks_per_slot*hashcnt_per_tick;
     poh->hashcnt_per_tick = hashcnt_per_tick;
 
@@ -189,6 +188,10 @@ update_hashes_per_tick( fd_poh_t * poh,
     poh->hashcnt = 0UL;
     fd_memcpy( poh->hash, poh->reset_hash, 32UL );
   }
+
+  /* tick_duration_ns can change independently of hashcnt_per_tick when
+     BAM is toggled at runtime. */
+  poh->hashcnt_duration_ns = (double)poh->tick_duration_ns/(double)hashcnt_per_tick;
 }
 
 void
@@ -751,6 +754,7 @@ fd_poh1_mixin( fd_poh_t *                         poh,
                uchar const *                      hash,
                ulong                              txn_cnt,
                fd_txn_p_t const *                 txns,
+               long const *                       first_seen_nanos,
                fd_leader_txn_timing_rec_t const * timing ) {
   if( FD_UNLIKELY( slot!=poh->next_leader_slot || slot!=poh->slot ) ) {
     FD_LOG_ERR(( "packed too early or late slot=%lu, current_slot=%lu", slot, poh->slot ));
@@ -787,7 +791,7 @@ fd_poh1_mixin( fd_poh_t *                         poh,
 
       fd_leader_txn_timing_rec_t * rec = &table->rec[ table->cnt++ ];
       *rec = *timing;
-      rec->received_ns     = txns[ i ].first_seen_nanos;
+      rec->received_ns     = first_seen_nanos[ i ];
       rec->poh_mixed_ticks = poh_mixed_ticks;
     }
   }

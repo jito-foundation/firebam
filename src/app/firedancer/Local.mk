@@ -18,6 +18,9 @@ $(call add-objs,topology,fd_firedancer)
 $(call add-objs,config,fd_firedancer)
 $(call add-objs,callbacks,fd_firedancer)
 
+$(call make-unit-test,test_firedancer_topology_bam,test_topology_bam,fd_firedancer fdctl_shared fdctl_platform fd_discof fd_disco fd_choreo fd_flamenco fd_quic fd_tls fd_reedsol fd_waltz fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))
+$(call run-unit-test,test_firedancer_topology_bam)
+
 # commands
 $(call add-objs,commands/add_authorized_voter,fd_firedancer)
 $(call add-objs,commands/remove_all_authorized_voters,fd_firedancer)

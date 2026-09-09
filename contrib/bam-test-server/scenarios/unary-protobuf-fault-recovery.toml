@@ -1,0 +1,22 @@
+description = "Return malformed auth and config protobuf messages before normal responses, then require scheduler recovery."
+heartbeat_interval_ms = 1000
+expected_terminal_results = 1
+auth_raw_hex_sequence = ["00", "0a80", "0801"]
+config_raw_hex_sequence = ["00", "0a80", "0a0100"]
+
+[[events]]
+type = "sleep"
+ms = 7000
+
+[[events]]
+type = "send_batch"
+seq_id = 6000
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
