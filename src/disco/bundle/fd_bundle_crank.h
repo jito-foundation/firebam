@@ -100,9 +100,11 @@ typedef struct fd_bundle_crank_tip_payment_config fd_bundle_crank_tip_payment_co
    Since the previous leader can modify the contents of this account
    almost arbitrarily, this is treated as mostly untrusted input.
    new_block_builder points to the desired block builder, which
-   typically comes from the bundle metadata.  identity points to the
-   current validator's identity pubkey, which must also be an authorized
-   voter for the vote account used in _init(); this account will be used
+   typically comes from the bundle metadata.  Callers that treat an
+   all-zero block builder as unavailable must suppress cranking before
+   calling this function.  identity points to the current validator's
+   identity pubkey, which must also be an authorized voter for the vote
+   account used in _init(); this account will be used
    as the signer for this transaction.  tip_receiver_owner points to the
    pubkey of the on-chain account owner of the tip_receiver account
    (also normally retrieved with get_addresses).  By convention, the

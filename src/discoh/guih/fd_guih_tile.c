@@ -17,6 +17,7 @@
 #include "generated/fd_guih_tile_seccomp.h"
 
 #include "../../disco/tiles.h"
+#include "../../disco/bam/fd_bam_microblock.h"
 #include "../../disco/keyguard/fd_keyload.h"
 #include "../../disco/keyguard/fd_keyswitch.h"
 #include "fd_guih.h"
@@ -279,13 +280,11 @@ after_frag( fd_guih_ctx_t *      ctx,
       break;
     }
     case IN_KIND_EXECLE_POH: {
-      FD_TEST( sz>=sizeof(fd_microblock_trailer_t) );
-      FD_TEST( (sz-sizeof(fd_microblock_trailer_t))%sizeof(fd_txn_p_t)==0UL );
-
-      fd_microblock_trailer_t trailer[1];
-      fd_memcpy( trailer, src+sz-sizeof(fd_microblock_trailer_t), sizeof(fd_microblock_trailer_t) );
+      fd_bam_microblock_view_t view[1];
+      FD_TEST( fd_bam_microblock_parse( src, sz, view ) );
+      fd_microblock_trailer_t const * trailer = view->trailer;
       long tspub_ns = fd_clock_tile_tickcomp_to_wallclock( ctx->clock, tspub );
-      ulong txn_cnt = (sz-sizeof( fd_microblock_trailer_t ))/sizeof(fd_txn_p_t);
+      ulong txn_cnt = view->txn_cnt;
       fd_guih_microblock_execution_end( ctx->gui,
                                       tspub_ns,
                                       ctx->in_bank_idx[ in_idx ],

@@ -6,6 +6,7 @@
 #include "../ballet/shred/fd_shred.h"
 #include "../flamenco/leaders/fd_leaders_base.h"
 #include "pack/fd_pack.h"
+#include "bam/fd_bam_types.h"
 #include "topo/fd_topo.h"
 #include "bundle/fd_bundle_crank.h"
 #include "../disco/metrics/generated/fd_metrics_pack.h"
@@ -205,17 +206,18 @@ struct fd_microblock_execle_trailer {
      transactions. */
   ulong pack_txn_idx;
 
-  /* If the microblock is a bundle, with a set of potentially
-     conflicting transactions that should be executed in order, and
-     all either commit or fail atomically. */
+  /* If the microblock was scheduled from the bundle treap, with a set of
+     potentially conflicting transactions that should be executed in order.
+     Atomic commit/fail behavior is determined by the bundle source. */
   int is_bundle;
 };
 typedef struct fd_microblock_execle_trailer fd_microblock_execle_trailer_t;
 
 /* Exact worst-case frag sizes for the pack_execle and execle_poh
    links.  execle strips the ALT accounts from each fd_txn_e_t before
-   forwarding to poh, so the poh side is smaller. */
+   forwarding to poh.  The PoH/motor fragment may also carry a
+   provisional BAM result before its trailer. */
 #define FD_PACK_EXECLE_MTU (MAX_TXN_PER_MICROBLOCK*sizeof(fd_txn_e_t)+sizeof(fd_microblock_execle_trailer_t))
-#define FD_EXECLE_POH_MTU  (MAX_TXN_PER_MICROBLOCK*sizeof(fd_txn_p_t)+sizeof(fd_microblock_trailer_t))
+#define FD_EXECLE_POH_MTU  (MAX_TXN_PER_MICROBLOCK*sizeof(fd_txn_p_t)+sizeof(fd_bam_bundle_result_t)+sizeof(fd_microblock_trailer_t))
 
 #endif /* HEADER_fd_src_disco_tiles_h */
