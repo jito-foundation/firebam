@@ -1971,8 +1971,10 @@ fd_pack_bundle_candidate( fd_pack_t const * pack,
 fd_txn_p_t const *
 fd_pack_peek_bundle_candidate( fd_pack_t const * pack,
                                _Bool             bam_only,
-                               ulong *           bundle_hint ) {
+                               ulong *           bundle_hint,
+                               void const **     opt_bundle_meta ) {
   *bundle_hint = ULONG_MAX;
+  if( opt_bundle_meta ) *opt_bundle_meta = NULL;
   ulong skipped = 0UL;
   treap_rev_iter_t _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped );
   if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return NULL; /* empty */
@@ -1981,6 +1983,10 @@ fd_pack_peek_bundle_candidate( fd_pack_t const * pack,
   /* Pool indices and the number of skipped pool elements each fit in a
      ushort.  Bit 32 binds the hint to the mode; upper bits bind its lifetime. */
   *bundle_hint = (ulong)_cur | (skipped<<16) | ((ulong)bam_only<<32) | pack->bundle_hint_generation;
+  if( opt_bundle_meta && !(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) &&
+      pack->initializer_bundle_state!=FD_PACK_IB_STATE_PENDING &&
+      pack->initializer_bundle_state!=FD_PACK_IB_STATE_FAILED )
+    *opt_bundle_meta = (uchar const *)pack->bundle_meta + (ulong)_cur*pack->bundle_meta_sz;
   return cur->txn;
 }
 
@@ -1991,13 +1997,10 @@ fd_pack_peek_bundle_meta( fd_pack_t const * pack,
   *bundle_hint = ULONG_MAX;
   int ib_state = pack->initializer_bundle_state;
   if( FD_UNLIKELY( (ib_state==FD_PACK_IB_STATE_PENDING) | (ib_state==FD_PACK_IB_STATE_FAILED) ) ) return NULL;
-  fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( pack, bam_only, bundle_hint );
-  if( FD_UNLIKELY( !candidate ) ) return NULL;
-  if( FD_UNLIKELY( candidate->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE ) ) {
-    *bundle_hint = ULONG_MAX;
-    return NULL;
-  }
-  return (uchar const *)pack->bundle_meta + (*bundle_hint & USHORT_MAX)*pack->bundle_meta_sz;
+  void const * meta;
+  fd_pack_peek_bundle_candidate( pack, bam_only, bundle_hint, &meta );
+  if( FD_UNLIKELY( !meta ) ) *bundle_hint = ULONG_MAX;
+  return meta;
 }
 
 int
@@ -2535,23 +2538,8 @@ fd_pack_microblock_complete( fd_pack_t * pack,
 #define TRY_BUNDLE_DOES_NOT_FIT        (-2)
 #define TRY_BUNDLE_SUCCESS(n)          ( n) /* schedule bundle with n transactions */
 
-/* Only ordinary full-permission capacity failures may defer a batch.
-   Worker/slot ineligibility and restricted-secondary capacity attempts
-   cannot spend this budget.  Update the selected whole batch together. */
-static inline void
-fd_pack_bundle_capacity_failure( fd_pack_t *      pack,
-                                 treap_rev_iter_t txn0,
-                                 ulong            bundle_idx,
-                                 int              may_defer ) {
-  if( FD_UNLIKELY( !may_defer ) ) return;
-  for( treap_rev_iter_t iter=txn0; !treap_rev_iter_done( iter ); iter=treap_rev_iter_next( iter, pack->pool ) ) {
-    fd_pack_ord_txn_t * cur = treap_rev_iter_ele( iter, pack->pool );
-    if( FD_UNLIKELY( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )!=bundle_idx ) ) break;
-    cur->skip = (ushort)(1+fd_ushort_min( (ushort)(pack->compressed_slot_number-1),
-          (ushort)(fd_ushort_min( cur->skip, FD_PACK_SKIP_CNT )-2) ) );
-  }
-}
-
+/* The caller validates the hint and BAM_READY and only calls with BUNDLE
+   or BAM_SINGLE permission. */
 static inline int
 fd_pack_try_schedule_bundle( fd_pack_t  * pack,
                              ulong        bank_tile,
@@ -2569,8 +2557,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
   ulong skipped_txn_cnt = 0UL;
   treap_rev_iter_t _cur;
-  if( FD_UNLIKELY( bundle_hint!=ULONG_MAX &&
-                   ((bundle_hint>>32)&1UL)==(ulong)bam_only ) ) {
+  if( FD_UNLIKELY( bundle_hint!=ULONG_MAX ) ) {
     skipped_txn_cnt = (bundle_hint>>16) & USHORT_MAX;
     _cur = (treap_rev_iter_t)(bundle_hint & USHORT_MAX);
   } else {
@@ -2586,11 +2573,11 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
   ulong bundle_idx = RC_TO_REL_BUNDLE_IDX( txn0->rewards, txn0->compute_est );
 
   _Bool is_bam = is_ib ? pack->initializer_bundle_bam : txn0->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
-  if( FD_UNLIKELY( is_bam && ( !(schedule_flags & FD_PACK_SCHEDULE_BAM_READY) || bundle_hint==ULONG_MAX ) ) )
+  if( FD_UNLIKELY( is_bam && !(schedule_flags & FD_PACK_SCHEDULE_BAM_READY) ) )
     return TRY_BUNDLE_NO_READY_BUNDLES;
 
   if( FD_UNLIKELY( !(schedule_flags & FD_PACK_SCHEDULE_BUNDLE) ) ) {
-    if( FD_UNLIKELY( !(schedule_flags & FD_PACK_SCHEDULE_BAM_SINGLE) || !is_bam || is_ib ) )
+    if( FD_UNLIKELY( !is_bam || is_ib ) )
       return TRY_BUNDLE_NO_READY_BUNDLES;
     treap_rev_iter_t next = treap_rev_iter_next( _txn0, pool );
     if( FD_LIKELY( !treap_rev_iter_done( next ) ) ) {
@@ -2759,8 +2746,19 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     }
     FD_TEST( acct_uses_key_cnt( pack->bundle_temp_map )==0UL );
 
-    if( FD_UNLIKELY( retval==TRY_BUNDLE_DOES_NOT_FIT ) ) {
-      fd_pack_bundle_capacity_failure( pack, _txn0, bundle_idx, schedule_flags & FD_PACK_SCHEDULE_BUNDLE );
+    if( FD_UNLIKELY( retval==TRY_BUNDLE_DOES_NOT_FIT && (schedule_flags & FD_PACK_SCHEDULE_BUNDLE) ) ) {
+      /* Only full-permission capacity failures may defer a batch.  Worker/
+         slot ineligibility and restricted-secondary attempts cannot spend
+         this budget.  Decrement the skip count for the whole batch. */
+      for( _cur=_txn0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
+        fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
+        ulong this_bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+        if( FD_UNLIKELY( this_bundle_idx!=bundle_idx ) ) break;
+
+        /* See fd_pack_schedule_impl for this line */
+        cur->skip = (ushort)(1+fd_ushort_min( (ushort)(pack->compressed_slot_number-1),
+              (ushort)(fd_ushort_min( cur->skip, FD_PACK_SKIP_CNT )-2) ) );
+      }
     }
     return retval;
   }
