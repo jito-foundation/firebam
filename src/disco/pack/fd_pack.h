@@ -665,6 +665,24 @@ void const * fd_pack_peek_bundle_meta( fd_pack_t const * pack,
                                        _Bool             bam_only,
                                        ulong *           bundle_hint );
 
+/* Returns the actual first whole candidate for the selected ownership
+   mode, including initializers and candidates in Pending/Failed state.
+   This is a read-only view, not permission to execute.  Pointer and hint
+   expire at the next insert, schedule, delete, expire, end/clear block,
+   initializer-state update or rebate call.  No candidate yields NULL and
+   ULONG_MAX.  Callers must recompute target-slot readiness within this
+   lifetime; the scheduling routine rejects stale or mode-mismatched BAM
+   readiness hints. */
+fd_txn_p_t const * fd_pack_peek_bundle_candidate( fd_pack_t const * pack,
+                                                  _Bool             bam_only,
+                                                  ulong *           bundle_hint );
+
+/* Tests the queued initializer's full signature and ownership mode, even
+   when it is deferred.  A dispatched initializer is no longer queued. */
+int fd_pack_contains_initializer_bundle( fd_pack_t const *        pack,
+                                         fd_ed25519_sig_t const * sig0,
+                                         _Bool                    bam_only );
+
 /* fd_pack_set_initializer_bundles_ready sets the IB state machine state
    (see long initializer bundle comment above) to the [Ready] state.
    This function makes it easy to use bundles without initializer
@@ -681,6 +699,17 @@ void fd_pack_set_initializer_bundles_ready( fd_pack_t * pack );
 #define FD_PACK_SCHEDULE_BUNDLE 2
 #define FD_PACK_SCHEDULE_TXN    4
 #define FD_PACK_SCHEDULE_BAM_ONLY 8
+#define FD_PACK_SCHEDULE_BAM_SINGLE 16
+#define FD_PACK_SCHEDULE_BAM_READY  32
+
+/* BAM_SINGLE grants worker eligibility only for the common candidate
+   when it is a non-initializer, one-transaction BAM batch.  It does not
+   bypass earlier batches or spend their capacity-deferral budget.
+   BUNDLE retains full worker eligibility and ordinary capacity deferral.
+   Both require BAM_READY for BAM batches and BAM initializers.  BAM_READY
+   certifies that this exact candidate is ready in the active leader bank
+   and must be passed with a live mode-matched candidate hint.  The
+   unhinted scheduling entry point cannot dispatch BAM work. */
 
 /* fd_pack_schedule_next_microblock schedules pending transactions.
    These transaction either form a microblock, which is a set of
@@ -696,15 +725,15 @@ void fd_pack_set_initializer_bundles_ready( fd_pack_t * pack );
    is a no-op.  The full policy is as follows:
     1. If the VOTE bit is set, attempt to schedule votes.  This is the
        microblock case.
-    2. If the BUNDLE bit is set, and step 1 did not schedule any votes,
+    2. If BUNDLE or BAM_SINGLE is set, and step 1 did not schedule votes,
        attempt to schedule bundles.  This is the bundle case.
     3. If the TXN bit is set, and step 2 did not schedule any bundles
        for a reason other than account conflicts, attempt to schedule
        normal transactions.  This is the microblock case.
    Note that it is possible to schedule a microblock containing both
    votes and normal transactions, but bundles cannot be combined with
-   either other type.  Additionally, if the BUNDLE bit is not set, step
-   2 will not schedule any bundles for that reason, which is a reason
+   either other type.  Additionally, if neither BUNDLE nor BAM_SINGLE is
+   set, step 2 will not schedule any bundles for that reason, which is a reason
    other than account conflicts, so that clause will always be
    satisfied.
 
@@ -750,8 +779,8 @@ fd_pack_schedule_next_microblock( fd_pack_t  * pack,
 
 /* fd_pack_schedule_next_microblock_with_bundle_hint is identical to
    fd_pack_schedule_next_microblock, except that it reuses a bundle candidate
-   returned through fd_pack_peek_bundle_meta's hint output.  Pass ULONG_MAX
-   to opt out of the hint. */
+   returned through fd_pack_peek_bundle_candidate or fd_pack_peek_bundle_meta.
+   Pass ULONG_MAX to opt out of the hint (and BAM readiness). */
 ulong
 fd_pack_schedule_next_microblock_with_bundle_hint( fd_pack_t  * pack,
                                                    ulong        total_cus,

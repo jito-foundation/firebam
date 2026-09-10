@@ -35,6 +35,7 @@ FD_IMPORT_BINARY( test_pack_tile_non_vote,    "src/ballet/txn/fixtures/transacti
 int fd_pack_insert_bundle_fini( fd_pack_t *, fd_txn_e_t * const *, ulong, ulong,
                                 int, void const *, ulong *, ulong * );
 ulong fd_pack_delete_transaction( fd_pack_t *, fd_ed25519_sig_t const * );
+void fd_pack_insert_bundle_cancel( fd_pack_t *, fd_txn_e_t * const *, ulong );
 int fd_pack_contains_bam_bundle( fd_pack_t const *, fd_ed25519_sig_t const *, uint, ushort, int );
 ulong fd_pack_delete_bam_bundle( fd_pack_t *, fd_ed25519_sig_t const *, uint, ushort );
 
@@ -52,6 +53,7 @@ static ulong             test_insert_fini_call_cnt;
 static int               test_insert_fini_result;
 static int               test_insert_fini_use_real_pack;
 static int               test_delete_use_real_pack;
+static int               test_cancel_use_real_pack;
 static int               test_delete_before_insert_fini;
 static ulong             test_insert_txn_init_call_cnt;
 static ulong             test_insert_txn_fini_call_cnt;
@@ -214,18 +216,19 @@ test_fd_pack_insert_bundle_cancel( fd_pack_t *          pack,
   (void)bundle;
   test_bundle_cancel_call_cnt++;
   test_bundle_cancel_last_txn_cnt = txn_cnt;
+  if( test_cancel_use_real_pack ) fd_pack_insert_bundle_cancel( pack, bundle, txn_cnt );
 }
 
 typedef struct {
   fd_frag_meta_t *  mcache;
   void *            dcache_mem;
   uchar *           dcache;
-  fd_frag_meta_t *  mcaches[ 1 ];
-  ulong             seqs[ 1 ];
-  ulong             depths[ 1 ];
-  ulong             cr_avail[ 1 ];
+  fd_frag_meta_t *  mcaches[ 4 ];
+  ulong             seqs[ 4 ];
+  ulong             depths[ 4 ];
+  ulong             cr_avail[ 4 ];
   ulong             min_cr_avail;
-  int              out_reliable[ 1 ];
+  int              out_reliable[ 4 ];
   fd_stem_context_t stem;
 } test_pack_tile_out_t;
 
@@ -261,9 +264,9 @@ static void
 test_pack_tile_out_new( test_pack_tile_out_t * out ) {
   fd_memset( out, 0, sizeof(*out) );
 
-  out->mcache = aligned_alloc( alignof(fd_frag_meta_t), TEST_PACK_TILE_MCACHE_DEPTH * sizeof(fd_frag_meta_t) );
+  out->mcache = aligned_alloc( alignof(fd_frag_meta_t), 4UL * TEST_PACK_TILE_MCACHE_DEPTH * sizeof(fd_frag_meta_t) );
   FD_TEST( out->mcache );
-  fd_memset( out->mcache, 0, TEST_PACK_TILE_MCACHE_DEPTH * sizeof(fd_frag_meta_t) );
+  fd_memset( out->mcache, 0, 4UL * TEST_PACK_TILE_MCACHE_DEPTH * sizeof(fd_frag_meta_t) );
 
   ulong dcache_data_sz   = TEST_PACK_TILE_DCACHE_CHUNKS * FD_CHUNK_SZ;
   ulong dcache_footprint = fd_dcache_footprint( dcache_data_sz, 0UL );
@@ -272,12 +275,13 @@ test_pack_tile_out_new( test_pack_tile_out_t * out ) {
   out->dcache = fd_dcache_join( fd_dcache_new( out->dcache_mem, dcache_data_sz, 0UL ) );
   FD_TEST( out->dcache );
 
-  out->mcaches[ 0 ]      = out->mcache;
-  out->seqs[ 0 ]         = 0UL;
-  out->depths[ 0 ]       = TEST_PACK_TILE_MCACHE_DEPTH;
-  out->cr_avail[ 0 ]     = ULONG_MAX;
-  out->min_cr_avail      = ULONG_MAX;
-  out->out_reliable[ 0 ] = 1;
+  for( ulong i=0UL; i<4UL; i++ ) {
+    out->mcaches[i] = out->mcache+i*TEST_PACK_TILE_MCACHE_DEPTH;
+    out->depths[i] = TEST_PACK_TILE_MCACHE_DEPTH;
+    out->cr_avail[i] = ULONG_MAX;
+    out->out_reliable[i] = 1;
+  }
+  out->min_cr_avail = ULONG_MAX;
   out->stem = (fd_stem_context_t){
     .mcaches             = out->mcaches,
     .seqs                = out->seqs,
@@ -351,6 +355,7 @@ test_pack_tile_harness_new( test_pack_tile_harness_t * h ) {
   test_insert_fini_result         = FD_PACK_INSERT_ACCEPT_NONVOTE_ADD;
   test_insert_fini_use_real_pack  = 0;
   test_delete_use_real_pack       = 0;
+  test_cancel_use_real_pack       = 0;
   test_delete_before_insert_fini  = 0;
   test_insert_txn_init_call_cnt   = 0UL;
   test_insert_txn_fini_call_cnt   = 0UL;
@@ -1017,8 +1022,8 @@ static void
 test_pack_tile_make_d18_poc_txns( fd_txn_p_t *,
                                   fd_txn_p_t * );
 
-/* Clearing override before old BAM work is retired makes that work eligible
-   for ordinary scheduling.  Delete the generation and wait for pack's ack. */
+/* Retire old BAM work before clearing override.  Readiness also prevents
+   buffered BAM work from becoming eligible for ordinary scheduling. */
 static void
 test_pack_tile_bam_disable_retires_pending_before_override_clear( void ) {
   fd_pack_limits_t limits = {
@@ -1031,8 +1036,8 @@ test_pack_tile_bam_disable_retires_pending_before_override_clear( void ) {
     .max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK,
   };
 
-  /* The control case demonstrates the leak without retirement; the guarded
-     case proves the same queued work remains unschedulable. */
+  /* Without retirement the work remains buffered but cannot dispatch.
+     The generation barrier removes that work before acknowledging handoff. */
   for( int retire_before_clear=0; retire_before_clear<2; retire_before_clear++ ) {
     fd_rng_t pack_rng[1];
     FD_TEST( fd_rng_join( fd_rng_new( pack_rng, 0U, (ulong)retire_before_clear ) ) );
@@ -1113,14 +1118,10 @@ test_pack_tile_bam_disable_retires_pending_before_override_clear( void ) {
         FD_PACK_SCHEDULE_VOTE | FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_TXN,
         scheduled );
 
-    if( FD_UNLIKELY( !retire_before_clear ) ) {
-      FD_TEST( scheduled_cnt==1UL );
-      FD_TEST( scheduled[ 0 ].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
-      FD_TEST( scheduled[ 0 ].txnp->bam.seq_id==360001U );
-      FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
-    } else {
-      FD_TEST( scheduled_cnt==0UL );
-    }
+    /* Even a buffered candidate cannot inherit normal-mode readiness.
+       The generation barrier still owns retirement of pending BAM work. */
+    FD_TEST( scheduled_cnt==0UL );
+    FD_TEST( fd_pack_avail_txn_cnt( pack )==(ulong)!retire_before_clear );
 
     test_pack_tile_harness_delete( h );
     FD_TEST( fd_pack_delete( fd_pack_leave( pack ) )==pack_mem );
@@ -2865,11 +2866,537 @@ test_pack_tile_bam_preprocess_marker_has_one_terminal_owner( void ) {
   }
 }
 
+/* Drive the actual Pack callbacks with a real two-worker pack and distinct
+   executor links.  The other tile tests retain their small fake Pack. */
+typedef struct {
+  test_pack_tile_harness_t h[1];
+  fd_rng_t rng[1];
+  void * pack_mem;
+  void * exec_dcache_mem[2];
+  void * extra_mem;
+  ulong status;
+  ulong generation;
+  ulong busy[2];
+} test_pack_callbacks_t;
+
+static void
+test_pack_callbacks_new( test_pack_callbacks_t * e,
+                         int                     strategy ) {
+  fd_memset( e, 0, sizeof(*e) );
+  test_pack_tile_harness_new( e->h );
+  fd_pack_ctx_t * ctx = e->h->ctx;
+  fd_pack_limits_t limits = {
+    .max_cost_per_block=FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND,
+    .max_vote_cost_per_block=FD_PACK_MAX_VOTE_COST_PER_BLOCK_LOWER_BOUND,
+    .max_write_cost_per_acct=FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND,
+    .max_data_bytes_per_block=FD_PACK_MAX_DATA_PER_BLOCK,
+    .max_txn_per_microblock=FD_PACK_MAX_TXN_PER_BUNDLE,
+    .max_microblocks_per_block=1024UL,
+    .max_allocated_data_per_block=FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK,
+  };
+  FD_TEST( fd_rng_join( fd_rng_new( e->rng, 0U, 0UL ) ) );
+  ulong sz = fd_pack_footprint( TEST_PACK_TILE_BAM_WORK_CAP, BUNDLE_META_SZ, 2UL, &limits );
+  e->pack_mem = aligned_alloc( fd_pack_align(), fd_ulong_align_up( sz, fd_pack_align() ) );
+  FD_TEST( e->pack_mem );
+  ctx->pack = fd_pack_join( fd_pack_new( e->pack_mem, TEST_PACK_TILE_BAM_WORK_CAP, BUNDLE_META_SZ,
+                                       2UL, &limits, NULL, 0UL, e->rng ) );
+  FD_TEST( ctx->pack );
+  test_insert_fini_use_real_pack = test_delete_use_real_pack = test_cancel_use_real_pack = 1;
+  ctx->execle_cnt = 2UL;
+  ctx->execle_idle_bitset = 3UL;
+  ctx->strategy = strategy;
+  e->status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+  e->generation = 7UL<<1;
+  ctx->bam_status_fseq = &e->status;
+  ctx->bam_gen_fseq = &e->generation;
+  ctx->bam_ownership_gen = 7U;
+  ctx->bam_override_snapshot = 1;
+  ctx->bam_leader_out.idx = ULONG_MAX;
+  ctx->bam_result_out.idx = 2UL;
+  ctx->poh_out = (fd_pack_out_ctx_t){ .out_idx=1UL, .mem=(fd_wksp_t *)e->h->out->dcache,
+      .chunk0=ctx->bam_result_out.chunk0, .chunk=ctx->bam_result_out.chunk0, .wmark=ctx->bam_result_out.wmark };
+  for( ulong i=0UL; i<2UL; i++ ) {
+    ulong data_sz = fd_dcache_req_data_sz( MAX_MICROBLOCK_SZ, TEST_PACK_TILE_MCACHE_DEPTH, 1UL, 1 );
+    e->exec_dcache_mem[i] = aligned_alloc( fd_dcache_align(), fd_dcache_footprint( data_sz, 0UL ) );
+    FD_TEST( e->exec_dcache_mem[i] );
+    void * dc = fd_dcache_join( fd_dcache_new( e->exec_dcache_mem[i], data_sz, 0UL ) );
+    FD_TEST( dc );
+    ulong chunk0 = fd_dcache_compact_chunk0( dc, dc );
+    ctx->execle_out[i] = (fd_pack_out_ctx_t){ .out_idx=i ? 3UL : 0UL, .mem=dc,
+        .chunk0=chunk0, .chunk=chunk0, .wmark=fd_dcache_compact_wmark( dc, dc, MAX_MICROBLOCK_SZ ) };
+    e->busy[i] = ULONG_MAX;
+    ctx->execle_current[i] = &e->busy[i];
+    ctx->execle_expect[i] = 0UL;
+  }
+#if FD_PACK_USE_EXTRA_STORAGE
+  e->extra_mem = aligned_alloc( extra_txn_deq_align(), fd_ulong_align_up( extra_txn_deq_footprint(), extra_txn_deq_align() ) );
+  FD_TEST( e->extra_mem );
+  ctx->extra_txn_deq = extra_txn_deq_join( extra_txn_deq_new( e->extra_mem ) );
+#endif
+  fd_histf_new( ctx->schedule_duration, 1UL, 1000000UL );
+  fd_histf_new( ctx->no_sched_duration, 1UL, 1000000UL );
+  fd_histf_new( ctx->insert_duration, 1UL, 1000000UL );
+  fd_histf_new( ctx->complete_duration, 1UL, 1000000UL );
+  fd_pack_pacing_init( ctx->pacer, fd_tickcount(), fd_tickcount()+1000000000L, 1.0f, limits.max_cost_per_block );
+}
+
+static void
+test_pack_callbacks_delete( test_pack_callbacks_t * e ) {
+  fd_pack_delete( fd_pack_leave( e->h->ctx->pack ) );
+  fd_rng_delete( fd_rng_leave( e->rng ) );
+  free( e->pack_mem );
+  for( ulong i=0UL; i<2UL; i++ ) free( e->exec_dcache_mem[i] );
+  free( e->extra_mem );
+  test_pack_tile_harness_delete( e->h );
+}
+
+static void
+test_pack_callbacks_leader( test_pack_callbacks_t * e,
+                            ulong                   slot,
+                            int                     frank ) {
+  fd_pack_ctx_t * ctx = e->h->ctx;
+  fd_became_leader_t leader = {0};
+  leader.slot = leader.bank_idx = slot;
+  leader.bank_seq = slot+1000UL;
+  leader.slot_start_ns = fd_log_wallclock();
+  leader.slot_end_ns = leader.slot_start_ns+400000000L;
+  leader.tick_duration_ns = 6250000UL;
+  leader.ticks_per_slot = 64UL;
+  leader.max_microblocks_in_slot = 1024UL;
+  leader.limits.slot_max_cost = FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND;
+  leader.limits.slot_max_vote_cost = FD_PACK_MAX_VOTE_COST_PER_BLOCK_LOWER_BOUND;
+  leader.limits.slot_max_write_cost_per_acct = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND;
+  leader.limits.slot_max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK;
+  leader.limits.slot_max_data_shreds = 32768UL;
+  ctx->in_kind[0] = frank ? IN_KIND_POH : IN_KIND_REPLAY;
+  ctx->in[0] = (fd_pack_in_ctx_t){ .mem=(fd_wksp_t *)&leader, .chunk0=0UL, .wmark=0UL };
+  ulong sig = frank ? fd_disco_poh_sig( slot, POH_PKT_TYPE_BECAME_LEADER, 0UL ) : REPLAY_SIG_BECAME_LEADER;
+  during_frag( ctx, 0UL, 0UL, sig, 0UL, sizeof(leader), 0UL );
+  after_frag( ctx, 0UL, 0UL, sig, sizeof(leader), 0UL, 0UL, &e->h->out->stem );
+}
+
+static void
+test_pack_callbacks_insert( test_pack_callbacks_t * e,
+                            uint                    seq_id,
+                            ulong                   target_slot,
+                            int                     revert ) {
+  fd_txn_p_t invalid[1], txn[1];
+  test_pack_tile_make_d18_poc_txns( invalid, txn );
+  test_pack_tile_fill_sig( txn->payload+1UL, (uchar)seq_id );
+  txn->payload[ TXN(txn)->acct_addr_off ] ^= (uchar)seq_id;
+  uchar resolved[ FD_TPU_RESOLVED_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
+  ulong leader_slot = e->h->ctx->leader_slot;
+  ulong sz = test_pack_tile_prepare_resolv_frag( e->h, resolved, txn->payload, txn->payload_sz, FD_TXN_M_TPU_SOURCE_BAM, 100UL );
+  e->h->ctx->leader_slot = leader_slot;
+  fd_txn_m_t * m = (fd_txn_m_t *)resolved;
+  m->bam.max_schedule_slot = target_slot;
+  m->bam.seq_id = seq_id;
+  m->bam.scheduler_gen = 9U;
+  m->bam.ownership_gen = e->h->ctx->bam_ownership_gen;
+  m->bam.txn_cnt = 1U;
+  m->bam.revert_on_error = !!revert;
+  m->block_engine.bundle_id = revert ? (ulong)seq_id+1UL : 0UL;
+  m->block_engine.bundle_txn_cnt = revert ? 1UL : 0UL;
+  during_frag( e->h->ctx, 0UL, 0UL, 100UL, 0UL, sz, 0UL );
+  after_frag( e->h->ctx, 0UL, 0UL, 100UL, sz, 0UL, 0UL, &e->h->out->stem );
+}
+
+static void
+test_pack_callbacks_step( test_pack_callbacks_t * e ) {
+  e->h->ctx->skip_cnt = 0L;
+  int poll=1, busy=0;
+  after_credit( e->h->ctx, &e->h->out->stem, &poll, &busy );
+}
+
+static ulong
+test_pack_callbacks_dispatch_count( test_pack_callbacks_t const * e ) {
+  return e->h->out->seqs[0]+e->h->out->seqs[3];
+}
+
+static fd_txn_e_t const *
+test_pack_callbacks_output( test_pack_callbacks_t const * e,
+                            ulong                         ordinal,
+                            fd_microblock_execle_trailer_t const ** trailer ) {
+  /* These fixtures dispatch one transaction per fragment.  Locate the
+     global Pack index across the two executor rings. */
+  for( ulong worker=0UL; worker<2UL; worker++ ) {
+    ulong idx = worker ? 3UL : 0UL;
+    for( ulong seq=0UL; seq<e->h->out->seqs[idx]; seq++ ) {
+      fd_frag_meta_t const * m = &e->h->out->mcaches[idx][fd_mcache_line_idx( seq, TEST_PACK_TILE_MCACHE_DEPTH )];
+      fd_txn_e_t const * txns = fd_chunk_to_laddr_const( e->h->ctx->execle_out[worker].mem, m->chunk );
+      ulong count = (m->sz-sizeof(**trailer))/sizeof(fd_txn_e_t);
+      *trailer = (fd_microblock_execle_trailer_t const *)(txns+count);
+      if( (*trailer)->microblock_idx==ordinal ) return txns;
+    }
+  }
+  FD_LOG_ERR(( "missing Pack output %lu", ordinal ));
+}
+
+static void
+test_pack_tile_bam_target_slot_callbacks( void ) {
+  for( int strategy=FD_PACK_STRATEGY_PERF; strategy<=FD_PACK_STRATEGY_BALANCED; strategy++ )
+  for( int frank=0; frank<2; frank++ )
+  for( int revert=0; revert<2; revert++ ) {
+    test_pack_callbacks_t e[1];
+    test_pack_callbacks_new( e, strategy );
+    fd_pack_ctx_t * ctx = e->h->ctx;
+    test_pack_callbacks_leader( e, 104UL, frank );
+    test_pack_callbacks_insert( e, 41U, 105UL, revert );
+    test_pack_callbacks_insert( e, 42U, 104UL, revert );
+    FD_TEST( ctx->bam_pending_work_cnt==2UL );
+    /* An idle secondary must not bypass a future FIFO head.  Empty BAM
+       fee configuration makes an accidental crank attempt observable via
+       cancellation without involving a sign service. */
+    ctx->crank->enabled = 1;
+    ctx->execle_idle_bitset = 2UL;
+    ulong cancel_before = test_bundle_cancel_call_cnt;
+    for( ulong j=0UL; j<128UL; j++ ) test_pack_callbacks_step( e );
+    FD_TEST( ctx->pack_idx==0U && !ctx->slot_microblock_cnt );
+    FD_TEST( !fd_pack_current_block_cost( ctx->pack ) );
+    FD_TEST( !ctx->bam_ib_associated && !ctx->crank->ib_inserted );
+    FD_TEST( test_bundle_cancel_call_cnt==cancel_before );
+    FD_TEST( test_pack_callbacks_dispatch_count( e )==0UL );
+
+    test_pack_callbacks_leader( e, 105UL, frank );
+    FD_TEST( ctx->bam_min_admission_slot==105UL && ctx->drain_execle );
+    FD_TEST( ctx->bam_pending_work_cnt==1UL && ctx->bam_pending_result_cnt==1UL );
+    uint after_close_idx = ctx->pack_idx;
+    test_pack_callbacks_step( e );
+    FD_TEST( ctx->pack_idx==after_close_idx && !test_pack_callbacks_dispatch_count( e ) );
+    /* Result progress is independent of old executor completion. */
+    FD_TEST( !ctx->bam_pending_result_cnt && e->h->out->seqs[2]==1UL );
+    fd_frag_meta_t const * res_meta = e->h->out->mcaches[2];
+    fd_bam_bundle_result_t const * res = fd_chunk_to_laddr_const( e->h->out->dcache, res_meta->chunk );
+    FD_TEST( res->seq_id==42U && res->scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT );
+    e->busy[0] = ctx->execle_expect[0];
+    test_pack_callbacks_step( e ); /* done draining */
+    FD_TEST( !ctx->drain_execle && !test_pack_callbacks_dispatch_count( e ) );
+    test_pack_callbacks_step( e );
+    FD_TEST( test_pack_callbacks_dispatch_count( e )==1UL && ctx->bam_scheduled_work_cnt==1UL );
+    fd_microblock_execle_trailer_t const * trailer;
+    fd_txn_e_t const * txn = test_pack_callbacks_output( e, 0UL, &trailer );
+    FD_TEST( txn->txnp->bam.seq_id==41U && txn->txnp->bam.revert_on_error==(uchar)revert );
+    FD_TEST( trailer->bank_idx==105UL && trailer->bank_seq==1105UL );
+    FD_TEST( trailer->pack_idx==after_close_idx );
+    test_pack_callbacks_delete( e );
+  }
+}
+
+static void
+test_pack_tile_bam_secondary_callbacks( void ) {
+  for( int revert=0; revert<2; revert++ ) {
+    test_pack_callbacks_t e[1];
+    test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+    fd_pack_ctx_t * ctx = e->h->ctx;
+    test_pack_callbacks_leader( e, 104UL, 0 );
+    test_pack_callbacks_insert( e, 51U, 104UL, revert );
+    test_pack_callbacks_insert( e, 52U, 104UL, revert );
+    test_pack_callbacks_step( e );
+    FD_TEST( ctx->execle_idle_bitset==2UL );
+    test_pack_callbacks_step( e );
+    FD_TEST( !ctx->execle_idle_bitset && ctx->bam_scheduled_work_cnt==2UL );
+    FD_TEST( ctx->pack_idx==2U && test_pack_callbacks_dispatch_count( e )==2UL );
+    FD_TEST( e->h->out->seqs[0]==1UL && e->h->out->seqs[3]==1UL );
+    for( ulong i=0UL; i<2UL; i++ ) {
+      fd_microblock_execle_trailer_t const * trailer;
+      fd_txn_e_t const * txn = test_pack_callbacks_output( e, i, &trailer );
+      FD_TEST( txn->txnp->bam.seq_id==(uint)(51UL+i) && trailer->pack_idx==(uint)i );
+      FD_TEST( trailer->is_bundle==(uchar)revert && trailer->bank_idx==104UL );
+    }
+    e->busy[1] = ctx->execle_expect[1];
+    for( int i=0; i<2; i++ ) test_pack_callbacks_step( e );
+    FD_TEST( ctx->execle_idle_bitset==2UL && ctx->pack_idx==2U );
+    test_pack_callbacks_delete( e );
+  }
+}
+
+static void
+test_pack_tile_bam_closed_admission_callbacks( void ) {
+  for( int frank=0; frank<2; frank++ ) {
+    test_pack_callbacks_t e[1];
+    test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+    fd_pack_ctx_t * ctx = e->h->ctx;
+    test_pack_callbacks_leader( e, 104UL, frank );
+    ctx->highest_observed_slot = 100UL;
+    pack_tile_finish_leader_slot( ctx, &e->h->out->stem, fd_tickcount(), "test",
+        FD_PACK_END_SLOT_REASON_TIME, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT );
+    FD_TEST( ctx->bam_min_admission_slot==105UL && ctx->leader_slot==ULONG_MAX );
+    test_pack_callbacks_insert( e, 61U, 104UL, 0 );
+    FD_TEST( !ctx->bam_pending_work_cnt && ctx->bam_pending_result_cnt==1UL );
+    test_pack_callbacks_insert( e, 62U, 105UL, 1 );
+    FD_TEST( ctx->bam_pending_work_cnt==1UL );
+    FD_TEST( ctx->highest_observed_slot==100UL );
+    /* Floor does not change the clock used for blockhash age or its error
+       precedence.  Unknown-current-slot and ULONG_MAX are explicit cases. */
+    FD_TEST( pack_tile_bam_admission_invalid_reason( ctx, 400UL, 104UL, 100UL )==PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED );
+    FD_TEST( pack_tile_bam_admission_invalid_reason( ctx, ULONG_MAX, 104UL, 100UL )==PACK_TILE_BAM_INVALID_OUTSIDE_SLOT );
+    FD_TEST( pack_tile_bam_admission_invalid_reason( ctx, ULONG_MAX, 105UL, 100UL )==PACK_TILE_BAM_INVALID_NONE );
+    ulong closed_outputs = e->h->out->seqs[1];
+    pack_tile_finish_leader_slot( ctx, &e->h->out->stem, fd_tickcount(), "unknown",
+        FD_PACK_END_SLOT_REASON_TIME, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT );
+    FD_TEST( ctx->bam_min_admission_slot==105UL && e->h->out->seqs[1]==closed_outputs );
+    /* An unexpected backward bank does not reopen the closed slot. */
+    test_pack_callbacks_leader( e, 103UL, frank );
+    test_pack_callbacks_insert( e, 63U, 104UL, 0 );
+    FD_TEST( ctx->bam_pending_work_cnt==1UL && ctx->bam_min_admission_slot==105UL );
+    /* Skip the target: rejection retains its original slot. */
+    test_pack_callbacks_leader( e, 106UL, frank );
+    FD_TEST( !ctx->bam_pending_work_cnt );
+    FD_TEST( !test_pack_callbacks_dispatch_count( e ) );
+    test_pack_callbacks_delete( e );
+  }
+}
+
+static void
+test_pack_tile_bam_result_drain_before_skip( void ) {
+  test_pack_callbacks_t e[1];
+  test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+  fd_pack_ctx_t * ctx = e->h->ctx;
+  ctx->drain_execle = 1;
+  ctx->execle_idle_bitset = 0UL;
+  /* after_credit runs only when every output has STEM_BURST credits.
+     Exercise real credit consumption, including an undrained FIFO tail
+     that must survive until the result consumer returns credit. */
+  for( ulong i=0UL; i<4UL; i++ ) e->h->out->cr_avail[i] = TEST_PACK_TILE_MCACHE_DEPTH;
+  e->h->out->cr_avail[2] = 4UL;
+  e->h->out->min_cr_avail = 4UL;
+  e->h->out->stem.cr_decrement_amount = 1UL;
+  fd_bam_bundle_result_t result = fd_bam_result_base( 70U, 9U, 104UL, 1U );
+  for( int i=0; i<4; i++ ) {
+    result.seq_id = (uint)(70+i);
+    FD_TEST( pack_tile_enqueue_bam_result( ctx, &result ) );
+  }
+  ctx->skip_cnt = 100L;
+  for( ulong i=1UL; i<=3UL; i++ ) {
+    FD_TEST( e->h->out->min_cr_avail>=2UL ); /* Pack's STEM_BURST */
+    int poll=1, busy=0;
+    after_credit( ctx, &e->h->out->stem, &poll, &busy );
+    FD_TEST( busy && e->h->out->seqs[2]==i && ctx->bam_pending_result_cnt==4UL-i );
+    FD_TEST( e->h->out->cr_avail[2]==4UL-i && e->h->out->min_cr_avail==4UL-i );
+    fd_frag_meta_t const * meta = &e->h->out->mcaches[2][i-1UL];
+    fd_bam_bundle_result_t const * published = fd_chunk_to_laddr_const( e->h->out->dcache, meta->chunk );
+    FD_TEST( published->seq_id==(uint)(69UL+i) && published->scheduler_gen==9U && published->slot==104UL );
+    FD_TEST( ctx->bam_result_publish_cnt==1UL && ctx->drain_execle );
+    FD_TEST( !test_pack_callbacks_dispatch_count( e ) && !e->h->out->seqs[1] );
+    FD_TEST( !pack_tile_drain_one_pending_bam_result( ctx, &e->h->out->stem ) );
+  }
+  FD_TEST( e->h->out->min_cr_avail<2UL && ctx->bam_pending_result_cnt==1UL );
+  FD_TEST( ctx->bam_result_queue[ctx->bam_result_queue_head].seq_id==73U );
+  /* Stem resumes the credited callback once the consumer advances. */
+  e->h->out->cr_avail[2] = e->h->out->min_cr_avail = 2UL;
+  int poll=1, busy=0;
+  after_credit( ctx, &e->h->out->stem, &poll, &busy );
+  FD_TEST( busy && !ctx->bam_pending_result_cnt && e->h->out->seqs[2]==4UL );
+  FD_TEST( e->h->out->cr_avail[2]==1UL && e->h->out->min_cr_avail==1UL );
+  FD_TEST( ctx->bam_result_publish_cnt==1UL && ctx->drain_execle );
+  FD_TEST( !test_pack_callbacks_dispatch_count( e ) && !e->h->out->seqs[1] );
+  test_pack_callbacks_delete( e );
+}
+
+static void
+test_pack_callbacks_initializer( test_pack_callbacks_t * e,
+                                  uchar                   seed,
+                                  ushort                  ownership_gen ) {
+  fd_pack_ctx_t * ctx = e->h->ctx;
+  fd_txn_e_t * bundle[1];
+  FD_TEST( fd_pack_insert_bundle_init( ctx->pack, bundle, 1UL )==bundle );
+  fd_txn_p_t invalid[1];
+  test_pack_tile_make_d18_poc_txns( invalid, bundle[0]->txnp );
+  test_pack_tile_fill_sig( bundle[0]->txnp->payload+1UL, seed );
+  bundle[0]->txnp->payload[ TXN(bundle[0]->txnp)->acct_addr_off ] ^= seed;
+  bundle[0]->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_BUNDLE;
+  fd_memcpy( ctx->crank->last_sig, bundle[0]->txnp->payload+1UL, sizeof(fd_ed25519_sig_t) );
+  ulong deleted;
+  FD_TEST( fd_pack_insert_bundle_fini( ctx->pack, bundle, 1UL, 100UL,
+              FD_PACK_IB_TYPE_BAM, NULL, &deleted, NULL )>=0 );
+  ctx->crank->enabled = 1;
+  ctx->crank->ib_inserted = 1;
+  ctx->bam_ib_associated = 1;
+  ctx->bam_ib_slot = ctx->leader_slot;
+  ctx->bam_ib_ownership_gen = ownership_gen;
+  fd_memset( ctx->crank->prev_config_before_ib, 0x11, sizeof(*ctx->crank->prev_config_before_ib) );
+  fd_memset( ctx->crank->prev_config,           0x22, sizeof(*ctx->crank->prev_config) );
+}
+
+static void
+test_pack_tile_bam_initializer_generation_callbacks( void ) {
+  /* Queued, deferred, dispatched/success, dispatched/failure, and a newer
+     replacement.  Override stays continuously active for every handoff. */
+  for( int scenario=0; scenario<5; scenario++ ) {
+    test_pack_callbacks_t e[1];
+    test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+    fd_pack_ctx_t * ctx = e->h->ctx;
+    test_pack_callbacks_leader( e, 104UL, 0 );
+    test_pack_callbacks_insert( e, 81U, 104UL, 1 );
+    test_pack_callbacks_initializer( e, 80U, 7U );
+    ulong old_hint;
+    FD_TEST( fd_pack_peek_bundle_candidate( ctx->pack, 1, &old_hint ) );
+    FD_TEST( fd_pack_contains_initializer_bundle( ctx->pack,
+                 (fd_ed25519_sig_t const *)ctx->crank->last_sig, 1 ) );
+    if( scenario==1 ) {
+      fd_pack_limits_t limits[1];
+      fd_pack_get_block_limits( ctx->pack, NULL, limits );
+      ulong old_bytes = limits->max_data_bytes_per_block;
+      /* Enough bytes for the scheduler's minimum-transaction guard, but
+         too few for this 223-byte initializer plus its microblock header. */
+      limits->max_data_bytes_per_block = 48UL+FD_TXN_MIN_SERIALIZED_SZ;
+      fd_pack_set_block_limits( ctx->pack, limits );
+      fd_txn_e_t output[FD_PACK_MAX_TXN_PER_BUNDLE];
+      for( ulong j=0UL; j<128UL; j++ ) {
+        ulong hint;
+        fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint );
+        FD_TEST( !fd_pack_schedule_next_microblock_with_bundle_hint( ctx->pack, CUS_PER_MICROBLOCK, 0.0f, 0UL,
+                    FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY, hint, output ) );
+      }
+      ulong deferred_hint;
+      FD_TEST( !fd_pack_peek_bundle_candidate( ctx->pack, 1, &deferred_hint ) );
+      FD_TEST( fd_pack_contains_initializer_bundle( ctx->pack,
+                   (fd_ed25519_sig_t const *)ctx->crank->last_sig, 1 ) );
+      limits->max_data_bytes_per_block = old_bytes;
+      fd_pack_set_block_limits( ctx->pack, limits );
+    }
+    if( scenario==2 || scenario==3 ) {
+      test_pack_callbacks_step( e );
+      FD_TEST( test_pack_callbacks_dispatch_count( e )==1UL );
+      FD_TEST( !fd_pack_contains_initializer_bundle( ctx->pack,
+                   (fd_ed25519_sig_t const *)ctx->crank->last_sig, 1 ) );
+    }
+    if( scenario==4 ) test_pack_callbacks_initializer( e, 83U, 8U );
+    fd_bundle_crank_tip_payment_config_t expected = *ctx->crank->prev_config;
+    e->generation = (8UL<<1) | 1UL;
+    pack_tile_sync_bam_ownership_generation( ctx );
+    FD_TEST( e->generation==(8UL<<1) && ctx->bam_ownership_gen==8U );
+    FD_TEST( e->status==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE && ctx->bam_override_snapshot );
+    FD_TEST( !ctx->bam_pending_work_cnt );
+    if( scenario<2 ) {
+      FD_TEST( !fd_pack_avail_txn_cnt( ctx->pack ) && !ctx->bam_ib_associated && !ctx->crank->ib_inserted );
+      FD_TEST( !memcmp( ctx->crank->prev_config, ctx->crank->prev_config_before_ib, sizeof(expected) ) );
+    } else {
+      FD_TEST( !memcmp( ctx->crank->prev_config, &expected, sizeof(expected) ) );
+      FD_TEST( ctx->bam_ib_associated==(scenario==4) );
+    }
+    if( scenario==4 ) {
+      FD_TEST( fd_pack_contains_initializer_bundle( ctx->pack,
+                   (fd_ed25519_sig_t const *)ctx->crank->last_sig, 1 ) );
+      /* Slot-close cleanup retires this newer queued initializer too. */
+      pack_tile_finish_leader_slot( ctx, &e->h->out->stem, fd_tickcount(), "initializer-close",
+          FD_PACK_END_SLOT_REASON_TIME, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT );
+      FD_TEST( !ctx->bam_ib_associated && !fd_pack_avail_txn_cnt( ctx->pack ) );
+      FD_TEST( !memcmp( ctx->crank->prev_config, ctx->crank->prev_config_before_ib, sizeof(expected) ) );
+      test_pack_callbacks_delete( e );
+      continue;
+    }
+    test_pack_callbacks_insert( e, 82U, 104UL, 0 );
+    if( scenario==2 || scenario==3 ) {
+      test_pack_callbacks_step( e );
+      FD_TEST( test_pack_callbacks_dispatch_count( e )==1UL && ctx->bam_pending_work_cnt==1UL );
+      /* Only the real initializer rebate releases Pending.  Failed keeps
+         the crank peek NULL but permits best-effort BAM scheduling. */
+      ctx->rebate->rebate->ib_result = scenario==2 ? 1 : 2;
+      ctx->in_kind[0] = IN_KIND_EXECLE;
+      after_frag( ctx, 0UL, 0UL, 104UL, 0UL, 0UL, 0UL, &e->h->out->stem );
+    }
+    test_pack_callbacks_step( e );
+    FD_TEST( ctx->bam_scheduled_work_cnt==1UL && !ctx->bam_pending_work_cnt );
+    fd_microblock_execle_trailer_t const * trailer;
+    fd_txn_e_t const * txn = test_pack_callbacks_output( e, (ulong)(scenario>=2), &trailer );
+    FD_TEST( txn->txnp->bam.seq_id==82U && trailer->bank_idx==104UL );
+    test_pack_callbacks_delete( e );
+  }
+}
+
+static void
+test_pack_tile_bam_readiness_identity_and_mode( void ) {
+  test_pack_callbacks_t e[1];
+  test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+  fd_pack_ctx_t * ctx = e->h->ctx;
+  test_pack_callbacks_leader( e, 104UL, 0 );
+  test_pack_callbacks_insert( e, 91U, 104UL, 0 );
+  /* A normal snapshot never turns buffered BAM work into a normal-mode
+     initializer.  Use an empty fee config to observe accidental attempts. */
+  ctx->crank->enabled = 1;
+  e->status = 0UL;
+  ulong cancel_before = test_bundle_cancel_call_cnt;
+  test_pack_callbacks_step( e );
+  FD_TEST( !test_pack_callbacks_dispatch_count( e ) && !ctx->crank->ib_inserted && test_bundle_cancel_call_cnt==cancel_before );
+  e->status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+  ctx->bam_override_snapshot = 1;
+  ulong hint;
+  fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint );
+  FD_TEST( candidate && pack_tile_bam_candidate_ready( ctx, candidate )==1 );
+  ctx->bam_work[0].scheduler_gen++;
+  FD_TEST( !pack_tile_bam_candidate_ready( ctx, candidate ) );
+  test_pack_callbacks_step( e );
+  FD_TEST( !test_pack_callbacks_dispatch_count( e ) );
+  ctx->bam_work[0].scheduler_gen--;
+  candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint );
+  pack_tile_bam_index_remove_work( ctx, 0UL );
+  FD_TEST( !pack_tile_bam_candidate_ready( ctx, candidate ) );
+  pack_tile_bam_index_insert_work( ctx, 0UL, 1U );
+  FD_TEST( ctx->bam_candidate_identity_mismatch_cnt>=3UL );
+  test_pack_callbacks_step( e );
+  FD_TEST( test_pack_callbacks_dispatch_count( e )==1UL );
+  test_pack_callbacks_delete( e );
+}
+
+static void
+test_pack_tile_bam_expired_head_refreshes_crank_readiness( void ) {
+  test_pack_callbacks_t e[1];
+  test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+  fd_pack_ctx_t * ctx = e->h->ctx;
+  test_pack_callbacks_leader( e, 104UL, 0 );
+  test_pack_callbacks_insert( e, 95U, 104UL, 0 );
+  test_pack_callbacks_insert( e, 96U, 105UL, 0 );
+  /* Isolate the final dispatch guard's eviction path, without the normal
+     leader callback's earlier bulk eviction hiding the stale-head case. */
+  ctx->leader_slot = ctx->leader_bank_idx = 105UL;
+  ctx->crank->enabled = 1;
+  ulong cancels = test_bundle_cancel_call_cnt;
+  test_pack_callbacks_step( e );
+  FD_TEST( test_bundle_cancel_call_cnt==cancels+1UL ); /* new head's crank preparation */
+  FD_TEST( ctx->bam_pending_result_cnt==1UL && ctx->bam_scheduled_work_cnt==1UL );
+  fd_microblock_execle_trailer_t const * trailer;
+  fd_txn_e_t const * txn = test_pack_callbacks_output( e, 0UL, &trailer );
+  FD_TEST( txn->txnp->bam.seq_id==96U && trailer->bank_idx==105UL );
+  test_pack_callbacks_delete( e );
+}
+
+static void
+test_pack_tile_bam_partial_close_preserves_precedence( void ) {
+  test_pack_callbacks_t e[1];
+  test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+  fd_pack_ctx_t * ctx = e->h->ctx;
+  test_pack_callbacks_leader( e, 104UL, 0 );
+  test_pack_tile_send_bam_resolv_frag( e->h, 101U, 9U, 7U, 104UL, 0U, 2U, 1, 0, 104UL, 101U );
+  FD_TEST( ctx->current_bundle->txn_received==1UL && !ctx->bam_pending_result_cnt );
+  pack_tile_finish_leader_slot( ctx, &e->h->out->stem, fd_tickcount(), "partial-close",
+      FD_PACK_END_SLOT_REASON_TIME, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT );
+  FD_TEST( ctx->bam_min_admission_slot==105UL && !ctx->bam_pending_result_cnt );
+  test_pack_tile_send_bam_resolv_frag( e->h, 101U, 9U, 7U, 104UL, 1U, 2U, 1, 1, 100UL, 102U );
+  FD_TEST( ctx->bam_pending_result_cnt==1UL && !ctx->bam_pending_work_cnt );
+  fd_bam_bundle_result_t const * res = &ctx->bam_result_queue[ ctx->bam_result_queue_head ];
+  FD_TEST( res->seq_id==101U && res->slot==104UL );
+  FD_TEST( res->scheduling_error==FD_BAM_SCHED_ERR_NONE && res->transaction_err_count==2U );
+  FD_TEST( res->transaction_err[0]==bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+  FD_TEST( res->transaction_err[1]==bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
+  test_pack_callbacks_delete( e );
+}
+
+
 int
 main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
   fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
+
+  test_pack_tile_bam_target_slot_callbacks();
+  test_pack_tile_bam_secondary_callbacks();
+  test_pack_tile_bam_closed_admission_callbacks();
+  test_pack_tile_bam_result_drain_before_skip();
+  test_pack_tile_bam_initializer_generation_callbacks();
+  test_pack_tile_bam_readiness_identity_and_mode();
+  test_pack_tile_bam_partial_close_preserves_precedence();
+  test_pack_tile_bam_expired_head_refreshes_crank_readiness();
 
   test_pack_tile_bam_leader_state_is_rate_limited();
   test_pack_tile_bam_work_partition_mutations();
