@@ -370,6 +370,13 @@ struct fd_pack_ctx {
   ulong *       bam_gen_fseq;
   ushort        bam_ownership_gen;
   _Bool         bam_override_snapshot;
+  /* The node currently forwards target_slot==max_schedule_slot.  Keep
+     dispatch policy and the closed-slot admission floor out of txnp. */
+  ulong         bam_min_admission_slot;
+  ulong         bam_ib_slot;
+  ushort        bam_ib_ownership_gen;
+  _Bool         bam_ib_associated; /* identity is crank->last_sig */
+  ulong         bam_candidate_identity_mismatch_cnt;
 
   struct {
     uint metric_state;
@@ -612,6 +619,7 @@ remove_ib( fd_pack_ctx_t * ctx ) {
     }
   }
   ctx->crank->ib_inserted = 0;
+  ctx->bam_ib_associated = 0;
 }
 
 static inline int
@@ -799,6 +807,16 @@ pack_tile_bam_invalid_reason( ulong current_slot,
     return PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
   }
   return PACK_TILE_BAM_INVALID_NONE;
+}
+
+static inline pack_tile_bam_invalid_reason_t
+pack_tile_bam_admission_invalid_reason( fd_pack_ctx_t const * ctx,
+                                        ulong                 current_slot,
+                                        ulong                 max_schedule_slot,
+                                        ulong                 blockhash_slot ) {
+  pack_tile_bam_invalid_reason_t reason = pack_tile_bam_invalid_reason( current_slot, max_schedule_slot, blockhash_slot );
+  if( FD_UNLIKELY( reason!=PACK_TILE_BAM_INVALID_NONE ) ) return reason;
+  return max_schedule_slot<ctx->bam_min_admission_slot ? PACK_TILE_BAM_INVALID_OUTSIDE_SLOT : PACK_TILE_BAM_INVALID_NONE;
 }
 
 
@@ -1037,7 +1055,7 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx,
   for( ulong src=ctx->bam_scheduled_work_cnt; src<old_work_cnt; src++ ) {
     pack_bam_work_t const * work = &ctx->bam_work[ src ];
     pack_tile_bam_invalid_reason_t invalid_reason =
-        pack_tile_bam_invalid_reason( current_slot,
+        pack_tile_bam_admission_invalid_reason( ctx, current_slot,
                                       work->max_schedule_slot,
                                       work->blockhash_slot );
     if( FD_LIKELY( invalid_reason==PACK_TILE_BAM_INVALID_NONE ) ) {
@@ -1094,6 +1112,43 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx,
     pack_tile_enqueue_bam_result( ctx, &res );
   }
   FD_TEST( ctx->bam_work_cnt==dst );
+}
+
+/* Readiness belongs to this exact candidate, never to a traversal filter.
+   Return 1 if ready, 0 if held, and -1 if normal missed-target eviction
+   invalidated the candidate.  A caller preparing an initializer must
+   refresh the view after -1 before inspecting the successor's metadata. */
+static inline int
+pack_tile_bam_candidate_ready( fd_pack_ctx_t *       ctx,
+                               fd_txn_p_t const *    candidate ) {
+  if( FD_UNLIKELY( !candidate || ctx->leader_slot==ULONG_MAX || ctx->drain_execle ) ) return 0;
+  if( FD_UNLIKELY( candidate->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE ) ) {
+    if( FD_LIKELY( !ctx->bam_override_snapshot ) ) return 1;
+    return ctx->bam_ib_associated && ctx->bam_ib_slot==ctx->leader_slot &&
+           ctx->bam_ib_ownership_gen==ctx->bam_ownership_gen &&
+           ctx->leader_slot>=ctx->bam_min_admission_slot &&
+           !memcmp( fd_txn_get_signatures( TXN(candidate), candidate->payload ), ctx->crank->last_sig, sizeof(fd_ed25519_sig_t) );
+  }
+  if( FD_LIKELY( candidate->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) return 1;
+  /* Normal-mode traversal can see BAM entries while ownership changes.
+     They must not dispatch or prepare a normal-mode fee initializer. */
+  if( FD_UNLIKELY( !ctx->bam_override_snapshot ) ) return 0;
+  ulong idx = pack_tile_bam_work_find_by_sig0_state( ctx,
+                  fd_txn_get_signatures( TXN(candidate), candidate->payload ), PACK_BAM_WORK_STATE_PENDING );
+  if( FD_UNLIKELY( idx>=ctx->bam_work_cnt || candidate->bam.batch_idx ||
+                   ctx->bam_work[ idx ].seq_id!=candidate->bam.seq_id ||
+                   ctx->bam_work[ idx ].scheduler_gen!=candidate->bam.scheduler_gen ) ) {
+    /* Diagnose once, then fail closed without logging on every attempt. */
+    if( FD_UNLIKELY( !ctx->bam_candidate_identity_mismatch_cnt++ ) )
+      FD_LOG_WARNING(( "BAM candidate has no matching pending work identity" ));
+    return 0;
+  }
+  ulong target = ctx->bam_work[ idx ].max_schedule_slot;
+  if( FD_UNLIKELY( target<ctx->leader_slot || target<ctx->bam_min_admission_slot ) ) {
+    pack_tile_evict_invalid_pending_bam_work( ctx, ctx->leader_slot );
+    return -1;
+  }
+  return target==ctx->leader_slot;
 }
 
 /* fd_pack reports how many bundles it evicted, not which ones. Retire
@@ -1458,6 +1513,15 @@ pack_tile_sync_bam_ownership_generation( fd_pack_ctx_t * ctx ) {
   ushort requested_gen = (ushort)(gen_state>>1);
 
   if( FD_UNLIKELY( requested_gen!=ctx->bam_ownership_gen ) ) {
+    if( FD_UNLIKELY( ctx->bam_ib_associated && ctx->bam_ib_ownership_gen!=requested_gen ) ) {
+      /* A queued initializer is bundle-source work outside bam_work.
+         Do not confuse an in-flight initializer or a newer replacement
+         with the retired generation's queued configuration change. */
+      if( FD_UNLIKELY( ctx->crank->ib_inserted &&
+                       fd_pack_contains_initializer_bundle( ctx->pack,
+                           (fd_ed25519_sig_t const *)ctx->crank->last_sig, 1 ) ) ) remove_ib( ctx );
+      ctx->bam_ib_associated = 0;
+    }
     if( FD_UNLIKELY( ctx->current_bundle_bam->is_bam &&
                      ctx->current_bundle_bam->ownership_gen!=requested_gen ) ) {
       if( FD_LIKELY( ctx->current_bundle->bundle ) )
@@ -1498,6 +1562,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               char const *        reason,
                               int                 end_slot_reason,
                               pack_tile_bam_bundle_assembly_abandon_reason_t bam_abandon_reason ) {
+  if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) return;
   if( FD_UNLIKELY( ctx->dump_bam_mode && ctx->leader_slot!=ULONG_MAX ) ) {
     long observed_ns = pack_tile_wallclock_from_ticks( ctx, now );
     FD_LOG_NOTICE(( "Firedancer slot end: pack_current_slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld reason=%s current_slot_has_bam_work=%u", ctx->leader_slot, ctx->slot_end_ns, observed_ns, observed_ns - ctx->slot_end_ns, reason, (uint)ctx->bam_current_slot_has_bam_work ));
@@ -1511,6 +1576,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
   ctx->bam_first_schedule_result_cnt[ first_schedule_result_idx ]++;
   /* Once the slot closes, pending BAM work must survive against the next slot. */
   ulong next_slot = fd_ulong_sat_add( ctx->leader_slot, 1UL );
+  ctx->bam_min_admission_slot = fd_ulong_max( ctx->bam_min_admission_slot, next_slot );
   pack_tile_evict_invalid_pending_bam_work( ctx, next_slot );
 
   /* Cancel any bundle assembly that never reached a publishable result. */
@@ -1736,6 +1802,7 @@ after_credit( fd_pack_ctx_t *     ctx,
               int *               charge_busy ) {
   ctx->bam_result_publish_cnt = 0UL;
   pack_tile_sync_bam_ownership_generation( ctx );
+  if( FD_UNLIKELY( pack_tile_drain_one_pending_bam_result( ctx, stem ) ) ) *charge_busy = 1;
 
   if( FD_UNLIKELY( (ctx->skip_cnt--)>0L ) ) return; /* It would take ages for this to hit LONG_MIN */
 
@@ -1838,13 +1905,11 @@ after_credit( fd_pack_ctx_t *     ctx,
       if( FD_LIKELY( result>=0 ) ) ctx->last_successful_insert = now;
     }
 #endif
-    if( FD_UNLIKELY( pack_tile_drain_one_pending_bam_result( ctx, stem ) ) ) *charge_busy = 1;
     return;
   }
 
   pack_tile_publish_bam_leader_state( ctx, stem, now );
 
-  if( FD_UNLIKELY( pack_tile_drain_one_pending_bam_result( ctx, stem ) ) ) *charge_busy = 1;
   if( FD_UNLIKELY( ctx->pending_reduce_mb_bound ) ) {
     ctx->pending_reduce_mb_bound = 0;
     ulong * dst = fd_chunk_to_laddr( ctx->poh_out.mem, ctx->poh_out.chunk );
@@ -1862,6 +1927,13 @@ after_credit( fd_pack_ctx_t *     ctx,
   int any_ready     = 0;
   int any_scheduled = 0;
   ulong bundle_hint = ULONG_MAX;
+  fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, bam_override, &bundle_hint );
+  int bam_ready = pack_tile_bam_candidate_ready( ctx, candidate );
+  if( FD_UNLIKELY( bam_ready<0 ) ) {
+    candidate = fd_pack_peek_bundle_candidate( ctx->pack, bam_override, &bundle_hint );
+    bam_ready = pack_tile_bam_candidate_ready( ctx, candidate );
+    FD_TEST( bam_ready>=0 ); /* Eviction removed every missed pending target. */
+  }
 
   *charge_busy = 1;
 
@@ -1869,7 +1941,7 @@ after_credit( fd_pack_ctx_t *     ctx,
     block_builder_info_t const * top_meta = fd_pack_peek_bundle_meta( ctx->pack,
                                                                       bam_override,
                                                                       &bundle_hint );
-    if( FD_UNLIKELY( top_meta ) ) {
+    if( FD_UNLIKELY( top_meta && (!top_meta->is_bam || bam_ready) ) ) {
       /* Have bundles, in a reasonable state to crank. */
 
       if( FD_LIKELY( top_meta->is_bam ) ) {
@@ -1914,9 +1986,8 @@ after_credit( fd_pack_ctx_t *     ctx,
                                  fd_txn_msg_sz( crank_txn, txn_sz ),
                                  FD_KEYGUARD_SIGN_TYPE_ED25519 );
 
-        memcpy( ctx->crank->last_sig, crank_sig, 64UL );
-
-        ctx->crank->ib_inserted = 1;
+        fd_ed25519_sig_t inserted_sig;
+        memcpy( inserted_sig, crank_sig, sizeof(inserted_sig) );
         ulong deleted;
         /* Any insert invalidates the candidate returned by the peek. */
         bundle_hint = ULONG_MAX;
@@ -1930,6 +2001,11 @@ after_credit( fd_pack_ctx_t *     ctx,
           ctx->crank->metrics[ 3 ]++; /* BUNDLE_CRANK_RESULT_INSERTION_FAILED */
           FD_LOG_WARNING(( "inserting initializer bundle returned %i", retval ));
         } else {
+          memcpy( ctx->crank->last_sig, inserted_sig, sizeof(inserted_sig) );
+          ctx->crank->ib_inserted = 1;
+          ctx->bam_ib_associated = bam_override;
+          ctx->bam_ib_slot = ctx->leader_slot;
+          ctx->bam_ib_ownership_gen = ctx->bam_ownership_gen;
           /* Update the cached copy of the on-chain state.  This seems a
              little dangerous, since we're updating it as if the bundle
              succeeded without knowing if that's true, but here's why
@@ -1980,11 +2056,18 @@ after_credit( fd_pack_ctx_t *     ctx,
            we keep pacing for normal transactions.  For example, if
            pacing_execle_cnt is 0, then pack won't schedule normal
            transactions to any execle tile. */
-        flags = FD_PACK_SCHEDULE_VOTE | fd_int_if( i==0,                FD_PACK_SCHEDULE_BUNDLE, 0 )
+        flags = FD_PACK_SCHEDULE_VOTE | fd_int_if( i==0,                FD_PACK_SCHEDULE_BUNDLE,
+                                                                  bam_override ? FD_PACK_SCHEDULE_BAM_SINGLE : 0 )
                                       | fd_int_if( i<pacing_execle_cnt, FD_PACK_SCHEDULE_TXN,    0 );
         break;
     }
     flags |= fd_int_if( bam_override, FD_PACK_SCHEDULE_BAM_ONLY, 0 );
+
+    /* Crank generation, insertion, cancellation and readiness eviction
+       invalidate hints.  Recheck immediately before dispatch on this
+       thread, with no input callback between the view and schedule. */
+    candidate = fd_pack_peek_bundle_candidate( ctx->pack, bam_override, &bundle_hint );
+    if( FD_LIKELY( pack_tile_bam_candidate_ready( ctx, candidate )>0 ) ) flags |= FD_PACK_SCHEDULE_BAM_READY;
 
     fd_pack_out_ctx_t * execle_out = &ctx->execle_out[ i ];
     fd_txn_e_t * microblock_dst = fd_chunk_to_laddr( execle_out->mem, execle_out->chunk );
@@ -2642,7 +2725,7 @@ after_frag( fd_pack_ctx_t *     ctx,
         pack_tile_bam_invalid_reason_t invalid_reason =
             resolver_blockhash_expired
             ? PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED
-            : pack_tile_bam_invalid_reason( pack_tile_bam_best_known_slot( ctx ),
+            : pack_tile_bam_admission_invalid_reason( ctx, pack_tile_bam_best_known_slot( ctx ),
                                             max_schedule_slot,
                                             min_blockhash_slot );
         uchar blockhash_txn_idx = fd_uchar_if( resolver_blockhash_expired,
@@ -3179,6 +3262,11 @@ unprivileged_init( fd_topo_t const *      topo,
                        : NULL;
   if( FD_UNLIKELY( bam_status_obj_id!=ULONG_MAX && !ctx->bam_status_fseq ) ) FD_LOG_ERR(( "pack tile missing bam_status fseq" ));
   ctx->bam_override_snapshot = pack_tile_bam_override_active( ctx );
+  ctx->bam_min_admission_slot = 0UL;
+  ctx->bam_ib_slot = ULONG_MAX;
+  ctx->bam_ib_ownership_gen = 0U;
+  ctx->bam_ib_associated = 0;
+  ctx->bam_candidate_identity_mismatch_cnt = 0UL;
 
   ulong bam_gen_obj_id = fd_pod_query_ulong( topo->props, "bam_gen", ULONG_MAX );
   if( FD_LIKELY( bam_gen_obj_id!=ULONG_MAX ) ) {
