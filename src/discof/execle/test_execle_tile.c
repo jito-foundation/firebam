@@ -2064,7 +2064,9 @@ test_bam_pair_run( int variant,
   int instruction_failure = variant==3 || variant==4 || variant==5;
   int fees_only = variant==6;
   int atomic_failure = variant==3 || variant==4;
-  ulong next = (variant==2 || variant==4 || duplicate) ? 2UL : 1UL;
+  /* The shared-member retry starts with one landed transaction, then
+     retries it alongside a new member.  Match the BAM capture consumer. */
+  ulong next = (variant==2 || variant==4 || variant==8) ? 2UL : 1UL;
   ulong second_worker = reverse && !duplicate ? 1UL : 0UL;
   result->atomic = (variant>=1 && variant<=4) || duplicate;
   result->slot = result->target_slot = bank->f.slot;
@@ -2122,7 +2124,7 @@ test_bam_pair_run( int variant,
   if( !duplicate ) test_bam_pair_insert( pack, &result->forwarded[next], result->second_batch_cnt, bank->f.slot );
   fd_txn_e_t dispatch[2][FD_PACK_MAX_TXN_PER_BUNDLE];
   ulong hint;
-  FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint ) );
+  FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
   FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, 0UL,
                FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
                hint, dispatch[0] )==next );
@@ -2133,7 +2135,7 @@ test_bam_pair_run( int variant,
   uint start_idx = UINT_MAX-1U; /* every three-member fixture crosses Pack-index wrap */
   test_bam_poh_fixture_t * poh = test_bam_poh_fixture_new( mini->wksp, bank->f.slot, start_idx );
   if( reverse && dependency ) {
-    FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint ) );
+    FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
     FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, 1UL,
                  FD_PACK_SCHEDULE_BAM_SINGLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
                  hint, dispatch[1] )==0UL );
@@ -2145,7 +2147,7 @@ test_bam_pair_run( int variant,
     if( !reverse )
       for( ulong i=0UL; i<output[0].seqs[0]; i++ ) FD_TEST( !test_bam_poll_poh( poh, env[0], &output[0], i ) );
   }
-  FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint ) );
+  FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
   FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, second_worker,
                (duplicate ? FD_PACK_SCHEDULE_BUNDLE : FD_PACK_SCHEDULE_BAM_SINGLE) | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
                hint, dispatch[1] )==result->second_batch_cnt );
@@ -2176,7 +2178,6 @@ test_bam_pair_run( int variant,
     FD_TEST( result->poh.txns[i].payload_sz==expected->payload_sz );
     FD_TEST( !memcmp( result->poh.txns[i].payload, expected->payload, expected->payload_sz ) );
   }
-  ulong terminals = 0UL;
   ulong terminal_seen = 0UL;
   for( ulong i=0UL; i<result->poh.result_cnt; i++ ) {
     fd_bam_bundle_result_t const * r = &result->poh.results[i];
@@ -2185,7 +2186,6 @@ test_bam_pair_run( int variant,
     FD_TEST( !(terminal_seen & (1UL<<batch)) );
     terminal_seen |= 1UL<<batch;
     result->terminal[batch] = *r;
-    terminals++;
   }
   for( ulong worker=0UL; worker<2UL; worker++ ) {
     for( ulong i=0UL; i<output[worker].seqs[2]; i++ ) {
@@ -2196,10 +2196,9 @@ test_bam_pair_run( int variant,
       FD_TEST( !(terminal_seen & (1UL<<batch)) );
       terminal_seen |= 1UL<<batch;
       result->terminal[batch] = *r;
-      terminals++;
     }
   }
-  FD_TEST( terminals==2UL && terminal_seen==3UL );
+  FD_TEST( terminal_seen==3UL );
   FD_TEST( result->terminal[0].execution_success==!atomic_failure );
   FD_TEST( result->terminal[1].execution_success==!duplicate );
   if( duplicate ) {
