@@ -113,7 +113,9 @@ FD_FN_CONST static inline ulong fd_disco_poh_sig_execle_tile( ulong sig ) { retu
 FD_FN_CONST static inline ulong
 fd_disco_execle_sig( ulong slot,
                      ulong pack_idx ) {
-  return (slot << 32) | pack_idx;
+  /* Pack indices wrap at 32 bits.  Bundle-member offsets are computed
+     as ulongs in both bank and execle; their carry must not change slot. */
+  return (slot << 32) | (pack_idx & 0xFFFFFFFFUL);
 }
 
 FD_FN_CONST static inline ulong fd_disco_execle_sig_slot( ulong sig ) { return (sig >> 32); }
