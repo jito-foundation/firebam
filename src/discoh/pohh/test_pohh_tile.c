@@ -237,10 +237,10 @@ test_full_slot_timing( fd_wksp_t * wksp ) {
 /* Accepting a prior-slot microblock after PoH resets can acknowledge work that
    PoH discarded.  Reject the stale microblock before reporting success. */
 static void
-test_reset_rejects_stale_bam_microblock( fd_wksp_t * wksp ) {
+test_reset_rejects_stale_bam_microblock( fd_wksp_t * wksp,
+                                        ulong       pack_idx ) {
   ulong const depth      = 4UL;
   ulong const stale_slot = 136UL;
-  uint  const pack_idx   = 94U;
 
   /* fd_pohh_tile_t contains the skipped-tick hash cache and is much
      larger than a normal thread stack. */
@@ -280,7 +280,7 @@ test_reset_rejects_stale_bam_microblock( fd_wksp_t * wksp ) {
   FD_TEST( ctx->highwater_leader_slot==stale_slot+1UL );
   FD_TEST( !ctx->current_leader_bank );
 
-  ctx->expect_pack_idx = pack_idx;
+  ctx->expect_pack_idx = (uint)pack_idx;
   ctx->in_kind[ 0 ]    = IN_KIND_BANK;
 
   void * in_dcache = test_dcache_new( wksp, depth, MAX_MICROBLOCK_SZ );
@@ -346,7 +346,7 @@ test_reset_rejects_stale_bam_microblock( fd_wksp_t * wksp ) {
 
   ulong sig = fd_disco_execle_sig( stale_slot, pack_idx );
   FD_TEST( before_frag( ctx, 0UL, 0UL, sig )==0 );
-  FD_TEST( ctx->expect_pack_idx==pack_idx+1U );
+  FD_TEST( ctx->expect_pack_idx==(uint)pack_idx+1U );
 
   during_frag( ctx, 0UL, 0UL, sig, in_chunk, fragment_sz, 0UL );
   FD_TEST( ctx->skip_frag );
@@ -378,7 +378,11 @@ main( int     argc,
   FD_TEST( wksp );
 
   test_full_slot_timing( wksp );
-  test_reset_rejects_stale_bam_microblock( wksp );
+  test_reset_rejects_stale_bam_microblock( wksp, 94UL );
+  /* The bank computes bundle-member offsets as ulongs.  A member after
+     UINT_MAX must still decode as the original stale slot and time out,
+     rather than appear to belong to the next live slot. */
+  test_reset_rejects_stale_bam_microblock( wksp, (ulong)UINT_MAX+1UL );
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
