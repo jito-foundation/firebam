@@ -32,12 +32,78 @@ readiness_attempt( fd_pack_ctx_t * ctx,
                     fd_txn_e_t *    out,
                     int *           ready_out ) {
   ulong hint;
-  fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint );
+  fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint, NULL );
   int ready = pack_tile_bam_candidate_ready( ctx, candidate );
   *ready_out = ready;
   if( ready>0 ) flags |= FD_PACK_SCHEDULE_BAM_READY;
   return fd_pack_schedule_next_microblock_with_bundle_hint( ctx->pack, 1500000UL, 0.75f,
                                                             worker, flags, hint, out );
+}
+
+/* Measure the callback itself as well as the isolated view above.  A held
+   future head makes duplicate candidate/readiness work visible without
+   including executor latency or repeatedly inserting transactions. */
+static void
+readiness_callback_bench( void ) {
+  char const * names[5] = { "normal_empty", "bam_future", "bam_future_busy",
+                           "bam_no_builder_busy", "bam_configured_busy" };
+  for( ulong scenario=0UL; scenario<5UL; scenario++ ) {
+    for( int crank=0; crank<2; crank++ ) {
+      test_pack_callbacks_t e[1];
+      test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+      fd_pack_ctx_t * ctx = e->h->ctx;
+      test_pack_callbacks_leader( e, 104UL, 0 );
+      ctx->slot_end_ns = fd_log_wallclock()+60000000000L;
+      if( scenario ) {
+        test_pack_callbacks_insert( e, 41U, scenario>=3UL ? 104UL : 105UL, 0 );
+        test_pack_callbacks_insert( e, 42U, 104UL, 0 );
+      } else {
+        e->status = 0UL;
+        ctx->bam_override_snapshot = 0;
+      }
+      ctx->crank->enabled = crank;
+      if( scenario>=2UL ) ctx->execle_idle_bitset = 0UL;
+      if( scenario==4UL ) {
+        /* A nonzero, already-applied configuration exercises the ordinary
+           generator no-op as a control for unavailable-builder handling. */
+        fd_acct_addr_t addresses[5] = {0};
+        for( ulong i=0UL; i<5UL; i++ ) addresses[i].b[0] = (uchar)(i+1UL);
+        fd_bundle_crank_gen_init( ctx->crank->gen, &addresses[0], &addresses[1],
+                                  &addresses[2], &addresses[3], "BEN", 0UL );
+        *ctx->bam_fee_meta->commission_pubkey = addresses[4];
+        ctx->bam_fee_meta->commission = 7UL;
+        ctx->crank->prev_config->discriminator = 0x82ccfa1ee0aa0c9bUL;
+        fd_bundle_crank_apply( ctx->crank->gen, ctx->crank->prev_config,
+                               ctx->bam_fee_meta->commission_pubkey, ctx->crank->tip_receiver_owner,
+                               ctx->crank->epoch, ctx->bam_fee_meta->commission );
+      }
+      ulong cancels = test_bundle_cancel_call_cnt;
+      ulong samples[101];
+      for( ulong sample=0UL; sample<=101UL; sample++ ) {
+        ulong attempts = sample ? 1024UL : 8192UL;
+        long begin = fd_tickcount();
+        for( ulong i=0UL; i<attempts; i++ ) test_pack_callbacks_step( e );
+        ulong ticks = (ulong)(fd_tickcount()-begin);
+        if( sample ) samples[sample-1UL] = ticks;
+      }
+      FD_TEST( ctx->leader_slot==104UL && !ctx->drain_execle );
+      FD_TEST( !test_pack_callbacks_dispatch_count( e ) && !ctx->pack_idx );
+      FD_TEST( !ctx->bam_pending_result_cnt && !ctx->bam_scheduled_work_cnt );
+      FD_TEST( ctx->bam_pending_work_cnt==(scenario ? 2UL : 0UL) );
+      FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==(scenario ? 2UL : 0UL) );
+      FD_TEST( !ctx->bam_candidate_identity_mismatch_cnt && !ctx->crank->ib_inserted );
+      if( scenario<3UL || !crank ) FD_TEST( cancels==test_bundle_cancel_call_cnt );
+      FD_TEST( !fd_pack_current_block_cost( ctx->pack ) );
+      FD_TEST( !ctx->crank->metrics[1] && !ctx->crank->metrics[2] && !ctx->crank->metrics[3] );
+      FD_TEST( ctx->crank->metrics[0]==((scenario==4UL && crank) ? 8192UL+101UL*1024UL : 0UL) );
+      FD_LOG_NOTICE(( "BAM_CALLBACK_BENCH scenario=%s crank=%i p50_ticks=%.3f p95_ticks=%.3f p99_ticks=%.3f",
+                       names[scenario], crank,
+                       (double)readiness_quantile( samples, 50UL )/1024.0,
+                       (double)readiness_quantile( samples, 95UL )/1024.0,
+                       (double)readiness_quantile( samples, 99UL )/1024.0 ));
+      test_pack_callbacks_delete( e );
+    }
+  }
 }
 
 int
@@ -136,7 +202,7 @@ main( int argc, char ** argv ) {
                        (double)readiness_quantile( samples, 95UL )/divisor,
                        (double)readiness_quantile( samples, 99UL )/divisor ));
       ulong hint;
-      fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint );
+      fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint, NULL );
       FD_TEST( candidate && candidate->bam.seq_id==1000U );
       FD_TEST( !memcmp( fd_txn_get_signatures( TXN(candidate), candidate->payload ), head_signature, sizeof(head_signature) ) );
       FD_TEST( !pack_tile_bam_candidate_ready( ctx, candidate ) );
@@ -156,6 +222,7 @@ main( int argc, char ** argv ) {
     free( ctx->bam_result_queue );
     free( ctx );
   }
+  readiness_callback_bench();
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
   return 0;

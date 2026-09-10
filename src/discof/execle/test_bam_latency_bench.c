@@ -219,7 +219,7 @@ bench_run( int             dual,
       if( !i ) flags |= FD_PACK_SCHEDULE_BUNDLE;
       else if( dual ) flags |= FD_PACK_SCHEDULE_BAM_SINGLE;
       ulong hint;
-      FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint ) );
+      FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
       ulong count = fd_pack_schedule_next_microblock_with_bundle_hint( pack, 1500000UL, 0.75f, i,
                                         flags | FD_PACK_SCHEDULE_BAM_READY, hint, worker->txn );
       if( count ) {
