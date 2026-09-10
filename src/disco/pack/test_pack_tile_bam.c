@@ -3044,10 +3044,12 @@ test_pack_tile_bam_target_slot_callbacks( void ) {
     test_pack_callbacks_insert( e, 41U, 105UL, revert );
     test_pack_callbacks_insert( e, 42U, 104UL, revert );
     FD_TEST( ctx->bam_pending_work_cnt==2UL );
-    /* An idle secondary must not bypass a future FIFO head.  Empty BAM
-       fee configuration makes an accidental crank attempt observable via
-       cancellation without involving a sign service. */
+    /* An idle secondary must not bypass a future FIFO head.  A nonzero
+       builder and invalid on-chain config make an accidental crank attempt
+       fail before signing and expose it through the creation-failed metric. */
     ctx->crank->enabled = 1;
+    ctx->bam_fee_meta->commission_pubkey->b[0] = 1U;
+    ctx->crank->gen->configured_epoch = ctx->crank->epoch;
     ctx->execle_idle_bitset = 2UL;
     ulong cancel_before = test_bundle_cancel_call_cnt;
     for( ulong j=0UL; j<128UL; j++ ) test_pack_callbacks_step( e );
@@ -3055,6 +3057,7 @@ test_pack_tile_bam_target_slot_callbacks( void ) {
     FD_TEST( !fd_pack_current_block_cost( ctx->pack ) );
     FD_TEST( !ctx->bam_ib_associated && !ctx->crank->ib_inserted );
     FD_TEST( test_bundle_cancel_call_cnt==cancel_before );
+    FD_TEST( !ctx->crank->metrics[2] );
     FD_TEST( test_pack_callbacks_dispatch_count( e )==0UL );
 
     test_pack_callbacks_leader( e, 105UL, frank );
@@ -3091,12 +3094,19 @@ test_pack_tile_bam_secondary_callbacks( void ) {
     test_pack_callbacks_leader( e, 104UL, 0 );
     test_pack_callbacks_insert( e, 51U, 104UL, revert );
     test_pack_callbacks_insert( e, 52U, 104UL, revert );
+    /* No builder is available yet.  The no-op state update still invalidates
+       the candidate hint, so both dispatches require a refreshed view. */
+    ctx->crank->enabled = 1;
+    ulong cancels = test_bundle_cancel_call_cnt;
     test_pack_callbacks_step( e );
     FD_TEST( ctx->execle_idle_bitset==2UL );
     test_pack_callbacks_step( e );
     FD_TEST( !ctx->execle_idle_bitset && ctx->bam_scheduled_work_cnt==2UL );
     FD_TEST( ctx->pack_idx==2U && test_pack_callbacks_dispatch_count( e )==2UL );
     FD_TEST( e->h->out->seqs[0]==1UL && e->h->out->seqs[3]==1UL );
+    FD_TEST( test_bundle_cancel_call_cnt==cancels );
+    FD_TEST( !ctx->crank->ib_inserted && !ctx->bam_ib_associated );
+    FD_TEST( !ctx->crank->metrics[0] && !ctx->crank->metrics[1] && !ctx->crank->metrics[2] && !ctx->crank->metrics[3] );
     for( ulong i=0UL; i<2UL; i++ ) {
       fd_microblock_execle_trailer_t const * trailer;
       fd_txn_e_t const * txn = test_pack_callbacks_output( e, i, &trailer );
@@ -3230,7 +3240,7 @@ test_pack_tile_bam_initializer_generation_callbacks( void ) {
     test_pack_callbacks_insert( e, 81U, 104UL, 1 );
     test_pack_callbacks_initializer( e, 80U, 7U );
     ulong old_hint;
-    FD_TEST( fd_pack_peek_bundle_candidate( ctx->pack, 1, &old_hint ) );
+    FD_TEST( fd_pack_peek_bundle_candidate( ctx->pack, 1, &old_hint, NULL ) );
     FD_TEST( fd_pack_contains_initializer_bundle( ctx->pack,
                  (fd_ed25519_sig_t const *)ctx->crank->last_sig, 1 ) );
     if( scenario==1 ) {
@@ -3244,12 +3254,12 @@ test_pack_tile_bam_initializer_generation_callbacks( void ) {
       fd_txn_e_t output[FD_PACK_MAX_TXN_PER_BUNDLE];
       for( ulong j=0UL; j<128UL; j++ ) {
         ulong hint;
-        fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint );
+        fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint, NULL );
         FD_TEST( !fd_pack_schedule_next_microblock_with_bundle_hint( ctx->pack, CUS_PER_MICROBLOCK, 0.0f, 0UL,
                     FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY, hint, output ) );
       }
       ulong deferred_hint;
-      FD_TEST( !fd_pack_peek_bundle_candidate( ctx->pack, 1, &deferred_hint ) );
+      FD_TEST( !fd_pack_peek_bundle_candidate( ctx->pack, 1, &deferred_hint, NULL ) );
       FD_TEST( fd_pack_contains_initializer_bundle( ctx->pack,
                    (fd_ed25519_sig_t const *)ctx->crank->last_sig, 1 ) );
       limits->max_data_bytes_per_block = old_bytes;
@@ -3313,23 +3323,26 @@ test_pack_tile_bam_readiness_identity_and_mode( void ) {
   test_pack_callbacks_leader( e, 104UL, 0 );
   test_pack_callbacks_insert( e, 91U, 104UL, 0 );
   /* A normal snapshot never turns buffered BAM work into a normal-mode
-     initializer.  Use an empty fee config to observe accidental attempts. */
+     initializer.  Invalid on-chain config exposes attempts before signing. */
   ctx->crank->enabled = 1;
+  ctx->bam_fee_meta->commission_pubkey->b[0] = 1U;
+  ctx->crank->gen->configured_epoch = ctx->crank->epoch;
   e->status = 0UL;
   ulong cancel_before = test_bundle_cancel_call_cnt;
   test_pack_callbacks_step( e );
   FD_TEST( !test_pack_callbacks_dispatch_count( e ) && !ctx->crank->ib_inserted && test_bundle_cancel_call_cnt==cancel_before );
+  FD_TEST( !ctx->crank->metrics[2] );
   e->status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
   ctx->bam_override_snapshot = 1;
   ulong hint;
-  fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint );
+  fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint, NULL );
   FD_TEST( candidate && pack_tile_bam_candidate_ready( ctx, candidate )==1 );
   ctx->bam_work[0].scheduler_gen++;
   FD_TEST( !pack_tile_bam_candidate_ready( ctx, candidate ) );
   test_pack_callbacks_step( e );
   FD_TEST( !test_pack_callbacks_dispatch_count( e ) );
   ctx->bam_work[0].scheduler_gen--;
-  candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint );
+  candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint, NULL );
   pack_tile_bam_index_remove_work( ctx, 0UL );
   FD_TEST( !pack_tile_bam_candidate_ready( ctx, candidate ) );
   pack_tile_bam_index_insert_work( ctx, 0UL, 1U );
@@ -3351,9 +3364,12 @@ test_pack_tile_bam_expired_head_refreshes_crank_readiness( void ) {
      leader callback's earlier bulk eviction hiding the stale-head case. */
   ctx->leader_slot = ctx->leader_bank_idx = 105UL;
   ctx->crank->enabled = 1;
+  ctx->bam_fee_meta->commission_pubkey->b[0] = 1U;
+  ctx->crank->gen->configured_epoch = ctx->crank->epoch;
   ulong cancels = test_bundle_cancel_call_cnt;
   test_pack_callbacks_step( e );
   FD_TEST( test_bundle_cancel_call_cnt==cancels+1UL ); /* new head's crank preparation */
+  FD_TEST( ctx->crank->metrics[2]==1UL ); /* invalid config, before signing */
   FD_TEST( ctx->bam_pending_result_cnt==1UL && ctx->bam_scheduled_work_cnt==1UL );
   fd_microblock_execle_trailer_t const * trailer;
   fd_txn_e_t const * txn = test_pack_callbacks_output( e, 0UL, &trailer );
