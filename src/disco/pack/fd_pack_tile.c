@@ -784,18 +784,18 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
 }
 
 static inline pack_tile_bam_invalid_reason_t
-pack_tile_bam_invalid_reason( ulong current_slot,
-                              ulong max_schedule_slot,
-                              ulong blockhash_slot ) {
+pack_tile_bam_admission_invalid_reason( fd_pack_ctx_t const * ctx,
+                                        ulong                 current_slot,
+                                        ulong                 max_schedule_slot,
+                                        ulong                 blockhash_slot ) {
   /* current_slot is the best local execution slot known to pack. If it is not
-     known yet, only a max_schedule_slot that already trails the blockhash slot
-     can be rejected immediately.
+     known yet, reject targets below the blockhash slot or closed-slot floor.
 
      Once current_slot is known, BAM matches the model contract: blockhash
      lifetime is checked against current_slot, and max_schedule_slot
      must still be >= both current_slot and blockhash_slot. */
   if( FD_UNLIKELY( current_slot==ULONG_MAX ) ) {
-    if( FD_UNLIKELY( max_schedule_slot<blockhash_slot ) ) {
+    if( FD_UNLIKELY( max_schedule_slot<fd_ulong_max( blockhash_slot, ctx->bam_min_admission_slot ) ) ) {
       return PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
     }
     return PACK_TILE_BAM_INVALID_NONE;
@@ -803,20 +803,10 @@ pack_tile_bam_invalid_reason( ulong current_slot,
 
   ulong oldest_live_slot = fd_ulong_max( current_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS;
   if( FD_UNLIKELY( blockhash_slot<oldest_live_slot ) ) return PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED;
-  if( FD_UNLIKELY( max_schedule_slot<fd_ulong_max( current_slot, blockhash_slot ) ) ) {
+  if( FD_UNLIKELY( max_schedule_slot<fd_ulong_max( current_slot, fd_ulong_max( blockhash_slot, ctx->bam_min_admission_slot ) ) ) ) {
     return PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
   }
   return PACK_TILE_BAM_INVALID_NONE;
-}
-
-static inline pack_tile_bam_invalid_reason_t
-pack_tile_bam_admission_invalid_reason( fd_pack_ctx_t const * ctx,
-                                        ulong                 current_slot,
-                                        ulong                 max_schedule_slot,
-                                        ulong                 blockhash_slot ) {
-  pack_tile_bam_invalid_reason_t reason = pack_tile_bam_invalid_reason( current_slot, max_schedule_slot, blockhash_slot );
-  if( FD_UNLIKELY( reason!=PACK_TILE_BAM_INVALID_NONE ) ) return reason;
-  return max_schedule_slot<ctx->bam_min_admission_slot ? PACK_TILE_BAM_INVALID_OUTSIDE_SLOT : PACK_TILE_BAM_INVALID_NONE;
 }
 
 
@@ -1563,7 +1553,7 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                               int                 end_slot_reason,
                               pack_tile_bam_bundle_assembly_abandon_reason_t bam_abandon_reason ) {
   if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX ) ) return;
-  if( FD_UNLIKELY( ctx->dump_bam_mode && ctx->leader_slot!=ULONG_MAX ) ) {
+  if( FD_UNLIKELY( ctx->dump_bam_mode ) ) {
     long observed_ns = pack_tile_wallclock_from_ticks( ctx, now );
     FD_LOG_NOTICE(( "Firedancer slot end: pack_current_slot=%lu slot_end_ns=%ld observed_ns=%ld observed_minus_slot_end_ns=%ld reason=%s current_slot_has_bam_work=%u", ctx->leader_slot, ctx->slot_end_ns, observed_ns, observed_ns - ctx->slot_end_ns, reason, (uint)ctx->bam_current_slot_has_bam_work ));
   }
@@ -1927,10 +1917,12 @@ after_credit( fd_pack_ctx_t *     ctx,
   int any_ready     = 0;
   int any_scheduled = 0;
   ulong bundle_hint = ULONG_MAX;
-  fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, bam_override, &bundle_hint );
+  void const * bundle_meta = NULL;
+  void const ** opt_bundle_meta = ctx->crank->enabled ? &bundle_meta : NULL;
+  fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, bam_override, &bundle_hint, opt_bundle_meta );
   int bam_ready = pack_tile_bam_candidate_ready( ctx, candidate );
   if( FD_UNLIKELY( bam_ready<0 ) ) {
-    candidate = fd_pack_peek_bundle_candidate( ctx->pack, bam_override, &bundle_hint );
+    candidate = fd_pack_peek_bundle_candidate( ctx->pack, bam_override, &bundle_hint, opt_bundle_meta );
     bam_ready = pack_tile_bam_candidate_ready( ctx, candidate );
     FD_TEST( bam_ready>=0 ); /* Eviction removed every missed pending target. */
   }
@@ -1938,9 +1930,7 @@ after_credit( fd_pack_ctx_t *     ctx,
   *charge_busy = 1;
 
   if( FD_LIKELY( ctx->crank->enabled ) ) {
-    block_builder_info_t const * top_meta = fd_pack_peek_bundle_meta( ctx->pack,
-                                                                      bam_override,
-                                                                      &bundle_hint );
+    block_builder_info_t const * top_meta = bundle_meta;
     if( FD_UNLIKELY( top_meta && (!top_meta->is_bam || bam_ready) ) ) {
       /* Have bundles, in a reasonable state to crank. */
 
@@ -1953,21 +1943,27 @@ after_credit( fd_pack_ctx_t *     ctx,
         top_meta = ctx->bam_fee_meta;
       }
 
+      /* Crank preparation invalidates this view even without a reservation:
+         the no-op path still transitions the initializer state to Ready. */
+      bam_ready = -1;
       fd_txn_e_t * _bundle[ 1UL ];
-      fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( ctx->pack, _bundle, 1UL );
-
-      ulong txn_sz = FD_UNLIKELY( top_meta->is_bam &&
-                                 fd_mem_iszero( top_meta->commission_pubkey->b, sizeof(top_meta->commission_pubkey->b) ) )
-                   ? 0UL
-                   : fd_bundle_crank_generate( ctx->crank->gen, ctx->crank->prev_config, top_meta->commission_pubkey,
-                         ctx->crank->identity_pubkey, ctx->crank->tip_receiver_owner, ctx->crank->epoch, top_meta->commission,
-                         bundle[0]->txnp->payload, TXN( bundle[0]->txnp ) );
+      fd_txn_e_t * const * bundle = NULL;
+      ulong txn_sz = 0UL;
+      /* An unavailable BAM builder cannot produce an initializer.  Avoid
+         reserving and canceling a pool entry just to take that no-op path. */
+      if( FD_LIKELY( !top_meta->is_bam ||
+                    !fd_mem_iszero( top_meta->commission_pubkey->b, sizeof(top_meta->commission_pubkey->b) ) ) ) {
+        bundle = fd_pack_insert_bundle_init( ctx->pack, _bundle, 1UL );
+        txn_sz = fd_bundle_crank_generate( ctx->crank->gen, ctx->crank->prev_config, top_meta->commission_pubkey,
+                     ctx->crank->identity_pubkey, ctx->crank->tip_receiver_owner, ctx->crank->epoch, top_meta->commission,
+                     bundle[0]->txnp->payload, TXN( bundle[0]->txnp ) );
+      }
 
       if( FD_LIKELY( txn_sz==0UL ) ) { /* No initializer bundle to insert. */
-        if( FD_LIKELY( !top_meta->is_bam ||
-                       !fd_mem_iszero( top_meta->commission_pubkey->b, sizeof(top_meta->commission_pubkey->b) ) ) )
+        if( FD_LIKELY( bundle ) ) {
           ctx->crank->metrics[ 0 ]++; /* BUNDLE_CRANK_STATUS_NOT_NEEDED */
-        fd_pack_insert_bundle_cancel( ctx->pack, bundle, 1UL );
+          fd_pack_insert_bundle_cancel( ctx->pack, bundle, 1UL );
+        }
         fd_pack_set_initializer_bundles_ready( ctx->pack );
       }
       else if( FD_LIKELY( txn_sz<ULONG_MAX ) ) {
@@ -1989,8 +1985,6 @@ after_credit( fd_pack_ctx_t *     ctx,
         fd_ed25519_sig_t inserted_sig;
         memcpy( inserted_sig, crank_sig, sizeof(inserted_sig) );
         ulong deleted;
-        /* Any insert invalidates the candidate returned by the peek. */
-        bundle_hint = ULONG_MAX;
         int retval = fd_pack_insert_bundle_fini( ctx->pack, bundle, 1UL, ctx->leader_slot-1UL,
                                                  fd_int_if( bam_override, FD_PACK_IB_TYPE_BAM, FD_PACK_IB_TYPE_NORMAL ),
                                                  NULL, &deleted, NULL );
@@ -2063,11 +2057,14 @@ after_credit( fd_pack_ctx_t *     ctx,
     }
     flags |= fd_int_if( bam_override, FD_PACK_SCHEDULE_BAM_ONLY, 0 );
 
-    /* Crank generation, insertion, cancellation and readiness eviction
-       invalidate hints.  Recheck immediately before dispatch on this
-       thread, with no input callback between the view and schedule. */
-    candidate = fd_pack_peek_bundle_candidate( ctx->pack, bam_override, &bundle_hint );
-    if( FD_LIKELY( pack_tile_bam_candidate_ready( ctx, candidate )>0 ) ) flags |= FD_PACK_SCHEDULE_BAM_READY;
+    /* No input callback can interleave here.  Reuse the checked candidate
+       unless crank preparation mutated Pack; the scheduler still validates
+       the hint's generation and ownership mode before using readiness. */
+    if( FD_UNLIKELY( bam_ready<0 ) ) {
+      candidate = fd_pack_peek_bundle_candidate( ctx->pack, bam_override, &bundle_hint, NULL );
+      bam_ready = pack_tile_bam_candidate_ready( ctx, candidate );
+    }
+    if( FD_LIKELY( bam_ready>0 ) ) flags |= FD_PACK_SCHEDULE_BAM_READY;
 
     fd_pack_out_ctx_t * execle_out = &ctx->execle_out[ i ];
     fd_txn_e_t * microblock_dst = fd_chunk_to_laddr( execle_out->mem, execle_out->chunk );

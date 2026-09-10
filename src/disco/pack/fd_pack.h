@@ -672,10 +672,17 @@ void const * fd_pack_peek_bundle_meta( fd_pack_t const * pack,
    initializer-state update or rebate call.  No candidate yields NULL and
    ULONG_MAX.  Callers must recompute target-slot readiness within this
    lifetime; the scheduling routine rejects stale or mode-mismatched BAM
-   readiness hints. */
+   readiness hints.
+
+   When opt_bundle_meta is non-NULL, it receives the metadata eligible for
+   initializer preparation, or NULL under the same conditions as
+   fd_pack_peek_bundle_meta.  Metadata suppression does not suppress the
+   candidate or its hint: a Failed-state BAM candidate can still dispatch.
+   This lets a caller prepare an initializer and schedule from one view. */
 fd_txn_p_t const * fd_pack_peek_bundle_candidate( fd_pack_t const * pack,
                                                   _Bool             bam_only,
-                                                  ulong *           bundle_hint );
+                                                  ulong *           bundle_hint,
+                                                  void const **     opt_bundle_meta );
 
 /* Tests the queued initializer's full signature and ownership mode, even
    when it is deferred.  A dispatched initializer is no longer queued. */
