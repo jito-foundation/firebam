@@ -16,6 +16,8 @@
 #include "../../flamenco/runtime/program/fd_bpf_loader_program.h"
 #include "../../flamenco/runtime/program/vote/fd_vote_codec.h"
 #include "../../ballet/txn/fd_compact_u16.h"
+#include "../../disco/pack/fd_pack.h"
+#include "test_bam_poh_fixture.h"
 #include "../../util/tmpl/fd_unit_test.c"
 #include <unistd.h>
 
@@ -87,30 +89,40 @@ test_topo_link_init( test_env_t *     env,
 }
 
 static fd_topo_link_t *
-test_topo_link( char const * name ) {
+test_topo_link_kind( char const * name,
+                     ulong        kind_id ) {
   for( ulong i=0UL; i<topo->link_cnt; i++ ) {
-    if( !strcmp( topo->links[i].name, name ) ) return &topo->links[i];
+    if( !strcmp( topo->links[i].name, name ) && topo->links[i].kind_id==kind_id ) return &topo->links[i];
   }
   FD_LOG_ERR(( "missing test topo link %s", name ));
 }
 
+static fd_topo_link_t *
+test_topo_link( char const * name ) {
+  return test_topo_link_kind( name, 0UL );
+}
+
 static test_env_t *
-test_env_create( void ) {
+test_env_create_worker( test_env_t const * sibling ) {
   test_env_t * env = fd_wksp_alloc_laddr( mini->wksp, alignof(test_env_t), sizeof(test_env_t), TOPO_TAG );
   FD_TEST( env );
   memset( env, 0, sizeof(test_env_t) );
 
   env->mini = mini;
 
-  fd_svm_mini_params_t params[1];
-  fd_svm_mini_params_default( params );
-  ulong root_idx = fd_svm_mini_reset( env->mini, params );
-  env->bank_idx = fd_svm_mini_attach_child( env->mini, root_idx, 2UL );
+  if( sibling ) env->bank_idx = sibling->bank_idx;
+  else {
+    fd_svm_mini_params_t params[1];
+    fd_svm_mini_params_default( params );
+    ulong root_idx = fd_svm_mini_reset( env->mini, params );
+    env->bank_idx = fd_svm_mini_attach_child( env->mini, root_idx, 2UL );
 
-  fd_topob_new( topo, "execle" );
-  fd_topo_wksp_t * topo_wksp = fd_topob_wksp( topo, "execle" );
-  topo_wksp->wksp = env->mini->wksp;
+    fd_topob_new( topo, "execle" );
+    fd_topo_wksp_t * topo_wksp = fd_topob_wksp( topo, "execle" );
+    topo_wksp->wksp = env->mini->wksp;
+  }
   fd_topo_tile_t * topo_tile = fd_topob_tile( topo, "execle", "execle", "execle", 0UL, 0, 0, 0 );
+  ulong kind_id = topo_tile->kind_id;
   topo_tile->execle.max_live_slots = MAX_LIVE_SLOTS;
 
   void * tile_mem = fd_wksp_alloc_laddr( env->mini->wksp, scratch_align(), scratch_footprint( topo_tile ), TOPO_TAG );
@@ -118,18 +130,18 @@ test_env_create( void ) {
   env->tile_mem = tile_mem;
   topo->objs[ topo_tile->tile_obj_id ].offset = fd_wksp_gaddr_fast( env->mini->wksp, tile_mem );
 
-  fd_topo_link_t * pack_execle = fd_topob_link( topo, "pack_execle", "execle", 4UL, MAX_MICROBLOCK_SZ, 1UL );
-  fd_topo_link_t * execle_poh  = fd_topob_link( topo, "execle_poh",  "execle", 4UL, MAX_MICROBLOCK_SZ, 1UL );
-  fd_topo_link_t * execle_pack = fd_topob_link( topo, "execle_pack", "execle", 4UL, MAX_MICROBLOCK_SZ, 1UL );
-  fd_topo_link_t * bank_bam    = fd_topob_link( topo, "bank_bam",    "execle", 4UL, sizeof(fd_bam_bundle_result_t), 1UL );
+  fd_topo_link_t * pack_execle = fd_topob_link( topo, "pack_execle", "execle", 32UL, MAX_MICROBLOCK_SZ, 1UL );
+  fd_topo_link_t * execle_poh  = fd_topob_link( topo, "execle_poh",  "execle", 32UL, MAX_MICROBLOCK_SZ, 1UL );
+  fd_topo_link_t * execle_pack = fd_topob_link( topo, "execle_pack", "execle", 32UL, MAX_MICROBLOCK_SZ, 1UL );
+  fd_topo_link_t * bank_bam    = fd_topob_link( topo, "bank_bam",    "execle", 32UL, sizeof(fd_bam_bundle_result_t), 1UL );
   test_topo_link_init( env, topo, pack_execle );
   test_topo_link_init( env, topo, execle_poh  );
   test_topo_link_init( env, topo, execle_pack );
   test_topo_link_init( env, topo, bank_bam    );
-  fd_topob_tile_in ( topo, "execle", 0UL, "execle", "pack_execle", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
-  fd_topob_tile_out( topo, "execle", 0UL, "execle_poh",  0UL );
-  fd_topob_tile_out( topo, "execle", 0UL, "execle_pack", 0UL );
-  fd_topob_tile_out( topo, "execle", 0UL, "bank_bam",    0UL );
+  fd_topob_tile_in ( topo, "execle", kind_id, "execle", "pack_execle", kind_id, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
+  fd_topob_tile_out( topo, "execle", kind_id, "execle_poh",  kind_id );
+  fd_topob_tile_out( topo, "execle", kind_id, "execle_pack", kind_id );
+  fd_topob_tile_out( topo, "execle", kind_id, "bank_bam",    kind_id );
 
   /* Share mini's accounts DB with the tile.  The tile re-joins the same
      accdb shmem (a second writer joiner) and opens it via the well-known
@@ -140,7 +152,7 @@ test_env_create( void ) {
   fd_topo_obj_t * progcache_obj  = test_topo_obj_laddr( topo, "progcache",  "execle", env->mini->progcache->join->shmem );
   fd_topo_obj_t * banks_obj      = test_topo_obj_laddr( topo, "banks",      "execle", env->mini->banks );
   fd_topo_obj_t * txncache_obj   = test_topo_obj_laddr( topo, "txncache",   "execle", env->mini->txncache_shmem );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, banks_obj->id, "banks" ) );
+  if( !sibling ) FD_TEST( fd_pod_insertf_ulong( topo->props, banks_obj->id, "banks" ) );
 
   void * busy_fseq_mem = fd_wksp_alloc_laddr( env->mini->wksp, fd_fseq_align(), fd_fseq_footprint(), TOPO_TAG );
   FD_TEST( fd_fseq_new( busy_fseq_mem, 0UL ) );
@@ -169,6 +181,11 @@ test_env_create( void ) {
   env->execle->out_pack->wmark  = fd_dcache_compact_wmark ( execle_pack->dcache, execle_pack->dcache, execle_pack->mtu );
   env->execle->out_pack->chunk  = env->execle->out_pack->chunk0;
   return env;
+}
+
+static test_env_t *
+test_env_create( void ) {
+  return test_env_create_worker( NULL );
 }
 
 static void
@@ -1914,6 +1931,388 @@ FD_UNIT_TEST( execle_bundle_dup ) {
   test_env_destroy( env );
 }
 
+static char const * test_bam_fixture_path;
+
+typedef struct {
+  fd_stem_context_t stem[1];
+  fd_frag_meta_t * mcaches[3];
+  ulong seqs[3];
+  ulong depths[3];
+  ulong credits[3];
+  ulong min_credit;
+  int reliable[3];
+} test_bam_worker_output_t;
+
+static void
+test_bam_worker_output_init( test_bam_worker_output_t * out,
+                             ulong                      worker ) {
+  fd_memset( out, 0, sizeof(*out) );
+  char const * names[3] = { "execle_poh", "execle_pack", "bank_bam" };
+  for( ulong i=0UL; i<3UL; i++ ) {
+    fd_topo_link_t const * link = test_topo_link_kind( names[i], worker );
+    out->mcaches[i] = link->mcache;
+    out->depths[i] = link->depth;
+    out->credits[i] = link->depth;
+    out->reliable[i] = 1;
+  }
+  out->min_credit = out->depths[0];
+  *out->stem = (fd_stem_context_t){ .mcaches=out->mcaches, .seqs=out->seqs, .depths=out->depths,
+      .cr_avail=out->credits, .min_cr_avail=&out->min_credit, .cr_decrement_amount=1UL,
+      .out_reliable=out->reliable };
+}
+
+static void
+test_bam_execute_pack_output( test_env_t *             env,
+                              test_bam_worker_output_t * out,
+                              fd_txn_e_t const *         txns,
+                              ulong                      txn_cnt,
+                              uint                       pack_idx,
+                              ulong                      pack_txn_idx ) {
+  fd_bank_t * bank = fd_svm_mini_bank( env->mini, env->bank_idx );
+  ulong chunk = env->execle->pack_in_chunk0;
+  fd_txn_e_t * in = fd_chunk_to_laddr( env->execle->pack_in_mem, chunk );
+  fd_memcpy( in, txns, txn_cnt*sizeof(fd_txn_e_t) );
+  fd_microblock_execle_trailer_t * trailer = (fd_microblock_execle_trailer_t *)(in+txn_cnt);
+  *trailer = (fd_microblock_execle_trailer_t){ .bank_idx=env->bank_idx,
+      .pack_idx=pack_idx, .pack_txn_idx=pack_txn_idx,
+      .is_bundle=!!(txns[0].txnp->flags & FD_TXN_P_FLAGS_BUNDLE) };
+  ulong sig = fd_disco_poh_sig( bank->f.slot, POH_PKT_TYPE_MICROBLOCK, env->execle->kind_id );
+  ulong sz = txn_cnt*sizeof(fd_txn_e_t)+sizeof(*trailer);
+  FD_TEST( !before_frag( env->execle, 0UL, 0UL, sig ) );
+  during_frag( env->execle, 0UL, 0UL, sig, chunk, sz, 0UL );
+  after_frag( env->execle, 0UL, 0UL, sig, sz, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ), out->stem );
+  FD_TEST( fd_fseq_query( env->execle->busy_fseq )==0UL );
+  /* Current execle batches CU rebates.  Flush through its credited
+     callback so the benchmark observes the same feedback as Pack. */
+  if( env->execle->rebate_microblock_cnt ) {
+    int poll=1, busy=0;
+    env->execle->rebate_idle_loop_cnt = REBATE_BATCH_IDLE_LOOPS;
+    after_credit( env->execle, out->stem, &poll, &busy );
+    FD_TEST( busy );
+  }
+}
+
+static int
+test_bam_poll_poh( test_bam_poh_fixture_t * poh,
+                    test_env_t const *     env,
+                    test_bam_worker_output_t const * out,
+                    ulong                  seq ) {
+  fd_frag_meta_t const * m = out->mcaches[0]+fd_mcache_line_idx( seq, out->depths[0] );
+  FD_TEST( fd_frag_meta_seq_query( m )==seq );
+  return test_bam_poh_fixture_consume( poh, env->execle->kind_id, m->sig,
+      fd_chunk_to_laddr_const( env->execle->out_poh->mem, m->chunk ), m->sz );
+}
+
+static void
+test_bam_pair_sign( fd_txn_p_t *       txnp,
+                     fd_pubkey_t const * signer,
+                     uchar const         private_key[32] ) {
+  fd_sha512_t sha[1];
+  FD_TEST( fd_sha512_join( fd_sha512_new( sha ) ) );
+  fd_txn_t const * txn = TXN(txnp);
+  uchar * signature = txnp->payload+txn->signature_off;
+  uchar const * message = txnp->payload+txn->message_off;
+  ulong message_sz = fd_txn_msg_sz( txn, txnp->payload_sz );
+  fd_ed25519_sign( signature, message, message_sz, signer->uc, private_key, sha );
+  FD_TEST( fd_ed25519_verify( message, message_sz, signature, signer->uc, sha )==FD_ED25519_SUCCESS );
+  fd_sha512_delete( fd_sha512_leave( sha ) );
+}
+
+typedef struct {
+  ulong target_slot;
+  ulong slot;
+  ulong first_batch_cnt;
+  ulong second_batch_cnt;
+  ulong forwarded_cnt;
+  int atomic;
+  fd_txn_p_t forwarded[4];
+  test_bam_poh_summary_t poh;
+  fd_bam_bundle_result_t terminal[2];
+  ulong balances[5];
+} test_bam_pair_result_t;
+
+static void
+test_bam_pair_insert( fd_pack_t * pack,
+                       fd_txn_p_t const * txns,
+                       ulong count,
+                       ulong slot ) {
+  fd_txn_e_t * slots[FD_PACK_MAX_TXN_PER_BUNDLE];
+  fd_pack_insert_bundle_init( pack, slots, count );
+  for( ulong i=0UL; i<count; i++ ) {
+    fd_memset( slots[i], 0, sizeof(fd_txn_e_t) );
+    *slots[i]->txnp = txns[i];
+  }
+  ulong deleted;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, slots, count, slot, FD_PACK_IB_TYPE_NONE,
+                                       NULL, &deleted, NULL )>=0 );
+  FD_TEST( !deleted );
+}
+
+/* Compare serial execution with reverse completion on independent workers.
+   Pack owns scheduling and locks; PoH independently reconstructs ledger
+   bytes and resolves provisional execution results in Pack-index order. */
+static void
+test_bam_pair_run( int variant,
+                    int reverse,
+                    test_bam_pair_result_t * result ) {
+  fd_memset( result, 0, sizeof(*result) );
+  test_env_t * env[2] = { test_env_create(), NULL };
+  env[1] = test_env_create_worker( env[0] );
+  fd_bank_t * bank = fd_svm_mini_bank( mini, env[0]->bank_idx );
+  int duplicate = variant>=8;
+  int dependency = variant==7;
+  int instruction_failure = variant==3 || variant==4 || variant==5;
+  int fees_only = variant==6;
+  int atomic_failure = variant==3 || variant==4;
+  ulong next = (variant==2 || variant==4 || duplicate) ? 2UL : 1UL;
+  ulong second_worker = reverse && !duplicate ? 1UL : 0UL;
+  result->atomic = (variant>=1 && variant<=4) || duplicate;
+  result->slot = result->target_slot = bank->f.slot;
+  result->first_batch_cnt = next;
+  result->second_batch_cnt = duplicate ? 2UL : 1UL;
+  result->forwarded_cnt = next+result->second_batch_cnt;
+  ulong const fee = 5000UL;
+  ((fd_blockhash_info_t *)fd_blockhashes_peek_last( &bank->f.block_hash_queue ))->lamports_per_signature = fee;
+  uchar private_keys[5][32];
+  fd_pubkey_t accounts[5];
+  ulong initial[5] = { 1000000000UL, 1000000UL, 1000000UL, 1000000000UL, 1000000UL };
+  for( ulong i=0UL; i<5UL; i++ ) {
+    fd_memset( private_keys[i], (int)(i+1UL), 32UL );
+    fd_sha512_t sha[1];
+    FD_TEST( fd_ed25519_public_from_private( accounts[i].uc, private_keys[i], fd_sha512_join( fd_sha512_new( sha ) ) ) );
+    fd_sha512_delete( fd_sha512_leave( sha ) );
+    test_fund_account( env[0], &accounts[i], initial[i] );
+  }
+  for( ulong i=0UL; i<next; i++ ) {
+    ulong transfer = dependency ? 1000000UL : 1000UL*(i+1UL);
+    if( instruction_failure && i==next-1UL ) transfer = ULONG_MAX;
+    if( fees_only ) test_build_missing_program_txn( &result->forwarded[i], bank, accounts[0], (fd_pubkey_t){ .ul={0xDEADUL} } );
+    else test_build_system_transfer_txns( &result->forwarded[i], bank, accounts[0], &accounts[i+1UL], &transfer, 1UL );
+    test_bam_pair_sign( &result->forwarded[i], &accounts[0], private_keys[0] );
+  }
+  test_mark_bam_batch( result->forwarded, next, 100U+(uint)(2*variant), result->atomic );
+  if( duplicate ) {
+    fd_memcpy( &result->forwarded[next], result->forwarded, next*sizeof(fd_txn_p_t) );
+    if( variant==9 ) {
+      ulong transfer = 3000UL;
+      test_build_system_transfer_txns( &result->forwarded[next+1UL], bank, accounts[3], &accounts[4], &transfer, 1UL );
+      test_bam_pair_sign( &result->forwarded[next+1UL], &accounts[3], private_keys[3] );
+    }
+  } else {
+    ulong payer = dependency ? 1UL : 3UL;
+    ulong transfer = dependency ? 800000UL : 3000UL;
+    test_build_system_transfer_txns( &result->forwarded[next], bank, accounts[payer], &accounts[4], &transfer, 1UL );
+    test_bam_pair_sign( &result->forwarded[next], &accounts[payer], private_keys[payer] );
+  }
+  test_mark_bam_batch( &result->forwarded[next], result->second_batch_cnt, 101U+(uint)(2*variant), duplicate );
+  for( ulong i=0UL; i<result->forwarded_cnt; i++ ) result->forwarded[i].bam.scheduler_gen = 7U;
+
+  fd_pack_limits_t limits = { .max_cost_per_block=48000000UL, .max_vote_cost_per_block=36000000UL,
+      .max_write_cost_per_acct=12000000UL, .max_data_bytes_per_block=5UL<<20,
+      .max_txn_per_microblock=8UL, .max_microblocks_per_block=32UL,
+      .max_allocated_data_per_block=FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK };
+  void * mem = fd_wksp_alloc_laddr( mini->wksp, fd_pack_align(), fd_pack_footprint( 64UL, 48UL, 2UL, &limits ), TOPO_TAG );
+  FD_TEST( mem );
+  fd_rng_t rng[1];
+  FD_TEST( fd_rng_join( fd_rng_new( rng, 0U, 0UL ) ) );
+  fd_pack_t * pack = fd_pack_join( fd_pack_new( mem, 64UL, 48UL, 2UL, &limits, NULL, 0UL, rng ) );
+  FD_TEST( pack );
+  fd_pack_set_initializer_bundles_ready( pack );
+  test_bam_pair_insert( pack, result->forwarded, next, bank->f.slot );
+  if( !duplicate ) test_bam_pair_insert( pack, &result->forwarded[next], result->second_batch_cnt, bank->f.slot );
+  fd_txn_e_t dispatch[2][FD_PACK_MAX_TXN_PER_BUNDLE];
+  ulong hint;
+  FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint ) );
+  FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, 0UL,
+               FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
+               hint, dispatch[0] )==next );
+  if( duplicate ) test_bam_pair_insert( pack, &result->forwarded[next], result->second_batch_cnt, bank->f.slot );
+  test_bam_worker_output_t output[2];
+  test_bam_worker_output_init( &output[0], 0UL );
+  test_bam_worker_output_init( &output[1], 1UL );
+  uint start_idx = UINT_MAX-1U; /* every three-member fixture crosses Pack-index wrap */
+  test_bam_poh_fixture_t * poh = test_bam_poh_fixture_new( mini->wksp, bank->f.slot, start_idx );
+  if( reverse && dependency ) {
+    FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint ) );
+    FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, 1UL,
+                 FD_PACK_SCHEDULE_BAM_SINGLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
+                 hint, dispatch[1] )==0UL );
+    FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
+  }
+  if( !reverse || dependency || duplicate ) {
+    test_bam_execute_pack_output( env[0], &output[0], dispatch[0], next, start_idx, 0UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+    if( !reverse )
+      for( ulong i=0UL; i<output[0].seqs[0]; i++ ) FD_TEST( !test_bam_poll_poh( poh, env[0], &output[0], i ) );
+  }
+  FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint ) );
+  FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, second_worker,
+               (duplicate ? FD_PACK_SCHEDULE_BUNDLE : FD_PACK_SCHEDULE_BAM_SINGLE) | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
+               hint, dispatch[1] )==result->second_batch_cnt );
+  FD_TEST( !fd_pack_avail_txn_cnt( pack ) );
+  ulong first_poh_cnt = output[0].seqs[0];
+  ulong second_poh_begin = output[second_worker].seqs[0];
+  test_bam_execute_pack_output( env[second_worker], &output[second_worker], dispatch[1], result->second_batch_cnt, start_idx+(uint)next, next );
+  FD_TEST( fd_pack_microblock_complete( pack, second_worker )==1 );
+  if( reverse ) {
+    FD_TEST( test_bam_poll_poh( poh, env[second_worker], &output[second_worker], second_poh_begin ) );
+    FD_TEST( !test_bam_poh_fixture_summary( poh )->txn_cnt );
+    FD_TEST( !test_bam_poh_fixture_summary( poh )->result_cnt );
+    FD_TEST( test_bam_poh_fixture_summary( poh )->expect_pack_idx==start_idx );
+    if( !dependency && !duplicate ) {
+      test_bam_execute_pack_output( env[0], &output[0], dispatch[0], next, start_idx, 0UL );
+      FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+      first_poh_cnt = output[0].seqs[0];
+    }
+    for( ulong i=0UL; i<first_poh_cnt; i++ ) FD_TEST( !test_bam_poll_poh( poh, env[0], &output[0], i ) );
+  }
+  for( ulong i=second_poh_begin; i<output[second_worker].seqs[0]; i++ )
+    FD_TEST( !test_bam_poll_poh( poh, env[second_worker], &output[second_worker], i ) );
+  result->poh = *test_bam_poh_fixture_summary( poh );
+  FD_TEST( result->poh.expect_pack_idx==start_idx+(uint)result->forwarded_cnt );
+  FD_TEST( result->poh.txn_cnt==(duplicate ? next : (atomic_failure ? 1UL : result->forwarded_cnt)) );
+  for( ulong i=0UL; i<result->poh.txn_cnt; i++ ) {
+    fd_txn_p_t const * expected = &result->forwarded[atomic_failure ? next : i];
+    FD_TEST( result->poh.txns[i].payload_sz==expected->payload_sz );
+    FD_TEST( !memcmp( result->poh.txns[i].payload, expected->payload, expected->payload_sz ) );
+  }
+  ulong terminals = 0UL;
+  ulong terminal_seen = 0UL;
+  for( ulong i=0UL; i<result->poh.result_cnt; i++ ) {
+    fd_bam_bundle_result_t const * r = &result->poh.results[i];
+    ulong batch = (ulong)(r->seq_id-(100U+(uint)(2*variant)));
+    FD_TEST( batch<2UL && r->scheduler_gen==7U && r->slot==bank->f.slot );
+    FD_TEST( !(terminal_seen & (1UL<<batch)) );
+    terminal_seen |= 1UL<<batch;
+    result->terminal[batch] = *r;
+    terminals++;
+  }
+  for( ulong worker=0UL; worker<2UL; worker++ ) {
+    for( ulong i=0UL; i<output[worker].seqs[2]; i++ ) {
+      fd_frag_meta_t const * m = output[worker].mcaches[2]+fd_mcache_line_idx( i, output[worker].depths[2] );
+      fd_bam_bundle_result_t const * r = fd_chunk_to_laddr_const( env[worker]->execle->out_bam->mem, m->chunk );
+      ulong batch = (ulong)(r->seq_id-(100U+(uint)(2*variant)));
+      FD_TEST( m->sz==sizeof(*r) && batch<2UL && r->scheduler_gen==7U && r->slot==bank->f.slot );
+      FD_TEST( !(terminal_seen & (1UL<<batch)) );
+      terminal_seen |= 1UL<<batch;
+      result->terminal[batch] = *r;
+      terminals++;
+    }
+  }
+  FD_TEST( terminals==2UL && terminal_seen==3UL );
+  FD_TEST( result->terminal[0].execution_success==!atomic_failure );
+  FD_TEST( result->terminal[1].execution_success==!duplicate );
+  if( duplicate ) {
+    FD_TEST( result->terminal[1].transaction_err_count==2U );
+    FD_TEST( result->terminal[1].transaction_err[0]==bam_types_TransactionErrorReason_ALREADY_PROCESSED );
+    FD_TEST( result->terminal[1].transaction_err[1]==bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+  } else FD_TEST( !result->terminal[1].transaction_err_count );
+  if( !instruction_failure && !fees_only )
+    FD_TEST( !result->terminal[0].transaction_err_count );
+  if( instruction_failure )
+    FD_TEST( result->terminal[0].transaction_err[next-1UL]==bam_types_TransactionErrorReason_INSTRUCTION_ERROR );
+  if( fees_only )
+    FD_TEST( result->terminal[0].transaction_err[0]==bam_types_TransactionErrorReason_PROGRAM_ACCOUNT_NOT_FOUND );
+
+  ulong expected[5];
+  fd_memcpy( expected, initial, sizeof(expected) );
+  if( !atomic_failure ) {
+    expected[0] -= fee*next;
+    if( !instruction_failure && !fees_only ) {
+      for( ulong i=0UL; i<next; i++ ) {
+        ulong transfer = dependency ? 1000000UL : 1000UL*(i+1UL);
+        expected[0] -= transfer;
+        expected[i+1UL] += transfer;
+      }
+    }
+  }
+  if( !duplicate ) {
+    expected[dependency ? 1UL : 3UL] -= fee+(dependency ? 800000UL : 3000UL);
+    expected[4] += dependency ? 800000UL : 3000UL;
+    FD_TEST( result->terminal[1].feepayer_balance_lamports[0]==expected[dependency ? 1UL : 3UL] );
+  }
+  for( ulong i=0UL; i<5UL; i++ ) {
+    result->balances[i] = test_read_lamports( env[0], &accounts[i] );
+    if( result->balances[i]!=expected[i] )
+      FD_LOG_WARNING(( "BAM fixture balance mismatch variant=%i reverse=%i account=%lu actual=%lu expected=%lu",
+                       variant, reverse, i, result->balances[i], expected[i] ));
+    FD_TEST( result->balances[i]==expected[i] );
+  }
+  fd_pack_delete( fd_pack_leave( pack ) );
+  fd_rng_delete( fd_rng_leave( rng ) );
+  test_env_destroy( env[0] ); /* frees both contexts and all fixture outputs */
+}
+
+static void
+test_bam_write_hex( FILE * file,
+                     void const * bytes,
+                     ulong        size ) {
+  uchar const * p = bytes;
+  fputc( '"', file );
+  for( ulong i=0UL; i<size; i++ ) fprintf( file, "%02x", p[i] );
+  fputc( '"', file );
+}
+
+FD_UNIT_TEST( execle_bam_two_workers_pack_poh ) {
+  static char const * names[10] = { "nonrevert_singles", "atomic_singles", "atomic_multi_then_single",
+                                  "atomic_single_failure", "atomic_multi_failure", "nonrevert_instruction_error",
+                                  "nonrevert_fees_only", "dependent_writer_lock", "duplicate_atomic_retry", "shared_member_atomic_retry" };
+  FILE * file = NULL;
+  if( test_bam_fixture_path ) {
+    file = fopen( test_bam_fixture_path, "w" );
+    FD_TEST( file );
+    fprintf( file, "{\"schema\":1,\"evidence\":\"local_real_pack_execle_poh_without_validator_root_confirmation\",\"cases\":[" );
+  }
+  for( int variant=0; variant<10; variant++ ) {
+    test_bam_pair_result_t parallel, serial;
+    test_bam_pair_run( variant, 1, &parallel );
+    test_bam_pair_run( variant, 0, &serial );
+    FD_TEST( !memcmp( parallel.balances, serial.balances, sizeof(parallel.balances) ) );
+    FD_TEST( parallel.poh.txn_cnt==serial.poh.txn_cnt );
+    for( ulong i=0UL; i<parallel.poh.txn_cnt; i++ ) {
+      FD_TEST( parallel.poh.txns[i].payload_sz==serial.poh.txns[i].payload_sz );
+      FD_TEST( !memcmp( parallel.poh.txns[i].payload, serial.poh.txns[i].payload, parallel.poh.txns[i].payload_sz ) );
+    }
+    for( ulong i=0UL; i<2UL; i++ ) {
+      FD_TEST( parallel.terminal[i].execution_success==serial.terminal[i].execution_success );
+      FD_TEST( !memcmp( parallel.terminal[i].transaction_err, serial.terminal[i].transaction_err,
+                        sizeof(parallel.terminal[i].transaction_err) ) );
+      FD_TEST( !memcmp( parallel.terminal[i].feepayer_balance_lamports, serial.terminal[i].feepayer_balance_lamports,
+                        sizeof(parallel.terminal[i].feepayer_balance_lamports) ) );
+    }
+    if( file ) {
+      fprintf( file, "%s{\"name\":\"%s\",\"slot\":%lu,\"dispatch_bank_slot\":%lu,\"poh_acceptance_slot\":%lu,\"scheduler_generation\":7,\"first_batch_count\":%lu,\"second_batch_count\":%lu,\"first_batch_atomic\":%s,\"forwarded\":[",
+               variant ? "," : "", names[variant], parallel.target_slot, parallel.slot, parallel.poh.slot, parallel.first_batch_cnt, parallel.second_batch_cnt, parallel.atomic ? "true" : "false" );
+      for( ulong i=0UL; i<parallel.forwarded_cnt; i++ ) {
+        if( i ) fputc( ',', file );
+        fprintf( file, "{\"sequence\":%u,\"member\":%u,\"target_slot\":%lu,\"transaction\":",
+                 parallel.forwarded[i].bam.seq_id, (uint)parallel.forwarded[i].bam.batch_idx, parallel.target_slot );
+        test_bam_write_hex( file, parallel.forwarded[i].payload, parallel.forwarded[i].payload_sz );
+        fputc( '}', file );
+      }
+      fprintf( file, "],\"poh_accepted_transactions\":[" );
+      for( ulong i=0UL; i<parallel.poh.txn_cnt; i++ ) {
+        if( i ) fputc( ',', file );
+        test_bam_write_hex( file, parallel.poh.txns[i].payload, parallel.poh.txns[i].payload_sz );
+      }
+      fprintf( file, "],\"terminal\":[" );
+      for( ulong i=0UL; i<2UL; i++ ) {
+        fd_bam_bundle_result_t const * r = &parallel.terminal[i];
+        fprintf( file, "%s{\"sequence\":%u,\"slot\":%lu,\"execution_success\":%s,\"transaction_errors\":[",
+                 i ? "," : "", r->seq_id, r->slot, r->execution_success ? "true" : "false" );
+        for( ulong j=0UL; j<(r->transaction_err_count ? r->bundle_txn_cnt : 0UL); j++ )
+          fprintf( file, "%s%u", j ? "," : "", (uint)r->transaction_err[j] );
+        fprintf( file, "]}" );
+      }
+      fprintf( file, "],\"balances\":[%lu,%lu,%lu,%lu,%lu]}", parallel.balances[0], parallel.balances[1],
+               parallel.balances[2], parallel.balances[3], parallel.balances[4] );
+    }
+    FD_LOG_NOTICE(( "BAM two-worker real-Pack/execle/PoH fixture passed: %s", names[variant] ));
+  }
+  if( file ) { fprintf( file, "]}\n" ); FD_TEST( !fclose( file ) ); }
+}
+
+
 int
 main( int     argc,
       char ** argv ) {
@@ -1923,10 +2322,12 @@ main( int     argc,
   limits->max_txn_per_slot        = MAX_TXN_PER_SLOT;
   limits->max_txn_write_locks     = MAX_TX_ACCOUNT_LOCKS;
   limits->wksp_addl_sz            = 5UL<<30;
-  limits->accdb_joiner_cnt        = 2UL; /* mini's runtime join + the exec tile join */
+  limits->accdb_joiner_cnt        = 3UL; /* mini runtime plus two independent execle joins */
 
   mini = fd_svm_test_boot( &argc, &argv, limits );
   fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
+
+  test_bam_fixture_path = fd_env_strip_cmdline_cstr( &argc, &argv, "--bam-fixture-output", NULL, NULL );
 
   fd_unit_tests( argc, argv );
 
