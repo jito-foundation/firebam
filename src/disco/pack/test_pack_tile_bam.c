@@ -2968,8 +2968,10 @@ test_pack_callbacks_leader( test_pack_callbacks_t * e,
   leader.limits.slot_max_write_cost_per_acct = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND;
   leader.limits.slot_max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK;
   leader.limits.slot_max_data_shreds = 32768UL;
+  uchar leader_buf[ sizeof(leader) ] __attribute__((aligned(FD_CHUNK_ALIGN)));
+  fd_memcpy( leader_buf, &leader, sizeof(leader) );
   ctx->in_kind[0] = frank ? IN_KIND_POH : IN_KIND_REPLAY;
-  ctx->in[0] = (fd_pack_in_ctx_t){ .mem=(fd_wksp_t *)&leader, .chunk0=0UL, .wmark=0UL };
+  ctx->in[0] = (fd_pack_in_ctx_t){ .mem=(fd_wksp_t *)leader_buf, .chunk0=0UL, .wmark=0UL };
   ulong sig = frank ? fd_disco_poh_sig( slot, POH_PKT_TYPE_BECAME_LEADER, 0UL ) : REPLAY_SIG_BECAME_LEADER;
   during_frag( ctx, 0UL, 0UL, sig, 0UL, sizeof(leader), 0UL );
   after_frag( ctx, 0UL, 0UL, sig, sizeof(leader), 0UL, 0UL, &e->h->out->stem );
