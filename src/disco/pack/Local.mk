@@ -11,6 +11,8 @@ $(call make-unit-test,test_chkdup,test_chkdup,fd_ballet fd_util)
 $(call make-unit-test,test_tip_prog_blacklist,test_tip_prog_blacklist,fd_ballet fd_util)
 $(call make-unit-test,test_pack_rebate_sum,test_pack_rebate_sum,fd_ballet fd_util)
 $(call make-unit-test,test_pack_tile_bam,test_pack_tile_bam,fd_disco fd_waltz fd_flamenco fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))
+# Explicit opt-in cost measurement; not part of the automatic unit suite.
+$(call make-unit-test,test_bam_readiness_bench,test_bam_readiness_bench,fd_disco fd_waltz fd_flamenco fd_tango fd_ballet fd_util,$(OPENSSL_LIBS))
 $(call run-unit-test,test_compute_budget_program)
 $(call run-unit-test,test_est_tbl)
 $(call run-unit-test,test_pack_bitset)
