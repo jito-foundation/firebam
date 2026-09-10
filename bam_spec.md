@@ -269,6 +269,14 @@ Each `AtomicTxnBatch` contains:
 - Node assigns each batch a `seq_id` from a process-lifetime wrapping counter and sets `max_schedule_slot` to the
   speculative bank's slot. The current implementation does not check for a pending or late-result collision when the
   counter wraps; results carry no auction-generation identifier.
+- FireBAM's Pack dispatch policy for this Node pairing chooses `max_schedule_slot` as the execution slot because
+  both Node forwarding paths record `target_slot == max_schedule_slot`. The protobuf field remains an inclusive
+  latest-allowed deadline. Pack buffers future-slot work in FIFO order, dispatches only with the matching active
+  leader bank after executor draining, and rejects missed targets without retargeting them. A producer with a
+  different target and deadline needs an explicit target-slot contract before using this policy.
+- Pack retains a separate minimum BAM admission slot after closing a leader slot. It does not advance resolver
+  blockhash knowledge. Completed stale arrivals are rejected after the existing preprocessing/blockhash checks;
+  partial batches retain their existing single-result assembly/error precedence.
 - The protocol permits multi-packet non-revert batches, but current Node output and validator result mapping assume one
   packet.
 
