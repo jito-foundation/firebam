@@ -242,8 +242,9 @@ fd_bam_gossip_update( fd_bam_tile_t *    ctx,
   fd_bam_client_id_update_state_t desired_client_id_pending = use_bam
     ? FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_BAM
     : FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT;
+  /* https://github.com/solana-foundation/solana-validator-client-ids/pull/10 */
   ushort desired_client_id = use_bam
-    ? (ushort)FD_GOSSIP_CONTACT_INFO_CLIENT_BAM
+    ? (ushort)( ctx->admin_rpc_path[0] ? 14U : FD_GOSSIP_CONTACT_INFO_CLIENT_BAM )
     : (ushort)( ctx->admin_rpc_path[0]
       ? FD_GOSSIP_CONTACT_INFO_CLIENT_FRANKENDANCER
       : FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
