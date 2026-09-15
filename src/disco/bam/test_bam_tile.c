@@ -4763,7 +4763,7 @@ test_bam_admin_rpc_apply_success_caches_default_and_marks_applied( fd_wksp_t * w
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "\"method\":\"setPublicTpuForwardsAddress\"" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "8.8.8.8:7007" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "\"method\":\"setContactInfoClientId\"" ) );
-  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "[12]" ) );
+  FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "[14]" ) );
 
   FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM );
   FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM );
