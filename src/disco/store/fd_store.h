@@ -215,7 +215,7 @@ FD_PROTOTYPES_BEGIN
 
 FD_FN_CONST static inline ulong
 fd_store_align( void ) {
-  return alignof(fd_store_t);
+  return FD_STORE_ALIGN;
 }
 
 FD_FN_CONST static inline ulong

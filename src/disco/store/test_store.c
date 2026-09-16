@@ -1,6 +1,23 @@
 #include "fd_store.h"
 #include "fd_store.c"
 
+static void
+test_alignment( fd_wksp_t * wksp ) {
+  ulong footprint = fd_store_footprint( 2UL, 1UL );
+  uchar * mem = fd_wksp_alloc_laddr( wksp, FD_STORE_ALIGN, footprint+FD_STORE_ALIGN, 1UL );
+  FD_TEST( mem );
+
+  /* Alignment of the store header alone does not align its map, pool,
+     and FEC data.  Reject such an address before formatting the store. */
+  FD_TEST( alignof(fd_store_t)<FD_STORE_ALIGN );
+  FD_TEST( !fd_store_new( mem+alignof(fd_store_t), 1UL, 2UL, 1UL ) );
+
+  fd_store_t * store = fd_store_join( fd_store_new( mem, 1UL, 2UL, 1UL ) );
+  FD_TEST( store );
+  FD_TEST( fd_store_verify( store )==0 );
+  fd_wksp_free_laddr( fd_store_delete( fd_store_leave( store ) ) );
+}
+
 /* test_simple defines the following store in which there is only a
    single FEC set per slot.
 
@@ -285,7 +302,9 @@ test_fec_data_max( fd_wksp_t * wksp ) {
   FD_TEST( fp_fixed );
   FD_TEST( fp_var );
   FD_TEST( fp_var > fp_fixed );
-  FD_TEST( fp_var - fp_fixed == (63985UL - 31840UL) * fec_max );
+  ulong data_growth = (63985UL - 31840UL) * fec_max;
+  FD_TEST( fp_var - fp_fixed >= data_growth );
+  FD_TEST( fp_var - fp_fixed - data_growth < fd_store_align() );
 
   /* Exercise fec_data_max = 63985 (variable-length FEC sets) */
   void * mem         = fd_wksp_alloc_laddr( wksp, fd_store_align(), fp_var, 1UL );
@@ -350,6 +369,7 @@ main( int argc, char ** argv ) {
   fd_wksp_t * wksp      = fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ), page_cnt, fd_shmem_cpu_idx( numa_idx ), "wksp", 0UL );
   FD_TEST( wksp );
 
+  test_alignment   ( wksp );
   test_api         ( wksp );
   test_api2        ( wksp );
   test_hash        ( wksp );
