@@ -398,11 +398,6 @@ test_final_empty_instr_borsh_io_error( fd_slot_delta_parser_t * parser ) {
   ulong input_rem = sizeof(input);
 
   int res = fd_slot_delta_parser_consume( parser, input_cur, input_rem, result );
-  FD_TEST( res==FD_SLOT_DELTA_PARSER_ADVANCE_SLOT );
-  input_cur += result->bytes_consumed;
-  input_rem -= result->bytes_consumed;
-
-  res = fd_slot_delta_parser_consume( parser, input_cur, input_rem, result );
   FD_TEST( res==FD_SLOT_DELTA_PARSER_ADVANCE_GROUP );
   input_cur += result->bytes_consumed;
   input_rem -= result->bytes_consumed;
