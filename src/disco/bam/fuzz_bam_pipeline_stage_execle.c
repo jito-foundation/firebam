@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define FD_TILE_TEST 1
 #define fd_tile_execle bam_fuzz_execle_tile_unused
 #include "../../discof/execle/fd_execle_tile.c"
