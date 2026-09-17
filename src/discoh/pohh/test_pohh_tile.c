@@ -15,7 +15,6 @@ test_next_leader_slot( fd_multi_epoch_leaders_t const * mleaders,
 #undef fd_multi_epoch_leaders_get_next_slot
 
 #include "../../util/tmpl/fd_unit_test.c"
-#include <unistd.h>
 #include <sys/wait.h>
 
 int volatile const fd_startup_skip_checks = 1; /* fd_startup.c */
