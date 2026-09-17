@@ -483,7 +483,7 @@ FD_UNIT_TEST( credit_stall ) {
   client->event_stream->s.tx_wnd = 50U;
   grpc->window_update_pending = 1;
   int charge_busy = 0;
-  FD_TEST( 0==fd_grpc_client_rxtx_socket( grpc, client->sockfd, t1, &charge_busy ) );
+  FD_TEST( 0==fd_grpc_client_rxtx_socket( grpc, client->sockfd, t1, &charge_busy, 1 ) );
   FD_TEST( fd_grpc_client_tx_starved( grpc )==rem-50UL );
   FD_TEST( !credit_stall_check( client, t1 ) );
   FD_TEST( client->stall_since==t1 );
