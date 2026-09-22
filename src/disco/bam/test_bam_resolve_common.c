@@ -12,9 +12,6 @@
 #ifndef TEST_BAM_RESOLVE_HAS_REPLAY
 #define TEST_BAM_RESOLVE_HAS_REPLAY 0
 #endif
-#ifndef TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH
-#define TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH 0
-#endif
 
 #define TEST_MCACHE_DEPTH  16UL
 #define TEST_DCACHE_CHUNKS 128UL
@@ -165,22 +162,29 @@ test_insert_blockhash( test_harness_t * h,
   entry->slot = slot;
 }
 
+/* Slot distance alone cannot distinguish age 150 from age 151, and replay
+   may have completed a newer slot on an unrelated fork.  Exercise both
+   ordinary and BAM ingress around the old slot cutoff and far beyond it. */
 static void
-test_expired_bam_forwarded_to_pack( void ) {
+test_known_hash_slot_distance_defers_to_runtime( void ) {
   test_harness_t h[1];
   test_harness_new( h );
-
-  fd_txn_m_t * txnm = test_prepare_bam_txn( h, 7U, 0, 0U, 1U, 0 );
-  test_insert_blockhash( h, txnm, 10UL );
-  h->ctx->completed_slot = 200UL;
-
-  after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
-
-  FD_TEST( h->seqs[ 0 ]==1UL );
-  FD_TEST( txnm->reference_slot==10UL );
-  FD_TEST( txnm->bam.blockhash_expired );
+  ulong const completed_slots[] = { 160UL, 161UL, 162UL, 171UL, 1000000UL, ULONG_MAX };
+  for( ulong source=0UL; source<2UL; source++ ) {
+    for( ulong i=0UL; i<sizeof(completed_slots)/sizeof(completed_slots[0]); i++ ) {
+      fd_txn_m_t * txnm = test_prepare_bam_txn( h, (uchar)(7UL+source*16UL+i), 0, 0U, 1U, 0 );
+      txnm->source_tpu = source ? FD_TXN_M_TPU_SOURCE_BAM : FD_TXN_M_TPU_SOURCE_QUIC;
+      test_insert_blockhash( h, txnm, 10UL );
+      h->ctx->completed_slot = completed_slots[i];
+      ulong seq = h->seqs[0];
+      after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
+      FD_TEST( h->seqs[0]==seq+1UL );
+      FD_TEST( txnm->reference_slot==10UL );
+      FD_TEST( !h->ctx->bundle_failed );
+    }
+  }
   FD_TEST( h->ctx->metrics.blockhash_expired==0UL );
-
+  FD_TEST( pool_free( h->ctx->pool )==4UL );
   test_harness_delete( h );
 }
 
@@ -203,10 +207,10 @@ test_no_bank_deser_marker( uchar batch_idx ) {
   test_harness_delete( h );
 }
 
-/* Dropping a later expired member lets pack replace its blockhash failure with
-   a sibling's sanitize result.  Forward the marker and every sibling intact. */
+/* A later member's old observed hash slot must not fail it or its siblings.
+   Runtime will check each member against the actual execution bank. */
 static void
-test_later_expired_bam_member_and_siblings_forwarded( void ) {
+test_old_hash_bam_member_and_siblings_forwarded( void ) {
   for( ulong revert_on_error=0UL; revert_on_error<2UL; revert_on_error++ ) {
     test_harness_t h[1];
     test_harness_new( h );
@@ -226,7 +230,6 @@ test_later_expired_bam_member_and_siblings_forwarded( void ) {
 
       FD_TEST( h->seqs[ 0 ]==(ulong)batch_idx+1UL );
       FD_TEST( txnm->reference_slot==blockhash_slot );
-      FD_TEST( txnm->bam.blockhash_expired==(batch_idx==1U) );
       FD_TEST( !h->ctx->bundle_failed );
     }
     FD_TEST( h->ctx->metrics.blockhash_expired==0UL );
@@ -235,23 +238,50 @@ test_later_expired_bam_member_and_siblings_forwarded( void ) {
   }
 }
 
-#if TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH
 static void
-test_unknown_blockhash_bam_bypasses_stash( void ) {
+test_unknown_hash_stash_and_nonce_bypass( void ) {
   test_harness_t h[1];
   test_harness_new( h );
+  h->ctx->completed_slot = 1000000UL; /* May belong to an unrelated fork. */
 
-  fd_txn_m_t * txnm = test_prepare_bam_txn( h, 17U, 0, 0U, 1U, 0 );
-  h->ctx->completed_slot = 100UL;
+  for( ulong i=0UL; i<8UL; i++ ) {
+    fd_txn_m_t * txnm = test_prepare_bam_txn( h, (uchar)(40UL+i), 0, 0U, 1U, 0 );
+    txnm->source_tpu = FD_TXN_M_TPU_SOURCE_QUIC;
+    after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
+    FD_TEST( !h->seqs[0] );
+    FD_TEST( pool_free( h->ctx->pool )==4UL-fd_ulong_min( i+1UL, 4UL ) );
+  }
+  FD_TEST( h->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_INSERTED_IDX ]==8UL );
+  FD_TEST( h->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_OVERRUN_IDX ]==4UL );
 
-  after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
-
-  FD_TEST( h->seqs[ 0 ]==1UL );
-  FD_TEST( h->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_INSERTED_IDX ]==0UL );
-
+  for( ulong source=0UL; source<3UL; source++ ) {
+    fd_txn_m_t * txnm = test_prepare_bam_txn( h, (uchar)(60UL+source), source==1UL, 0U, 1U, 0 );
+    if( source ) txnm->source_tpu = FD_TXN_M_TPU_SOURCE_QUIC;
+    if( source==2UL ) {
+      /* A possible durable nonce uses SystemProgram AdvanceNonceAccount.
+         Resolver only recognizes the shape; runtime validates its state. */
+      txnm->payload_sz = 68U;
+      txnm->txn_t_sz = (ushort)fd_txn_footprint( 1UL, 0UL );
+      uchar * payload = fd_txn_m_payload( txnm );
+      fd_memset( payload+32UL, 0, 32UL );
+      fd_memcpy( payload+64UL, (uchar[4]){ 4U, 0U, 0U, 0U }, 4UL );
+      fd_txn_t * txn = fd_txn_m_txn_t( txnm );
+      fd_memset( txn, 0, txnm->txn_t_sz );
+      txn->acct_addr_off = 32U;
+      txn->acct_addr_cnt = 1U;
+      txn->instr_cnt = 1U;
+      txn->instr[0].data_off = 64U;
+      txn->instr[0].data_sz = 4U;
+      txn->instr[0].acct_cnt = 3U;
+    }
+    after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
+    FD_TEST( h->seqs[0]==source+1UL );
+    FD_TEST( txnm->reference_slot==1000000UL );
+    FD_TEST( !pool_free( h->ctx->pool ) );
+    FD_TEST( h->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_INSERTED_IDX ]==8UL );
+  }
   test_harness_delete( h );
 }
-#endif
 
 int
 main( int     argc,
@@ -271,13 +301,11 @@ main( int     argc,
   }
   test_harness_delete( h );
 
-  test_expired_bam_forwarded_to_pack();
-  test_later_expired_bam_member_and_siblings_forwarded();
+  test_known_hash_slot_distance_defers_to_runtime();
+  test_old_hash_bam_member_and_siblings_forwarded();
   test_no_bank_deser_marker( 0U );
   test_no_bank_deser_marker( 1U );
-#if TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH
-  test_unknown_blockhash_bam_bypasses_stash();
-#endif
+  test_unknown_hash_stash_and_nonce_bypass();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

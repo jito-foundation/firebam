@@ -2400,6 +2400,72 @@ typedef struct {
   ulong slot;
 } test_bam_lookahead_ready_t;
 
+FD_UNIT_TEST( execle_bank_blockhash_validity ) {
+  /* Exercise the actual runtime, after conservative resolver/pack admission.
+     The bank is hundreds of slots beyond its parent; produced-hash age,
+     fork membership and durable nonce state still decide admission. */
+  for( ulong kind=0UL; kind<7UL; kind++ ) {
+    test_env_t * env = test_env_create();
+    ulong parent_idx = env->bank_idx;
+    fd_svm_mini_freeze( mini, parent_idx );
+    env->bank_idx = fd_svm_mini_attach_child( mini, parent_idx, 600UL );
+    fd_bank_t * bank = fd_svm_mini_bank( mini, env->bank_idx );
+    fd_hash_t hash = *fd_blockhashes_peek_last_hash( &bank->f.block_hash_queue );
+    ((fd_blockhash_info_t *)fd_blockhashes_peek_last( &bank->f.block_hash_queue ))->lamports_per_signature = 5000UL;
+    ulong produced = kind<3UL ? 149UL+kind : 0UL;
+    for( ulong i=0UL; i<produced; i++ ) {
+      fd_hash_t next_hash = { .ul={0xabcdefUL, i+1UL, 0UL, 0UL} };
+      fd_blockhashes_push_new( &bank->f.block_hash_queue, &next_hash )->lamports_per_signature = 5000UL;
+    }
+    if( kind==3UL || kind==4UL ) {
+      hash = (fd_hash_t){ .ul={0x123456789UL, 0UL, 0UL, 0UL} };
+      if( kind==4UL ) {
+        ulong sibling_idx = fd_svm_mini_attach_child( mini, parent_idx, 600UL );
+        fd_bank_t * sibling = fd_svm_mini_bank( mini, sibling_idx );
+        fd_blockhashes_push_new( &sibling->f.block_hash_queue, &hash );
+        FD_TEST( fd_blockhashes_check_age( &sibling->f.block_hash_queue, &hash, 150UL ) );
+      }
+      FD_TEST( !fd_blockhashes_check_age( &bank->f.block_hash_queue, &hash, 150UL ) );
+    }
+
+    uchar private_key[32];
+    fd_memset( private_key, 37, sizeof(private_key) );
+    fd_pubkey_t payer;
+    fd_sha512_t sha[1];
+    fd_ed25519_public_from_private( payer.uc, private_key, fd_sha512_join( fd_sha512_new( sha ) ) );
+    fd_sha512_delete( fd_sha512_leave( sha ) );
+    fd_pubkey_t recipient = { .ul={0x7777UL} };
+    test_fund_account( env, &payer, 1000000000UL );
+    test_fund_account( env, &recipient, 1000000UL );
+    fd_txn_p_t txn[1];
+    if( kind>=5UL ) {
+      fd_pubkey_t nonce_key = { .ul={0x9999UL} };
+      fd_hash_t seed = { .ul={0x5555UL} };
+      test_durable_nonce_from_blockhash( &hash, &seed );
+      fd_hash_t stored = hash;
+      if( kind==6UL ) stored.uc[0] ^= 1U;
+      test_put_nonce_account_rooted( env, &nonce_key, &payer, &stored, 5000000UL );
+      test_build_durable_nonce_transfer_txn( txn, payer, nonce_key, recipient, &hash, 1000UL, 91UL );
+    } else {
+      test_build_system_transfer_txn( txn, bank, payer, recipient, 1000UL );
+      fd_memcpy( txn->payload+TXN(txn)->recent_blockhash_off, &hash, sizeof(hash) );
+    }
+    test_bam_pair_sign( txn, &payer, private_key );
+    test_mark_bam_batch( txn, 1UL, 400U+(uint)kind, 0 );
+    test_execle_run( env, txn, 1UL, 0U, 0UL, 0 );
+
+    int accepted = kind<2UL || kind==5UL;
+    fd_txn_p_t const * out = fd_chunk_to_laddr_const( env->execle->out_poh->mem, test_out_poh_meta( 0UL )->chunk );
+    FD_TEST( !!(out->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS)==accepted );
+    int expected_err = accepted ? FD_RUNTIME_EXECUTE_SUCCESS :
+                       kind==6UL ? FD_RUNTIME_TXN_ERR_BLOCKHASH_FAIL_WRONG_NONCE : FD_RUNTIME_TXN_ERR_BLOCKHASH_NOT_FOUND;
+    FD_TEST( env->execle->txn_out[0].err.txn_err==expected_err );
+    FD_TEST( test_read_lamports( env, &recipient )==1000000UL+(accepted ? 1000UL : 0UL) );
+    if( !accepted ) FD_TEST( test_read_lamports( env, &payer )==1000000000UL );
+    test_env_destroy( env );
+  }
+}
+
 FD_UNIT_TEST( execle_reserved_fee_payer_rejected ) {
   /* The pack admission repair must not make a reserved account a usable
      fee payer.  This directly tests runtime validation; no signature with

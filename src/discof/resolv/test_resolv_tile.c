@@ -390,7 +390,7 @@ FD_UNIT_TEST( resolv_blockhash_known ) {
   test_env_destroy( env );
 }
 
-FD_UNIT_TEST( resolv_blockhash_expired ) {
+FD_UNIT_TEST( resolv_old_observed_hash_defers_to_runtime ) {
   test_env_t env[1];
   test_env_create( env );
   env->ctx->completed_slot = 300UL;
@@ -399,8 +399,8 @@ FD_UNIT_TEST( resolv_blockhash_expired ) {
   test_add_blockhash( env, &hash, 100UL );
   test_ingest_txn( env, &hash, 0 );
 
-  FD_TEST( env->stem_seqs[0]==0UL );
-  FD_TEST( env->ctx->metrics.blockhash_expired==1UL );
+  FD_TEST( env->stem_seqs[0]==1UL );
+  FD_TEST( env->ctx->metrics.blockhash_expired==0UL );
 
   test_env_destroy( env );
 }

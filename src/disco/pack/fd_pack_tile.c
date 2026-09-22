@@ -39,11 +39,10 @@
    2000*MAX_TXN_PER_MICROBLOCK txn/sec/execle. */
 #define MICROBLOCK_DURATION_NS  (0L)
 
-/* There are 151 accepted blockhashes, but those don't include skips.
-   This check is neither precise nor accurate, but just good enough.
-   The execle tile does the final check.  We give a little margin for a
-   few percent skip rate. */
-#define TRANSACTION_LIFETIME_SLOTS 160UL
+/* Blockhash validity belongs to the execution bank's produced-hash queue.
+   A slot-distance threshold cannot establish expiry across skipped slots
+   or forks.  Keep pack's fixed capacity and BAM target-slot eviction, and
+   let runtime reject stale hashes when execution is attempted. */
 
 /* Time is normally a long, but pack expects a ulong.  Add -LONG_MIN to
    the time values so that LONG_MIN maps to 0, LONG_MAX maps to
@@ -100,12 +99,6 @@ typedef enum {
   PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT,
 } pack_tile_bam_bundle_assembly_abandon_reason_t;
 
-typedef enum {
-  PACK_TILE_BAM_INVALID_NONE = 0,
-  PACK_TILE_BAM_INVALID_OUTSIDE_SLOT,
-  PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED,
-} pack_tile_bam_invalid_reason_t;
-
 typedef struct fd_pack_ctx fd_pack_ctx_t;
 
 typedef struct {
@@ -123,7 +116,6 @@ typedef struct {
   ushort           scheduler_gen;
   uchar            txn_cnt;
   uchar            saw_unlanded_completion;
-  uchar            min_blockhash_slot_txn_idx;
   uchar            indexed_mask; /* bit j set while sig[j] has an entry in bam_sig_map */
 } pack_bam_work_t;
 
@@ -280,10 +272,9 @@ struct fd_pack_ctx {
   fd_clock_tile_t  clock[1];
 
   /* highest_observed_slot stores the highest slot number we've seen
-     from any transaction coming from the resolv tile.  When this
-     increases, we expire old transactions. */
+     from any transaction coming from the resolv tile, for diagnostics only.
+     Observations from other forks cannot establish a scheduling deadline. */
   ulong highest_observed_slot;
-  ulong bam_pending_check_slot;
 
   /* microblock_duration_ns scaled to be in ticks instead of nanoseconds */
   ulong microblock_duration_ticks;
@@ -387,7 +378,6 @@ struct fd_pack_ctx {
     ushort ownership_gen;
     _Bool is_bam;
     uchar min_blockhash_slot_txn_idx;
-    uchar resolver_blockhash_expired_txn_idx;
   } current_bundle_bam[1];
 
   block_builder_info_t blk_engine_cfg[1];
@@ -620,29 +610,13 @@ pack_tile_enqueue_bam_result( fd_pack_ctx_t *               ctx,
 }
 
 static inline fd_bam_bundle_result_t
-pack_tile_make_bam_invalid_result( uint                           seq_id,
-                                   ushort                         scheduler_gen,
-                                   ulong                          max_schedule_slot,
-                                   uchar                          txn_cnt,
-                                   uchar                          blockhash_txn_idx,
-                                   pack_tile_bam_invalid_reason_t reason ) {
+pack_tile_make_bam_outside_slot_result( uint   seq_id,
+                                        ushort scheduler_gen,
+                                        ulong  max_schedule_slot,
+                                        uchar  txn_cnt ) {
   fd_bam_bundle_result_t res = fd_bam_result_base( seq_id, scheduler_gen, max_schedule_slot, txn_cnt );
-  if( FD_UNLIKELY( reason==PACK_TILE_BAM_INVALID_OUTSIDE_SLOT ) ) {
-    res.scheduling_error = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
-  } else {
-    fd_bam_result_mark_not_committed_txn_error( &res, blockhash_txn_idx, bam_types_TransactionErrorReason_BLOCKHASH_NOT_FOUND );
-    fd_bam_result_mark_sanitize_success_all( &res );
-  }
+  res.scheduling_error = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
   return res;
-}
-
-/* BAM work is validated against the best local slot view pack has:
-   the active leader slot if present, otherwise the highest observed slot. */
-static inline ulong
-pack_tile_bam_best_known_slot( fd_pack_ctx_t const * ctx ) {
-  if( FD_LIKELY( ctx->leader_slot!=ULONG_MAX ) ) return ctx->leader_slot;
-  if( FD_LIKELY( ctx->highest_observed_slot ) )  return ctx->highest_observed_slot;
-  return ULONG_MAX;
 }
 
 static inline char const *
@@ -692,7 +666,7 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
     if( FD_UNLIKELY( entry->slot!=max_schedule_slot || entry->first_debug_seq_id!=seq_id ) ) return;
   }
 
-  ulong validation_slot                    = pack_tile_bam_best_known_slot( ctx );
+  ulong validation_slot                    = ctx->leader_slot;
   ulong required_min_slot                  = ULONG_MAX;
   long  now_ns                             = pack_tile_wallclock_from_ticks( ctx, fd_tickcount() );
   ulong age_ns                             = ULONG_MAX;
@@ -704,11 +678,9 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
   extra_queue_cnt = extra_txn_deq_cnt( ctx->extra_txn_deq );
 #endif
   if( FD_LIKELY( first_rx_ts_ns>0L && now_ns>=first_rx_ts_ns ) ) age_ns = (ulong)( now_ns - first_rx_ts_ns );
-  if( FD_LIKELY( validation_slot!=ULONG_MAX ) ) {
-    required_min_slot = blockhash_slot!=ULONG_MAX ? fd_ulong_max( validation_slot, blockhash_slot ) : validation_slot;
-  } else if( FD_LIKELY( blockhash_slot!=ULONG_MAX ) ) {
-    required_min_slot = blockhash_slot;
-  }
+  if( FD_LIKELY( validation_slot!=ULONG_MAX ) ) required_min_slot = validation_slot;
+  if( ctx->bam_min_admission_slot ) required_min_slot = fd_ulong_max( ctx->bam_min_admission_slot,
+                                                                                  required_min_slot==ULONG_MAX ? 0UL : required_min_slot );
 
   char sig0_b58[ FD_BASE58_ENCODED_64_SZ ] = "<none>";
   if( FD_LIKELY( sig0 ) ) fd_base58_encode_64( (uchar const *)sig0, NULL, sig0_b58 );
@@ -716,7 +688,7 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
   FD_LOG_INFO(( "bam_drop category=%s reason=%s invalid_reason_known=%u invalid_reason_idx=%u pack_rc_known=%u pack_rc=%d seq_id=%u txns=%u sig0=%s work_state=%s validation_slot=%lu validation_slot_known=%u required_min_slot=%lu required_min_slot_known=%u bam_max_schedule_slot=%lu work_slot=%lu work_slot_known=%u blockhash_slot=%lu blockhash_slot_known=%u leader_slot=%lu leader_slot_known=%u current_leader_slot_end_ns=%ld current_leader_slot_end_known=%u now_ns=%ld now_minus_current_leader_slot_end_ns=%ld highest_observed_slot=%lu first_rx_ts_ns=%ld first_rx_known=%u age_ns=%lu age_known=%u revert_on_error_known=%u revert_on_error=%u batch_idx_known=%u batch_idx=%u txn_received=%lu txn_expected=%lu first_missing_idx_known=%u first_missing_idx=%u pack_avail_txn_cnt=%lu extra_queue_cnt=%lu bam_work_cnt=%lu bam_pending_work_cnt=%lu bam_scheduled_work_cnt=%lu max_pending_transactions=%lu",
                 category,
                 reason,
-                (uint)( invalid_reason_idx!=PACK_TILE_BAM_INVALID_NONE ),
+                (uint)( invalid_reason_idx!=0U ),
                 invalid_reason_idx,
                 (uint)( pack_rc<0 ),
                 pack_rc,
@@ -760,27 +732,15 @@ pack_tile_log_bam_drop( fd_pack_ctx_t const * ctx,
                 ctx->max_pending_transactions ));
 }
 
-static inline pack_tile_bam_invalid_reason_t
-pack_tile_bam_admission_invalid_reason( fd_pack_ctx_t const * ctx,
-                                        ulong                 current_slot,
-                                        ulong                 max_schedule_slot,
-                                        ulong                 blockhash_slot ) {
-  /* current_slot is the best local execution slot known to pack. If it is not
-     known yet, reject targets below the blockhash slot or closed-slot floor.
-
-     Once current_slot is known, BAM matches the model contract: blockhash
-     lifetime is checked against current_slot, and max_schedule_slot
-     must still be >= both current_slot and blockhash_slot. */
-  if( FD_UNLIKELY( current_slot==ULONG_MAX ) ) current_slot = 0UL;
-
-  ulong oldest_live_slot = fd_ulong_max( current_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS;
-  if( FD_UNLIKELY( blockhash_slot<oldest_live_slot ) ) return PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED;
-  if( FD_UNLIKELY( max_schedule_slot<fd_ulong_max( current_slot, fd_ulong_max( blockhash_slot, ctx->bam_min_admission_slot ) ) ) ) {
-    return PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
-  }
-  return PACK_TILE_BAM_INVALID_NONE;
+/* Only the active leader slot and explicitly closed-slot floor constrain
+   the target.  Resolver reference slots are not fork-qualified validity. */
+static inline int
+pack_tile_bam_target_expired( fd_pack_ctx_t const * ctx,
+                              ulong                 max_schedule_slot ) {
+  ulong min_slot = ctx->bam_min_admission_slot;
+  if( FD_LIKELY( ctx->leader_slot!=ULONG_MAX ) ) min_slot = fd_ulong_max( min_slot, ctx->leader_slot );
+  return max_schedule_slot<min_slot;
 }
-
 
 static inline void
 pack_tile_bam_index_remove_one( fd_pack_ctx_t * ctx,
@@ -956,7 +916,6 @@ pack_tile_append_bam_work( fd_pack_ctx_t * ctx,
                            ushort          scheduler_gen,
                            ulong           max_schedule_slot,
                            ulong           blockhash_slot,
-                           uchar           min_blockhash_slot_txn_idx,
                            uchar           txn_cnt ) {
   if( FD_UNLIKELY( ctx->bam_work_cnt >= ctx->bam_work_max ) ) return 0;
   if( FD_UNLIKELY( ctx->bam_pending_result_cnt + pack_tile_bam_pending_work_cnt( ctx ) + 1UL >= 2UL*ctx->bam_work_max ) ) return 0;
@@ -969,7 +928,6 @@ pack_tile_append_bam_work( fd_pack_ctx_t * ctx,
     .blockhash_slot    = blockhash_slot,
     .seq_id            = seq_id,
     .scheduler_gen     = scheduler_gen,
-    .min_blockhash_slot_txn_idx = min_blockhash_slot_txn_idx,
     .txn_cnt           = txn_cnt,
   };
   fd_memcpy( item->sig, sigs, (ulong)txn_cnt * sizeof(fd_ed25519_sig_t) );
@@ -979,17 +937,12 @@ pack_tile_append_bam_work( fd_pack_ctx_t * ctx,
 }
 
 static inline void
-pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx,
-                                          ulong           current_slot ) {
+pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx ) {
   ulong old_work_cnt = ctx->bam_work_cnt;
   ulong dst          = ctx->bam_scheduled_work_cnt;
   for( ulong src=ctx->bam_scheduled_work_cnt; src<old_work_cnt; src++ ) {
     pack_bam_work_t const * work = &ctx->bam_work[ src ];
-    pack_tile_bam_invalid_reason_t invalid_reason =
-        pack_tile_bam_admission_invalid_reason( ctx, current_slot,
-                                      work->max_schedule_slot,
-                                      work->blockhash_slot );
-    if( FD_LIKELY( invalid_reason==PACK_TILE_BAM_INVALID_NONE ) ) {
+    if( FD_LIKELY( !pack_tile_bam_target_expired( ctx, work->max_schedule_slot ) ) ) {
       pack_tile_bam_work_move( ctx, dst, src );
       dst++;
       continue;
@@ -1002,10 +955,8 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx,
     ctx->bam_work_cnt--;
     pack_tile_log_bam_drop( ctx,
                                "post_pending_validation",
-                               invalid_reason==PACK_TILE_BAM_INVALID_OUTSIDE_SLOT
-                                   ? "pending_evicted_outside_slot"
-                                   : "pending_evicted_blockhash_expired",
-                               (uint)invalid_reason,
+                               "pending_evicted_outside_slot",
+                               1U,
                                0,
                                item.seq_id,
                                item.txn_cnt,
@@ -1019,7 +970,9 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx,
                                0U,
                                item.sig[ 0 ] );
 
-    ctx->bam_pending_work_evicted_cnt[ ( item.txn_cnt==1U ? 0UL : 2UL ) + (ulong)invalid_reason - 1UL ]++;
+    ctx->bam_pending_work_evicted_cnt[ item.txn_cnt==1U
+        ? FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX
+        : FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_BUNDLE_OUTSIDE_SLOT_IDX ]++;
     ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_PENDING_EVICTED_IDX ]++;
     pack_tile_note_bam_first_outcome( ctx,
                                       FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_PENDING_EVICTED_IDX,
@@ -1032,12 +985,10 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx,
                                                item.scheduler_gen );
     FD_MCNT_INC( PACK, TXN_DELETED, deleted );
 
-    fd_bam_bundle_result_t res = pack_tile_make_bam_invalid_result( item.seq_id,
-                                                                    item.scheduler_gen,
-                                                                    item.max_schedule_slot,
-                                                                    item.txn_cnt,
-                                                                    item.min_blockhash_slot_txn_idx,
-                                                                    invalid_reason );
+    fd_bam_bundle_result_t res = pack_tile_make_bam_outside_slot_result( item.seq_id,
+                                                                         item.scheduler_gen,
+                                                                         item.max_schedule_slot,
+                                                                         item.txn_cnt );
     pack_tile_enqueue_bam_result( ctx, &res );
   }
   FD_TEST( ctx->bam_work_cnt==dst );
@@ -1073,8 +1024,8 @@ pack_tile_bam_candidate_ready( fd_pack_ctx_t *       ctx,
     return 0;
   }
   ulong target = ctx->bam_work[ idx ].max_schedule_slot;
-  if( FD_UNLIKELY( target<ctx->leader_slot || target<ctx->bam_min_admission_slot ) ) {
-    pack_tile_evict_invalid_pending_bam_work( ctx, ctx->leader_slot );
+  if( FD_UNLIKELY( pack_tile_bam_target_expired( ctx, target ) ) ) {
+    pack_tile_evict_invalid_pending_bam_work( ctx );
     return -1;
   }
   return target==ctx->leader_slot;
@@ -1085,9 +1036,8 @@ pack_tile_bam_candidate_ready( fd_pack_ctx_t *       ctx,
    a duplicate. Scan when fd_pack_bundle_evicted_cnt changes, or after
    explicit signature-wide deletion in remove_ib.
 
-   The counter excludes expiry and clear_all. Pair every fd_pack_expire_before
-   call with pack_tile_evict_invalid_pending_bam_work at the matching
-   threshold. fd_pack_clear_all is only used by tests. */
+   The counter excludes clear_all, which is only used by tests.  Slot-age
+   expiry is deliberately not used: it cannot establish blockhash validity. */
 
 static inline void
 pack_tile_reconcile_pending_bam_work( fd_pack_ctx_t * ctx ) {
@@ -1491,10 +1441,12 @@ pack_tile_finish_leader_slot( fd_pack_ctx_t *     ctx,
                                                                            ctx->bam_first_schedule_minus_slot_end_ns );
   ctx->bam_first_insert_result_cnt[ first_insert_result_idx ]++;
   ctx->bam_first_schedule_result_cnt[ first_schedule_result_idx ]++;
-  /* Once the slot closes, pending BAM work must survive against the next slot. */
-  ulong next_slot = fd_ulong_sat_add( ctx->leader_slot, 1UL );
-  ctx->bam_min_admission_slot = fd_ulong_max( ctx->bam_min_admission_slot, next_slot );
-  pack_tile_evict_invalid_pending_bam_work( ctx, next_slot );
+  /* Admission and leader-start eviction leave no missed pending targets.
+     Advancing the closed-slot floor removes exactly this slot's pending work. */
+  ulong work_cnt = ctx->bam_work_cnt;
+  ctx->bam_min_admission_slot = fd_ulong_max( ctx->bam_min_admission_slot, fd_ulong_sat_add( ctx->leader_slot, 1UL ) );
+  pack_tile_evict_invalid_pending_bam_work( ctx );
+  FD_MCNT_INC( PACK, BAM_UNSCHEDULED_AT_SLOT_END, work_cnt-ctx->bam_work_cnt );
 
   /* Cancel any bundle assembly that never reached a publishable result. */
   pack_tile_abandon_current_bam_bundle( ctx, bam_abandon_reason );
@@ -2200,24 +2152,7 @@ during_frag( fd_pack_ctx_t * ctx,
     FD_TEST( addr_table_sz<=32UL*FD_TXN_ACCT_ADDR_MAX );
 
     if( FD_UNLIKELY( (ctx->leader_slot==ULONG_MAX) & (sig>ctx->highest_observed_slot) ) ) {
-      /* Using the resolv tile's knowledge of the current slot is a bit
-         of a hack, since we don't get any info if there are no
-         transactions and we're not leader.  We're actually in exactly
-         the case where that's okay though.  The point of calling
-         expire_before long before we become leader is so that we don't
-         drop new but low-fee-paying transactions when pack is clogged
-         with expired but high-fee-paying transactions.  That can only
-         happen if we are getting transactions. */
       ctx->highest_observed_slot = sig;
-      /* Expiry can drop a pending item's transaction out of pack without
-         moving fd_pack_bundle_evicted_cnt, so it must stay paired with a
-         pack_tile_evict_invalid_pending_bam_work at the same threshold.
-         Here that pairing is deferred to bam_pending_check_slot, which
-         after_frag consumes at the top of the IN_KIND_RESOLV case, i.e.
-         before any BAM duplicate check for this frag. */
-      ctx->bam_pending_check_slot = sig;
-      ulong exp_cnt = fd_pack_expire_before( ctx->pack, fd_ulong_max( ctx->highest_observed_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS );
-      FD_MCNT_INC( PACK, TXN_EXPIRED, exp_cnt );
     }
 
     ulong bundle_id = txnm->block_engine.bundle_id;
@@ -2236,9 +2171,6 @@ during_frag( fd_pack_ctx_t * ctx,
                        ctx->current_bundle_bam->ownership_gen==txnm->bam.ownership_gen &&
                        txnm->bam.batch_idx==ctx->current_bundle->txn_received ) ) {
         ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_BAM;
-        if( FD_UNLIKELY( txnm->bam.blockhash_expired &&
-                         ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx==FD_PACK_MAX_TXN_PER_BUNDLE ) )
-          ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = txnm->bam.batch_idx;
         return;
       }
 
@@ -2279,7 +2211,6 @@ during_frag( fd_pack_ctx_t * ctx,
         ctx->current_bundle_bam->ownership_gen     = txnm->bam.ownership_gen;
         ctx->current_bundle_bam->is_bam            = 1;
         ctx->current_bundle_bam->min_blockhash_slot_txn_idx = 0U;
-        ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = FD_PACK_MAX_TXN_PER_BUNDLE;
         ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_RECEIVED_IDX ]++;
         if( FD_LIKELY( txnm->bam.max_schedule_slot!=ULONG_MAX ) ) {
           pack_bam_recent_slot_t * entry = &ctx->bam_recent_slot[ txnm->bam.max_schedule_slot & ( FD_PACK_BAM_RECENT_SLOT_CNT - 1UL ) ];
@@ -2296,10 +2227,6 @@ during_frag( fd_pack_ctx_t * ctx,
       if( FD_UNLIKELY( sig<ctx->current_bundle->min_blockhash_slot ) ) {
         ctx->current_bundle->min_blockhash_slot = sig;
         ctx->current_bundle_bam->min_blockhash_slot_txn_idx = txnm->bam.batch_idx;
-      }
-      if( FD_UNLIKELY( txnm->bam.blockhash_expired &&
-                       ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx==FD_PACK_MAX_TXN_PER_BUNDLE ) ) {
-        ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx = txnm->bam.batch_idx;
       }
     } else if( FD_UNLIKELY( bundle_id ) ) {
       if( FD_UNLIKELY( pack_tile_bam_override_active( ctx ) ) ) {
@@ -2473,7 +2400,7 @@ after_frag( fd_pack_ctx_t *     ctx,
     ctx->bam_first_schedule_seen = 0U;
     ctx->bam_first_insert_minus_slot_end_ns = 0L;
     ctx->bam_first_schedule_minus_slot_end_ns = 0L;
-    pack_tile_evict_invalid_pending_bam_work( ctx, ctx->leader_slot );
+    pack_tile_evict_invalid_pending_bam_work( ctx );
     for( ulong i=0UL; i<ctx->bam_scheduled_work_cnt; ) {
       if( FD_UNLIKELY( ctx->bam_work[ i ].max_schedule_slot==ULONG_MAX || ctx->bam_work[ i ].max_schedule_slot < ctx->leader_slot ) ) {
         (void)pack_tile_bam_work_swap_remove( ctx, i );
@@ -2484,13 +2411,6 @@ after_frag( fd_pack_ctx_t *     ctx,
 
     ctx->slot_pack_start_ns  = now_ns;
     ctx->slot_bundle_txn_cnt = 0UL;
-
-    /* Paired with the pack_tile_evict_invalid_pending_bam_work above, which
-       uses the same leader_slot threshold.  Expiry drops bundles without
-       moving fd_pack_bundle_evicted_cnt, so nothing else would retire the
-       bam_work whose transactions this removes.  Keep the two together. */
-    ulong exp_cnt = fd_pack_expire_before( ctx->pack, fd_ulong_max( ctx->leader_slot, TRANSACTION_LIFETIME_SLOTS )-TRANSACTION_LIFETIME_SLOTS );
-    FD_MCNT_INC( PACK, TXN_EXPIRED, exp_cnt );
 
     ctx->leader_bank          = ctx->_became_leader->bank;
     ctx->leader_bank_idx      = ctx->_became_leader->bank_idx;
@@ -2569,13 +2489,6 @@ after_frag( fd_pack_ctx_t *     ctx,
     break;
   }
   case IN_KIND_RESOLV: {
-    /* While not leader, resolv slot bumps are the only local signal that
-       buffered BAM work may have crossed its schedule or blockhash window. */
-    if( FD_UNLIKELY( ctx->leader_slot==ULONG_MAX && ctx->bam_pending_check_slot ) ) {
-      pack_tile_evict_invalid_pending_bam_work( ctx, ctx->bam_pending_check_slot );
-      ctx->bam_pending_check_slot = 0UL;
-    }
-
     switch( ctx->bundle_kind ) {
     case PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE: {
       if( FD_UNLIKELY( pack_tile_bam_override_active( ctx ) ) ) {
@@ -2607,16 +2520,10 @@ after_frag( fd_pack_ctx_t *     ctx,
         if( FD_UNLIKELY( !ctx->cur_spot ) ) {
           ctx->current_bundle->txn_received++;
           if( FD_LIKELY( ctx->current_bundle->txn_received==ctx->current_bundle->txn_cnt ) ) {
-            uchar expired_idx = ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx;
-            pack_tile_bam_invalid_reason_t reason = expired_idx<ctx->current_bundle->txn_cnt
-                                                     ? PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED
-                                                     : PACK_TILE_BAM_INVALID_OUTSIDE_SLOT;
-            fd_bam_bundle_result_t res = pack_tile_make_bam_invalid_result( (uint)(ctx->current_bundle->id-1UL),
-                                                                            ctx->current_bundle_bam->scheduler_gen,
-                                                                            ctx->current_bundle_bam->max_schedule_slot,
-                                                                            (uchar)ctx->current_bundle->txn_cnt,
-                                                                            expired_idx,
-                                                                            reason );
+            fd_bam_bundle_result_t res = pack_tile_make_bam_outside_slot_result( (uint)(ctx->current_bundle->id-1UL),
+                                                                                 ctx->current_bundle_bam->scheduler_gen,
+                                                                                 ctx->current_bundle_bam->max_schedule_slot,
+                                                                                 (uchar)ctx->current_bundle->txn_cnt );
             pack_tile_enqueue_bam_result( ctx, &res );
             ctx->current_bundle_bam->is_bam = 0;
           }
@@ -2633,26 +2540,12 @@ after_frag( fd_pack_ctx_t *     ctx,
         ulong max_schedule_slot = ctx->current_bundle_bam->max_schedule_slot;
         ulong min_blockhash_slot = ctx->current_bundle->min_blockhash_slot;
         uchar min_blockhash_slot_txn_idx = ctx->current_bundle_bam->min_blockhash_slot_txn_idx;
-        uchar resolver_blockhash_expired_txn_idx = ctx->current_bundle_bam->resolver_blockhash_expired_txn_idx;
-        _Bool resolver_blockhash_expired = resolver_blockhash_expired_txn_idx<txn_cnt;
         long first_rx_ts_ns = pack_tile_current_bam_bundle_first_rx_ts_ns( ctx );
-        pack_tile_bam_invalid_reason_t invalid_reason =
-            resolver_blockhash_expired
-            ? PACK_TILE_BAM_INVALID_BLOCKHASH_EXPIRED
-            : pack_tile_bam_admission_invalid_reason( ctx, pack_tile_bam_best_known_slot( ctx ),
-                                            max_schedule_slot,
-                                            min_blockhash_slot );
-        uchar blockhash_txn_idx = fd_uchar_if( resolver_blockhash_expired,
-                                               resolver_blockhash_expired_txn_idx,
-                                               min_blockhash_slot_txn_idx );
-
-        if( FD_UNLIKELY( invalid_reason!=PACK_TILE_BAM_INVALID_NONE ) ) {
+        if( FD_UNLIKELY( pack_tile_bam_target_expired( ctx, max_schedule_slot ) ) ) {
           pack_tile_log_bam_drop( ctx,
                                      "pre_pending_validation",
-                                     invalid_reason==PACK_TILE_BAM_INVALID_OUTSIDE_SLOT
-                                         ? "rejected_pre_pending_outside_slot"
-                                         : "rejected_pre_pending_blockhash_expired",
-                                     (uint)invalid_reason,
+                                     "rejected_pre_pending_outside_slot",
+                                     1U,
                                      0,
                                      seq_id,
                                      txn_cnt,
@@ -2666,18 +2559,18 @@ after_frag( fd_pack_ctx_t *     ctx,
                                      0U,
                                      fd_txn_get_signatures( TXN(ctx->current_bundle->bundle[ 0 ]->txnp),
                                                             ctx->current_bundle->bundle[ 0 ]->txnp->payload ) );
-          ctx->bam_work_rejected_pre_pending_cnt[ ( txn_cnt==1U ? 0UL : 2UL ) + (ulong)invalid_reason - 1UL ]++;
+          ctx->bam_work_rejected_pre_pending_cnt[ txn_cnt==1U
+            ? FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_SINGLE_OUTSIDE_SLOT_IDX
+            : FD_METRICS_ENUM_PACK_BAM_WORK_INVALID_REASON_V_BUNDLE_OUTSIDE_SLOT_IDX ]++;
           pack_tile_note_bam_first_outcome( ctx,
                                             FD_METRICS_ENUM_PACK_BAM_WORK_FIRST_OUTCOME_V_REJECTED_PRE_PENDING_IDX,
                                             first_rx_ts_ns,
                                             pack_tile_wallclock_from_ticks( ctx, fd_tickcount() ) );
           ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STAGE_V_REJECTED_PRE_PENDING_IDX ]++;
-          fd_bam_bundle_result_t res = pack_tile_make_bam_invalid_result( seq_id,
-                                                                          ctx->current_bundle_bam->scheduler_gen,
-                                                                          max_schedule_slot,
-                                                                          txn_cnt,
-                                                                          blockhash_txn_idx,
-                                                                          invalid_reason );
+          fd_bam_bundle_result_t res = pack_tile_make_bam_outside_slot_result( seq_id,
+                                                                               ctx->current_bundle_bam->scheduler_gen,
+                                                                               max_schedule_slot,
+                                                                               txn_cnt );
           pack_tile_enqueue_bam_result( ctx, &res );
           fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
           ctx->current_bundle->bundle = NULL;
@@ -2797,7 +2690,6 @@ after_frag( fd_pack_ctx_t *     ctx,
                                                      ctx->current_bundle_bam->scheduler_gen,
                                                      max_schedule_slot,
                                                      min_blockhash_slot,
-                                                     min_blockhash_slot_txn_idx,
                                                      txn_cnt ) ) ) {
           pack_tile_publish_bam_tracking_reject( ctx,
                                                  bam_sig[ 0 ],
@@ -3068,7 +2960,6 @@ unprivileged_init( fd_topo_t const *      topo,
   fd_clock_tile_init( ctx->clock );
   double tick_per_ns                 = ctx->clock->epoch->w;
   ctx->highest_observed_slot         = 0UL;
-  ctx->bam_pending_check_slot        = 0UL;
   ctx->microblock_duration_ticks     = (ulong)(tick_per_ns*(double)MICROBLOCK_DURATION_NS  + 0.5);
 #if FD_PACK_USE_EXTRA_STORAGE
   ctx->insert_to_extra               = 0;
