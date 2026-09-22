@@ -1607,6 +1607,36 @@ fd_pack_insert_bundle_cancel( fd_pack_t          * pack,
 #define BUNDLE_N       313721UL
 #define RC_TO_REL_BUNDLE_IDX( r, c ) (BUNDLE_N - ((ulong)(r) * 1UL<<32)/((ulong)(c) * BUNDLE_L_PRIME))
 
+/* Reclaim ordinal bands without changing bundle or member order.  The
+   pending transaction count bounds the number of groups, so assign groups
+   descending ordinals from that count, reserving zero for the initializer.
+   Forward iteration visits each group's last member first: use the same
+   priority recurrence as insertion, without buffering or rebuilding groups.
+   Treap iteration follows links, which the priority rewrite leaves intact. */
+static void
+fd_pack_rebase_bundle_ordinals( fd_pack_t * pack ) {
+  ulong ordinal = treap_ele_cnt( pack->pending_bundles );
+  pack->relative_bundle_idx = ordinal+1UL;
+  FD_TEST( pack->relative_bundle_idx<=BUNDLE_N ); /* Pool indices are ushorts. */
+  ulong old_ordinal = ULONG_MAX;
+  ulong prev_reward = 0UL;
+  ulong prev_cost = 0UL;
+  for( treap_fwd_iter_t iter=treap_fwd_iter_init( pack->pending_bundles, pack->pool );
+       !treap_fwd_iter_done( iter ); iter=treap_fwd_iter_next( iter, pack->pool ) ) {
+    fd_pack_ord_txn_t * cur = treap_fwd_iter_ele( iter, pack->pool );
+    ulong group = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+    if( group!=old_ordinal ) {
+      old_ordinal = group;
+      ulong idx = (cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) ? 0UL : ordinal--;
+      prev_reward = BUNDLE_L_PRIME*(BUNDLE_N-idx)-1UL;
+      prev_cost = 1UL<<32;
+    }
+    cur->rewards = (uint)(((ulong)cur->compute_est*(prev_reward+1UL)+prev_cost-1UL)/prev_cost);
+    prev_reward = cur->rewards;
+    prev_cost = cur->compute_est;
+  }
+}
+
 int
 fd_pack_insert_bundle_fini( fd_pack_t          * pack,
                             fd_txn_e_t * const * bundle,
@@ -1852,9 +1882,9 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
      Now all that remains is to determine N.  It's a bit unfortunate
      that we require N, since it limits our capacity, but it's necessary
      in any system that tries to compute priorities to enforce a FIFO
-     order.  If we've inserted more than N bundles without ever having
-     the bundle treap go empty, we'll briefly break the FIFO ordering as
-     we underflow.
+     order.  Before the counter exhausts these bands, renumber the
+     still-pending groups in the same order.  The bounded pool holds
+     far fewer groups than N, so this prevents ordinal reuse.
 
      Thus, we'd like to make N as big as possible, avoiding overflow.
      r_0, ..., r_4 are all uints, and taking the bounds from above,
@@ -1877,14 +1907,8 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
      directly. */
      FD_STATIC_ASSERT( FD_PACK_MIN_TXN_COST==   1020UL, adjust_constants );
      FD_STATIC_ASSERT( FD_PACK_MAX_TXN_COST==1551570UL, adjust_constants );
-#define BUNDLE_L_PRIME 37896771UL
-#define BUNDLE_N       313721UL
 
-  if( FD_UNLIKELY( pack->relative_bundle_idx>BUNDLE_N ) ) {
-    FD_LOG_WARNING(( "Too many bundles inserted without allowing pending bundles to go empty. "
-                     "Ordering of bundles may be incorrect." ));
-    pack->relative_bundle_idx = 1UL;
-  }
+  if( FD_UNLIKELY( pack->relative_bundle_idx>BUNDLE_N ) ) fd_pack_rebase_bundle_ordinals( pack );
   ulong bundle_idx = fd_ulong_if( initializer_bundle, 0UL, pack->relative_bundle_idx );
   if( FD_UNLIKELY( initializer_bundle ) ) pack->initializer_bundle_bam = initializer_bundle_kind==FD_PACK_IB_TYPE_BAM;
   insert_bundle_impl( pack, bundle_idx, txn_cnt, (fd_pack_ord_txn_t * *)bundle, expires_at );
@@ -2172,9 +2196,8 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
        it's the compressed slot number of a previous slot.  We don't
        care unless we're going to update the value though, so we don't
        need to eagerly reset it to FD_PACK_MAX_SKIP.
-       compressed_slot_number is a ushort, so it's possible for it to
-       roll over, but the transaction lifetime is much shorter than
-       that, so it won't be a problem. */
+       end_block resets old slot markers before the compressed slot
+       number rolls over, including for indefinitely retained work. */
 
     if( FD_UNLIKELY( cur->txn->payload_sz>byte_limit ) ) {
       byte_limit_c++;
@@ -3131,6 +3154,15 @@ fd_pack_end_block( fd_pack_t * pack ) {
 
   /* compressed_slot_number is > FD_PACK_SKIP_CNT, which means +1 is the
      max unless it overflows. */
+  if( FD_UNLIKELY( pack->compressed_slot_number==USHORT_MAX ) ) {
+    /* Expiration is controlled by callers; a pending transaction can
+       outlive the compressed counter.  Retire old slot markers before
+       reusing them, preserving partially spent capacity-miss budgets. */
+    for( ulong i=0UL; i<expq_cnt( pack->expiration_q ); i++ ) {
+      fd_pack_ord_txn_t * cur = pack->expiration_q[ i ].txn;
+      if( cur->skip>FD_PACK_SKIP_CNT ) cur->skip = FD_PACK_SKIP_CNT;
+    }
+  }
   pack->compressed_slot_number = fd_ushort_max( (ushort)(pack->compressed_slot_number+1), (ushort)(FD_PACK_SKIP_CNT+1) );
 
   FD_PACK_BITSET_CLEAR( pack->bitset_rw_in_use );
@@ -3279,22 +3311,22 @@ delete_transaction( fd_pack_t         * pack,
         !treap_fwd_iter_done( _cur ); _cur=treap_fwd_iter_next( _cur, pool ) ) {
       fd_pack_ord_txn_t * cur = treap_fwd_iter_ele( _cur, pool );
       if( FD_LIKELY( bundle_idx==RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est ) ) ) {
+        FD_TEST( cnt<FD_PACK_MAX_TXN_PER_BUNDLE-1UL );
         bundle_ptrs[ cnt++ ] = cur;
       } else {
         break;
       }
-      FD_TEST( cnt<FD_PACK_MAX_TXN_PER_BUNDLE );
     }
 
     for( treap_rev_iter_t _cur=treap_rev_iter_next( (treap_rev_iter_t)treap_idx_fast( containing, pool ), pool );
         !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
       fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
       if( FD_LIKELY( bundle_idx==RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est ) ) ) {
+        FD_TEST( cnt<FD_PACK_MAX_TXN_PER_BUNDLE-1UL );
         bundle_ptrs[ cnt++ ] = cur;
       } else {
         break;
       }
-      FD_TEST( cnt<FD_PACK_MAX_TXN_PER_BUNDLE );
     }
 
     /* Delete them each, setting delete_full_bundle to 0 to avoid
