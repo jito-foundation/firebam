@@ -89,7 +89,7 @@ readiness_callback_bench( void ) {
       FD_TEST( ctx->leader_slot==104UL && !ctx->drain_execle );
       FD_TEST( !test_pack_callbacks_dispatch_count( e ) && !ctx->pack_idx );
       FD_TEST( !ctx->bam_pending_result_cnt && !ctx->bam_scheduled_work_cnt );
-      FD_TEST( ctx->bam_pending_work_cnt==(scenario ? 2UL : 0UL) );
+      FD_TEST( pack_tile_bam_pending_work_cnt( ctx )==(scenario ? 2UL : 0UL) );
       FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==(scenario ? 2UL : 0UL) );
       FD_TEST( !ctx->bam_candidate_identity_mismatch_cnt && !ctx->crank->ib_inserted );
       if( scenario<3UL || !crank ) FD_TEST( cancels==test_bundle_cancel_call_cnt );
@@ -205,7 +205,7 @@ main( int argc, char ** argv ) {
       FD_TEST( candidate && candidate->bam.seq_id==1000U );
       FD_TEST( !memcmp( fd_txn_get_signatures( TXN(candidate), candidate->payload ), head_signature, sizeof(head_signature) ) );
       FD_TEST( !pack_tile_bam_candidate_ready( ctx, candidate ) );
-      FD_TEST( ctx->bam_work_cnt==occupancy[depth_idx] && ctx->bam_pending_work_cnt==occupancy[depth_idx] );
+      FD_TEST( ctx->bam_work_cnt==occupancy[depth_idx] && pack_tile_bam_pending_work_cnt( ctx )==occupancy[depth_idx] );
       FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==occupancy[depth_idx] );
       FD_TEST( !fd_pack_current_block_cost( ctx->pack ) && ctx->pack_idx==17U );
       FD_TEST( !ctx->bam_scheduled_work_cnt && !ctx->bam_pending_result_cnt && !ctx->bam_candidate_identity_mismatch_cnt );

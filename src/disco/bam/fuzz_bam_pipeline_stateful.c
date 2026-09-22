@@ -903,7 +903,7 @@ bam_fuzz_drain_result_queue( test_bam_env_t * env,
       expected[ k ] = f->durable_results[ ( f->durable_results_head + k ) % FD_BAM_MAX_PENDING_RESULTS ];
     }
 
-    int flush_busy = fd_bam_test_flush_results( state );
+    int flush_busy = fd_bam_flush_results( state );
     if( FD_UNLIKELY( !flush_busy ) ) {
       bam_fuzz_assert_shadow_queue( f, state );
       return;

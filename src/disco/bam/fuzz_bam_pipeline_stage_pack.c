@@ -322,15 +322,15 @@ bam_fuzz_pack_new( fd_wksp_t * wksp,
     .out_idx = BAM_FUZZ_PACK_OUT_POH_IDX,
   };
 
-  h->ctx->bam_leader_out = (pack_bam_out_ctx_t) {
-    .idx    = BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX,
+  h->ctx->bam_leader_out = (fd_pack_out_ctx_t) {
+    .out_idx = BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX,
     .mem    = (fd_wksp_t *)h->bam_leader_dcache,
     .chunk0 = fd_dcache_compact_chunk0( h->bam_leader_dcache, h->bam_leader_dcache ),
     .wmark  = fd_dcache_compact_wmark ( h->bam_leader_dcache, h->bam_leader_dcache, sizeof(fd_bam_leader_state_t) ),
     .chunk  = fd_dcache_compact_chunk0( h->bam_leader_dcache, h->bam_leader_dcache ),
   };
-  h->ctx->bam_result_out = (pack_bam_out_ctx_t) {
-    .idx    = BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX,
+  h->ctx->bam_result_out = (fd_pack_out_ctx_t) {
+    .out_idx = BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX,
     .mem    = (fd_wksp_t *)h->bam_result_dcache,
     .chunk0 = fd_dcache_compact_chunk0( h->bam_result_dcache, h->bam_result_dcache ),
     .wmark  = fd_dcache_compact_wmark ( h->bam_result_dcache, h->bam_result_dcache, sizeof(fd_bam_bundle_result_t) ),
@@ -454,7 +454,7 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
     .bam_leader_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX ],
     .bam_result_before  = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ],
     .bam_result_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ],
-    .pending_work_cnt   = h->ctx->bam_pending_work_cnt,
+    .pending_work_cnt   = pack_tile_bam_pending_work_cnt( h->ctx ),
     .scheduled_work_cnt = h->ctx->bam_scheduled_work_cnt,
   };
 
@@ -469,7 +469,7 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
     res.poh_after          = h->stem_seqs[ BAM_FUZZ_PACK_OUT_POH_IDX ];
     res.bam_leader_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX ];
     res.bam_result_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ];
-    res.pending_work_cnt   = h->ctx->bam_pending_work_cnt;
+    res.pending_work_cnt   = pack_tile_bam_pending_work_cnt( h->ctx );
     res.scheduled_work_cnt = h->ctx->bam_scheduled_work_cnt;
     return res;
   }
@@ -479,7 +479,7 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
     res.poh_after          = h->stem_seqs[ BAM_FUZZ_PACK_OUT_POH_IDX ];
     res.bam_leader_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX ];
     res.bam_result_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ];
-    res.pending_work_cnt   = h->ctx->bam_pending_work_cnt;
+    res.pending_work_cnt   = pack_tile_bam_pending_work_cnt( h->ctx );
     res.scheduled_work_cnt = h->ctx->bam_scheduled_work_cnt;
     return res;
   }
@@ -532,7 +532,7 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
   res.poh_after          = h->stem_seqs[ BAM_FUZZ_PACK_OUT_POH_IDX ];
   res.bam_leader_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX ];
   res.bam_result_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ];
-  res.pending_work_cnt   = h->ctx->bam_pending_work_cnt;
+  res.pending_work_cnt   = pack_tile_bam_pending_work_cnt( h->ctx );
   res.scheduled_work_cnt = h->ctx->bam_scheduled_work_cnt;
   return res;
 }
@@ -550,7 +550,7 @@ bam_fuzz_pack_frag( bam_fuzz_pack_t *    h,
     .bam_leader_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX ],
     .bam_result_before  = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ],
     .bam_result_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ],
-    .pending_work_cnt   = h->ctx->bam_pending_work_cnt,
+    .pending_work_cnt   = pack_tile_bam_pending_work_cnt( h->ctx ),
     .scheduled_work_cnt = h->ctx->bam_scheduled_work_cnt,
   };
   during_frag( h->ctx, BAM_FUZZ_PACK_IN_RESOLV_IDX, seq, meta->sig, meta->chunk, meta->sz, meta->ctl );
@@ -566,7 +566,7 @@ bam_fuzz_pack_frag( bam_fuzz_pack_t *    h,
   res.poh_after          = h->stem_seqs[ BAM_FUZZ_PACK_OUT_POH_IDX ];
   res.bam_leader_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX ];
   res.bam_result_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ];
-  res.pending_work_cnt   = h->ctx->bam_pending_work_cnt;
+  res.pending_work_cnt   = pack_tile_bam_pending_work_cnt( h->ctx );
   res.scheduled_work_cnt = h->ctx->bam_scheduled_work_cnt;
   return res;
 }
@@ -582,7 +582,7 @@ bam_fuzz_pack_credit( bam_fuzz_pack_t * h ) {
     .bam_leader_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX ],
     .bam_result_before  = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ],
     .bam_result_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ],
-    .pending_work_cnt   = h->ctx->bam_pending_work_cnt,
+    .pending_work_cnt   = pack_tile_bam_pending_work_cnt( h->ctx ),
     .scheduled_work_cnt = h->ctx->bam_scheduled_work_cnt,
   };
   int charge_busy = 0;
@@ -593,7 +593,7 @@ bam_fuzz_pack_credit( bam_fuzz_pack_t * h ) {
   res.poh_after          = h->stem_seqs[ BAM_FUZZ_PACK_OUT_POH_IDX ];
   res.bam_leader_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX ];
   res.bam_result_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_RESULT_IDX ];
-  res.pending_work_cnt   = h->ctx->bam_pending_work_cnt;
+  res.pending_work_cnt   = pack_tile_bam_pending_work_cnt( h->ctx );
   res.scheduled_work_cnt = h->ctx->bam_scheduled_work_cnt;
   return res;
 }

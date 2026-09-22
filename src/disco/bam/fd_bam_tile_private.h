@@ -34,7 +34,6 @@ struct fd_bam_pending_txn {
   long   first_seen_nanos;
   ulong  max_schedule_slot;
   uint   seq_id;
-  uint   source_ipv4;
   ushort payload_sz;
   ushort txn_t_sz;
   uchar  batch_idx;
@@ -177,36 +176,16 @@ typedef struct {
   fd_bam_parsed_batch_t    parsed[1];
 } fd_bam_decoded_multi_batch_t;
 
-/* fd_bam_tpu_update_state_t tracks which TPU contact was last applied or still needs retry.
-   Issue:
-   - Two independent code paths can call fd_bam_gossip_update() around the same
-     time (e.g. ConfigResponse arrival + BAM status edge). Without
-     dedupe, both paths can immediately publish or invoke admin RPC updates back-to-back.
-
-   How it is used:
-   - fd_bam_gossip_update() compares the desired "applied" state
-     (BAM vs default TPU) to ctx->tpu_update_state. If it already matches,
-     it skips duplicate updates.
-   - On failure (admin RPC unavailable or apply failure),
-     it records a PENDING_* state so fd_bam_tile_housekeeping() will retry later.
-   - When BAM TPU sockets change (new ConfigResponse), we set UNKNOWN so the
-     next call will re-apply even if we're already in BAM mode. */
-
+/* TPU sockets and client ID are applied independently.  Each tracks the
+   same contact mode and retry states.  Config changes reset the state to
+   UNKNOWN so a later update reapplies the contact even in the same mode. */
 typedef enum {
-  FD_BAM_TPU_UPDATE_STATE_UNKNOWN         = 0, /* No known applied state; next update should attempt to apply desired. */
-  FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT = 1, /* Last successful update applied default TPU. */
-  FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM     = 2, /* Last successful update applied BAM-provided TPU. */
-  FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT = 3, /* Needs an update attempt to apply default TPU; housekeeping retries. */
-  FD_BAM_TPU_UPDATE_STATE_PENDING_BAM     = 4, /* Needs an update attempt to apply BAM TPU; housekeeping retries. */
-} fd_bam_tpu_update_state_t;
-
-typedef enum {
-  FD_BAM_CLIENT_ID_UPDATE_STATE_UNKNOWN         = 0, /* No known applied state; next update should attempt to apply desired. */
-  FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT = 1, /* Last successful update applied the validator's default client id. */
-  FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM     = 2, /* Last successful update applied the BAM client id. */
-  FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT = 3, /* Needs an update attempt to apply the validator's default client id. */
-  FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_BAM     = 4, /* Needs an update attempt to apply the BAM client id. */
-} fd_bam_client_id_update_state_t;
+  FD_BAM_CONTACT_UPDATE_STATE_UNKNOWN         = 0,
+  FD_BAM_CONTACT_UPDATE_STATE_APPLIED_DEFAULT = 1,
+  FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM     = 2,
+  FD_BAM_CONTACT_UPDATE_STATE_PENDING_DEFAULT = 3,
+  FD_BAM_CONTACT_UPDATE_STATE_PENDING_BAM     = 4,
+} fd_bam_contact_update_state_t;
 
 #define FD_BAM_ADMIN_RPC_RESPONSE_BUF_SZ (4096UL)
 
@@ -270,7 +249,6 @@ struct fd_bam_tile {
 
   /* gRPC client */
   void *                   grpc_client_mem;       /* Scratch backing storage for fd_grpc_client */
-  ulong                    grpc_buf_max;          /* Maximum payload size allocated for gRPC */
   fd_grpc_client_t *       grpc_client;           /* Active gRPC client driving HTTP/2 */
   fd_grpc_client_metrics_t grpc_metrics[1];       /* Per-client metrics exported to fd_metrics */
   ulong                    map_seed;              /* Random seed used for header hashing */
@@ -283,10 +261,6 @@ struct fd_bam_tile {
   uchar builder_pubkey[ 32 ];                     /* Builder identity fetched from BAM */
   uchar builder_commission;                       /* commission as a percentage (0-100) */
   long  builder_info_valid_until;                 /* Expiry timestamp for builder info */
-
-  /* ConfigResponse BamConfig values */
-  uchar prio_fee_recipient[ 32 ];                 /* Recipient pubkey of the priority fee commission */
-  uchar prio_fee_recipient_set;                   /* Flag indicating prio_fee_recipient populated */
 
   fd_bam_fee_cfg_t * fee_cfg;          /* Shared block builder configuration exported to pack */
   uint               fee_cfg_version;  /* Last version published to fee_cfg */
@@ -304,8 +278,8 @@ struct fd_bam_tile {
   uchar admin_rpc_response_pending;    /* One request was sent but its complete response has not arrived yet. */
   char admin_rpc_response_buf[ FD_BAM_ADMIN_RPC_RESPONSE_BUF_SZ ]; /* Partial outstanding response retained across soft timeouts. */
   char admin_rpc_path[ PATH_MAX ];     /* Empty disables admin RPC updates; full Firedancer currently uses gossip updates only. */
-  fd_bam_tpu_update_state_t tpu_update_state; /* Dedupe/retry state for TPU advert updates */
-  fd_bam_client_id_update_state_t client_id_update_state; /* Dedupe/retry state for ContactInfo client-id updates */
+  fd_bam_contact_update_state_t tpu_update_state; /* Dedupe/retry state for TPU advert updates */
+  fd_bam_contact_update_state_t client_id_update_state; /* Dedupe/retry state for ContactInfo client-id updates */
 
   /* BAM ingress/debug state */
   fd_bam_slot_ingress_timing_t slot_ingress_timing[ FD_BAM_SLOT_INGRESS_TIMING_CNT ]; /* Recent BAM ingress timing by max_schedule_slot for debug captures. */
@@ -334,7 +308,6 @@ struct fd_bam_tile {
   char                  challenge_to_sign[ sizeof(bam_api_AuthChallengeResponse) ]; /* Latest auth challenge from AuthChallengeResponse.challenge_to_sign field */
   char                  bam_auth_signature[ FD_BASE58_ENCODED_64_SZ ]; /* Base58-encoded Ed25519 signature for BAM auth (NUL-terminated) */
   uint                  bam_stream_live        : 1;      /* set once bam_stream is established and delivering messages */
-  uint                  bam_stream_connecting  : 1;      /* set during gRPC stream handshake before bam_stream_live */
   uint                  bam_auth_ready         : 1;      /* set when challenge_to_sign contains a fresh, NUL-terminated challenge to sign */
   uint                  bam_auth_inflight      : 1;      /* true while GetAuthChallenge GRPC call is pending */
   uint                  bam_config_inflight    : 1;      /* true while GetBuilderConfig GRPC call is pending */
@@ -380,8 +353,6 @@ fd_bam_has_effective_contact( fd_bam_tile_t const * ctx ) {
              ctx->bam_tpu_fwd.addr && ctx->bam_tpu_fwd.port );
 }
 
-typedef struct fd_bam_tile fd_bam_tile_t;
-
 /* Result feedback is durable: append to the local FIFO ring and keep it
    across reconnect/reset until the scheduler stream accepts it. */
 FD_FN_UNUSED static inline void
@@ -393,9 +364,7 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
     ctx->metrics.feedback_results_dropped_cnt++;
     return;
   }
-  /* Duplicate terminal results usually arrive close together.  Check the
-     newest entry first so the common duplicate is O(1), then fall back to the
-     bounded ring scan before treating a full queue as a drop. */
+  /* Scan newest first: nearby duplicate terminal results remain O(1). */
   for( ushort i=0U; i<ctx->feedback_queue_depth; i++ ) {
     ushort idx = (ushort)(((uint)ctx->bam_results_tail + FD_BAM_MAX_PENDING_RESULTS - 1U - (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
     fd_bam_bundle_result_t const * pending = &ctx->bam_results[ idx ];
@@ -558,61 +527,28 @@ fd_bam_stage_leader_state( fd_bam_tile_t *                ctx,
   ctx->bam_leader_pending = 1U;
 }
 
-typedef enum {
-  FD_BAM_LEADER_STATE_SUPPRESS_NOT_LEADER = 0,
-  FD_BAM_LEADER_STATE_SUPPRESS_EXPIRED,
-  FD_BAM_LEADER_STATE_SUPPRESS_SLOT_REGRESSION,
-  FD_BAM_LEADER_STATE_SUPPRESS_SCHEDULER_REJECTED
-} fd_bam_leader_state_suppress_reason_t;
-
-FD_FN_CONST static inline ulong
-fd_bam_leader_state_suppress_reason_idx( fd_bam_leader_state_suppress_reason_t reason ) {
-  switch( reason ) {
-  case FD_BAM_LEADER_STATE_SUPPRESS_NOT_LEADER:
-    return FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_NOT_LEADER_IDX;
-  case FD_BAM_LEADER_STATE_SUPPRESS_EXPIRED:
-    return FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_EXPIRED_IDX;
-  case FD_BAM_LEADER_STATE_SUPPRESS_SLOT_REGRESSION:
-    return FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_SLOT_REGRESSION_IDX;
-  case FD_BAM_LEADER_STATE_SUPPRESS_SCHEDULER_REJECTED:
-    return FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_SCHEDULER_REJECTED_IDX;
-  default:
-    return FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_EXPIRED_IDX;
-  }
-}
-
 FD_FN_CONST static inline char const *
-fd_bam_leader_state_suppress_reason_cstr( fd_bam_leader_state_suppress_reason_t reason ) {
+fd_bam_leader_state_suppress_reason_cstr( uint reason ) {
   switch( reason ) {
-  case FD_BAM_LEADER_STATE_SUPPRESS_NOT_LEADER:       return "not_leader";
-  case FD_BAM_LEADER_STATE_SUPPRESS_EXPIRED:          return "expired";
-  case FD_BAM_LEADER_STATE_SUPPRESS_SLOT_REGRESSION:  return "slot_regression";
-  case FD_BAM_LEADER_STATE_SUPPRESS_SCHEDULER_REJECTED: return "scheduler_rejected";
+  case FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_NOT_LEADER_IDX:       return "not_leader";
+  case FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_EXPIRED_IDX:          return "expired";
+  case FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_SCHEDULER_REJECTED_IDX: return "scheduler_rejected";
   default:                                            return "unknown";
   }
 }
 
 static inline int
-fd_bam_leader_state_suppress_reason( fd_bam_tile_t const *                  ctx,
-                                     fd_bam_leader_state_t const *          state,
-                                     long                                   now_ns,
-                                     int                                    check_slot_regression,
-                                     fd_bam_leader_state_suppress_reason_t * reason ) {
+fd_bam_leader_state_suppress_reason( fd_bam_leader_state_t const * state,
+                                     long                          now_ns,
+                                     uint *                        reason ) {
   if( FD_UNLIKELY( state->slot==ULONG_MAX ) ) {
-    *reason = FD_BAM_LEADER_STATE_SUPPRESS_NOT_LEADER;
-    return 1;
-  }
-
-  if( FD_UNLIKELY( check_slot_regression &&
-                   ctx->bam_leader_state.slot!=ULONG_MAX &&
-                   state->slot<ctx->bam_leader_state.slot ) ) {
-    *reason = FD_BAM_LEADER_STATE_SUPPRESS_SLOT_REGRESSION;
+    *reason = FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_NOT_LEADER_IDX;
     return 1;
   }
 
   if( FD_UNLIKELY( state->slot_end_ns &&
                    fd_long_sat_add( state->slot_end_ns, FD_BAM_LEADER_STATE_EXPIRY_GRACE_NS )<=now_ns ) ) {
-    *reason = FD_BAM_LEADER_STATE_SUPPRESS_EXPIRED;
+    *reason = FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_EXPIRED_IDX;
     return 1;
   }
 
@@ -622,9 +558,9 @@ fd_bam_leader_state_suppress_reason( fd_bam_tile_t const *                  ctx,
 static inline void
 fd_bam_note_leader_state_suppressed( fd_bam_tile_t *                       ctx,
                                      fd_bam_leader_state_t const *         state,
-                                     fd_bam_leader_state_suppress_reason_t reason,
+                                     uint                                  reason,
                                      long                                  now_ns ) {
-  ctx->metrics.leader_state_suppressed_cnt[ fd_bam_leader_state_suppress_reason_idx( reason ) ]++;
+  ctx->metrics.leader_state_suppressed_cnt[ reason ]++;
 
   FD_LOG_WARNING(( "dropping BAM leader state slot=%lu tick=%u slot_end_ns=%ld now_ns=%ld reason=%s current_slot=%lu current_slot_end_ns=%ld pending=%u current_slot_has_bam_work=%u",
                    state->slot,
@@ -691,11 +627,10 @@ int
 fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
                                  long               now );
 
-/* Expose internal result flushing logic for unit tests. Returns 1 if any
-   results were flushed (busy), 0 otherwise. Not used in production. */
+/* Returns 1 if any queued results were flushed, 0 otherwise. */
 
 int
-fd_bam_test_flush_results( fd_bam_tile_t * ctx );
+fd_bam_flush_results( fd_bam_tile_t * ctx );
 
 int
 fd_bam_send_leader_state( fd_bam_tile_t *               ctx,

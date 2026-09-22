@@ -12,41 +12,17 @@ set_bam_cmd_args( int *    pargc,
                   args_t * args ) {
   char const * usage = "Usage: fdctl set-bam [--enable|--disable] [--url <url>] [--sni <domain>]";
 
-  /* Start with sentinel "no change" values.  enable stays at -1 until the user requests
-     --enable/--disable, while NULL pointers mean URL/SNI should not be modified. */
-  args->set_bam.enable = -1;
-  args->set_bam.url    = NULL;
-  args->set_bam.sni    = NULL;
-
   int enable_flag  = fd_env_strip_cmdline_contains( pargc, pargv, "--enable" );
   int disable_flag = fd_env_strip_cmdline_contains( pargc, pargv, "--disable" );
   if( FD_UNLIKELY( enable_flag && disable_flag ) )
     FD_LOG_ERR(( "Cannot pass both --enable and --disable" ));
 
-  if( enable_flag ) {
-    args->set_bam.enable = 1;
-  } else if( disable_flag ) {
-    args->set_bam.enable = 0;
-  }
+  /* NULL means unchanged; an empty URL/SNI explicitly clears it. */
+  args->set_bam.enable = enable_flag ? 1 : disable_flag ? 0 : -1;
+  args->set_bam.url = fd_env_strip_cmdline_cstr( pargc, pargv, "--url", NULL, NULL );
+  args->set_bam.sni = fd_env_strip_cmdline_cstr( pargc, pargv, "--sni", NULL, NULL );
 
-  char const * url = fd_env_strip_cmdline_cstr( pargc, pargv, "--url", NULL, NULL );
-  if( url ) {
-    /* Empty string is a valid input; it clears the URL when copied into the control struct. */
-    args->set_bam.url = url;
-  }
-
-  char const * sni = fd_env_strip_cmdline_cstr( pargc, pargv, "--sni", NULL, NULL );
-  if( sni ) {
-    /* Likewise, an empty string erases an existing SNI override. */
-    args->set_bam.sni = sni;
-  }
-
-  if( FD_UNLIKELY( *pargc ) )
-    FD_LOG_ERR(( "%s", usage ));
-
-  if( FD_UNLIKELY( args->set_bam.enable<0 &&
-                   !args->set_bam.url &&
-                   !args->set_bam.sni ) )
+  if( FD_UNLIKELY( *pargc || (args->set_bam.enable<0 && !args->set_bam.url && !args->set_bam.sni) ) )
     FD_LOG_ERR(( "%s", usage ));
 }
 

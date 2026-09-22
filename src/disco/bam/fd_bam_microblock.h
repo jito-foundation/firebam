@@ -23,15 +23,8 @@ typedef struct {
    microblock.  Producers publish non-provisional failures immediately,
    but attach provisional success to the microblock for PoH to resolve. */
 
-FD_FN_PURE static inline _Bool
-fd_bam_result_is_provisional( fd_bam_bundle_result_t const * result ) {
-  return !!result->execution_success;
-}
-
 static inline void
-fd_bam_result_resolve_at_poh( fd_bam_bundle_result_t * result,
-                              int                      accepted ) {
-  if( FD_LIKELY( accepted ) ) return;
+fd_bam_result_poh_timeout( fd_bam_bundle_result_t * result ) {
   result->execution_success = 0U;
   result->scheduling_error  = FD_BAM_SCHED_ERR_POH_TIMEOUT;
 }

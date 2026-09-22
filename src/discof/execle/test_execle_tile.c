@@ -1179,6 +1179,58 @@ FD_UNIT_TEST( execle_simple_fee_payer_fail ) {
   test_env_destroy( env );
 }
 
+FD_UNIT_TEST( execle_bam_result_member_isolation ) {
+  /* Exercise feedback filtering directly: foreign member metadata must
+     not change the first batch's result or overwrite its member stats. */
+  for( ulong mismatch=0UL; mismatch<5UL; mismatch++ ) {
+    for( int committed_error=0; committed_error<2; committed_error++ ) {
+      test_env_t * env = test_env_create();
+      fd_bank_t * bank = fd_svm_mini_bank( env->mini, env->bank_idx );
+      ((fd_blockhash_info_t *)fd_blockhashes_peek_last( &bank->f.block_hash_queue ))->lamports_per_signature = 5000UL;
+
+      fd_pubkey_t payer0     = { .ul={0x3333UL} };
+      fd_pubkey_t payer1     = { .ul={0x4444UL} };
+      fd_pubkey_t recipient0 = { .ul={0x5555UL} };
+      fd_pubkey_t recipient1 = { .ul={0x6666UL} };
+      test_fund_account( env, &payer0, 1000000000UL );
+      if( committed_error ) test_fund_account( env, &payer1, 1000000000UL );
+      test_fund_account( env, &recipient0, 1000000UL );
+      test_fund_account( env, &recipient1, 1000000UL );
+
+      fd_txn_p_t txns[2];
+      test_build_system_transfer_txn( &txns[0], bank, payer0, recipient0, 111UL );
+      test_build_system_transfer_txn( &txns[1], bank, payer1, recipient1, ULONG_MAX );
+      test_mark_bam_batch( txns, 2UL, 43U, 0 );
+      txns[0].bam.scheduler_gen = txns[1].bam.scheduler_gen = 9U;
+      switch( mismatch ) {
+      case 0UL: txns[1].bam.seq_id = 42U; txns[1].bam.batch_idx = 0U; break;
+      case 1UL: txns[1].bam.scheduler_gen = 10U; break;
+      case 2UL: txns[1].bam.batch_idx = 2U; break;
+      case 3UL: txns[1].bam.revert_on_error = 1U; break;
+      case 4UL: txns[1].source_tpu = FD_TXN_M_TPU_SOURCE_QUIC; break;
+      }
+      test_execle_run( env, txns, 2UL, 3U, 17UL, 0 );
+
+      fd_frag_meta_t const * meta = test_out_poh_meta( 0UL );
+      fd_txn_p_t const * out = fd_chunk_to_laddr( env->execle->out_poh->mem, meta->chunk );
+      fd_bam_microblock_view_t view[1];
+      FD_TEST( fd_bam_microblock_parse( out, meta->sz, view ) );
+      FD_TEST( view->result );
+      fd_bam_bundle_result_t const * result = view->result;
+      FD_TEST( result->seq_id==43U && result->scheduler_gen==9U );
+      FD_TEST( result->execution_success && !result->transaction_err_count );
+      FD_TEST( result->feepayer_balance_lamports[0]==1000000000UL-5000UL-111UL );
+      FD_TEST( !result->sanitize_success[1] && !result->consumed_cus[1] );
+      FD_TEST( !result->feepayer_balance_lamports[1] && !result->loaded_accounts_data_size[1] );
+      FD_TEST( test_topo_link( "bank_bam" )->mcache->sz==0UL );
+      FD_TEST( !!(out[1].flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS)==committed_error );
+      FD_TEST( test_read_lamports( env, &payer0 )==1000000000UL-5000UL-111UL );
+      FD_TEST( test_read_lamports( env, &payer1 )==(committed_error ? 1000000000UL-5000UL : 0UL) );
+      test_env_destroy( env );
+    }
+  }
+}
+
 /* Test for relax_fee_payer_constraint feature: we want to drop no-op
    transactions in the leader pipeline, as they do not charge any fees
    and so it is not profitable to include them. */
