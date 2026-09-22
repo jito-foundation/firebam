@@ -169,8 +169,7 @@ main( int argc, char ** argv ) {
       FD_TEST( !deleted );
       /* Later current-slot batches must remain behind the future-slot head. */
       ulong target = i ? 104UL : 105UL;
-      FD_TEST( pack_tile_append_bam_work( ctx, copied_signature, 0L, (uint)(1000UL+i), 9U,
-                                          target, target, 100UL, 0U, 1U ) );
+      FD_TEST( pack_tile_append_bam_work( ctx, copied_signature, 0L, (uint)(1000UL+i), 9U, target, 100UL, 0U, 1U ) );
     }
     FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==occupancy[depth_idx] );
     FD_TEST( ctx->bam_work_cnt==occupancy[depth_idx] );

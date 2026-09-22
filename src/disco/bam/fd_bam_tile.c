@@ -614,8 +614,7 @@ fd_bam_tile_begin_ownership_generation( fd_bam_tile_t * ctx,
   if( FD_UNLIKELY( !ctx->ownership_gen ) ) ctx->ownership_gen++;
   ctx->ownership_gen_retired = 1U;
 
-  while( FD_UNLIKELY( !bam_pending_txn_empty( ctx->pending_txns ) ) )
-    bam_pending_txn_remove_head( ctx->pending_txns );
+  bam_pending_txn_remove_all( ctx->pending_txns );
   if( FD_UNLIKELY( forget_feedback && ctx->feedback_queue_depth ) ) {
     ctx->metrics.feedback_results_dropped_cnt += (ulong)ctx->feedback_queue_depth;
     ctx->bam_results_head     = ctx->bam_results_tail;

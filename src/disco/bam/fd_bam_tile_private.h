@@ -396,19 +396,12 @@ fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
   /* Duplicate terminal results usually arrive close together.  Check the
      newest entry first so the common duplicate is O(1), then fall back to the
      bounded ring scan before treating a full queue as a drop. */
-  if( FD_LIKELY( ctx->feedback_queue_depth ) ) {
-    ushort idx = (ushort)(((uint)ctx->bam_results_tail + FD_BAM_MAX_PENDING_RESULTS - 1U) % FD_BAM_MAX_PENDING_RESULTS);
-    fd_bam_bundle_result_t const * pending = &ctx->bam_results[ idx ];
-    if( FD_UNLIKELY( pending->scheduler_gen==res->scheduler_gen &&
-                     pending->slot         ==res->slot          &&
-                     pending->seq_id       ==res->seq_id ) ) return;
-  }
-  for( ushort i=1U; i<ctx->feedback_queue_depth; i++ ) {
+  for( ushort i=0U; i<ctx->feedback_queue_depth; i++ ) {
     ushort idx = (ushort)(((uint)ctx->bam_results_tail + FD_BAM_MAX_PENDING_RESULTS - 1U - (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
     fd_bam_bundle_result_t const * pending = &ctx->bam_results[ idx ];
-    if( FD_UNLIKELY( pending->scheduler_gen==res->scheduler_gen &&
+    if( FD_UNLIKELY( pending->seq_id       ==res->seq_id        &&
                      pending->slot         ==res->slot          &&
-                     pending->seq_id       ==res->seq_id ) ) return;
+                     pending->scheduler_gen==res->scheduler_gen ) ) return;
   }
   if( FD_UNLIKELY( ctx->feedback_queue_depth>=FD_BAM_MAX_PENDING_RESULTS ) ) {
     FD_LOG_WARNING(( "Dropping BAM bundle result (bam tile queue full): seq_id=%u slot=%lu bundle_txn_cnt=%u exec_success=%u sched_err=%u",
