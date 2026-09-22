@@ -103,6 +103,8 @@
 #define FD_GOSSIP_CONTACT_INFO_SOCKET_ALPENGLOW         (13)
 #define FD_GOSSIP_CONTACT_INFO_SOCKET_CNT               (14)
 
+/* ContactInfo version.client ids are assigned in
+   https://github.com/solana-foundation/solana-validator-client-ids/blob/main/client-ids.csv */
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_SOLANA_LABS   (0)
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_JITO_LABS     (1)
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_FRANKENDANCER (2)
@@ -111,6 +113,7 @@
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER    (5)
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_AGAVE_BAM     (6)
 #define FD_GOSSIP_CONTACT_INFO_CLIENT_SIG           (7)
+#define FD_GOSSIP_CONTACT_INFO_CLIENT_BAM           (12)
 
 #define FD_GOSSIP_MESSAGE_PULL_REQUEST  (0)
 #define FD_GOSSIP_MESSAGE_PULL_RESPONSE (1)

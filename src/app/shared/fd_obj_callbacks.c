@@ -10,6 +10,8 @@
 #include "../../disco/keyguard/fd_keyswitch.h"
 #include "../../disco/node_info/fd_node_info.h"
 #include "../../discof/poh/fd_poh.h"
+#include "../../disco/bam/fd_bam_ctrl.h"
+#include "../../disco/bam/fd_bam_types.h"
 
 #define VAL(name) (__extension__({                                                             \
   ulong __x = fd_pod_queryf_ulong( topo->props, ULONG_MAX, "obj.%lu.%s", obj->id, name );      \
@@ -245,6 +247,36 @@ fd_topo_obj_callbacks_t fd_obj_cb_leader_txn_timing = {
   .name      = "ldr_tt",
   .footprint = leader_txn_timing_footprint,
   .align     = leader_txn_timing_align,
+};
+
+static ulong
+bam_fixed_footprint( fd_topo_t const *     topo FD_FN_UNUSED,
+                     fd_topo_obj_t const * obj ) {
+  if( !strcmp( obj->name, "bam_ctrl" ) )    return sizeof(fd_bam_ctrl_t);
+  if( !strcmp( obj->name, "bam_fee_cfg" ) ) return sizeof(fd_bam_fee_cfg_t);
+  FD_LOG_ERR(( "unexpected BAM object type `%s`", obj->name ));
+  return 0UL;
+}
+
+static ulong
+bam_fixed_align( fd_topo_t const *     topo FD_FN_UNUSED,
+                 fd_topo_obj_t const * obj ) {
+  if( !strcmp( obj->name, "bam_ctrl" ) )    return alignof(fd_bam_ctrl_t);
+  if( !strcmp( obj->name, "bam_fee_cfg" ) ) return alignof(fd_bam_fee_cfg_t);
+  FD_LOG_ERR(( "unexpected BAM object type `%s`", obj->name ));
+  return 0UL;
+}
+
+fd_topo_obj_callbacks_t fd_obj_cb_bam_ctrl = {
+  .name      = "bam_ctrl",
+  .footprint = bam_fixed_footprint,
+  .align     = bam_fixed_align,
+};
+
+fd_topo_obj_callbacks_t fd_obj_cb_bam_fee_cfg = {
+  .name      = "bam_fee_cfg",
+  .footprint = bam_fixed_footprint,
+  .align     = bam_fixed_align,
 };
 
 fd_topo_run_tile_t
