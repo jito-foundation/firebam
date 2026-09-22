@@ -1133,6 +1133,11 @@ EXAMPLES
     <histogram name="CuPct" min="0" max="100">
         <summary>Percent of the total block cost limit used for each block pack produced</summary>
     </histogram>
+    <counter name="BamConflictBlocked" summary="Scheduling attempts blocked by account conflicts on the selected BAM candidate. Does not establish that a later independent batch was runnable or measure lost earnings." />
+    <counter name="BamUnscheduledAtSlotEnd" summary="Tracked BAM batches still pending for the closing leader slot before slot-end cleanup. Excludes dispatched and future-slot batches; does not establish validity, schedulability, or lost earnings." />
+    <counter name="BamRefundWait" summary="BAM scheduling attempts that retained the head because outstanding execution reports could cover its whole-batch block-cost shortfall. Counts attempts, not unique batches or lost earnings." />
+    <counter name="BamCapacityDeferred" summary="BAM candidate groups newly deferred for the current block after exhausting the capacity-miss budget. Counts transitions once per bundle ordinal; ordinal wrap can coalesce original batches." />
+    <gauge name="PendingRebateCost" summary="Original reserved CU cost of dispatched transactions without a settled execution report in the current block. Upper bound on possible future refunds, not measured refundable or lost CUs; disabled rebates or lost reports on unreliable inputs retain reservations until block reset." />
 </tile>
 
 <!-- Frankendancer transaction result -->

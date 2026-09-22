@@ -72,7 +72,7 @@ struct fd_txn_m {
     uchar  txn_cnt;           /* How many transactions are expected in the atomic transaction batch */
     uchar  batch_idx;         /* Index of this transaction inside the atomic transaction batch */
     uchar  revert_on_error   : 1; /* If true and any transaction in the batch fails, revert everything. otherwise commit errors */
-    uchar  blockhash_expired : 1; /* Set by resolv when a known blockhash is expired so pack can reject the complete batch with the correct index */
+    uchar                   : 1; /* Retain the former expiry flag bit for layout compatibility. */
     uchar  preprocess_failed : 1; /* Set when preprocessing failed so pack can terminate the complete batch */
   } bam;
 

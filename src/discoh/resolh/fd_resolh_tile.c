@@ -27,17 +27,11 @@ typedef struct blockhash_map blockhash_map_t;
 
 static const blockhash_t null_blockhash = { 0 };
 
-/* The blockhash ring holds recent blockhashes, so we can identify when
-   a transaction arrives, what slot it will expire (and can no longer be
-   packed) in.  This is useful so we don't send transactions to pack
-   that are no longer packable.
-
-   Unfortunately, poorly written transaction senders frequently send
-   transactions from millions of slots ago, so we need a large ring to
-   be able to determine and evict these.  The highest practically useful
-   value here is around 22, which works out to 19 days of blockhash
-   history.  Beyond this, the validator is likely to be restarted, and
-   lose the history anyway. */
+/* The blockhash ring records observed hashes and their reference slots.
+   It lets us release stashed transactions when a hash is observed.  It is
+   not a fork-qualified validity queue: slot distance cannot establish
+   expiry.  Retain the existing bounded history (about 19 days), including
+   hashes from before recent skips or a change in the selected fork. */
 
 #define BLOCKHASH_LG_RING_CNT 22UL
 #define BLOCKHASH_RING_LEN   (1UL<<BLOCKHASH_LG_RING_CNT)
@@ -370,31 +364,16 @@ after_frag( fd_resolh_tile_t *  ctx,
   FD_TEST( txnm->txn_t_sz<=FD_TXN_MAX_SZ );
   fd_txn_t const * txnt = fd_txn_m_txn_t( txnm );
 
-  /* If we find the recent blockhash, life is simple.  We drop
-     transactions that couldn't possibly execute any more, and forward
-     to pack ones that could.
+  /* Observing a blockhash records its slot, not its age in the execution
+     bank's hash queue.  Skipped slots and observations from other forks
+     make slot-distance expiry unsound.  Forward known hashes and let the
+     runtime check the selected bank's queue (including durable nonces).
 
-     If we can't find the recent blockhash ... it means one of four
-     things,
-
-     (1) The blockhash is really old (more than 19 days) or just
-         non-existent.
-     (2) The blockhash is not that old, but was created before this
-         validator was started.
-     (3) It's really new (we haven't seen the bank yet).
-     (4) It's a durable nonce transaction, or part of a bundle (just let
-         it pass).
-
-    For durable nonce transactions, there isn't much we can do except
-    pass them along and see if they execute.
-
-    For the other three cases ... we don't want to flood pack with what
-    might be junk transactions, so we accumulate them into a local
-    buffer.  If we later see the blockhash come to exist, we forward any
-    buffered transactions to back. */
+     Unknown ordinary hashes still use the bounded stash below: they may
+     be old, nonexistent, from before startup, or not observed yet.  BAM,
+     bundles, and possible durable nonces bypass the stash as before. */
 
   int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
-  if( FD_UNLIKELY( is_bam ) ) txnm->bam.blockhash_expired = 0;
   ulong failure_group_id = fd_txn_m_failure_group_id( txnm );
 
   if( FD_UNLIKELY( failure_group_id &&
@@ -422,15 +401,6 @@ after_frag( fd_resolh_tile_t *  ctx,
   }
   if( FD_LIKELY( blockhash ) ) {
     txnm->reference_slot = blockhash->slot;
-    if( FD_UNLIKELY( txnm->reference_slot+151UL<ctx->completed_slot ) ) {
-      if( FD_UNLIKELY( is_bam ) ) {
-        txnm->bam.blockhash_expired = 1;
-      } else {
-        if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
-        ctx->metrics.blockhash_expired++;
-        return;
-      }
-    }
   }
 
   int is_bundle_member = !!txnm->block_engine.bundle_id;
@@ -614,7 +584,6 @@ fd_ext_bank_load_account( void const *  bank,
 #define TEST_BAM_RESOLVE_CTX_T                    fd_resolh_tile_t
 #define TEST_BAM_RESOLVE_OUT_CNT                  1UL
 #define TEST_BAM_RESOLVE_IN_KIND                  FD_RESOLH_IN_KIND_FRAGMENT
-#define TEST_BAM_RESOLVE_RUN_UNKNOWN_BLOCKHASH    1
 #include "../../disco/bam/test_bam_resolve_common.c"
 
 #endif /* FD_RESOLH_TILE_BAM_UNIT_TEST */

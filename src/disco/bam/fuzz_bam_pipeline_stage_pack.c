@@ -290,7 +290,6 @@ bam_fuzz_pack_new( fd_wksp_t * wksp,
   h->ctx->drain_execle                  = 0;
   fd_clock_tile_init( h->ctx->clock );
   h->ctx->highest_observed_slot         = 0UL;
-  h->ctx->bam_pending_check_slot        = 0UL;
   h->ctx->microblock_duration_ticks     = (ulong)(fd_tempo_tick_per_ns( NULL )*(double)MICROBLOCK_DURATION_NS + 0.5);
   h->ctx->use_consumed_cus              = 0;
   h->ctx->limits.slot_max_cost          = lower.max_cost_per_block;
