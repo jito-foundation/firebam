@@ -6434,7 +6434,7 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
 /* --- Bundle result durability ------------------------------------------------------- */
 
 /* Verifies that bundle results buffered in the queue survive fd_bam_client_reset
- * and flush in FIFO order as one repeated-result protobuf message. */
+ * and flush in FIFO order without exceeding BAM's 24-result wire limit. */
 
 static void
 test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
@@ -6447,38 +6447,43 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
 
   state->bam_results_head = FD_BAM_MAX_PENDING_RESULTS-1U;
   state->bam_results_tail = FD_BAM_MAX_PENDING_RESULTS-1U;
-  for( uint i=0U; i<FD_BAM_RESULTS_PER_MESSAGE; i++ ) {
+  /* Keep this independent of FD_BAM_RESULTS_PER_MESSAGE: the receiver rejects
+     any message with more than 24 results. */
+  uint const result_cnt = 49U;
+  for( uint i=0U; i<result_cnt; i++ ) {
     fd_bam_bundle_result_t res = test_make_bundle_result( 200 + i, 1200, 2 );
     test_enqueue_bundle_result( state, &res );
   }
 
   ulong expected_tail = state->bam_results_tail;
   fd_bam_client_reset( state );
-  FD_TEST( state->feedback_queue_depth == FD_BAM_RESULTS_PER_MESSAGE );
+  FD_TEST( fd_bam_flush_results( state ) == 0 );
+  FD_TEST( state->feedback_queue_depth == result_cnt );
   FD_TEST( state->bam_results_head == FD_BAM_MAX_PENDING_RESULTS-1U );
   FD_TEST( state->bam_results_tail == expected_tail );
   FD_TEST( state->bam_results[ FD_BAM_MAX_PENDING_RESULTS-1U ].seq_id == 200U );
   FD_TEST( state->bam_results[ 0 ].seq_id == 201U );
 
   test_bam_env_mock_conn( env );
-  state->bam_stream_live = 0U;
-
-  fd_grpc_h2_stream_t * stream = fd_grpc_client_stream_acquire( state->grpc_client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
-  FD_TEST( stream );
-  stream->hdrs.h2_status     = 200;
-  stream->hdrs.is_grpc_proto = 1;
-  state->bam_stream = stream;
-  state->bam_stream_live = 1U;
-  state->grpc_client->request_stream = NULL;
-  *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
+  test_bam_prepare_scheduler_stream( state );
 
   test_bam_decoded_message_t decoded;
-  FD_TEST( fd_bam_flush_results( state ) == 1 );
-  test_bam_decode_last_message( state, &decoded );
-  FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
-  FD_TEST( decoded.multi.result_cnt == FD_BAM_RESULTS_PER_MESSAGE );
-  for( uint i=0U; i<FD_BAM_RESULTS_PER_MESSAGE; i++ ) {
-    FD_TEST( decoded.multi.results[ i ].seq_id == 200U+i );
+  for( uint sent=0U; sent<result_cnt; ) {
+    uint const batch_cnt = fd_uint_min( 24U, result_cnt-sent );
+    FD_TEST( fd_bam_flush_results( state ) == 1 );
+
+    /* A busy TX buffer must leave the remaining FIFO untouched. */
+    FD_TEST( fd_bam_flush_results( state ) == 0 );
+    test_bam_decode_last_message( state, &decoded );
+    FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
+    FD_TEST( decoded.multi.result_cnt == batch_cnt );
+    for( uint i=0U; i<batch_cnt; i++ ) {
+      FD_TEST( decoded.multi.results[ i ].seq_id == 200U+sent+i );
+    }
+    sent += batch_cnt;
+    FD_TEST( state->feedback_queue_depth == result_cnt-sent );
+    FD_TEST( state->bam_results_head == (FD_BAM_MAX_PENDING_RESULTS-1U+sent) % FD_BAM_MAX_PENDING_RESULTS );
+    FD_TEST( state->bam_results_tail == expected_tail );
   }
   FD_TEST( state->feedback_queue_depth == 0UL );
   FD_TEST( state->bam_results_head == state->bam_results_tail );
