@@ -89,14 +89,12 @@ test_harness_new( test_harness_t * h ) {
   h->ctx->flush_pool_idx  = ULONG_MAX;
   h->ctx->in[ 0 ].kind    = TEST_BAM_RESOLVE_IN_KIND;
 
-  h->ctx->out_pack->idx    = 0UL;
   h->ctx->out_pack->mem    = (fd_wksp_t *)h->pack_dcache;
   h->ctx->out_pack->chunk0 = 0UL;
   h->ctx->out_pack->wmark  = TEST_DCACHE_CHUNKS-1UL;
   h->ctx->out_pack->chunk  = 0UL;
 
 #if TEST_BAM_RESOLVE_HAS_REPLAY
-  h->ctx->out_replay->idx    = 1UL;
   h->ctx->out_replay->mem    = (fd_wksp_t *)h->replay_dcache;
   h->ctx->out_replay->chunk0 = 0UL;
   h->ctx->out_replay->wmark  = TEST_DCACHE_CHUNKS-1UL;

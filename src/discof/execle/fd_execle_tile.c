@@ -303,14 +303,6 @@ bam_fill_txn_result( fd_bam_bundle_result_t * res,
 }
 
 static inline void
-publish_bam_result( fd_execle_tile_t *      ctx,
-                    fd_stem_context_t *     stem,
-                    fd_bam_bundle_result_t const * res ) {
-  fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
-                         ctx->out_bam->chunk0, ctx->out_bam->wmark, res );
-}
-
-static inline void
 handle_microblock( fd_execle_tile_t *  ctx,
                    ulong               seq,
                    ulong               sig,
@@ -345,11 +337,9 @@ handle_microblock( fd_execle_tile_t *  ctx,
                             !txns[0].bam.batch_idx );
   fd_bam_bundle_result_t bam_res[1];
   if( FD_UNLIKELY( bam_nonrevert ) ) {
-    /* Pack schedules BAM batches through the bundle path, which emits the
-       batch as an isolated microblock.  For non-revert BAM, pack clears
-       FD_TXN_P_FLAGS_BUNDLE before publishing to bank/execle, so this path
-       sees the isolated BAM batch as a normal microblock.  fd_txn_p_t does
-       not carry bam.txn_cnt, so txn_cnt is the batch size here. */
+    /* Non-revert BAM uses the ordinary execution path.  Retain member
+       identity checks below: Pack's bundle priority ordinal can wrap and
+       combine distinct batches in one microblock. */
     FD_TEST( txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
     *bam_res = fd_bam_result_base( txns[0].bam.seq_id, txns[0].bam.scheduler_gen, slot, (uchar)txn_cnt );
     bam_res->execution_success = 1U;
@@ -397,7 +387,6 @@ handle_microblock( fd_execle_tile_t *  ctx,
       FD_TEST( !txn_out->err.is_fees_only );
       if( FD_UNLIKELY( bam_result_member ) ) {
         fd_bam_result_mark_not_committed_txn_error( bam_res, bam_idx, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
-        bam_res->execution_success = 0U;
         bam_fill_txn_result( bam_res, bam_idx, txn_out );
       }
       fd_runtime_cancel_txn( ctx->runtime, bank, txn_in, txn_out, ctx->report_transaction_diffs );
@@ -423,7 +412,6 @@ handle_microblock( fd_execle_tile_t *  ctx,
         txn_out->err.is_committable = 0;
         if( FD_UNLIKELY( bam_result_member ) ) {
           fd_bam_result_mark_not_committed_txn_error( bam_res, bam_idx, fd_bam_txn_err_from_runtime_err( txn_out->err.txn_err ) );
-          bam_res->execution_success = 0U;
           bam_fill_txn_result( bam_res, bam_idx, txn_out );
         }
         fd_runtime_cancel_txn( ctx->runtime, bank, txn_in, txn_out, ctx->report_transaction_diffs );
@@ -538,7 +526,9 @@ handle_microblock( fd_execle_tile_t *  ctx,
   /* Flush GUI-visible counters before releasing the execle to pack. */
   metrics_write( ctx );
 
-  if( FD_UNLIKELY( bam_nonrevert && !fd_bam_result_is_provisional( bam_res ) ) ) publish_bam_result( ctx, stem, bam_res );
+  if( FD_UNLIKELY( bam_nonrevert && !bam_res->execution_success ) )
+    fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
+                           ctx->out_bam->chunk0, ctx->out_bam->wmark, bam_res );
 
   /* Indicate to pack tile we are done processing the transactions so
      it can pack new microblocks using these accounts. */
@@ -561,7 +551,7 @@ handle_microblock( fd_execle_tile_t *  ctx,
   /* We always need to publish, even if there are no successfully executed
      transactions so the PoH tile can keep an accurate count of microblocks
      it has seen. */
-  int attach_bam_result = bam_nonrevert && fd_bam_result_is_provisional( bam_res );
+  int attach_bam_result = bam_nonrevert && bam_res->execution_success;
   if( FD_UNLIKELY( attach_bam_result ) ) {
     memmove( (uchar *)trailer+sizeof(*bam_res), trailer, sizeof(*trailer) );
     fd_memcpy( trailer, bam_res, sizeof(*bam_res) );
@@ -725,7 +715,8 @@ handle_bundle( fd_execle_tile_t *  ctx,
       }
       fd_bam_result_set_txn_error( bam_res, failed_idx, fd_bam_txn_err_from_runtime_err( ctx->txn_out[ failed_idx ].err.txn_err ) );
       for( ulong i=0UL; i<=failed_idx; i++ ) bam_fill_txn_result( bam_res, i, &ctx->txn_out[ i ] );
-      publish_bam_result( ctx, stem, bam_res );
+      fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
+                             ctx->out_bam->chunk0, ctx->out_bam->wmark, bam_res );
     }
     for( ulong i=0UL; i<txn_cnt; i++ ) {
 
@@ -785,7 +776,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
     uchar * dst = (uchar *)fd_chunk_to_laddr( ctx->out_poh->mem, ctx->out_poh->chunk );
     fd_memcpy( dst, bundle_txn_temp+i, sizeof(fd_txn_p_t) );
 
-    int attach_bam_result = is_bam_revert && fd_bam_result_is_provisional( bam_res ) && i==txn_cnt-1UL;
+    int attach_bam_result = is_bam_revert && bam_res->execution_success && i==txn_cnt-1UL;
     fd_microblock_trailer_t * trailer = fd_bam_microblock_prepare_trailer( dst, 1UL, attach_bam_result ? bam_res : NULL );
     hash_transactions( ctx->bmtree, (fd_txn_p_t*)dst, 1UL, trailer->hash );
     trailer->pack_txn_idx     = ctx->_txn_idx + i;

@@ -637,11 +637,11 @@ fd_guih_printf_bam( fd_guih_t * gui ) {
       jsonp_string( gui->http, "tpu",    gui->bam.tpu_cstr );
       jsonp_string( gui->http, "tpu_fwd",gui->bam.tpu_fwd_cstr );
       jsonp_ulong(  gui->http, "enabled", gui->bam.enabled );
-      if( FD_UNLIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED ) )      jsonp_string( gui->http, "status", "disabled" );
-      else if( FD_UNLIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED ) ) jsonp_string( gui->http, "status", "disconnected" );
-      else if( FD_UNLIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) ) jsonp_string( gui->http, "status", "connecting" );
-      else if( FD_UNLIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY ) ) jsonp_string( gui->http, "status", "connected-unhealthy" );
-      else if( FD_LIKELY( gui->bam.status==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) jsonp_string( gui->http, "status", "connected-healthy" );
+      if( FD_UNLIKELY( gui->bam.status_code==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED ) )      jsonp_string( gui->http, "status", "disabled" );
+      else if( FD_UNLIKELY( gui->bam.status_code==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED ) ) jsonp_string( gui->http, "status", "disconnected" );
+      else if( FD_UNLIKELY( gui->bam.status_code==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING ) ) jsonp_string( gui->http, "status", "connecting" );
+      else if( FD_UNLIKELY( gui->bam.status_code==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_UNHEALTHY ) ) jsonp_string( gui->http, "status", "connected-unhealthy" );
+      else if( FD_LIKELY( gui->bam.status_code==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) ) jsonp_string( gui->http, "status", "connected-healthy" );
       else                                                                               jsonp_string( gui->http, "status", "unexpected" );
 
       jsonp_double( gui->http, "keepalive_rtt_sample",     (double)gui->bam.keepalive_rtt_sample );
