@@ -308,6 +308,7 @@
         will always be 420,000. */
 
 #include "../../disco/fd_disco_base.h"
+#include "../../disco/fd_txn_m.h"
 #include "../../disco/pack/fd_pack.h"
 #include "../../disco/stem/fd_stem.h"
 #include "../../disco/fd_clock_tile.h"
@@ -403,6 +404,22 @@ struct fd_poh_out_private {
 };
 
 typedef struct fd_poh_out_private fd_poh_out_t;
+
+static inline void
+fd_poh_publish_txn_completions( fd_poh_out_t *       out,
+                                fd_stem_context_t *  stem,
+                                fd_txn_p_t const *   txns,
+                                ulong                txn_cnt ) {
+  for( ulong i=0UL; i<txn_cnt; i++ ) {
+    int landed = !!(txns[ i ].flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS);
+    if( FD_UNLIKELY( !landed && txns[ i ].source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
+    ulong event_kind = landed ? FD_EXECUTED_TXN_KIND_LANDED : FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED;
+    fd_memcpy( fd_chunk_to_laddr( out->mem, out->chunk ),
+               fd_txn_get_signatures( TXN(txns+i), txns[ i ].payload ), FD_TXN_SIGNATURE_SZ );
+    fd_stem_publish( stem, out->idx, event_kind, out->chunk, FD_TXN_SIGNATURE_SZ, 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
+    out->chunk = fd_dcache_compact_next( out->chunk, FD_TXN_SIGNATURE_SZ, out->chunk0, out->wmark );
+  }
+}
 
 struct __attribute__((aligned(FD_POH_ALIGN))) fd_poh_private {
   int state;
