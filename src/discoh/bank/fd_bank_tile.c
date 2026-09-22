@@ -142,19 +142,6 @@ after_credit( fd_bank_ctx_t *     ctx,
 }
 
 static inline void
-bank_tile_publish_bam_result( fd_bank_ctx_t *               ctx,
-                              fd_stem_context_t *           stem,
-                              fd_bam_bundle_result_t const * res ) {
-  fd_bam_publish_result( stem,
-                         ctx->bam_out_idx,
-                         ctx->bam_out_mem,
-                         &ctx->bam_out_chunk,
-                         ctx->bam_out_chunk0,
-                         ctx->bam_out_wmark,
-                         res );
-}
-
-static inline void
 bank_tile_fill_bam_nonrevert_result( fd_bam_bundle_result_t * res,
                                      fd_txn_p_t const *       txn,
                                      ulong                    result_idx,
@@ -169,14 +156,10 @@ bank_tile_fill_bam_nonrevert_result( fd_bam_bundle_result_t * res,
   res->loaded_accounts_data_size[ result_idx ] = loaded_accounts_data_size;
   if( FD_LIKELY( sanitize_success ) ) fd_bam_result_mark_sanitize_success( res, result_idx );
 
-  if( FD_UNLIKELY( !sanitize_success ) ) {
-    fd_bam_result_mark_not_committed_txn_error( res, result_idx, bam_types_TransactionErrorReason_SANITIZE_FAILURE );
-  } else if( FD_UNLIKELY( !committed ) ) {
-    fd_bam_result_mark_not_committed_txn_error( res,
-                                                result_idx,
-                                                transaction_err_idx!=FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ?
-                                                  fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) :
-                                                  bam_types_TransactionErrorReason_COMMIT_CANCELLED );
+  if( FD_UNLIKELY( !sanitize_success || !committed ) ) {
+    fd_bam_result_mark_not_committed_txn_error( res, result_idx,
+        sanitize_success ? fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) :
+                           bam_types_TransactionErrorReason_SANITIZE_FAILURE );
   } else if( FD_UNLIKELY( transaction_err_idx!=FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ) ) {
     fd_bam_result_add_txn_error( res, result_idx, fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) );
   }
@@ -342,11 +325,9 @@ handle_microblock( fd_bank_ctx_t *     ctx,
                             !txns->bam.batch_idx );
   fd_bam_bundle_result_t bam_res[1];
   if( FD_UNLIKELY( bam_nonrevert ) ) {
-    /* Pack schedules BAM batches through the bundle path, which emits the
-       batch as an isolated microblock.  For non-revert BAM, pack clears
-       FD_TXN_P_FLAGS_BUNDLE before publishing to bank/execle, so this path
-       sees the isolated BAM batch as a normal microblock.  fd_txn_p_t does
-       not carry bam.txn_cnt, so txn_cnt is the batch size here. */
+    /* Non-revert BAM uses the ordinary execution path.  Retain member
+       identity checks below: Pack's bundle priority ordinal can wrap and
+       combine distinct batches in one microblock. */
     FD_TEST( txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE );
     *bam_res = fd_bam_result_base( txns->bam.seq_id, txns->bam.scheduler_gen, slot, (uchar)txn_cnt );
     bam_res->execution_success = 1U;
@@ -444,8 +425,9 @@ handle_microblock( fd_bank_ctx_t *     ctx,
     else                                       ctx->metrics.success++;
   }
 
-  if( FD_UNLIKELY( bam_nonrevert && !fd_bam_result_is_provisional( bam_res ) && ctx->bam_out_idx!=ULONG_MAX ) )
-    bank_tile_publish_bam_result( ctx, stem, bam_res );
+  if( FD_UNLIKELY( bam_nonrevert && !bam_res->execution_success ) )
+    fd_bam_publish_result( stem, ctx->bam_out_idx, ctx->bam_out_mem, &ctx->bam_out_chunk,
+                           ctx->bam_out_chunk0, ctx->bam_out_wmark, bam_res );
 
   if( FD_UNLIKELY( skip_commit ) ) {
     FD_TEST( txn_cnt==1UL ); /* see comment about FeesOnly nonce transactions above */
@@ -472,7 +454,7 @@ handle_microblock( fd_bank_ctx_t *     ctx,
   /* Now produce the merkle hash of the transactions for inclusion
      (mixin) to the PoH hash.  This is done on the bank tile because
      it shards / scales horizontally here, while PoH does not. */
-  int attach_bam_result = bam_nonrevert && fd_bam_result_is_provisional( bam_res );
+  int attach_bam_result = bam_nonrevert && bam_res->execution_success;
   fd_microblock_trailer_t * trailer = fd_bam_microblock_prepare_trailer( dst, txn_cnt, attach_bam_result ? bam_res : NULL );
   fd_memset( trailer->first_seen_nanos, 0, sizeof(trailer->first_seen_nanos) );
   fd_memcpy( trailer->first_seen_nanos, ctx->_first_seen_nanos, txn_cnt*sizeof(long) );
@@ -657,18 +639,16 @@ handle_bundle( fd_bank_ctx_t *     ctx,
       if( FD_LIKELY( execution_success ) ) {
         res.feepayer_balance_lamports[ i ] = feepayer_balance_lamports[ i ];
         res.loaded_accounts_data_size[ i ] = loaded_accounts_data_size[ i ];
+      } else {
+        fd_bam_result_add_txn_error( &res, i,
+            sanitize_success ? fd_bam_txn_err_from_transaction_error_idx( transaction_err[ i ] ) :
+                               bam_types_TransactionErrorReason_SANITIZE_FAILURE );
       }
     }
 
     if( FD_UNLIKELY( !execution_success ) ) {
-      for( ulong i=0UL; i<txn_cnt; i++ ) {
-        int transaction_err_idx = transaction_err[ i ];
-        fd_bam_result_add_txn_error( &res, i,
-            !( txns[ i ].flags & FD_TXN_P_FLAGS_SANITIZE_SUCCESS ) ? bam_types_TransactionErrorReason_SANITIZE_FAILURE :
-            transaction_err_idx==FD_METRICS_ENUM_TRANSACTION_ERROR_V_SUCCESS_IDX ? bam_types_TransactionErrorReason_COMMIT_CANCELLED :
-            fd_bam_txn_err_from_transaction_error_idx( transaction_err_idx ) );
-      }
-      bank_tile_publish_bam_result( ctx, stem, &res );
+      fd_bam_publish_result( stem, ctx->bam_out_idx, ctx->bam_out_mem, &ctx->bam_out_chunk,
+                             ctx->bam_out_chunk0, ctx->bam_out_wmark, &res );
     }
   }
 
@@ -686,7 +666,7 @@ handle_bundle( fd_bank_ctx_t *     ctx,
     uchar * dst = (uchar *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
     fd_memcpy( dst, bundle_txn_temp+i, sizeof(fd_txn_p_t) );
 
-    int attach_bam_result = bam_revert && fd_bam_result_is_provisional( &res ) && i==txn_cnt-1UL;
+    int attach_bam_result = bam_revert && res.execution_success && i==txn_cnt-1UL;
     fd_microblock_trailer_t * trailer = fd_bam_microblock_prepare_trailer( dst, 1UL, attach_bam_result ? &res : NULL );
     fd_memset( trailer->first_seen_nanos, 0, sizeof(trailer->first_seen_nanos) );
     trailer->first_seen_nanos[0] = ctx->_first_seen_nanos[i];

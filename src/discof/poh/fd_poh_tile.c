@@ -2,7 +2,6 @@
 #include "fd_poh_tile.h"
 #include "../replay/fd_replay_tile.h"
 #include "../../util/pod/fd_pod.h"
-#include "../../disco/fd_txn_m.h"
 #include "../../disco/bam/fd_bam_microblock.h"
 #include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/tiles.h"
@@ -188,7 +187,7 @@ returnable_frag( fd_poh_tile_t *     ctx,
     FD_TEST( fd_bam_microblock_parse( txns, sz, view ) );
     if( FD_UNLIKELY( view->result ) ) {
       fd_bam_bundle_result_t result = *view->result;
-      fd_bam_result_resolve_at_poh( &result, 0 );
+      fd_bam_result_poh_timeout( &result );
       fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
                              ctx->bam_out->chunk0, ctx->bam_out->wmark, &result );
     }
@@ -270,19 +269,7 @@ returnable_frag( fd_poh_tile_t *     ctx,
         fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
                                ctx->bam_out->chunk0, ctx->bam_out->wmark, view->result );
 
-      ulong txn_cnt = view->txn_cnt;
-      fd_poh_out_t * executed_txn_out = ctx->executed_txn_out;
-      for( ulong i=0UL; i<txn_cnt; i++ ) {
-        int landed = !!(txns[ i ].flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS);
-        if( FD_UNLIKELY( !landed && txns[ i ].source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) continue;
-        ulong event_kind = landed ? FD_EXECUTED_TXN_KIND_LANDED : FD_EXECUTED_TXN_KIND_BAM_COMPLETED_UNLANDED;
-
-        fd_memcpy( fd_chunk_to_laddr( executed_txn_out->mem, executed_txn_out->chunk ),
-                   fd_txn_get_signatures( TXN(txns+i), txns[ i ].payload ),
-                   FD_TXN_SIGNATURE_SZ );
-        fd_stem_publish( stem, executed_txn_out->idx, event_kind, executed_txn_out->chunk, FD_TXN_SIGNATURE_SZ, 0UL, 0UL, fd_frag_meta_ts_comp( fd_tickcount() ) );
-        executed_txn_out->chunk = fd_dcache_compact_next( executed_txn_out->chunk, FD_TXN_SIGNATURE_SZ, executed_txn_out->chunk0, executed_txn_out->wmark );
-      }
+      fd_poh_publish_txn_completions( ctx->executed_txn_out, stem, txns, view->txn_cnt );
       break;
     }
     default: {

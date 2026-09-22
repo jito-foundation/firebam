@@ -131,13 +131,12 @@ bam_fuzz_resolv_new( fd_wksp_t * wksp,
     .wmark  = in_wmark,
     .mtu    = FD_TPU_PARSED_MTU,
   };
-  h->ctx->out_pack->idx    = BAM_FUZZ_RESOLV_OUT_PACK_IDX;
   h->ctx->out_pack->mem    = (fd_wksp_t *)h->pack_dcache;
   h->ctx->out_pack->chunk0 = fd_dcache_compact_chunk0( h->pack_dcache, h->pack_dcache );
   h->ctx->out_pack->wmark  = fd_dcache_compact_wmark ( h->pack_dcache, h->pack_dcache, FD_TPU_RESOLVED_MTU );
   h->ctx->out_pack->chunk  = h->ctx->out_pack->chunk0;
 
-  *h->ctx->out_replay = (fd_resolv_out_ctx_t){ .idx = ULONG_MAX };
+  *h->ctx->out_replay = (fd_resolv_out_ctx_t){0};
 
   if( FD_LIKELY( pack_out ) ) {
     *pack_out = (bam_fuzz_link_t) {

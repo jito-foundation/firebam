@@ -125,7 +125,6 @@ test_bam_prepare_scheduler_stream( fd_bam_tile_t * state ) {
   FD_TEST( stream );
   state->bam_stream            = stream;
   state->bam_stream_live       = 1U;
-  state->bam_stream_connecting = 0U;
   state->grpc_client->request_stream = NULL;
   *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
   state->grpc_client->frame_tx->lo = state->grpc_client->frame_tx->hi;
@@ -495,12 +494,11 @@ test_bam_env_create( test_bam_env_t * env,
   state->admin_rpc_fd    = -1;
   state->keylog_fd       = -1;
   state->so_rcvbuf       = 4096;
-  state->grpc_buf_max    = 4096UL;
   state->map_seed        = 1UL;
 
-  state->grpc_client_mem = fd_wksp_alloc_laddr( wksp, fd_grpc_client_align(), fd_grpc_client_footprint( state->grpc_buf_max ), 1UL );
+  state->grpc_client_mem = fd_wksp_alloc_laddr( wksp, fd_grpc_client_align(), fd_grpc_client_footprint( 4096UL ), 1UL );
   FD_TEST( state->grpc_client_mem );
-  state->grpc_client = fd_grpc_client_new( state->grpc_client_mem, &fd_bam_client_grpc_callbacks, state->grpc_metrics, state, state->grpc_buf_max, state->map_seed );
+  state->grpc_client = fd_grpc_client_new( state->grpc_client_mem, &fd_bam_client_grpc_callbacks, state->grpc_metrics, state, 4096UL, state->map_seed );
   FD_TEST( state->grpc_client );
   fd_h2_conn_t * h2_conn = fd_grpc_client_h2_conn( state->grpc_client );
   h2_conn->flags = 0;
@@ -510,8 +508,6 @@ test_bam_env_create( test_bam_env_t * env,
   FD_TEST( state->fee_cfg );
   fd_memset( state->fee_cfg, 0, sizeof(fd_bam_fee_cfg_t) );
   state->fee_cfg_version = 0U;
-  state->prio_fee_recipient_set = 0U;
-  fd_memset( state->prio_fee_recipient, 0, sizeof( state->prio_fee_recipient ) );
 
   FD_TEST( fd_rng_new( state->rng, 0U, 0UL ) );
   long ka_interval = (long)1e9;

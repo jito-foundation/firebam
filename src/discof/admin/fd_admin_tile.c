@@ -317,6 +317,17 @@ find_identity_keyswitch( fd_admin_tile_ctx_t * ctx,
   return keyswitch;
 }
 
+/* These tiles must halt before txsend flushes the final old-key votes. */
+static inline int
+is_early_identity_signer( char const * name ) {
+  return !strcmp( name, "repair" ) ||
+         !strcmp( name, "gossip" ) ||
+         !strcmp( name, "tower"  ) ||
+         !strcmp( name, "bundle" ) ||
+         !strcmp( name, "rserve" ) ||
+         !strcmp( name, "bam"    );
+}
+
 static int FD_FN_SENSITIVE
 poll_set_identity( fd_admin_tile_ctx_t * ctx,
                    ulong *               state,
@@ -366,14 +377,7 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
       for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
         fd_topo_tile_t const * tile = &topo->tiles[ i ];
         if( FD_LIKELY( tile->id_keyswitch_obj_id==ULONG_MAX ) ) continue;
-        if( strcmp( tile->name, "repair" ) &&
-            strcmp( tile->name, "gossip" ) &&
-            strcmp( tile->name, "tower" ) &&
-            strcmp( tile->name, "bundle" ) &&
-            strcmp( tile->name, "rserve" ) &&
-            strcmp( tile->name, "bam" ) ) {
-          continue;
-        }
+        if( !is_early_identity_signer( tile->name ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
         if( !strcmp( tile->name, "gossip" ) ) tile_ks->param = identity_outset;
@@ -391,14 +395,7 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
       for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
         fd_topo_tile_t const * tile = &topo->tiles[ i ];
         if( FD_LIKELY( tile->id_keyswitch_obj_id==ULONG_MAX ) ) continue;
-        if( strcmp( tile->name, "repair" ) &&
-            strcmp( tile->name, "gossip" ) &&
-            strcmp( tile->name, "tower" ) &&
-            strcmp( tile->name, "bundle" ) &&
-            strcmp( tile->name, "rserve" ) &&
-            strcmp( tile->name, "bam" ) ) {
-          continue;
-        }
+        if( !is_early_identity_signer( tile->name ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
         if( FD_LIKELY( tile_ks->state==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
@@ -455,13 +452,8 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
         if( FD_LIKELY( tile->id_keyswitch_obj_id==ULONG_MAX ) ) continue;
         if( FD_LIKELY( !strcmp( tile->name, "sign" ) ||
                        !strcmp( tile->name, "replay" ) ||
-                       !strcmp( tile->name, "repair" ) ||
-                       !strcmp( tile->name, "gossip" ) ||
                        !strcmp( tile->name, "txsend" ) ||
-                       !strcmp( tile->name, "tower" ) ||
-                       !strcmp( tile->name, "bundle" ) ||
-                       !strcmp( tile->name, "rserve" ) ||
-                       !strcmp( tile->name, "bam" ) ) ) continue;
+                       is_early_identity_signer( tile->name ) ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
         if( !strcmp( tile->name, "gossvf" ) ) tile_ks->param = identity_outset;
@@ -481,13 +473,8 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
         fd_topo_tile_t const * tile = &topo->tiles[ i ];
         if( FD_LIKELY( tile->id_keyswitch_obj_id==ULONG_MAX ) ) continue;
         if( FD_LIKELY( !strcmp( tile->name, "replay" ) ||
-                       !strcmp( tile->name, "repair" ) ||
-                       !strcmp( tile->name, "gossip" ) ||
                        !strcmp( tile->name, "txsend" ) ||
-                       !strcmp( tile->name, "tower" ) ||
-                       !strcmp( tile->name, "bundle" ) ||
-                       !strcmp( tile->name, "rserve" ) ||
-                       !strcmp( tile->name, "bam" ) ) ) continue;
+                       is_early_identity_signer( tile->name ) ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
         if( FD_LIKELY( tile_ks->state==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
@@ -517,15 +504,7 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
       for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
         fd_topo_tile_t const * tile = &topo->tiles[ i ];
         if( FD_LIKELY( tile->id_keyswitch_obj_id==ULONG_MAX ) ) continue;
-        if( strcmp( tile->name, "repair" ) &&
-            strcmp( tile->name, "gossip" ) &&
-            strcmp( tile->name, "tower" ) &&
-            strcmp( tile->name, "txsend" ) &&
-            strcmp( tile->name, "bundle" ) &&
-            strcmp( tile->name, "rserve" ) &&
-            strcmp( tile->name, "bam" ) ) {
-          continue;
-        }
+        if( !is_early_identity_signer( tile->name ) && strcmp( tile->name, "txsend" ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
         FD_COMPILER_MFENCE();
@@ -542,15 +521,7 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
       for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
         fd_topo_tile_t const * tile = &topo->tiles[ i ];
         if( FD_LIKELY( tile->id_keyswitch_obj_id==ULONG_MAX ) ) continue;
-        if( strcmp( tile->name, "repair" ) &&
-            strcmp( tile->name, "gossip" ) &&
-            strcmp( tile->name, "tower" ) &&
-            strcmp( tile->name, "txsend" ) &&
-            strcmp( tile->name, "bundle" ) &&
-            strcmp( tile->name, "rserve" ) &&
-            strcmp( tile->name, "bam" ) ) {
-          continue;
-        }
+        if( !is_early_identity_signer( tile->name ) && strcmp( tile->name, "txsend" ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
         if( FD_LIKELY( tile_ks->state==FD_KEYSWITCH_STATE_UNHALT_PENDING ) ) {

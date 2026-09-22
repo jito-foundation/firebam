@@ -2209,7 +2209,7 @@ after_frag( fd_pohh_tile_t *    ctx,
                                       : NULL;
   if( FD_UNLIKELY( ctx->skip_frag ) ) {
     if( FD_UNLIKELY( bam_result ) ) {
-      fd_bam_result_resolve_at_poh( bam_result, 0 );
+      fd_bam_result_poh_timeout( bam_result );
       fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
                              ctx->bam_out->chunk0, ctx->bam_out->wmark, bam_result );
     }
@@ -2328,7 +2328,6 @@ after_frag( fd_pohh_tile_t *    ctx,
 
   publish_microblock( ctx, stem, target_slot, hashcnt_delta, txn_cnt );
   if( FD_UNLIKELY( bam_result ) ) {
-    fd_bam_result_resolve_at_poh( bam_result, 1 );
     fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
                            ctx->bam_out->chunk0, ctx->bam_out->wmark, bam_result );
   }

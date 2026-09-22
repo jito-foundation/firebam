@@ -1990,7 +1990,7 @@ test_bam_bundle_revert_flag_cases( fd_wksp_t * wksp ) {
     test_bam_keepalive_sync( state, g_clock );
     state->bam_last_config_poll_ns = g_clock;
 
-    FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+    FD_TEST( fd_bam_flush_results( state ) == 1 );
     FD_TEST( state->feedback_queue_depth == 0UL );
 
     test_bam_decoded_message_t decoded;
@@ -2101,7 +2101,7 @@ test_bam_validation_orders_revert_consistency_before_vote_rejection( fd_wksp_t *
   test_bam_keepalive_sync( state, g_clock );
   state->bam_last_config_poll_ns = g_clock;
 
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( fd_bam_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -2146,7 +2146,7 @@ test_bam_bundle_rejects_real_vote_payload( fd_wksp_t * wksp ) {
   test_bam_keepalive_sync( state, g_clock );
   state->bam_last_config_poll_ns = g_clock;
 
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( fd_bam_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -2191,7 +2191,7 @@ test_bam_stale_slot_rejects_before_vote_error( fd_wksp_t * wksp ) {
   test_bam_keepalive_sync( state, g_clock );
   state->bam_last_config_poll_ns = g_clock;
 
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( fd_bam_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -2240,7 +2240,7 @@ test_bam_bundle_rejects_excess_packet_count( fd_wksp_t * wksp ) {
   test_bam_keepalive_sync( state, g_clock );
   state->bam_last_config_poll_ns = g_clock;
 
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( fd_bam_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -2493,7 +2493,7 @@ test_bam_bundle_rejects_empty_batch( fd_wksp_t * wksp ) {
   test_bam_keepalive_sync( state, g_clock );
   state->bam_last_config_poll_ns = g_clock;
 
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( fd_bam_flush_results( state ) == 1 );
   FD_TEST( state->feedback_queue_depth == 0UL );
 
   test_bam_decoded_message_t decoded;
@@ -2812,7 +2812,6 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   };
   fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &hdrs_fail );
   FD_TEST( state->bam_stream_live == 0U );
-  FD_TEST( state->bam_stream_connecting == 0U );
   FD_TEST( state->bam_stream == NULL );
   FD_TEST( state->bam_leader_pending == 0U );
   FD_TEST( state->defer_reset == 1U );
@@ -2836,7 +2835,6 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   };
   fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &hdrs_ok );
   FD_TEST( state->bam_stream_live == 0U );
-  FD_TEST( state->bam_stream_connecting == 0U );
   FD_TEST( state->bam_stream == NULL );
   FD_TEST( state->bam_leader_pending == 0U );
   FD_TEST( state->defer_reset == 1U );
@@ -2868,14 +2866,12 @@ test_bam_grpc_timeout( fd_wksp_t * wksp ) {
 
   state->defer_reset = 0U;
   state->bam_stream_live       = 1U;
-  state->bam_stream_connecting = 1U;
   state->bam_leader_pending    = 1U;
   fd_grpc_h2_stream_t * timeout_stream = fd_grpc_client_stream_acquire( state->grpc_client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( timeout_stream );
   state->bam_stream = timeout_stream;
   fd_bam_client_grpc_rx_timeout( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, FD_GRPC_DEADLINE_RX_END );
   FD_TEST( state->bam_stream_live == 0U );
-  FD_TEST( state->bam_stream_connecting == 0U );
   FD_TEST( state->bam_leader_pending == 0U );
   FD_TEST( state->defer_reset == 1U );
   FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_TIMEOUT_IDX ] == 2UL );
@@ -2929,7 +2925,6 @@ test_bam_scheduler_stream_replays_only_retained_leader_state( fd_wksp_t * wksp )
 
   test_bam_prepare_scheduler_stream( state );
   state->bam_stream_live       = 0U;
-  state->bam_stream_connecting = 1U;
 
   FD_TEST( state->bam_leader_state.slot == ULONG_MAX );
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
@@ -2957,7 +2952,6 @@ test_bam_scheduler_stream_replays_only_retained_leader_state( fd_wksp_t * wksp )
   };
   state->bam_leader_pending = 0U;
   state->bam_stream_live       = 0U;
-  state->bam_stream_connecting = 1U;
 
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->bam_leader_pending == 1U );
@@ -2984,7 +2978,6 @@ test_bam_scheduler_stream_replays_only_retained_leader_state( fd_wksp_t * wksp )
   };
   state->bam_leader_pending = 0U;
   state->bam_stream_live       = 0U;
-  state->bam_stream_connecting = 1U;
 
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->bam_leader_pending == 1U );
@@ -3422,7 +3415,6 @@ test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
 
   state->bam_stream            = NULL;
   state->bam_stream_live       = 0U;
-  state->bam_stream_connecting = 0U;
   state->bam_config_inflight   = 1U;
   state->bam_auth_ready        = 1U;
   state->bam_auth_inflight     = 0U;
@@ -3445,7 +3437,6 @@ test_bam_scheduler_auth_proof_publishes_message( fd_wksp_t * wksp ) {
   fd_bam_client_step_reconnect( state, g_clock );
 
   FD_TEST( state->bam_stream != NULL );
-  FD_TEST( state->bam_stream_connecting == 1U );
   FD_TEST( state->bam_auth_ready == 0U );
   FD_TEST( state->challenge_to_sign[ 0 ] == '\0' );
   FD_TEST( state->bam_stream_live == 0U );
@@ -3471,7 +3462,6 @@ test_bam_scheduler_stream_starts_without_builder_info( fd_wksp_t * wksp ) {
 
   state->bam_stream            = NULL;
   state->bam_stream_live       = 0U;
-  state->bam_stream_connecting = 0U;
   state->bam_config_inflight   = 1U;
   state->bam_auth_ready        = 1U;
   state->bam_auth_inflight     = 0U;
@@ -3490,7 +3480,6 @@ test_bam_scheduler_stream_starts_without_builder_info( fd_wksp_t * wksp ) {
   fd_bam_client_step_reconnect( state, g_clock );
 
   FD_TEST( state->bam_stream != NULL );
-  FD_TEST( state->bam_stream_connecting == 1U );
   FD_TEST( state->bam_auth_ready == 0U );
 
   test_bam_env_destroy( env );
@@ -4065,7 +4054,6 @@ test_bam_identity_switch_halts_signing_and_invalidates_leader_schedule_state( fd
   FD_TEST( state->tcp_sock == -1 );
   FD_TEST( state->tcp_sock_connected == 0U );
   FD_TEST( state->bam_stream_live == 0U );
-  FD_TEST( state->bam_stream_connecting == 0U );
   FD_TEST( state->defer_reset == 0U );
 
   FD_TEST( state->next_leader_slot == ULONG_MAX );
@@ -4384,7 +4372,7 @@ test_bam_round_trip_result( fd_bam_tile_t *               state,
                             fd_bam_bundle_result_t const * result,
                             test_bam_decoded_message_t *   decoded ) {
   test_enqueue_bundle_result( state, result );
-  FD_TEST( fd_bam_test_flush_results( state )==1 );
+  FD_TEST( fd_bam_flush_results( state )==1 );
   FD_TEST( state->feedback_queue_depth==0UL );
 
   test_bam_decode_last_message( state, decoded );
@@ -4777,7 +4765,7 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   FD_TEST( fd_cstr_to_ip4_addr( "2.2.2.2", &ctx->default_tpu_fwd.addr ) );
   ctx->default_tpu.port     = fd_ushort_bswap( 4242U );
   ctx->default_tpu_fwd.port = fd_ushort_bswap( 4343U );
-  ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
+  ctx->tpu_update_state = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
 
   test_bam_admin_rpc_mock_reset();
   test_bam_admin_rpc_expect_fseq_active = fseq;
@@ -4830,8 +4818,8 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   fd_bam_publish_active_state( ctx, ctx->stem, 0 );
 
   FD_TEST( fd_fseq_query( fseq ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
-  FD_TEST( ctx->tpu_update_state       == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
-  FD_TEST( ctx->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT );
+  FD_TEST( ctx->tpu_update_state       == FD_BAM_CONTACT_UPDATE_STATE_PENDING_DEFAULT );
+  FD_TEST( ctx->client_id_update_state == FD_BAM_CONTACT_UPDATE_STATE_PENDING_DEFAULT );
 
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":{\"tpu\":\"9.9.9.9:7000\",\"tpu_forwards\":\"8.8.8.8:7001\"},\"id\":1}" );
   test_bam_admin_rpc_mock_push_reply( 0, "{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":2}" );
@@ -4841,8 +4829,8 @@ test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   fd_bam_tile_housekeeping( ctx );
 
   FD_TEST( test_bam_admin_rpc_mock.request_cnt == 5UL );
-  FD_TEST( ctx->tpu_update_state       == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
-  FD_TEST( ctx->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( ctx->tpu_update_state       == FD_BAM_CONTACT_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( ctx->client_id_update_state == FD_BAM_CONTACT_UPDATE_STATE_APPLIED_DEFAULT );
   FD_TEST( fd_fseq_query( fseq ) == 0UL );
 
   test_bam_admin_rpc_expect_fseq_active = NULL;
@@ -5074,8 +5062,8 @@ test_bam_admin_rpc_apply_success_caches_default_and_marks_applied( fd_wksp_t * w
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "\"method\":\"setContactInfoClientId\"" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "[14]" ) );
 
-  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM );
-  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM );
+  FD_TEST( state->tpu_update_state == FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM );
+  FD_TEST( state->client_id_update_state == FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM );
   FD_TEST( fd_ushort_bswap( state->default_tpu.port ) == 4242 );
   FD_TEST( fd_ushort_bswap( state->default_tpu_fwd.port ) == 4343 );
 
@@ -5103,8 +5091,8 @@ test_bam_admin_rpc_set_failure_stays_pending( fd_wksp_t * wksp ) {
 
   FD_TEST( test_bam_admin_rpc_mock.request_cnt == 2UL );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[1], "\"method\":\"setPublicTpuAddress\"" ) );
-  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM );
-  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_BAM );
+  FD_TEST( state->tpu_update_state == FD_BAM_CONTACT_UPDATE_STATE_PENDING_BAM );
+  FD_TEST( state->client_id_update_state == FD_BAM_CONTACT_UPDATE_STATE_PENDING_BAM );
 
   test_bam_env_destroy( env );
 }
@@ -5132,8 +5120,8 @@ test_bam_admin_rpc_revert_uses_cached_defaults( fd_wksp_t * wksp ) {
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[2], "1.1.1.1:4248" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "\"method\":\"setPublicTpuForwardsAddress\"" ) );
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "2.2.2.2:4349" ) );
-  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
-  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( state->tpu_update_state == FD_BAM_CONTACT_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( state->client_id_update_state == FD_BAM_CONTACT_UPDATE_STATE_APPLIED_DEFAULT );
 
   test_bam_env_destroy( env );
 }
@@ -5161,8 +5149,8 @@ test_bam_admin_rpc_restart_recovers_configured_defaults_for_revert( fd_wksp_t * 
   FD_TEST( strstr( test_bam_admin_rpc_mock.requests[3], "1.1.1.1:4248" ) );
   FD_TEST( fd_ushort_bswap( state->default_tpu.port ) == 4242 );
   FD_TEST( fd_ushort_bswap( state->default_tpu_fwd.port ) == 4242 );
-  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
-  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( state->tpu_update_state == FD_BAM_CONTACT_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( state->client_id_update_state == FD_BAM_CONTACT_UPDATE_STATE_APPLIED_DEFAULT );
 
   test_bam_env_destroy( env );
 }
@@ -5184,8 +5172,8 @@ test_bam_admin_rpc_path_empty_skips_frankendancer_apply( fd_wksp_t * wksp ) {
   FD_TEST( test_bam_admin_rpc_mock.request_cnt == 0UL );
   FD_TEST( state->gossip_out.chunk == chunk_before );
   FD_TEST( env->stem_seqs[ state->gossip_out.idx ] == seq_before );
-  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_DEFAULT );
-  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_DEFAULT );
+  FD_TEST( state->tpu_update_state == FD_BAM_CONTACT_UPDATE_STATE_PENDING_DEFAULT );
+  FD_TEST( state->client_id_update_state == FD_BAM_CONTACT_UPDATE_STATE_PENDING_DEFAULT );
   FD_TEST( !state->bam_gossip_handoff_pending );
 
   FD_TEST( fd_cstr_to_ip4_addr( "1.1.1.1", &state->configured_default_tpu.addr ) );
@@ -5203,8 +5191,8 @@ test_bam_admin_rpc_path_empty_skips_frankendancer_apply( fd_wksp_t * wksp ) {
   FD_TEST( update.version_client_id == FD_GOSSIP_CONTACT_INFO_CLIENT_FIREDANCER );
   FD_TEST( state->default_tpu.l     == state->configured_default_tpu.l );
   FD_TEST( state->default_tpu_fwd.l == state->configured_default_tpu.l );
-  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_APPLIED_DEFAULT );
-  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( state->tpu_update_state == FD_BAM_CONTACT_UPDATE_STATE_APPLIED_DEFAULT );
+  FD_TEST( state->client_id_update_state == FD_BAM_CONTACT_UPDATE_STATE_APPLIED_DEFAULT );
 
   test_bam_env_destroy( env );
 }
@@ -5481,8 +5469,8 @@ test_bam_activation_waits_for_bundle_publication( fd_wksp_t * wksp ) {
   ulong * fseq = fd_fseq_join( fseq_shmem );
   FD_TEST( fseq );
   state->bam_status_fseq      = fseq;
-  state->tpu_update_state     = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
-  state->client_id_update_state = FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM;
+  state->tpu_update_state     = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
+  state->client_id_update_state = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
 
   /* Bundle owns publication, so BAM must leave the word untouched and remain
      unable to drain scheduler work. */
@@ -5491,8 +5479,8 @@ test_bam_activation_waits_for_bundle_publication( fd_wksp_t * wksp ) {
 
   /* Once bundle releases ownership, BAM wins the next activation attempt. */
   FD_TEST( FD_ATOMIC_CAS( fseq, FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING, 0UL )==FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
-  state->tpu_update_state       = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
-  state->client_id_update_state = FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM;
+  state->tpu_update_state       = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
+  state->client_id_update_state = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
   fd_bam_publish_active_state( state, state->stem, 1 );
   FD_TEST( fd_fseq_query( fseq )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
 
@@ -5600,8 +5588,8 @@ test_bam_invalid_quic_base_port_does_not_activate( fd_wksp_t * wksp ) {
   FD_TEST( state->gossip_out.chunk == chunk_before );
   FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
   FD_TEST( !state->bam_gossip_handoff_pending );
-  FD_TEST( state->tpu_update_state == FD_BAM_TPU_UPDATE_STATE_PENDING_BAM );
-  FD_TEST( state->client_id_update_state == FD_BAM_CLIENT_ID_UPDATE_STATE_PENDING_BAM );
+  FD_TEST( state->tpu_update_state == FD_BAM_CONTACT_UPDATE_STATE_PENDING_BAM );
+  FD_TEST( state->client_id_update_state == FD_BAM_CONTACT_UPDATE_STATE_PENDING_BAM );
 
   fd_fseq_update( fseqs->gossip, 1UL );
   fd_bam_publish_active_state( state, state->stem, 1 );
@@ -5628,8 +5616,8 @@ test_bam_gossip_uses_defaults_when_contact_missing( fd_wksp_t * wksp ) {
   state->default_tpu.port     = fd_ushort_bswap( 4242 );
   state->default_tpu_fwd.port = fd_ushort_bswap( 4343 );
 
-  state->tpu_update_state       = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
-  state->client_id_update_state = FD_BAM_CLIENT_ID_UPDATE_STATE_APPLIED_BAM;
+  state->tpu_update_state       = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
+  state->client_id_update_state = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
   state->bam_stream_live        = 1U;
   state->bam_config_received    = 1U;
   state->bam_last_builder_activity_ns = fd_bam_now();
@@ -5743,7 +5731,7 @@ test_bam_gossip_disconnect_uses_defaults_without_clearing_stored_contact( fd_wks
 
   state->bam_status_recent = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTING;
   state->bam_stream_live = 0U;
-  state->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_APPLIED_BAM;
+  state->tpu_update_state = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
 
   resp = (bam_api_ConfigResponse)bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
@@ -6234,7 +6222,7 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_tpu_fwd.addr == 0U );
   FD_TEST( state->bam_tpu_fwd.port == 0U );
 
-  /* Initial config populates TPU endpoints and fee recipient. */
+  /* Initial config populates TPU endpoints. */
   bam_api_ConfigResponse resp = bam_api_ConfigResponse_init_default;
   resp.has_bam_config = true;
   resp.bam_config.has_tpu_sock = true;
@@ -6243,9 +6231,7 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   resp.bam_config.has_tpu_fwd_sock = true;
   fd_cstr_ncpy( resp.bam_config.tpu_fwd_sock.ip, "5.6.7.8", sizeof( resp.bam_config.tpu_fwd_sock.ip ) );
   resp.bam_config.tpu_fwd_sock.port = 10001U;
-  uchar prio_fee_raw[ 32 ];
   char const * prio_fee_b58 = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
-  FD_TEST( fd_base58_decode_32( prio_fee_b58, prio_fee_raw ) );
   fd_cstr_ncpy( resp.bam_config.prio_fee_recipient_pubkey, prio_fee_b58, sizeof( resp.bam_config.prio_fee_recipient_pubkey ) );
   resp.bam_config.commission_bps = 2750U;
 
@@ -6266,24 +6252,6 @@ test_bam_config_updates_contact_info( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_tpu.addr == expected_tpu_addr );
   FD_TEST( fd_ushort_bswap( state->bam_tpu.port ) == 9000U );
 
-  FD_TEST( state->bam_tpu_fwd.addr == expected_tpu_fwd_addr );
-  FD_TEST( fd_ushort_bswap( state->bam_tpu_fwd.port ) == 10001U );
-  FD_TEST( state->prio_fee_recipient_set == 1U );
-  FD_TEST( 0 == memcmp( state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
-
-  /* Clearing the recipient on an empty partial update loses the last valid fee
-     destination.  Preserve it while applying other fields. */
-  resp.bam_config.prio_fee_recipient_pubkey[ 0 ] = '\0';
-  ostream = pb_ostream_from_buffer( pb_buf, sizeof(pb_buf) );
-  FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
-  fd_bam_client_grpc_rx_msg( state,
-                             pb_buf,
-                             ostream.bytes_written,
-                             FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
-  FD_TEST( state->prio_fee_recipient_set == 1U );
-  FD_TEST( 0 == memcmp( state->prio_fee_recipient, prio_fee_raw, sizeof( prio_fee_raw ) ) );
-  FD_TEST( state->bam_tpu.addr == expected_tpu_addr );
-  FD_TEST( fd_ushort_bswap( state->bam_tpu.port ) == 9000U );
   FD_TEST( state->bam_tpu_fwd.addr == expected_tpu_fwd_addr );
   FD_TEST( fd_ushort_bswap( state->bam_tpu_fwd.port ) == 10001U );
 
@@ -6505,7 +6473,7 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
   *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
 
   test_bam_decoded_message_t decoded;
-  FD_TEST( fd_bam_test_flush_results( state ) == 1 );
+  FD_TEST( fd_bam_flush_results( state ) == 1 );
   test_bam_decode_last_message( state, &decoded );
   FD_TEST( decoded.msg.versioned_msg.v0.which_msg == bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag );
   FD_TEST( decoded.multi.result_cnt == FD_BAM_RESULTS_PER_MESSAGE );

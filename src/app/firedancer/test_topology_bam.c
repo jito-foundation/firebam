@@ -234,6 +234,15 @@ test_topology( int bundle_enabled,
 
   FD_TEST( (fd_topo_find_tile( topo, "bundle", 0UL )!=ULONG_MAX)==bundle_enabled );
   FD_TEST( (fd_topo_find_tile( topo, "bam",    0UL )!=ULONG_MAX)==bam_enabled );
+  if( bam_enabled ) {
+    ulong verify_link = fd_topo_find_link( topo, "bam_verif", 0UL );
+    ulong sign_link   = fd_topo_find_link( topo, "bam_sign",  0UL );
+    FD_TEST( verify_link!=ULONG_MAX && sign_link!=ULONG_MAX );
+    FD_TEST( fd_topo_link_consumer_cnt( topo, &topo->links[ verify_link ] )==1UL );
+    fd_topo_tile_t const * verify = &topo->tiles[ fd_topo_find_tile( topo, "verify", 0UL ) ];
+    ulong verify_in = fd_topo_find_tile_in_link( topo, verify, "bam_verif", 0UL );
+    FD_TEST( verify_in!=ULONG_MAX && verify->in_link_reliable[ verify_in ] && verify->in_link_poll[ verify_in ] );
+  }
 
   /* Omitting executed_txn outside BAM leaves landed transactions in pack and
      dedup, allowing stale copies to be scheduled again. */

@@ -542,7 +542,7 @@ fd_topo_initialize( config_t * config ) {
 
   if( FD_UNLIKELY( bam_enabled ) ) {
     /**/                   fd_topob_link( topo, "bam_verif",    "bam_verif",    FD_BAM_VERIFY_OUT_DEPTH,                     FD_TPU_PARSED_MTU,          FD_BAM_STEM_BURST );
-    /**/                   fd_topob_link( topo, "bam_sign",     "bam_sign",     65536UL,                                  256UL,                     1UL );
+    /**/                   fd_topob_link( topo, "bam_sign",     "bam_sign",     128UL,                                    256UL,                     1UL );
     /**/                   fd_topob_link( topo, "sign_bam",     "sign_bam",     128UL,                                    64UL,                      1UL );
     /**/                   fd_topob_link( topo, "bam_gossip",   "bam_gossip",   128UL,                                    sizeof(fd_bam_contact_update_t), 1UL );
     /**/                   fd_topob_link( topo, "pack_bam_ldr", "pack_bam_ldr", FD_BAM_MAX_PENDING_RESULTS,               sizeof(fd_bam_leader_state_t),  1UL );
@@ -871,7 +871,7 @@ fd_topo_initialize( config_t * config ) {
 
   if( FD_UNLIKELY( bam_enabled ) ) {
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_verif",    0UL                                                );
-    FOR(verify_tile_cnt) fd_topob_tile_in(  topo, "verify", i,             "metric_in", "bam_verif",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
+    /**/                 fd_topob_tile_in(  topo, "verify", 0UL,          "metric_in", "bam_verif",    0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED   );
 
     /**/                 fd_topob_tile_in(  topo, "sign",   0UL,           "metric_in", "bam_sign",     0UL,          FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED   );
     /**/                 fd_topob_tile_out( topo, "bam",    0UL,                        "bam_sign",     0UL                                                );
