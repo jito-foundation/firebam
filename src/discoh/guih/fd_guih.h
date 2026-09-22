@@ -799,21 +799,8 @@ struct fd_guih {
     char ip_cstr[ 40 ]; /* IPv4 or IPv6 cstr */
     int status;
   } block_engine;
-  struct {
-    uchar   has_bam;
-    fd_plugin_bam_update_status_t   status;
-    uchar   enabled;
-    char  name[ 16 ];
-    char  url[ FD_URL_MAX ];
-    char  sni[ FD_SNI_BUF_MAX ];
-    char  ip_cstr[ 40 ];
-    char  tpu_cstr[ 22 ];
-    char  tpu_fwd_cstr[ 22 ];
-    float  keepalive_rtt_sample;
-    float  keepalive_rtt_smoothed;
-    float  keepalive_rtt_deviation;
-    ushort feedback_queue_depth;
-  } bam;
+  uchar has_bam;
+  fd_plugin_msg_bam_update_t bam;
 
   struct {
     int has_epoch[ 2 ];

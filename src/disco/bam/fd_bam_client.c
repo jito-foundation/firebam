@@ -92,7 +92,7 @@ fd_bam_clear_scheduler_rejected_leader_state( fd_bam_tile_t * ctx,
   long now = fd_bam_now();
   fd_bam_note_leader_state_suppressed( ctx,
                                        &ctx->bam_leader_state,
-                                       FD_BAM_LEADER_STATE_SUPPRESS_SCHEDULER_REJECTED,
+                                       FD_METRICS_ENUM_BAM_LEADER_STATE_SUPPRESS_REASON_V_SCHEDULER_REJECTED_IDX,
                                        now );
   FD_LOG_WARNING(( "clearing retained BAM leader state slot=%lu after scheduler rejected valid_range=%lu..=%lu",
                    rejected_slot,
@@ -116,7 +116,6 @@ fd_bam_clear_stream_state( fd_bam_tile_t * ctx,
                            uint            reason_idx ) {
   ctx->bam_stream            = NULL;
   fd_bam_set_stream_live( ctx, 0U );
-  ctx->bam_stream_connecting = 0;
   fd_bam_drop_pending_leader_state( ctx, reason_idx );
 }
 
@@ -161,7 +160,6 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
 
   ctx->bam_stream                 = NULL;
   fd_bam_set_stream_live( ctx, 0U );
-  ctx->bam_stream_connecting      = 0;
   fd_bam_clear_auth_state( ctx );
   ctx->bam_config_inflight        = 0;
   ctx->bam_config_received        = 0;
@@ -553,7 +551,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
   _Bool has_valid_new_contact = !!new_tpu.addr && !!new_tpu.port && !!new_tpu_fwd.addr && !!new_tpu_fwd.port;
   if( FD_LIKELY( has_valid_new_contact ) ) {
     if( FD_UNLIKELY( ctx->bam_tpu.l != new_tpu.l || ctx->bam_tpu_fwd.l != new_tpu_fwd.l ) )
-      ctx->tpu_update_state = FD_BAM_TPU_UPDATE_STATE_UNKNOWN;
+      ctx->tpu_update_state = FD_BAM_CONTACT_UPDATE_STATE_UNKNOWN;
     ctx->bam_tpu     = new_tpu;
     ctx->bam_tpu_fwd = new_tpu_fwd;
   } else {
@@ -577,13 +575,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
 
   if( FD_LIKELY( cfg->prio_fee_recipient_pubkey[0] ) ) {
     uchar decoded[ 32 ];
-    if( FD_LIKELY( fd_base58_decode_32( cfg->prio_fee_recipient_pubkey, decoded ) ) ) {
-      /* Either we have not seen a key before, or the pubkey changed. */
-      if( FD_UNLIKELY( !ctx->prio_fee_recipient_set || !!memcmp( ctx->prio_fee_recipient, decoded, sizeof( decoded ) ) ) ) {
-        fd_memcpy( ctx->prio_fee_recipient, decoded, sizeof( decoded ) );
-        ctx->prio_fee_recipient_set = 1U;
-      }
-    } else {
+    if( FD_UNLIKELY( !fd_base58_decode_32( cfg->prio_fee_recipient_pubkey, decoded ) ) ) {
       FD_LOG_HEXDUMP_WARNING(( "Invalid priority fee recipient pubkey in ConfigResponse",
                                cfg->prio_fee_recipient_pubkey,
                                strnlen( cfg->prio_fee_recipient_pubkey, sizeof( cfg->prio_fee_recipient_pubkey ) ) ));
@@ -594,7 +586,7 @@ fd_bam_handle_config( fd_bam_tile_t * ctx,
 static void
 fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->bam_auth_ready ) ) return;
-  if( FD_UNLIKELY( ctx->bam_stream || ctx->bam_stream_connecting ) ) return;
+  if( FD_UNLIKELY( ctx->bam_stream ) ) return;
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
 
   bam_types_AuthProof proof = bam_types_AuthProof_init_default;
@@ -628,7 +620,6 @@ fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
     return;
   }
   ctx->bam_stream            = stream;
-  ctx->bam_stream_connecting = 1;
   ctx->bam_auth_ready        = 0;
   ctx->challenge_to_sign[ 0 ] = '\0';
 }
@@ -640,9 +631,7 @@ fd_bam_send_heartbeat( fd_bam_tile_t * ctx,
   bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
   msg.which_versioned_msg        = bam_api_SchedulerMessage_v0_tag;
   msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_heart_beat_tag;
-  bam_types_ValidatorHeartBeat hb = bam_types_ValidatorHeartBeat_init_default;
-  hb.time_sent_microseconds = (ulong)fd_long_max(now / 1000, 0);
-  msg.versioned_msg.v0.msg.heart_beat = hb;
+  msg.versioned_msg.v0.msg.heart_beat.time_sent_microseconds = (ulong)fd_long_max(now / 1000, 0);
   int send_res = fd_grpc_client_stream_send_msg( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg );
   if( FD_LIKELY( send_res ) ) ctx->bam_last_validator_heartbeat_ns = now;
   ctx->metrics.outbound_enqueue_outcome_cnt[
@@ -742,14 +731,13 @@ fd_bam_send_results( fd_bam_tile_t * ctx ) {
     return 0;
   }
 
-  bam_types_MultipleAtomicTxnBatchResult multi = bam_types_MultipleAtomicTxnBatchResult_init_default;
-  multi.results.funcs.encode = fd_bam_encode_batch_results_cb;
-  multi.results.arg          = ctx;
-
   bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
   msg.which_versioned_msg                        = bam_api_SchedulerMessage_v0_tag;
   msg.versioned_msg.v0.which_msg                 = bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag;
-  msg.versioned_msg.v0.msg.multiple_atomic_txn_batch_result = multi;
+  msg.versioned_msg.v0.msg.multiple_atomic_txn_batch_result.results = (pb_callback_t) {
+    .funcs.encode = fd_bam_encode_batch_results_cb,
+    .arg          = ctx
+  };
 
   int send_res = fd_grpc_client_stream_send_msg( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg );
   ctx->metrics.outbound_enqueue_outcome_cnt[
@@ -763,14 +751,11 @@ int
 fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
                           fd_bam_leader_state_t const *  state ) {
   long now = fd_bam_now();
-  fd_bam_leader_state_suppress_reason_t reason;
-  if( FD_UNLIKELY( fd_bam_leader_state_suppress_reason( ctx, state, now, 0, &reason ) ) ) {
+  uint reason;
+  if( FD_UNLIKELY( fd_bam_leader_state_suppress_reason( state, now, &reason ) ) ) {
     fd_bam_note_leader_state_suppressed( ctx, state, reason, now );
     ctx->bam_leader_pending = 0U;
-    if( FD_UNLIKELY( reason==FD_BAM_LEADER_STATE_SUPPRESS_NOT_LEADER ||
-                     reason==FD_BAM_LEADER_STATE_SUPPRESS_EXPIRED ) ) {
-      ctx->bam_leader_state = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
-    }
+    ctx->bam_leader_state = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
     return 0;
   }
 
@@ -779,15 +764,14 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
     return 0;
   }
 
-  bam_types_LeaderState ls = bam_types_LeaderState_init_default;
-  ls.slot                    = state->slot;
-  ls.tick                    = state->tick;
-  ls.slot_cu_budget_remaining = state->slot_cu_budget_remaining;
-
   bam_api_SchedulerMessage msg = bam_api_SchedulerMessage_init_default;
   msg.which_versioned_msg        = bam_api_SchedulerMessage_v0_tag;
   msg.versioned_msg.v0.which_msg = bam_api_SchedulerMessageV0_leader_state_tag;
-  msg.versioned_msg.v0.msg.leader_state = ls;
+  msg.versioned_msg.v0.msg.leader_state = (bam_types_LeaderState) {
+    .slot                     = state->slot,
+    .tick                     = state->tick,
+    .slot_cu_budget_remaining = state->slot_cu_budget_remaining
+  };
 
   int send_res = fd_grpc_client_stream_send_msg( ctx->grpc_client, ctx->bam_stream, &bam_api_SchedulerMessage_msg, &msg );
   ctx->metrics.outbound_enqueue_outcome_cnt[
@@ -797,7 +781,7 @@ fd_bam_send_leader_state( fd_bam_tile_t *                ctx,
   return send_res;
 }
 
-static int
+int
 fd_bam_flush_results( fd_bam_tile_t * ctx ) {
   int busy = 0;
   while( FD_UNLIKELY( ctx->feedback_queue_depth ) ) {
@@ -808,11 +792,6 @@ fd_bam_flush_results( fd_bam_tile_t * ctx ) {
     busy = 1;
   }
   return busy;
-}
-
-int
-fd_bam_test_flush_results( fd_bam_tile_t * ctx ) {
-  return fd_bam_flush_results( ctx );
 }
 
 void
@@ -1157,23 +1136,16 @@ fd_bam_client_grpc_rx_start(
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream: {
     long now = fd_bam_now();
     fd_bam_set_stream_live( ctx, 1U );
-    ctx->bam_stream_connecting  = 0;
     ctx->bam_last_validator_heartbeat_ns = now;
     ctx->bam_last_builder_activity_ns    = now;
     ctx->bam_builder_heartbeat_received  = 0U;
-    fd_bam_leader_state_suppress_reason_t reason;
+    uint reason;
     if( FD_UNLIKELY( ctx->bam_leader_state.slot != ULONG_MAX &&
-                     fd_bam_leader_state_suppress_reason( ctx, &ctx->bam_leader_state, now, 0, &reason ) ) ) {
+                     fd_bam_leader_state_suppress_reason( &ctx->bam_leader_state, now, &reason ) ) ) {
       fd_bam_note_leader_state_suppressed( ctx, &ctx->bam_leader_state, reason, now );
       ctx->bam_leader_state = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
-      ctx->bam_leader_pending = 0U;
-    } else if( FD_UNLIKELY( ctx->bam_leader_state.slot != ULONG_MAX &&
-                            ctx->bam_leader_state.slot_end_ns &&
-                            fd_long_sat_add( ctx->bam_leader_state.slot_end_ns, FD_BAM_LEADER_STATE_EXPIRY_GRACE_NS ) > now ) ) {
-      ctx->bam_leader_pending = 1U;
-    } else {
-      ctx->bam_leader_pending = 0U;
     }
+    ctx->bam_leader_pending = ctx->bam_leader_state.slot!=ULONG_MAX && ctx->bam_leader_state.slot_end_ns;
     break;
   }
   }

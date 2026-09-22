@@ -1005,41 +1005,38 @@ send_shred( fd_shred_ctx_t                 * ctx,
   ctx->net_out_chunk = fd_dcache_compact_next( chunk, pkt_sz, ctx->net_out_chunk0, ctx->net_out_wmark );
 }
 
-static inline void
-fd_shred_send_bam_shred( fd_shred_ctx_t *    ctx,
-                         fd_stem_context_t * stem,
-                         fd_shred_t const *  shred,
-                         int                 is_retransmit ) {
-  if( FD_UNLIKELY( !ctx->bam_dests_cnt ) ) return;
+static inline ulong
+fd_shred_bam_dest_cnt( fd_shred_ctx_t * ctx,
+                       ulong            slot,
+                       int              is_retransmit ) {
+  if( FD_UNLIKELY( !ctx->bam_dests_cnt ) ) return 0UL;
 
   int should_send = 0;
   if( is_retransmit ) {
     /* Stop forwarding older retransmits once local leader shredding starts. */
-    if( FD_UNLIKELY( ctx->slot!=ULONG_MAX && shred->slot<ctx->slot ) ) return;
+    if( FD_UNLIKELY( ctx->slot!=ULONG_MAX && slot<ctx->slot ) ) return 0UL;
 
-    if( FD_LIKELY( shred->slot==ctx->bam_leader_soon_slot ) ) {
+    if( FD_LIKELY( slot==ctx->bam_leader_soon_slot ) ) {
       should_send = ctx->bam_leader_soon;
     } else {
       for( ulong off=1UL; off<5UL; off++ ) {
-        ulong slot = shred->slot + off;
-        fd_epoch_leaders_t const * lsched = fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot );
-        if( FD_LIKELY( !lsched || (slot-lsched->slot0)%FD_EPOCH_SLOTS_PER_ROTATION ) ) continue;
-        fd_pubkey_t const * leader = fd_epoch_leaders_get( lsched, slot );
+        ulong next_slot = slot + off;
+        fd_epoch_leaders_t const * lsched = fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, next_slot );
+        if( FD_LIKELY( !lsched || (next_slot-lsched->slot0)%FD_EPOCH_SLOTS_PER_ROTATION ) ) continue;
+        fd_pubkey_t const * leader = fd_epoch_leaders_get( lsched, next_slot );
         if( FD_LIKELY( !leader || !fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) ) ) continue;
         should_send = 1;
         break;
       }
-      ctx->bam_leader_soon_slot = shred->slot;
+      ctx->bam_leader_soon_slot = slot;
       ctx->bam_leader_soon      = should_send;
     }
   } else {
-    fd_pubkey_t const * leader = fd_epoch_leaders_get( fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, shred->slot ), shred->slot );
+    fd_pubkey_t const * leader = fd_epoch_leaders_get( fd_stake_ci_get_lsched_for_slot( ctx->stake_ci, slot ), slot );
     should_send = !!( leader && fd_memeq( leader, ctx->identity_key, sizeof(fd_pubkey_t) ) );
   }
 
-  if( FD_UNLIKELY( !should_send ) ) return;
-
-  for( ulong i=0UL; i<ctx->bam_dests_cnt; i++ ) send_shred( ctx, stem, shred, ctx->bam_dests + i, ctx->tsorig );
+  return should_send ? ctx->bam_dests_cnt : 0UL;
 }
 
 static void
@@ -1225,7 +1222,8 @@ after_frag( fd_shred_ctx_t *    ctx,
         fd_shred_dest_idx_t * dests = fd_shred_dest_compute_children( sdest, &shred, 1UL, ctx->scratchpad_dests, 1UL, fanout, fanout, max_dest_cnt );
         if( FD_UNLIKELY( !dests ) ) break;
 
-        fd_shred_send_bam_shred( ctx, stem, *out_shred, 1 );
+        ulong bam_dest_cnt = fd_shred_bam_dest_cnt( ctx, (*out_shred)->slot, 1 );
+        for( ulong i=0UL; i<bam_dest_cnt; i++ ) send_shred( ctx, stem, *out_shred, ctx->bam_dests+i, ctx->tsorig );
         for( ulong i=0UL; i<ctx->adtl_dests_retransmit_cnt; i++ ) send_shred( ctx, stem, *out_shred, ctx->adtl_dests_retransmit+i, ctx->tsorig );
         for( ulong j=0UL; j<*max_dest_cnt; j++ ) send_shred( ctx, stem, *out_shred, fd_shred_dest_idx_to_dest( sdest, dests[ j ] ), ctx->tsorig );
       } while( 0 );
@@ -1270,20 +1268,21 @@ after_frag( fd_shred_ctx_t *    ctx,
       if( FD_UNLIKELY( !k ) ) break;
       fd_shred_dest_t * sdest = fd_stake_ci_get_sdest_for_slot( ctx->stake_ci, new_shreds[ 0 ]->slot );
       if( FD_UNLIKELY( !sdest ) ) break;
+      ulong bam_dest_cnt = fd_shred_bam_dest_cnt( ctx, new_shreds[ 0 ]->slot, ctx->in_kind[ in_idx ]==IN_KIND_NET );
 
       ulong out_stride;
       ulong max_dest_cnt[1];
       fd_shred_dest_idx_t * dests;
       if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_NET ) ) {
         for( ulong i=0UL; i<k; i++ ) {
-          fd_shred_send_bam_shred( ctx, stem, new_shreds[ i ], 1 );
+          for( ulong j=0UL; j<bam_dest_cnt; j++ ) send_shred( ctx, stem, new_shreds[ i ], ctx->bam_dests+j, ctx->tsorig );
           for( ulong j=0UL; j<ctx->adtl_dests_retransmit_cnt; j++ ) send_shred( ctx, stem, new_shreds[ i ], ctx->adtl_dests_retransmit+j, ctx->tsorig );
         }
         out_stride = k;
         dests = fd_shred_dest_compute_children( sdest, new_shreds, k, ctx->scratchpad_dests, k, fanout, fanout, max_dest_cnt );
       } else {
         for( ulong i=0UL; i<k; i++ ) {
-          fd_shred_send_bam_shred( ctx, stem, new_shreds[ i ], 0 );
+          for( ulong j=0UL; j<bam_dest_cnt; j++ ) send_shred( ctx, stem, new_shreds[ i ], ctx->bam_dests+j, ctx->tsorig );
           for( ulong j=0UL; j<ctx->adtl_dests_leader_cnt; j++ ) send_shred( ctx, stem, new_shreds[ i ], ctx->adtl_dests_leader+j, ctx->tsorig );
         }
         out_stride = 1UL;

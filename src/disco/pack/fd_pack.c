@@ -3375,7 +3375,9 @@ fd_pack_delete_transaction( fd_pack_t              * pack,
   ulong cnt = 0;
   ulong idx;
 
-  fd_txn_e_t query_e = {0};
+  /* sig2txn reads only the signature offset and signature bytes. */
+  fd_txn_e_t query_e;
+  TXN(query_e.txnp)->signature_off = 0U;
   fd_memcpy( query_e.txnp[0].payload, sig0, FD_TXN_SIGNATURE_SZ );
   while( (idx=sig2txn_idx_query_const( pack->signature_map,
                                        &query_e,
@@ -3400,7 +3402,8 @@ fd_pack_find_bam_bundle( fd_pack_t const *        pack,
                          uint                     seq_id,
                          ushort                   scheduler_gen,
                          int                      match_identity ) {
-  fd_txn_e_t query_e = {0};
+  fd_txn_e_t query_e;
+  TXN(query_e.txnp)->signature_off = 0U;
   fd_memcpy( query_e.txnp[0].payload, sig0, FD_TXN_SIGNATURE_SZ );
   ulong idx = sig2txn_idx_query_const( pack->signature_map,
                                        &query_e,
