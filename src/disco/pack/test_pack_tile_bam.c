@@ -3161,10 +3161,12 @@ test_pack_tile_bam_ordinal_wrap_tracks_every_dispatched_batch( void ) {
   FD_TEST( !fd_pack_avail_txn_cnt( ctx->pack ) );
   FD_TEST( ctx->bam_scheduled_work_cnt==2UL && !pack_tile_bam_pending_work_cnt( ctx ) );
 
-  /* Ordinal reuse can currently coalesce the two singleton batches into
-     one microblock.  Do not require that defect: a future scheduler fix
-     may emit separate microblocks or restore their order.  Every emitted
-     batch must nevertheless be scheduled and retire on completion. */
+  /* Renumbering preserves distinct singleton batches in their original
+     FIFO order, and both must remain tracked through completion. */
+  FD_TEST( test_pack_callbacks_dispatch_count( e )==2UL );
+  fd_microblock_execle_trailer_t const * ordered_trailer;
+  FD_TEST( test_pack_callbacks_output( e, 0UL, &ordered_trailer )->txnp->bam.seq_id==42U );
+  FD_TEST( test_pack_callbacks_output( e, 1UL, &ordered_trailer )->txnp->bam.seq_id==43U );
   fd_ed25519_sig_t signatures[2];
   uint seen = 0U;
   ulong txn_cnt = 0UL;
@@ -3174,6 +3176,7 @@ test_pack_tile_bam_ordinal_wrap_tracks_every_dispatched_batch( void ) {
       fd_frag_meta_t const * meta = &e->h->out->mcaches[out_idx][fd_mcache_line_idx( seq, TEST_PACK_TILE_MCACHE_DEPTH )];
       fd_txn_e_t const * out = fd_chunk_to_laddr_const( ctx->execle_out[worker].mem, meta->chunk );
       ulong count = (meta->sz-sizeof(fd_microblock_execle_trailer_t))/sizeof(fd_txn_e_t);
+      FD_TEST( count==1UL );
       for( ulong j=0UL; j<count; j++ ) {
         fd_txn_p_t const * txnp = out[j].txnp;
         FD_TEST( txn_cnt<2UL && txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && !txnp->bam.batch_idx );
