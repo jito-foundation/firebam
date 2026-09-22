@@ -1,13 +1,18 @@
 #ifndef HEADER_fd_src_disco_pack_fd_pack_unwritable_h
 #define HEADER_fd_src_disco_pack_fd_pack_unwritable_h
 
-/* Table of special addresses that are not allowed to be written to.  We
-   immediately reject and refuse to pack any transaction that tries to
-   write to one of these accounts.  Because we reject any writes to any
-   of these accounts, we actually don't need to track reads of them
-   either.  This is nice, because fd_map_dynamic requires a null address
-   that we promise never to insert.  The zero address is a sysvar, so
-   now we meet that part of the fd_map_dynamic contract. */
+#include "../../ballet/txn/fd_txn.h"
+#include "../../flamenco/runtime/fd_system_ids_pp.h"
+
+/* Reserved accounts are read-only at runtime even when the signed message
+   requests a write lock.  Exclude them from pack's account-lock, per-writer
+   cost, and rebate maps.  In particular, the System Program's zero address
+   is also the null-key sentinel used by fd_map_dynamic.
+
+   Do not change the message's requested writable flags: write-lock compute
+   cost is charged for the requested permissions, including demoted accounts.
+   Nonreserved invoked programs remain conservatively locked according to
+   their requested permissions. */
 #define MAP_PERFECT_NAME      fd_pack_unwritable
 #define MAP_PERFECT_LG_TBL_SZ 5
 #define MAP_PERFECT_T         fd_acct_addr_t

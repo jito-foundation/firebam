@@ -191,7 +191,7 @@ typedef struct fd_pack_private fd_pack_t;
 
    bank_tile_cnt sets the number of bank tiles to which this pack object
    can schedule transactions.  bank_tile_cnt must be in [1,
-   FD_PACK_MAX_BANK_TILES].
+   FD_PACK_MAX_EXECLE_TILES].
 
    limits sets various limits for the blocks and microblocks that pack
    can produce. */
@@ -258,10 +258,15 @@ fd_pack_avail_txn_cnt( fd_pack_t const * pack ) {
    be a valid local join. */
 FD_FN_PURE ulong fd_pack_current_block_cost( fd_pack_t const * pack );
 
+/* Upper bound on CUs still refundable by execution reports for the
+   current block.  Completion of account locking alone does not settle
+   a reservation.  With rebates disabled this grows until block reset. */
+FD_FN_PURE ulong fd_pack_pending_rebate_cost( fd_pack_t const * pack );
+
 /* fd_pack_bank_tile_cnt: returns the value of bank_tile_cnt provided in
    pack when the pack object was initialized with fd_pack_new.  pack
    must be a valid local join.  The result will be in [1,
-   FD_PACK_MAX_BANK_TILES]. */
+   FD_PACK_MAX_EXECLE_TILES]. */
 FD_FN_PURE ulong fd_pack_bank_tile_cnt( fd_pack_t const * pack );
 
 /* fd_pack_set_block_limits: Updates the limits provided fd_pack_new to
@@ -367,12 +372,8 @@ void fd_pack_get_pending_smallest( fd_pack_t * pack, fd_pack_smallest_t * opt_pe
     * ESTIMATION_FAIL: estimation of the transaction's compute cost and
       fee failed, typically because the transaction contained a
       malformed ComputeBudgetProgram instruction.
-    * WRITES_SYSVAR: the transaction attempts to write-lock a sysvar.
-      Write-locking a sysvar can cause heavy contention.  Agave
-      solves this by downgrading these to read locks, but we instead
-      solve it by refusing to pack such transactions.
-    * INVALID_NONCE: the transaction looks like a durable nonce
-      transaction, but the nonce authority did not sign the transaction.
+    * WRITES_SYSVAR: reserved legacy result code; no longer returned.
+      Reserved accounts are demoted for locking, as they are at runtime.
     * BUNDLE_BLACKLIST: bundles are enabled and the transaction uses an
       account in the bundle blacklist, or the bundle contains a vote.
     * ACCT_BLOCKLIST: the transaction included an account address in the
@@ -402,7 +403,6 @@ void fd_pack_get_pending_smallest( fd_pack_t * pack, fd_pack_smallest_t * opt_pe
 #define FD_PACK_INSERT_REJECT_DUPLICATE_ACCT        ( -9)
 #define FD_PACK_INSERT_REJECT_ESTIMATION_FAIL       (-10)
 #define FD_PACK_INSERT_REJECT_WRITES_SYSVAR         (-11)
-#define FD_PACK_INSERT_REJECT_INVALID_NONCE         (-12)
 #define FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST      (-13)
 #define FD_PACK_INSERT_REJECT_ACCT_BLOCKLIST        (-14)
 #define FD_PACK_INSERT_REJECT_NONCE_CONFLICT        (-15)
@@ -489,16 +489,17 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
    the bundle have the same expires_at value, since if one expires, the
    whole bundle becomes invalid.
 
-   If initializer_bundle is non-zero, this bundle will be inserted at
-   the front of the bundle queue so that it is the next bundle
-   scheduled.  Otherwise, the bundle will be inserted at the back of the
+   initializer_bundle_kind must be one of FD_PACK_IB_TYPE_{NONE,NORMAL,BAM}.
+   If it is NORMAL or BAM, this bundle will be inserted at the front of
+   the bundle queue so that it is the next bundle for that scheduling
+   mode.  Otherwise, the bundle will be inserted at the back of the
    bundle queue, and will be scheduled in FIFO order with the rest of
    the bundles.  If an initializer bundle is already present in pack's
    pending transactions, that bundle will be deleted.  Additionally, if
-   initializer_bundle is non-zero, the transactions in the bundle will
-   not be checked against the bundle blacklist; otherwise, the check
-   will be performed as normal.  See the section below on initializer
-   bundles for more details.
+   initializer_bundle_kind is NORMAL or BAM, the transactions in the
+   bundle will not be checked against the bundle blacklist; otherwise,
+   the check will be performed as normal.  See the section below on
+   initializer bundles for more details.
 
    Other than the blacklist check, transactions in a bundle are subject
    to the same checks as other transactions.  If any transaction in the
@@ -509,9 +510,9 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
    If bundle_meta is non-NULL, the contents of the memory will be copied
    to a metadata region associated with this bundle and can be retrieved
    later with fd_pack_peek_bundle_meta.  The contents of bundle_meta is
-   not retrievable if initializer_bundle is non-zero, so you may wish to
-   just pass NULL in that case.  This function does not retain any
-   interest in the contents of bundle_meta after it returns.
+   not retrievable if initializer_bundle_kind is NORMAL or BAM, so you
+   may wish to just pass NULL in that case.  This function does not
+   retain any interest in the contents of bundle_meta after it returns.
 
    txn_cnt must be in [1, MAX_TXN_PER_BUNDLE].  A txn_cnt of 1 inserts a
    single-transaction bundle which is transaction with extremely high
@@ -523,16 +524,23 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
    or FD_PACK_INSERT_REJECT_* codes explained above.  If there are
    multiple reasons for rejecting a bundle, the which of the reasons it
    returns is unspecified.  delete_cnt is the number of existing
-   transactions that were deleted as a side effect of insertion.
+   transactions that were deleted as a side effect of insertion.  If
+   reject_txn_idx is non-NULL, it is set to the index of the transaction
+   that caused a per-transaction rejection, or ULONG_MAX if the bundle
+   was accepted or rejected for a bundle-level reason.
 
    These functions must not be called if the pack object was initialized
    with bundle_meta_sz==0. */
 
 fd_txn_e_t * const * fd_pack_insert_bundle_init  ( fd_pack_t * pack, fd_txn_e_t *       * bundle, ulong txn_cnt                                        );
 int                  fd_pack_insert_bundle_fini  ( fd_pack_t * pack, fd_txn_e_t * const * bundle, ulong txn_cnt,
-                                                   ulong expires_at, int initializer_bundle, void const * bundle_meta, ulong * delete_cnt );
+                                                   ulong expires_at, int initializer_bundle_kind, void const * bundle_meta,
+                                                   ulong * delete_cnt, ulong * reject_txn_idx );
 void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t * const * bundle, ulong txn_cnt                                        );
 
+#define FD_PACK_IB_TYPE_NONE   (0)
+#define FD_PACK_IB_TYPE_NORMAL (1)
+#define FD_PACK_IB_TYPE_BAM    (2)
 
 /* =========== More details about initializer bundles ===============
    Initializer bundles are a special type of bundle with special support
@@ -560,14 +568,22 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
 
 
    When attempting to schedule a bundle the pack object checks the
-   state, and employs the following rules:
-   * [Not Initialized]: If the top bundle is an IB, schedule it,
-     removing it like normal, then transition to [Pending].  Otherwise,
-     do not schedule a bundle.
-   * [Pending]: Do not schedule a bundle.
-   * [Failed]: Do not schedule a bundle
-   * [Ready]: Attempt to schedule the next bundle.  If scheduling an IB,
-     transition to [Pending].
+   state and the requested scheduling mode, and employs the following
+   rules:
+   * [Not Initialized]: If the top bundle eligible for that mode is a
+     matching IB, schedule it, removing it like normal, then transition
+     to [Pending].  Otherwise, normal scheduling does not schedule a
+     bundle, while BAM-only scheduling attempts to schedule the BAM
+     bundle without an IB.
+   * [Pending]: Do not schedule a bundle in either mode.
+   * [Failed]: Normal scheduling does not schedule a bundle, while
+     BAM-only scheduling attempts to schedule the next BAM bundle.
+   * [Ready]: Attempt to schedule the next bundle eligible for that
+     mode.  If scheduling an IB, transition to [Pending].
+
+   Thus initializer maintenance is strict for normal bundles, but
+   best-effort for BAM-only scheduling except while an IB is [Pending].
+   A mode-matched queued IB remains ahead of non-initializer bundles.
 
    As described in the state machine, ending the block (via
    fd_pack_end_block) transitions to [Not Initialized], and calls to
@@ -602,22 +618,64 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
 
 /* fd_pack_peek_bundle_meta returns a constant pointer to the bundle
    metadata associated with the bundle currently in line to be scheduled
-   next, or NULL in any of the following cases:
-     * There are no bundles
-     * The bundle currently in line to be scheduled next is an IB
+   next for the selected mode.  bam_only has the same meaning as the
+   FD_PACK_SCHEDULE_BAM_ONLY scheduling flag.  It returns NULL in any of
+   the following cases:
+     * There are no bundles eligible for the selected mode
+     * The eligible bundle currently in line to be scheduled next is an
+       IB for the selected mode
      * The bundle state is currently [Pending] or [Failed].
 
-   The lifetime of the returned pointer is until the next pack insert,
-   schedule, delete, or expire call.  The size of the region pointed to
-   by the returned pointer is bundle_meta_sz.  If this bundle was
-   inserted with bundle_meta==NULL, then the contents of the region
-   pointed to by the returned pointer are arbitrary, but it will be safe
-   to read.
+   Pointer and hint expire on insert fini, schedule, delete, expire,
+   end/clear block, initializer-state update, or rebate.  Insert init/cancel
+   leave them valid.  The metadata region is bundle_meta_sz bytes.  If this
+   bundle was inserted with bundle_meta==NULL, its contents are arbitrary but
+   safe to read.
+
+   bundle_hint receives an opaque value that lets an immediately following
+   schedule avoid walking the pending bundle treap a second time.  On failure
+   it receives ULONG_MAX.  The hint has the lifetime described above.
 
    Pack doesn't do anything special to ensure the returned pointer
    points to memory with any particular alignment.  It will naturally
    have an alignment of at least GCD( 64, bundle_meta_sz ). */
-void const * fd_pack_peek_bundle_meta( fd_pack_t const * pack );
+void const * fd_pack_peek_bundle_meta( fd_pack_t const * pack,
+                                       _Bool             bam_only,
+                                       ulong *           bundle_hint );
+
+/* Returns the actual first whole candidate for the selected ownership
+   mode, including initializers and candidates in Pending/Failed state.
+   This is a read-only view, not permission to execute.  Pointer and hint
+   expire on insert fini, schedule, delete, expire, end/clear block,
+   initializer-state update, or rebate; insert init/cancel leave them valid.
+   No candidate yields NULL and ULONG_MAX.  Callers must recompute target-slot
+   readiness within this lifetime; scheduling rejects stale or mode-mismatched
+   BAM readiness hints.
+
+   When opt_bundle_meta is non-NULL, it receives the metadata eligible for
+   initializer preparation, or NULL under the same conditions as
+   fd_pack_peek_bundle_meta.  Metadata suppression does not suppress the
+   candidate or its hint: a Failed-state BAM candidate can still dispatch.
+   This lets a caller prepare an initializer and schedule from one view. */
+fd_txn_p_t const * fd_pack_peek_bundle_candidate( fd_pack_t const * pack,
+                                                  _Bool             bam_only,
+                                                  ulong *           bundle_hint,
+                                                  void const **     opt_bundle_meta );
+
+/* Read-only BAM admission check used for each whole group considered by
+   bounded conflict lookahead.  Return nonzero only when this exact batch,
+   including txn_cnt members, is ready in the current slot and ownership
+   generation.  A zero result is a barrier.  This callback must not mutate
+   pack or retain any pointer it receives. */
+typedef int fd_pack_bam_ready_fn( void const *       ctx,
+                                 fd_txn_p_t const * candidate,
+                                 ulong              txn_cnt );
+
+/* Tests the queued initializer's full signature and ownership mode, even
+   when it is deferred.  A dispatched initializer is no longer queued. */
+int fd_pack_contains_initializer_bundle( fd_pack_t const *        pack,
+                                         fd_ed25519_sig_t const * sig0,
+                                         _Bool                    bam_only );
 
 /* fd_pack_set_initializer_bundles_ready sets the IB state machine state
    (see long initializer bundle comment above) to the [Ready] state.
@@ -628,10 +686,27 @@ void fd_pack_set_initializer_bundles_ready( fd_pack_t * pack );
 
 /* FD_PACK_SCHEDULE_{VOTE,BUNDLE,TXN} form a set of bitflags used in
    fd_pack_schedule_next_microblock below.  They control what types of
-   scheduling are allowed.  The names should be self-explanatory. */
+   scheduling are allowed.  The BAM_ONLY bit suppresses normal
+   transactions and filters bundles to BAM work, but does not suppress
+   votes. */
 #define FD_PACK_SCHEDULE_VOTE   1
 #define FD_PACK_SCHEDULE_BUNDLE 2
 #define FD_PACK_SCHEDULE_TXN    4
+#define FD_PACK_SCHEDULE_BAM_ONLY 8
+#define FD_PACK_SCHEDULE_BAM_SINGLE 16
+#define FD_PACK_SCHEDULE_BAM_READY  32
+
+/* BAM_SINGLE grants worker eligibility only for a non-initializer,
+   one-transaction BAM batch.  Only bounded conflict lookahead can select
+   a younger candidate.  It does not spend earlier batches'
+   capacity-deferral budget.
+   BUNDLE retains full worker eligibility and ordinary capacity deferral.
+   Both require BAM_READY for BAM batches and BAM initializers.  BAM_READY
+   certifies that this exact candidate is ready in the active leader bank
+   and must be passed with a live mode-matched candidate hint.  The
+   unhinted scheduling entry point cannot dispatch BAM work.  Capacity
+   failures retain their normal policy; deferred batches
+   are never resurrected. */
 
 /* fd_pack_schedule_next_microblock schedules pending transactions.
    These transaction either form a microblock, which is a set of
@@ -647,15 +722,15 @@ void fd_pack_set_initializer_bundles_ready( fd_pack_t * pack );
    is a no-op.  The full policy is as follows:
     1. If the VOTE bit is set, attempt to schedule votes.  This is the
        microblock case.
-    2. If the BUNDLE bit is set, and step 1 did not schedule any votes,
+    2. If BUNDLE or BAM_SINGLE is set, and step 1 did not schedule votes,
        attempt to schedule bundles.  This is the bundle case.
     3. If the TXN bit is set, and step 2 did not schedule any bundles
-       for a reason other than account conflicts, attempt to schedule
-       normal transactions.  This is the microblock case.
+       for a reason other than account conflicts,
+       attempt to schedule normal transactions.  This is the microblock case.
    Note that it is possible to schedule a microblock containing both
    votes and normal transactions, but bundles cannot be combined with
-   either other type.  Additionally, if the BUNDLE bit is not set, step
-   2 will not schedule any bundles for that reason, which is a reason
+   either other type.  Additionally, if neither BUNDLE nor BAM_SINGLE is
+   set, step 2 will not schedule any bundles for that reason, which is a reason
    other than account conflicts, so that clause will always be
    satisfied.
 
@@ -699,6 +774,30 @@ fd_pack_schedule_next_microblock( fd_pack_t  * pack,
                                   int          schedule_flags,
                                   fd_txn_e_t * out );
 
+/* fd_pack_schedule_next_microblock_with_bundle_hint is identical to
+   fd_pack_schedule_next_microblock, except that it reuses a bundle candidate
+   returned through fd_pack_peek_bundle_candidate or fd_pack_peek_bundle_meta.
+   Pass ULONG_MAX to opt out of the hint (and BAM readiness).
+
+   When ready is non-NULL, a conflict on the common BAM head may trigger
+   lookahead over at most five transactions.  This applies only in BAM_ONLY
+   mode with initializer state Ready.  Every complete predecessor and the
+   candidate must pass ready(ready_ctx,...).  Skipped batches remain account
+   dependencies, including batches this worker cannot execute.  Initializers,
+   deferred, incomplete and foreign batches remain barriers.  Capacity
+   failures never authorize lookahead and deferred work is never revived.
+   The ordinary successful path does not invoke the callback or scan. */
+ulong
+fd_pack_schedule_next_microblock_with_bundle_hint( fd_pack_t  * pack,
+                                                   ulong        total_cus,
+                                                   float        vote_fraction,
+                                                   ulong        bank_tile,
+                                                   int          schedule_flags,
+                                                   ulong        bundle_hint,
+                                                   fd_pack_bam_ready_fn * ready,
+                                                   void const * ready_ctx,
+                                                   fd_txn_e_t * out );
+
 
 /* fd_pack_rebate_cus adjusts the compute unit accounting for the
    specified transactions to take into account the actual consumed CUs
@@ -723,7 +822,9 @@ fd_pack_schedule_next_microblock( fd_pack_t  * pack,
    rebate_cus is optional and has much more relaxed ordering
    constraints.  The restriction about intervening calls to end_block
    and that this must come after schedule_next_microblock are the only
-   ordering constraints. */
+   ordering constraints.  Each reservation must be settled only once.
+   Block reset discards
+   outstanding reservations along with the other block accounting. */
 void fd_pack_rebate_cus( fd_pack_t * pack, fd_pack_rebate_t const * rebate );
 
 /* fd_pack_microblock_complete signals that the bank_tile with index
@@ -749,6 +850,39 @@ ulong fd_pack_expire_before( fd_pack_t * pack, ulong expire_before );
    transaction was found (and then removed) and 0 if not.  The count
    might be >1 if a bundle was caused to be deleted. */
 ulong fd_pack_delete_transaction( fd_pack_t * pack, fd_ed25519_sig_t const * sig0 );
+
+/* fd_pack_contains_bam_bundle returns 1 when pack contains the pending
+   BAM bundle identified by its leading transaction signature.  When
+   match_identity is nonzero, the scheduler generation and sequence ID
+   must match as well.  Signatures belonging to unrelated transactions or
+   non-leading bundle members do not count as a match. */
+int fd_pack_contains_bam_bundle( fd_pack_t const *        pack,
+                                 fd_ed25519_sig_t const * sig0,
+                                 uint                     seq_id,
+                                 ushort                   scheduler_gen,
+                                 int                      match_identity );
+
+/* fd_pack_delete_bam_bundle deletes pending BAM bundles matching the leading
+   signature, scheduler generation, and sequence ID exactly.  Returns the
+   number of transactions deleted.  Unrelated transactions and overlapping
+   bundles that happen to carry sig0 are left intact. */
+ulong fd_pack_delete_bam_bundle( fd_pack_t *              pack,
+                                 fd_ed25519_sig_t const * sig0,
+                                 uint                     seq_id,
+                                 ushort                   scheduler_gen );
+
+/* fd_pack_bundle_evicted_cnt returns a monotonically increasing count of
+   bundles that pack evicted on its own initiative, i.e. to make room for
+   an insert rather than in response to an explicit delete API.  Pack does
+   not report which bundle went away, so a caller that tracks pending BAM
+   bundles externally should poll this and, when it moves, reconcile its
+   own view with fd_pack_contains_bam_bundle.  Never reset, including by
+   fd_pack_clear_all, so that a stale snapshot cannot miss an edge. */
+#define FD_PACK_BUNDLE_EVICTED_CNT_OFF 88
+FD_FN_PURE static inline ulong
+fd_pack_bundle_evicted_cnt( fd_pack_t const * pack ) {
+  return *((ulong const *)((uchar const *)pack + FD_PACK_BUNDLE_EVICTED_CNT_OFF));
+}
 
 /* fd_pack_end_block resets some state to prepare for the next block.
    Specifically, the per-block limits are cleared and transactions in

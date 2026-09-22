@@ -6,6 +6,7 @@
 #include "../../../disco/topo/fd_topo.h"
 #include "../../../disco/keyguard/fd_keyswitch.h"
 #include "../../../disco/keyguard/fd_keyload.h"
+#include "set_identityh_bam.h"
 
 #include <strings.h>
 #include <unistd.h>
@@ -214,7 +215,7 @@ poll_keyswitch( fd_topo_t *   topo,
           fd_keyswitch_state( shred, FD_KEYSWITCH_STATE_SWITCH_PENDING );
           FD_COMPILER_MFENCE();
           FD_LOG_INFO(( "Flushing in-flight unpublished shreds, must reach seq %lu...", *halted_seq ));
-        } else if( FD_UNLIKELY( !strcmp( tile->name, "bundle" ) ) ) {
+        } else if( FD_UNLIKELY( set_identityh_is_bundle( tile->name ) ) ) {
           fd_keyswitch_t * bundle = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
           FD_TEST( bundle );
 
@@ -232,7 +233,7 @@ poll_keyswitch( fd_topo_t *   topo,
       for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
         fd_topo_tile_t const * tile = &topo->tiles[ i ];
         if( FD_LIKELY( strcmp( tile->name, "shred" ) &&
-                       strcmp( tile->name, "bundle" ) ) ) continue;
+                       !set_identityh_is_bundle( tile->name ) ) ) continue;
 
         fd_keyswitch_t * keyswitch = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
         FD_TEST( keyswitch );
@@ -269,7 +270,7 @@ poll_keyswitch( fd_topo_t *   topo,
         if( FD_LIKELY( !strcmp( topo->tiles[ i ].name, "sign" ) ||
                        !strcmp( topo->tiles[ i ].name, "pohh" ) ||
                        !strcmp( topo->tiles[ i ].name, "shred" ) ||
-                       !strcmp( topo->tiles[ i ].name, "bundle" ) ) ) continue;
+                       set_identityh_is_bundle( topo->tiles[ i ].name ) ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, topo->tiles[ i ].id_keyswitch_obj_id );
         memcpy( tile_ks->bytes, keypair+32UL, 32UL );
@@ -288,7 +289,7 @@ poll_keyswitch( fd_topo_t *   topo,
         if( FD_LIKELY( topo->tiles[ i ].id_keyswitch_obj_id==ULONG_MAX ) ) continue;
         if( FD_LIKELY( !strcmp( topo->tiles[ i ].name, "pohh" ) ||
                        !strcmp( topo->tiles[ i ].name, "shred" ) ||
-                       !strcmp( topo->tiles[ i ].name, "bundle" ) ) ) continue;
+                       set_identityh_is_bundle( topo->tiles[ i ].name ) ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, topo->tiles[ i ].id_keyswitch_obj_id );
         ulong tile_state = fd_keyswitch_state_query( tile_ks );
@@ -316,7 +317,7 @@ poll_keyswitch( fd_topo_t *   topo,
       break;
     }
     case FD_SET_IDENTITY_STATE_ALL_SWITCHED: {
-      int bundle_exists = fd_topo_find_tile( topo, "bundle", 0UL )!=ULONG_MAX;
+      int bundle_exists = set_identityh_bundle_exists( topo );
       if( FD_LIKELY( *has_error || !bundle_exists ) ) {
         fd_keyswitch_t * poh = find_keyswitch( topo, "pohh" );
         FD_COMPILER_MFENCE();
@@ -325,17 +326,13 @@ poll_keyswitch( fd_topo_t *   topo,
         FD_LOG_INFO(( "Requesting to unpause leader pipeline..." ));
         *state = FD_SET_IDENTITY_STATE_POH_UNHALT_REQUESTED;
       } else {
-        fd_keyswitch_t * bundle = find_keyswitch( topo, "bundle" );
-        FD_COMPILER_MFENCE();
-        fd_keyswitch_state( bundle, FD_KEYSWITCH_STATE_UNHALT_PENDING );
-        FD_COMPILER_MFENCE();
+        set_identityh_bundle_unhalt( topo );
         *state = FD_SET_IDENTITY_STATE_BUNDLE_UNHALT_REQUESTED;
       }
       break;
     }
     case FD_SET_IDENTITY_STATE_BUNDLE_UNHALT_REQUESTED: {
-      fd_keyswitch_t * bundle = find_keyswitch( topo, "bundle" );
-      ulong bundle_state = fd_keyswitch_state_query( bundle );
+      ulong bundle_state = set_identityh_bundle_state( topo );
       if( FD_LIKELY( bundle_state==FD_KEYSWITCH_STATE_COMPLETED ) ) {
         fd_keyswitch_t * poh = find_keyswitch( topo, "pohh" );
         FD_COMPILER_MFENCE();

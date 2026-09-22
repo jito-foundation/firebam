@@ -14,6 +14,7 @@
 #include "../../disco/fd_txn_m.h"
 #include "../tower/fd_tower_tile.h"
 #include "../restore/utils/fd_ssmsg.h"
+#include "fd_gossip_tile_bam.h"
 
 #define IN_KIND_GOSSVF        (0)
 #define IN_KIND_SHRED_VERSION (1)
@@ -251,6 +252,7 @@ after_credit( fd_gossip_tile_ctx_t * ctx,
     /* the identity key is swapped after the sign tile has been swapped
        because the below function directly sends a sign request. */
     FD_BASE58_ENCODE_32_BYTES( ctx->keyswitch->bytes, _new_id_b58 );
+    fd_gossip_tile_bam_set_identity( ctx );
     fd_gossip_set_identity( ctx->gossip,
                             ctx->keyswitch->bytes,
                             fd_clock_tile_now( ctx->clock ),
@@ -424,6 +426,7 @@ after_frag( fd_gossip_tile_ctx_t * ctx,
     }
     case IN_KIND_SIGN: {
       fd_gossip_sign_response( ctx->gossip, ctx->sign_staged, stem, fd_clock_tile_now( ctx->clock ) );
+      if( FD_UNLIKELY( ctx->bam_contact.ack_pending ) ) fd_gossip_tile_bam_contact_ack( ctx );
       if( FD_UNLIKELY( ctx->is_halting_signing && !fd_gossip_sign_pend_cnt( ctx->gossip ) &&
                        fd_keyswitch_state_query( ctx->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
         fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
@@ -498,6 +501,7 @@ returnable_frag( fd_gossip_tile_ctx_t * ctx,
 
       break;
     }
+    case IN_KIND_BAM_GOSSIP: fd_gossip_tile_bam_contact_frag( ctx, in_idx, seq, chunk, sz, stem ); break;
     default: FD_LOG_ERR(( "unreachable" ));
   }
 
@@ -600,6 +604,8 @@ unprivileged_init( fd_topo_t const *      topo,
       ctx->in[ i ].kind = IN_KIND_TOWER;
     } else if( FD_UNLIKELY( !strcmp( link->name, "snapin_manif" ) ) ) {
       ctx->in[ i ].kind = IN_KIND_SNAPIN_MANIF;
+    } else if( FD_UNLIKELY( !strcmp( link->name, "bam_gossip" ) ) ) {
+      ctx->in[ i ].kind = fd_gossip_tile_bam_init( ctx, topo );
     } else {
       FD_LOG_ERR(( "unexpected input link name %s", link->name ));
     }

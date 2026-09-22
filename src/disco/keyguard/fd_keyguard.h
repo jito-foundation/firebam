@@ -37,7 +37,8 @@ FD_STATIC_ASSERT( FD_KEYGUARD_AUTH_VOTERS_MAX<=16UL, auth_voters_max_fits_sign_r
 #define FD_KEYGUARD_ROLE_BUNDLE_CRANK (7)  /* Sign cranking transactions for bundle tips */
 #define FD_KEYGUARD_ROLE_RSERVE       (8)  /* Repair server tile */
 #define FD_KEYGUARD_ROLE_VOTOR        (9)  /* Alpenglow votor tile (QUIC TLS) */
-#define FD_KEYGUARD_ROLE_CNT          (10) /* number of known roles */
+#define FD_KEYGUARD_ROLE_BAM         (10)  /* BAM auth */
+#define FD_KEYGUARD_ROLE_CNT         (11)  /* number of known roles */
 
 /* Payload types ******************************************************/
 
@@ -53,6 +54,7 @@ FD_STATIC_ASSERT( FD_KEYGUARD_AUTH_VOTERS_MAX<=16UL, auth_voters_max_fits_sign_r
 #define FD_KEYGUARD_PAYLOAD_LG_PONG       (10)  /* Gossip/Repair ping/pong protocol */
 #define FD_KEYGUARD_PAYLOAD_LG_AG_VOTE    (11)  /* Alpenglow BLS vote */
 #define FD_KEYGUARD_PAYLOAD_LG_BLS_PUBKEY (12)  /* Alpenglow BLS public key query */
+#define FD_KEYGUARD_PAYLOAD_LG_BAM_AUTH   (13)  /* BAM auth label+challenge */
 
 #define FD_KEYGUARD_PAYLOAD_TXN        (1UL<<FD_KEYGUARD_PAYLOAD_LG_TXN       )
 #define FD_KEYGUARD_PAYLOAD_GOSSIP     (1UL<<FD_KEYGUARD_PAYLOAD_LG_GOSSIP    )
@@ -66,6 +68,7 @@ FD_STATIC_ASSERT( FD_KEYGUARD_AUTH_VOTERS_MAX<=16UL, auth_voters_max_fits_sign_r
 #define FD_KEYGUARD_PAYLOAD_PONG       (1UL<<FD_KEYGUARD_PAYLOAD_LG_PONG      )
 #define FD_KEYGUARD_PAYLOAD_AG_VOTE    (1UL<<FD_KEYGUARD_PAYLOAD_LG_AG_VOTE   )
 #define FD_KEYGUARD_PAYLOAD_BLS_PUBKEY (1UL<<FD_KEYGUARD_PAYLOAD_LG_BLS_PUBKEY)
+#define FD_KEYGUARD_PAYLOAD_BAM_AUTH   (1UL<<FD_KEYGUARD_PAYLOAD_LG_BAM_AUTH  )
 
 /* Sign types *********************************************************/
 

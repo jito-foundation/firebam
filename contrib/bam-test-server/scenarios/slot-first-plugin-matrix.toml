@@ -1,0 +1,31 @@
+description = "Exercise slot-first BAM diagnostics twice for one slot and publish GUI/plugin state transitions."
+heartbeat_interval_ms = 1000
+expected_terminal_results = 2
+
+[[events]]
+type = "sleep"
+ms = 6000
+
+[[events]]
+type = "send_batch"
+seq_id = 5600
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+
+[[events]]
+type = "send_batch"
+seq_id = 5601
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 2
+timeout_ms = 30000
+
+[[events]]
+type = "sleep"
+ms = 6000

@@ -66,6 +66,14 @@ union fdctl_args {
   } ps;
 
   struct {
+    char         enable; /* -1 => retain current enable state, 0 => disable BAM runtime, 1 => enable */
+    char const * url;    /* BAM control endpoint; NULL => no change, empty string => clear URL */
+    char const * sni;    /* TLS SNI override; NULL => no change, empty string => clear override */
+    /* Edge cases: CLI rejects simultaneous --enable/--disable, requires at least one change, and
+       forwards empty strings so callers can intentionally clear URL/SNI. */
+  } set_bam;
+
+  struct {
     int  parent_pipefd;
     int  no_watch;
     int  full_watch;

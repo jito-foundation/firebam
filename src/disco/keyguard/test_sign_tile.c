@@ -294,6 +294,27 @@ test_bls_request_rejected( void ) {
   FD_TEST( bls_request_exit_status( FD_KEYGUARD_SIGN_TYPE_BLS|(1UL<<32), 11UL )==1 ); /* authorized voter 0, none loaded */
 }
 
+static void
+test_bam_auth_request_signing( void ) {
+  setup();
+  ctx.in[0].role      = FD_KEYGUARD_ROLE_BAM;
+  client.response_mtu = FD_ED25519_SIG_SZ;
+
+  uchar payload[25];
+  memcpy( payload, "X_OFF_CHAIN_JITO_BAM_V1\0", 24UL );
+  payload[24] = 'x';
+  uchar signature[ FD_ED25519_SIG_SZ ];
+
+  ulong request_cnt = 1UL;
+  pthread_t signer;
+  FD_TEST( !pthread_create( &signer, NULL, sign_requests, &request_cnt ) );
+  fd_keyguard_client_sign( &client, signature, payload, sizeof(payload), FD_KEYGUARD_SIGN_TYPE_ED25519 );
+  FD_TEST( !pthread_join( signer, NULL ) );
+  fd_frag_meta_t const * response = client.response+fd_mcache_line_idx( 0UL, TEST_DEPTH );
+  FD_TEST( response->sz==FD_ED25519_SIG_SZ );
+  FD_TEST( !fd_ed25519_verify( payload, sizeof(payload), signature, ctx.public_key, ctx.sha512 ) );
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -308,6 +329,7 @@ main( int     argc,
   test_bls_pubkey_last_authority();
   test_bls_pubkey_request_rejected();
   test_bls_request_rejected();
+  test_bam_auth_request_signing();
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
   return 0;
