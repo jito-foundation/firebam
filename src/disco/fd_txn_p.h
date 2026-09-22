@@ -31,10 +31,6 @@ struct __attribute__((aligned(64))) fd_txn_p {
   /* Wallclock nanoseconds at which the transaction arrived to the pack tile. Set by pack and intended to be read from a transaction on a pack->execle link. */
   long scheduler_arrival_time_nanos;
 
-  /* Wallclock nanoseconds at which the validator first saw the
-     transaction. */
-  long first_seen_nanos;
-
   union {
     struct {
       /* set by replay scheduler for use by monitoring tools */
@@ -53,6 +49,15 @@ struct __attribute__((aligned(64))) fd_txn_p {
      FD_TXN_P_FLAGS_* defined above.  The execle sets the high byte with
      the transaction result code. */
   uint  flags;
+
+  /* BAM execution metadata. Pack keeps max_schedule_slot and
+     first_seen_nanos in sidecar state to preserve the transaction size. */
+  struct {
+    uint  seq_id;
+    ushort scheduler_gen;
+    uchar batch_idx;
+    _Bool revert_on_error;
+  } bam;
   /* union {
     This would be ideal but doesn't work because of the flexible array member
     uchar _[FD_TXN_MAX_SZ];
@@ -84,6 +89,9 @@ fd_txn_p_copy( fd_txn_p_t *       dst,
 struct __attribute__((aligned(64))) fd_txn_e {
    fd_txn_p_t     txnp[1];
    fd_acct_addr_t alt_accts[FD_TXN_ACCT_ADDR_MAX]; /* The used account is in the fd_txn_t*/
+   /* Ingress timestamp carried alongside pack's expanded transaction.
+      Execution moves it to the microblock trailer for leader telemetry. */
+   long          first_seen_nanos;
 };
 
 typedef struct fd_txn_e fd_txn_e_t;

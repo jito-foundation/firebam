@@ -8,6 +8,7 @@
 #include "../../flamenco/runtime/fd_runtime_const.h"
 #include "../../disco/keyguard/fd_keyswitch.h"
 #include "../../disco/gui/fd_gui_gossip_bw.h"
+#include "../../disco/bam/fd_bam_types.h"
 
 typedef struct {
   int         kind;
@@ -59,6 +60,7 @@ struct fd_gossip_tile_ctx {
 
   ulong sign_out_mtu;
   uchar sign_staged[ 64UL ];
+  fd_bam_gossip_contact_t bam_contact;
 
   fd_keyswitch_t *     keyswitch;
   int                  is_halting_signing;

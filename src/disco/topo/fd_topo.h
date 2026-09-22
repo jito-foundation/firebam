@@ -44,6 +44,11 @@ FD_STATIC_ASSERT( FD_SLEEP_OUT_MAX ==FD_TOPO_MAX_TILE_OUT_LINKS, sleep_limits );
 #define FD_TOPO_CORE_DUMP_LEVEL_FULL     (3)
 #define FD_TOPO_CORE_DUMP_LEVEL_NEVER    (4)
 
+#define FD_BAM_DEBUG_DUMP_MODE_OFF        0U
+#define FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST 1U
+#define FD_BAM_DEBUG_DUMP_MODE_ALL        2U
+
+
 /* A workspace is a Firedancer specific memory management structure that
    sits on top of 1 or more memory mapped gigantic or huge pages mounted
    to the hugetlbfs. */
@@ -349,6 +354,23 @@ struct fd_topo_tile {
     } event;
 
     struct {
+      char  url[ FD_URL_MAX ];
+      ulong url_len;
+      char  sni[ FD_SNI_BUF_MAX ];
+      ulong sni_len;
+      char  admin_rpc_path[ PATH_MAX ];
+      fd_ip4_port_t configured_default_tpu;
+      char  identity_key_path[ PATH_MAX ];
+      char  key_log_path[ PATH_MAX ];
+      ulong buf_sz;
+      ulong out_depth;
+      ulong keepalive_interval_nanos;
+      uchar tls_cert_verify : 1;
+      uchar enabled         : 1;
+      uchar dump_bam_mode   : 2;
+    } bam;
+
+    struct {
       ulong max_pending_transactions;
       ulong execle_tile_count;
       ulong max_cost_per_block;
@@ -356,12 +378,13 @@ struct fd_topo_tile {
       ulong bench_max_shreds_per_block; /* [development.bench], floors the leader's per-slot shred limit */
       int   use_consumed_cus;
       int   schedule_strategy;
+      uchar dump_bam_mode : 2;
       struct {
         int   enabled;
         uchar tip_distribution_program_addr[ 32 ];
         uchar tip_payment_program_addr[ 32 ];
         uchar tip_distribution_authority[ 32 ];
-        ulong commission_bps;
+        uint  commission_bps;
         char  identity_key_path[ PATH_MAX ];
         char  vote_account_path[ PATH_MAX ]; /* or pubkey is okay */
       } bundle;

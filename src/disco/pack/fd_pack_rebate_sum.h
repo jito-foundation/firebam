@@ -28,6 +28,7 @@ typedef struct {
 #define FD_PACK_REBATE_SUM_MAP_ALIGN     (8UL)
 
 struct fd_pack_rebate_sum_private {
+  ulong consumed_cost;
   ulong total_cost_rebate;
   ulong vote_cost_rebate;
   ulong data_bytes_rebate;
@@ -44,6 +45,9 @@ typedef struct fd_pack_rebate_sum_private fd_pack_rebate_sum_t;
 
 
 struct fd_pack_rebate {
+  /* Actual block cost of reported executions; together with the rebate,
+     this settles their original reservations, including zero refunds. */
+  ulong consumed_cost;
   ulong total_cost_rebate;
   ulong vote_cost_rebate;
   ulong data_bytes_rebate;

@@ -1,0 +1,45 @@
+description = "Deliver validly encoded transactions for BAM decoder and live scheduling program-family coverage."
+heartbeat_interval_ms = 1000
+expected_terminal_results = 2
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 5100001
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [
+  { program_id = "Vote111111111111111111111111111111111111111" },
+  { program_id = "Stake11111111111111111111111111111111111111" },
+  { program_id = "Config1111111111111111111111111111111111111" },
+  { program_id = "BPFLoader1111111111111111111111111111111111" },
+  { program_id = "BPFLoader2111111111111111111111111111111111" },
+]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5100002
+max_schedule_slot = "max"
+revert_on_error = true
+program_invocations = [
+  { program_id = "BPFLoaderUpgradeab1e11111111111111111111111" },
+  { program_id = "LoaderV411111111111111111111111111111111111" },
+  { program_id = "AddressLookupTab1e1111111111111111111111111" },
+  { program_id = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" },
+  { program_id = "Ed25519SigVerify111111111111111111111111111", data_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", account_count = 5 },
+]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 2
+timeout_ms = 30000
