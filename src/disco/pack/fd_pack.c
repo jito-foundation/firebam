@@ -1346,12 +1346,6 @@ validate_transaction( fd_pack_t               * pack,
                       fd_acct_addr_t    const * accts,
                       fd_acct_addr_t    const * alt_adj,
                       int                       check_bundle_blacklist ) {
-  int writes_to_sysvar = 0;
-  for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
-      iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
-    writes_to_sysvar |= fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) );
-  }
-
   int bundle_blacklist = 0;
   int acct_blocklist   = 0;
   for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_ALL );
@@ -1377,8 +1371,6 @@ validate_transaction( fd_pack_t               * pack,
   if( FD_UNLIKELY( fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_ALL )>64UL     ) ) return FD_PACK_INSERT_REJECT_ACCOUNT_CNT;
   /*           ... that duplicate an account address */
   if( FD_UNLIKELY( fd_chkdup_check( chkdup, accts, imm_cnt, alt, alt_cnt ) ) ) return FD_PACK_INSERT_REJECT_DUPLICATE_ACCT;
-  /*           ... that try to write to a sysvar */
-  if( FD_UNLIKELY( writes_to_sysvar                                        ) ) return FD_PACK_INSERT_REJECT_WRITES_SYSVAR;
   /*           ... that use an account that violates bundle rules */
   if( FD_UNLIKELY( bundle_blacklist & !!check_bundle_blacklist             ) ) return FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST;
   /*           ... that use a blocklisted account */
@@ -1414,6 +1406,7 @@ populate_bitsets( fd_pack_t         * pack,
 
   for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
       iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+    if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
     fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
     fd_pack_bitset_acct_mapping_t * q = bitset_map_query( pack->acct_to_bitset, acct, NULL );
     if( FD_UNLIKELY( q==NULL ) ) {
@@ -2196,6 +2189,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
        current readers */
     for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
 
       fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
 
@@ -2331,6 +2325,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
 
     for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
       fd_acct_addr_t acct_addr = *ACCT_ITER_TO_PTR( iter );
 
       fd_pack_wcost_ele_t * in_wcost_table = wcost_map_ele_query( writer_costs, &acct_addr, NULL, writers );
@@ -2675,6 +2670,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
        current readers */
     for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
 
       fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
 
@@ -3314,6 +3310,7 @@ delete_transaction( fd_pack_t         * pack,
 
     for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
       fd_pack_penalty_treap_t * p_trp = penalty_map_query( pack->penalty_treaps, *ACCT_ITER_TO_PTR( iter ), NULL );
       if( FD_UNLIKELY( p_trp ) ) {
         fd_pack_ord_txn_t * best_in_trp = treap_rev_iter_ele( treap_rev_iter_init( p_trp->penalty_treap, pack->pool ), pack->pool );
@@ -3557,6 +3554,7 @@ fd_pack_verify( fd_pack_t * pack,
       FD_PACK_BITSET_COPY( complement, full );
       for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
           iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+        if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
         fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
 
         fd_pack_bitset_acct_mapping_t * q = bitset_map_query( bitset_copy, acct, NULL );

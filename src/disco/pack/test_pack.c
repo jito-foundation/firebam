@@ -1363,9 +1363,9 @@ test_vote_qos( void ) {
 }
 
 static inline void
-test_reject_writes_to_sysvars( void ) {
-  FD_LOG_NOTICE(( "TEST SYSVARS" ));
-  fd_pack_t * pack = init_all( 1024UL, 1UL, 128UL, &outcome );
+test_reserved_account_permissions( void ) {
+  FD_LOG_NOTICE(( "TEST RESERVED ACCOUNT PERMISSIONS" ));
+  fd_pack_t * pack = init_all( 1024UL, 2UL, 1UL, &outcome );
   /* list generated with:
         for x in ReservedAccountKeys::all_keys_iter() {
             println!("\"{:#?}\",", x);
@@ -1405,13 +1405,83 @@ test_reject_writes_to_sysvars( void ) {
     "NativeLoader1111111111111111111111111111111",
     "Sysvar1111111111111111111111111111111111111"
   };
-  for( ulong i=0UL; i<N_ACCTS; i++ ) {
-    make_transaction( i, 1000001U, 500U, 11.0, "A", "B", NULL, NULL );
-    /* Replace A with the sysvar */
-    fd_base58_decode_32( sysvars[ i ], txnp_scratch[ i ].payload+97UL );
-    txnp_scratch[ i ].payload[ 129UL ]++; /* so it no longer is the compute budget program */
-    FD_TEST( insert( i, pack )==FD_PACK_INSERT_REJECT_WRITES_SYSVAR );
-    FD_TEST( fd_pack_avail_txn_cnt( pack )==0UL );
+  fd_pack_rebate_sum_t _rebater[1];
+  fd_pack_rebate_sum_t * rebater = fd_pack_rebate_sum_join( fd_pack_rebate_sum_new( _rebater, 1UL ) );
+  union { fd_pack_rebate_t rebate[1]; uchar footprint[USHORT_MAX]; } report;
+  fd_txn_e_t input[2];
+
+  for( int alt=0; alt<2; alt++ ) for( ulong i=0UL; i<N_ACCTS; i++ ) {
+    fd_pack_clear_all( pack );
+    ulong expiry = 1000UL+2UL*(i+(ulong)alt*N_ACCTS);
+    ulong cost[2];
+    for( ulong j=0UL; j<2UL; j++ ) {
+      fd_txn_e_t * txne = input+j;
+      make_transaction1( txne->txnp, j, 1000U, 500U, 11.0, alt ? "" : "A", "B", NULL, NULL );
+      fd_txn_t * txn = TXN( txne->txnp );
+      fd_acct_addr_t * accts = (fd_acct_addr_t *)(txne->txnp->payload+txn->acct_addr_off);
+      /* Avoid duplicating ComputeBudget when it is the reserved test key. */
+      accts[alt ? 1 : 2].b[0]++;
+      if( alt ) {
+        txn->transaction_version         = FD_TXN_V0;
+        txn->addr_table_adtl_cnt          = 1U;
+        txn->addr_table_adtl_writable_cnt = 1U;
+        FD_TEST( fd_base58_decode_32( sysvars[i], txne->alt_accts[0].b ) );
+      } else {
+        FD_TEST( fd_base58_decode_32( sysvars[i], accts[1].b ) );
+      }
+      uint flags;
+      cost[j] = fd_pack_compute_cost( txn, txne->txnp->payload, &flags, NULL, NULL, NULL, NULL, NULL );
+      /* Demotion must not remove the requested-write-lock compute charge. */
+      if( alt ) txn->addr_table_adtl_writable_cnt--;
+      else      txn->readonly_unsigned_cnt++;
+      ulong readonly_cost = fd_pack_compute_cost( txn, txne->txnp->payload, &flags, NULL, NULL, NULL, NULL, NULL );
+      FD_TEST( cost[j]==readonly_cost+FD_PACK_COST_PER_WRITABLE_ACCT );
+      if( alt ) txn->addr_table_adtl_writable_cnt++;
+      else      txn->readonly_unsigned_cnt--;
+      fd_txn_e_t * slot = fd_pack_insert_txn_init( pack );
+      *slot = *txne;
+      ulong deleted;
+      FD_TEST( fd_pack_insert_txn_fini( pack, slot, expiry, &deleted )==FD_PACK_INSERT_ACCEPT_NONVOTE_ADD );
+      FD_TEST( !deleted );
+    }
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+
+    /* Distinct fee payers sharing a requested-writable reserved key can
+       run concurrently.  No reserved address may enter any lock map. */
+    for( ulong j=0UL; j<2UL; j++ ) {
+      FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                                j, ALL, outcome.results+j )==1UL );
+      fd_txn_p_t * result = outcome.results[j].txnp;
+      ulong idx = fd_ulong_load_8( fd_txn_get_signatures( TXN(result), result->payload ) );
+      FD_TEST( idx<2UL );
+      FD_TEST( !memcmp( result->payload, input[idx].txnp->payload, result->payload_sz ) );
+      FD_TEST( !memcmp( TXN(result), TXN(input[idx].txnp), fd_txn_footprint( TXN(result)->instr_cnt, 0UL ) ) );
+      FD_TEST( (ulong)result->pack_cu.non_execution_cus+result->pack_cu.requested_exec_plus_acct_data_cus==cost[idx] );
+      result->flags |= FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
+      result->execle_cu.rebated_cus = 100U;
+      result->execle_cu.actual_consumed_cus = (uint)(cost[idx]-100UL);
+      fd_acct_addr_t const * alt_rebate[1] = { outcome.results[j].alt_accts };
+      FD_TEST( !fd_pack_rebate_sum_add_txn( rebater, result, alt_rebate, 1UL ) );
+    }
+    FD_TEST( fd_pack_rebate_sum_report( rebater, report.rebate ) );
+    FD_TEST( report.rebate->writer_cnt==2UL ); /* fee payers only */
+    FD_TEST( report.rebate->total_cost_rebate==200UL );
+    fd_pack_rebate_cus( pack, report.rebate );
+    FD_TEST( fd_pack_current_block_cost( pack )==cost[0]+cost[1]-200UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+    FD_TEST( fd_pack_microblock_complete( pack, 1UL ) );
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+
+    /* The same keys must remain absent during deletion and expiration. */
+    for( ulong j=0UL; j<2UL; j++ ) {
+      fd_txn_e_t * slot = fd_pack_insert_txn_init( pack );
+      *slot = input[j];
+      ulong deleted;
+      FD_TEST( fd_pack_insert_txn_fini( pack, slot, expiry, &deleted )>=0 );
+    }
+    FD_TEST( fd_pack_delete_transaction( pack, fd_txn_get_signatures( TXN(input[0].txnp), input[0].txnp->payload ) )==1UL );
+    FD_TEST( fd_pack_expire_before( pack, expiry+1UL )==1UL );
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
   }
 #undef N_ACCTS
 }
@@ -1861,6 +1931,138 @@ schedule_slot_ready_bam( fd_pack_t *  pack,
   fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( pack, !!(flags & FD_PACK_SCHEDULE_BAM_ONLY), &hint, NULL );
   if( candidate ) flags |= FD_PACK_SCHEDULE_BAM_READY;
   return fd_pack_schedule_next_microblock_with_bundle_hint( pack, total_cus, vote_fraction, bank_tile, flags, hint, out );
+}
+
+/* Reserved permissions apply to ordinary bundles and both BAM execution
+   modes.  Nonreserved reads and writes must still conflict normally. */
+static void
+test_reserved_bundle_permissions( void ) {
+  for( int alt=0; alt<2; alt++ ) for( int mode=0; mode<3; mode++ ) {
+    fd_pack_t * pack = init_all( 64UL, 2UL, 4UL, &outcome );
+    fd_pack_set_initializer_bundles_ready( pack );
+    fd_txn_e_t * slots[2];
+    ulong costs[4];
+    for( ulong b=0UL; b<2UL; b++ ) {
+      fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, slots, 2UL );
+      for( ulong j=0UL; j<2UL; j++ ) {
+        fd_txn_e_t * txne = bundle[j];
+        make_transaction1( txne->txnp, 2UL*b+j, 1000U, 500U, 11.0,
+                           alt ? (b ? "" : "R") : (b ? "A" : "AR"), "", NULL, NULL );
+        fd_txn_t * txn = TXN( txne->txnp );
+        if( alt ) {
+          txn->transaction_version         = FD_TXN_V0;
+          txn->addr_table_adtl_cnt          = 1U;
+          txn->addr_table_adtl_writable_cnt = 1U;
+          fd_memset( txne->alt_accts[0].b, 0, sizeof(fd_acct_addr_t) );
+        } else {
+          fd_memset( txne->txnp->payload+txn->acct_addr_off+32UL, 0, 32UL );
+        }
+        if( mode ) {
+          txne->txnp->source_tpu          = FD_TXN_M_TPU_SOURCE_BAM;
+          txne->txnp->bam.seq_id          = (uint)b;
+          txne->txnp->bam.scheduler_gen   = 1U;
+          txne->txnp->bam.batch_idx       = (uchar)j;
+          txne->txnp->bam.revert_on_error = (uchar)(mode==2);
+        }
+        uint flags;
+        costs[2UL*b+j] = fd_pack_compute_cost( txn, txne->txnp->payload, &flags, NULL, NULL, NULL, NULL, NULL );
+      }
+      ulong deleted;
+      FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 1000UL, 0, NULL, &deleted, NULL )>=0 );
+      FD_TEST( !deleted );
+    }
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+    FD_TEST( schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                     0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results )==2UL );
+    FD_TEST( schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                     1UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results+2 )==2UL );
+    fd_pack_rebate_sum_t _rebater[1];
+    fd_pack_rebate_sum_t * rebater = fd_pack_rebate_sum_join( fd_pack_rebate_sum_new( _rebater, 2UL ) );
+    union { fd_pack_rebate_t rebate[1]; uchar footprint[USHORT_MAX]; } report;
+    for( ulong j=0UL; j<4UL; j++ ) {
+      fd_txn_p_t * txnp = outcome.results[j].txnp;
+      FD_TEST( !!(txnp->flags & FD_TXN_P_FLAGS_BUNDLE)==(mode!=1) );
+      txnp->flags |= FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
+      txnp->execle_cu.rebated_cus         = 100U;
+      txnp->execle_cu.actual_consumed_cus = (uint)(costs[j]-100UL);
+      fd_acct_addr_t const * alt_rebate[1] = { outcome.results[j].alt_accts };
+      FD_TEST( !fd_pack_rebate_sum_add_txn( rebater, txnp, alt_rebate, 1UL ) );
+    }
+    FD_TEST( fd_pack_rebate_sum_report( rebater, report.rebate ) );
+    FD_TEST( report.rebate->writer_cnt==5UL ); /* four fee payers and R */
+    FD_TEST( report.rebate->total_cost_rebate==400UL );
+    fd_pack_rebate_cus( pack, report.rebate );
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+
+    /* The ordinary writer in bundle zero still excludes readers. */
+    make_transaction( 4UL, 1000U, 500U, 11.0, "", "R", NULL, NULL );
+    FD_TEST( insert( 4UL, pack )>=0 );
+    FD_TEST( fd_pack_microblock_complete( pack, 1UL ) );
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                              1UL, FD_PACK_SCHEDULE_TXN, outcome.results )==0UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                              1UL, FD_PACK_SCHEDULE_TXN, outcome.results )==1UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 1UL ) );
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+  }
+}
+
+static void
+test_reserved_fee_payer_and_program_locks( void ) {
+  fd_pack_t * pack = init_all( 64UL, 2UL, 1UL, &outcome );
+  fd_txn_e_t * slot = fd_pack_insert_txn_init( pack );
+  make_transaction1( slot->txnp, 0UL, 1000U, 500U, 11.0, "", "", NULL, NULL );
+  /* Pack leaves fee-payer account validation to runtime.  A reserved
+     requested-writable payer must never put the null key in a map. */
+  fd_memset( slot->txnp->payload+TXN(slot->txnp)->acct_addr_off, 0, 32UL );
+  ulong deleted;
+  FD_TEST( fd_pack_insert_txn_fini( pack, slot, 1000UL, &deleted )>=0 );
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                            0UL, ALL, outcome.results )==1UL );
+  fd_txn_p_t * txnp = outcome.results[0].txnp;
+  FD_TEST( fd_txn_is_writable( TXN(txnp), 0 ) );
+  ulong cost = (ulong)txnp->pack_cu.non_execution_cus+txnp->pack_cu.requested_exec_plus_acct_data_cus;
+  txnp->execle_cu.rebated_cus = (uint)cost; /* runtime rejects this payer */
+  txnp->execle_cu.actual_consumed_cus = 0U;
+  fd_pack_rebate_sum_t _rebater[1];
+  fd_pack_rebate_sum_t * rebater = fd_pack_rebate_sum_join( fd_pack_rebate_sum_new( _rebater, 3UL ) );
+  fd_acct_addr_t const * alt[1] = { NULL };
+  union { fd_pack_rebate_t rebate[1]; uchar footprint[USHORT_MAX]; } report;
+  FD_TEST( !fd_pack_rebate_sum_add_txn( rebater, txnp, alt, 1UL ) );
+  FD_TEST( fd_pack_rebate_sum_report( rebater, report.rebate ) );
+  FD_TEST( report.rebate->writer_cnt==0UL );
+  fd_pack_rebate_cus( pack, report.rebate );
+  FD_TEST( fd_pack_current_block_cost( pack )==0UL );
+  FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+
+  /* This repair intentionally preserves conservative requested write
+     locks for nonreserved invoked programs.  This remains safe whether
+     or not the upgradeable loader makes the runtime permission writable. */
+  for( int loader=0; loader<2; loader++ ) {
+    fd_pack_clear_all( pack );
+    for( ulong i=0UL; i<2UL; i++ ) {
+      slot = fd_pack_insert_txn_init( pack );
+      make_transaction1( slot->txnp, i, 1000U, 500U, 11.0, "", "", NULL, NULL );
+      TXN(slot->txnp)->readonly_unsigned_cnt = 0U; /* requests CB and work program writable */
+      if( loader ) {
+        TXN(slot->txnp)->transaction_version = FD_TXN_V0;
+        TXN(slot->txnp)->addr_table_adtl_cnt = 1U;
+        FD_TEST( fd_base58_decode_32( "BPFLoaderUpgradeab1e11111111111111111111111", slot->alt_accts[0].b ) );
+      }
+      FD_TEST( fd_pack_insert_txn_fini( pack, slot, 1000UL, &deleted )>=0 );
+    }
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                              0UL, ALL, outcome.results )==1UL );
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                              1UL, ALL, outcome.results )==0UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                              1UL, ALL, outcome.results )==1UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 1UL ) );
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+  }
 }
 
 /* BAM-spec regression: non-revert BAM singles use the bundle treap and keep
@@ -2805,7 +3007,9 @@ main( int     argc,
   test_gap();
   test_limits();
   if( 0 ) test_vote_qos();
-  test_reject_writes_to_sysvars();
+  test_reserved_account_permissions();
+  test_reserved_bundle_permissions();
+  test_reserved_fee_payer_and_program_locks();
   test_reject();
   test_reject_blocklist();
   test_duplicate_sig();
