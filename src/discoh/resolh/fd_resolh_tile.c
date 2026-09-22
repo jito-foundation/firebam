@@ -115,7 +115,6 @@ struct fd_resolh_in {
 typedef struct fd_resolh_in fd_resolh_in_t;
 
 struct fd_resolh_out {
-  ulong       idx;
   fd_wksp_t * mem;
   ulong       chunk0;
   ulong       wmark;
@@ -266,7 +265,7 @@ publish_txn( fd_resolh_tile_t *         ctx,
 
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
-  fd_stem_publish( stem, ctx->out_pack->idx, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, 0UL, tspub );
+  fd_stem_publish( stem, 0UL, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, 0UL, tspub );
   ctx->out_pack->chunk = fd_dcache_compact_next( ctx->out_pack->chunk, realized_sz, ctx->out_pack->chunk0, ctx->out_pack->wmark );
 
   return 1;
@@ -437,7 +436,7 @@ after_frag( fd_resolh_tile_t *  ctx,
   int is_bundle_member = !!txnm->block_engine.bundle_id;
   int is_durable_nonce = fd_resolh_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
 
-  if( FD_UNLIKELY( !is_bundle_member && txnm->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM && !is_durable_nonce && !blockhash ) ) {
+  if( FD_UNLIKELY( !is_bundle_member && !is_bam && !is_durable_nonce && !blockhash ) ) {
     ulong pool_idx;
     if( FD_UNLIKELY( !pool_free( ctx->pool ) ) ) {
       pool_idx = lru_list_idx_pop_tail( ctx->lru_list, ctx->pool );
@@ -480,20 +479,16 @@ after_frag( fd_resolh_tile_t *  ctx,
     }
 
     if( FD_UNLIKELY( failed ) ) {
-      if( FD_UNLIKELY( is_bam ) ) {
-        txnm->bam.preprocess_failed = 1U;
-        if( FD_LIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
-        goto publish;
-      }
       if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
-      return;
+      if( FD_LIKELY( !is_bam ) ) return;
+      txnm->bam.preprocess_failed = 1U;
     }
   }
 
 publish:;
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
-  fd_stem_publish( stem, ctx->out_pack->idx, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, tsorig, tspub );
+  fd_stem_publish( stem, 0UL, txnm->reference_slot, ctx->out_pack->chunk, realized_sz, 0UL, tsorig, tspub );
   ctx->out_pack->chunk = fd_dcache_compact_next( ctx->out_pack->chunk, realized_sz, ctx->out_pack->chunk0, ctx->out_pack->wmark );
 }
 
@@ -559,7 +554,6 @@ unprivileged_init( fd_topo_t const *      topo,
   }
 
   fd_topo_link_t const * pack_out = &topo->links[ tile->out_link_id[ 0UL ] ];
-  ctx->out_pack->idx    = 0UL;
   ctx->out_pack->mem    = topo->workspaces[ topo->objs[ pack_out->dcache_obj_id ].wksp_id ].wksp;
   ctx->out_pack->chunk0 = fd_dcache_compact_chunk0( ctx->out_pack->mem, pack_out->dcache );
   ctx->out_pack->wmark  = fd_dcache_compact_wmark ( ctx->out_pack->mem, pack_out->dcache, pack_out->mtu );

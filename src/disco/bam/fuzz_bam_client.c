@@ -648,14 +648,13 @@ bam_fuzz_reset_tile( void ) {
   ctx->is_ssl = 1;
 
   /* gRPC client in "connected" state to exercise outbound encode paths */
-  ctx->grpc_buf_max      = bam_fuzz_ctx.grpc_buf_max;
   ctx->grpc_client_mem   = bam_fuzz_ctx.grpc_client_mem;
   ctx->map_seed          = 1UL;
   ctx->grpc_client = fd_grpc_client_new( ctx->grpc_client_mem,
                                          &fd_bam_client_grpc_callbacks,
                                          ctx->grpc_metrics,
                                          ctx,
-                                         ctx->grpc_buf_max,
+                                         bam_fuzz_ctx.grpc_buf_max,
                                          ctx->map_seed );
   FD_TEST( ctx->grpc_client );
   fd_grpc_client_set_version( ctx->grpc_client, fdctl_version_string, strlen( fdctl_version_string ) );
@@ -681,7 +680,6 @@ bam_fuzz_reset_tile( void ) {
   bam_fuzz_seed_keyguard_response( ctx, NULL );
 
   ctx->keylog_fd             = -1;
-  ctx->grpc_buf_max          = 4096UL;
   ctx->tcp_sock              = -1;
   ctx->bam_status_logged    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->bam_status_recent    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
