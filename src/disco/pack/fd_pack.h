@@ -387,10 +387,8 @@ void fd_pack_get_pending_smallest( fd_pack_t * pack, fd_pack_smallest_t * opt_pe
     * ESTIMATION_FAIL: estimation of the transaction's compute cost and
       fee failed, typically because the transaction contained a
       malformed ComputeBudgetProgram instruction.
-    * WRITES_SYSVAR: the transaction attempts to write-lock a sysvar.
-      Write-locking a sysvar can cause heavy contention.  Agave
-      solves this by downgrading these to read locks, but we instead
-      solve it by refusing to pack such transactions.
+    * WRITES_SYSVAR: reserved legacy result code; no longer returned.
+      Reserved accounts are demoted for locking, as they are at runtime.
     * INVALID_NONCE: the transaction looks like a durable nonce
       transaction, but the nonce authority did not sign the transaction.
     * BUNDLE_BLACKLIST: bundles are enabled and the transaction uses an

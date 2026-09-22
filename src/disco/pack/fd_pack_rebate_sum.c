@@ -1,5 +1,6 @@
 #include "fd_pack_rebate_sum.h"
 #include "fd_pack.h"
+#include "fd_pack_unwritable.h"
 #include "../../util/fd_hash32.h"
 #if FD_HAS_AVX
 #include "../../util/simd/fd_avx.h"
@@ -32,16 +33,11 @@ fd_pack_rebate_sum_new( void * mem,
                         ulong  seed ) {
   fd_pack_rebate_sum_t * s = (fd_pack_rebate_sum_t *)mem;
 
-  s->total_cost_rebate        = 0UL;
-  s->vote_cost_rebate         = 0UL;
-  s->data_bytes_rebate        = 0UL;
-  s->microblock_cnt_rebate    = 0UL;
-  s->alloc_rebate             = 0UL;
-  s->ib_result                = 0;
-  s->writer_cnt               = 0U;
+  s->writer_cnt = 0U;
 
   s->map = rmap_join( rmap_new( s->map_mem, MAP_LG_SLOT_CNT, seed ) );
   FD_TEST( s->map );
+  fd_pack_rebate_sum_clear( s );
 
   /* Not a good place to put this, but there's not really a better place
      for it either.  The compiler should eliminate it. */
@@ -85,35 +81,24 @@ fd_pack_rebate_sum_add_txn( fd_pack_rebate_sum_t         * s,
 
     if( FD_UNLIKELY( rebated_cus==0UL ) ) continue;
 
-    fd_acct_addr_t const * accts = fd_txn_get_acct_addrs( TXN(txn), txn->payload );
-    for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( TXN(txn), FD_TXN_ACCT_CAT_WRITABLE & FD_TXN_ACCT_CAT_IMM );
+    fd_txn_t const * parsed = TXN(txn);
+    fd_acct_addr_t const * accts = fd_txn_get_acct_addrs( parsed, txn->payload );
+    fd_acct_addr_t const * alt = adtl_writable[i];
+    /* Failed sanitization still rebates pre-resolved ALT accounts when
+       available; a NULL pointer excludes them from this iterator. */
+    int cat = FD_TXN_ACCT_CAT_WRITABLE & (alt ? FD_TXN_ACCT_CAT_ALL : FD_TXN_ACCT_CAT_IMM);
+    for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( parsed, cat );
         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
-
-      ulong j=fd_txn_acct_iter_idx( iter );
-
-      fd_pack_rebate_entry_t * in_table = rmap_query( s->map, accts[j], NULL );
+      ulong j = fd_txn_acct_iter_idx( iter );
+      fd_acct_addr_t const * key = j<parsed->acct_addr_cnt ? accts+j : alt+(j-parsed->acct_addr_cnt);
+      if( FD_UNLIKELY( fd_pack_unwritable_contains( key ) ) ) continue;
+      fd_pack_rebate_entry_t * in_table = rmap_query( s->map, *key, NULL );
       if( FD_UNLIKELY( !in_table ) ) {
-        in_table = rmap_insert( s->map, accts[j] );
+        in_table = rmap_insert( s->map, *key );
         in_table->rebate_cus = 0UL;
         s->inserted[ s->writer_cnt++ ] = in_table;
       }
       in_table->rebate_cus += rebated_cus;
-    }
-    /* ALT accounts are pre-resolved by resolv_tile and passed via
-       fd_txn_e_t, so we always rebate even if bank sanitization
-       failed (e.g. due to LUT deactivation).  If adtl_writable[i] is
-       NULL, we do not rebate ALT accounts. */
-    accts = adtl_writable[i];
-    if( FD_LIKELY( accts ) ) {
-      for( ulong j=0UL; j<(ulong)TXN(txn)->addr_table_adtl_writable_cnt; j++ ) {
-        fd_pack_rebate_entry_t * in_table = rmap_query( s->map, accts[j], NULL );
-        if( FD_UNLIKELY( !in_table ) ) {
-          in_table = rmap_insert( s->map, accts[j] );
-          in_table->rebate_cus = 0UL;
-          s->inserted[ s->writer_cnt++ ] = in_table;
-        }
-        in_table->rebate_cus += rebated_cus;
-      }
     }
     FD_TEST( s->writer_cnt<=FD_PACK_REBATE_SUM_CAPACITY );
   }
