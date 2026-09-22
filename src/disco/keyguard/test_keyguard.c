@@ -203,6 +203,32 @@ test_bls_pubkey_authorize( void ) {
   FD_TEST( !fd_keyguard_payload_authorize( &authority, query, sizeof(ulong),     FD_KEYGUARD_ROLE_VOTOR,  FD_KEYGUARD_SIGN_TYPE_BLS_PUBKEY ) );
 }
 
+static void
+test_bam_auth_authorize( void ) {
+  fd_keyguard_authority_t authority = {0};
+  uchar payload[25];
+  memcpy( payload, "X_OFF_CHAIN_JITO_BAM_V1\0", 24UL );
+  payload[24] = 'x';
+
+  FD_TEST( FD_KEYGUARD_ROLE_VOTOR==9 && FD_KEYGUARD_ROLE_BAM==10 );
+  FD_TEST( FD_KEYGUARD_PAYLOAD_BLS_PUBKEY==(1UL<<12) );
+  FD_TEST( FD_KEYGUARD_PAYLOAD_BAM_AUTH  ==(1UL<<13) );
+  FD_TEST( fd_keyguard_payload_match( payload, sizeof(payload), FD_KEYGUARD_SIGN_TYPE_ED25519 )==FD_KEYGUARD_PAYLOAD_BAM_AUTH );
+  FD_TEST( !fd_keyguard_payload_match( payload, sizeof(payload), FD_KEYGUARD_SIGN_TYPE_BLS_PUBKEY ) );
+  FD_TEST( fd_keyguard_payload_authorize( &authority, payload, sizeof(payload), FD_KEYGUARD_ROLE_BAM, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
+  FD_TEST( !fd_keyguard_payload_authorize( &authority, payload, sizeof(payload), FD_KEYGUARD_ROLE_VOTOR, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
+  FD_TEST( !fd_keyguard_payload_authorize( &authority, payload, sizeof(payload), FD_KEYGUARD_ROLE_BAM, FD_KEYGUARD_SIGN_TYPE_BLS ) );
+  FD_TEST( !fd_keyguard_payload_authorize( &authority, payload, sizeof(payload), FD_KEYGUARD_ROLE_BAM, FD_KEYGUARD_SIGN_TYPE_BLS_PUBKEY ) );
+
+  uchar query[ sizeof(ulong)+1UL ] = {0}; /* authority index */
+  FD_TEST( !fd_keyguard_payload_authorize( &authority, query, sizeof(ulong), FD_KEYGUARD_ROLE_BAM, FD_KEYGUARD_SIGN_TYPE_BLS_PUBKEY ) );
+
+  uchar skip[11] = { 3 /* Alpenglow skip vote */ };
+  FD_TEST( fd_keyguard_payload_match( skip, sizeof(skip), FD_KEYGUARD_SIGN_TYPE_BLS )==FD_KEYGUARD_PAYLOAD_AG_VOTE );
+  FD_TEST( !fd_keyguard_payload_authorize( &authority, skip, sizeof(skip), FD_KEYGUARD_ROLE_BAM, FD_KEYGUARD_SIGN_TYPE_BLS ) );
+  FD_TEST( fd_keyguard_payload_authorize( &authority, skip, sizeof(skip), FD_KEYGUARD_ROLE_VOTOR, FD_KEYGUARD_SIGN_TYPE_BLS ) );
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -211,6 +237,7 @@ main( int     argc,
   test_txn_v1_match();
   test_ag_vote_authorize();
   test_bls_pubkey_authorize();
+  test_bam_auth_authorize();
   FD_LOG_NOTICE(( "pass" ));
   return 0;
 }

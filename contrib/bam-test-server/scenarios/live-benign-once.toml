@@ -1,0 +1,45 @@
+description = "A short benign BAM burst that more closely matches the steady scheduler path."
+heartbeat_interval_ms = 2000
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 1
+packet_count = 5
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 2
+packet_count = 5
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 3
+packet_count = 5
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events]]
+type = "sleep"
+ms = 6000

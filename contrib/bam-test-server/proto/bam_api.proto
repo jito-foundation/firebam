@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package bam_api;
+
+import "bam_types.proto";
+
+// Wire-compatible test-server copy of the BAM API.  The extra oneof variants
+// let live coverage scenarios exercise forward-version handling without
+// changing the validator's production schema.
+message AuthChallengeRequest {}
+
+message AuthChallengeResponse {
+  string challenge_to_sign = 1;
+}
+
+message ConfigRequest {}
+
+message ConfigResponse {
+  bam_types.BlockEngineBuilderConfig block_engine_config = 1;
+  bam_types.BamConfig bam_config = 2;
+}
+
+message SchedulerMessage {
+  oneof versioned_msg {
+    SchedulerMessageV0 v0 = 1;
+  }
+}
+
+message SchedulerMessageV0 {
+  oneof msg {
+    bam_types.ValidatorHeartBeat heart_beat = 1;
+    bam_types.LeaderState leader_state = 2;
+    bam_types.MultipleAtomicTxnBatchResult multiple_atomic_txn_batch_result = 3;
+    bam_types.AuthProof auth_proof = 4;
+    bam_types.Pong pong = 5;
+  }
+}
+
+message SchedulerResponse {
+  oneof versioned_msg {
+    SchedulerResponseV0 v0 = 1;
+    bytes unsupported_version = 2;
+  }
+}
+
+message SchedulerResponseV0 {
+  oneof resp {
+    bam_types.BuilderHeartBeat heart_beat = 1;
+    bam_types.MultipleAtomicTxnBatch multiple_atomic_txn_batch = 2;
+    bam_types.Ping ping = 3;
+    bytes unsupported_response = 4;
+  }
+}
+
+// Implemented manually by the test server so scripted scenarios can emit
+// malformed protobuf wire bytes that generated Prost messages cannot express.
+message RawSchedulerResponse {}
+message RawAuthChallengeResponse {}
+message RawConfigResponse {}
+
+service BamNodeApi {
+  rpc GetAuthChallenge(AuthChallengeRequest) returns (RawAuthChallengeResponse) {}
+  rpc GetBuilderConfig(ConfigRequest) returns (RawConfigResponse) {}
+  rpc InitSchedulerStream(stream SchedulerMessage) returns (stream RawSchedulerResponse) {}
+}

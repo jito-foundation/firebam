@@ -12,6 +12,7 @@
 #include "fd_pack_unwritable.h"
 #include "fd_chkdup.h"
 #include "fd_pack_tip_prog_blacklist.h"
+#include "../fd_txn_m.h"
 #include <math.h> /* for sqrt */
 #include <stddef.h> /* for offsetof */
 #include "../metrics/fd_metrics.h"
@@ -561,6 +562,11 @@ struct fd_pack_private {
   fd_pack_limits_t lim[1];
 
   ulong      pending_txn_cnt; /* Summed across all treaps */
+  /* Monotonic count of bundles pack evicted on its own initiative, i.e.
+     not in response to an explicit delete API.  Callers that track
+     bundles externally poll this to learn that some bundle they believe
+     is pending has silently gone away; see fd_pack_bundle_evicted_cnt. */
+  ulong      bundle_evicted_cnt;
   ulong      microblock_cnt; /* How many microblocks have we
                                 generated in this block? */
   ulong      data_bytes_consumed; /* How much data is in this block so
@@ -576,6 +582,7 @@ struct fd_pack_private {
 
   ulong      cumulative_block_cost;
   ulong      cumulative_vote_cost;
+  ulong      reported_block_cost; /* Included cost already settled by execution reports. */
 
   /* expire_before: Any transactions with expires_at strictly less than
      the current expire_before are removed from the available pending
@@ -617,6 +624,7 @@ struct fd_pack_private {
      respective values for a discussion of what each state means and the
      transitions between them. */
   int   initializer_bundle_state;
+  _Bool initializer_bundle_bam; /* Mode of the sole pending IB */
 
   /* relative_bundle_idx: the number of bundles that have been inserted
      since the last time pending_bundles was empty.  See the long
@@ -753,11 +761,20 @@ struct fd_pack_private {
      bundle meta, it's located at bundle_meta[j] for j in
      [i*bundle_meta_sz, (i+1)*bundle_meta_sz). */
   void * bundle_meta;
+  /* Upper 31 hint bits; advances on calls that may change the selected
+     bundle or its scheduling state.  Hints are callback-local. */
+  ulong bundle_hint_generation;
 };
 
 typedef struct fd_pack_private fd_pack_t;
 
+static inline void
+fd_pack_invalidate_bundle_hint( fd_pack_t * pack ) {
+  pack->bundle_hint_generation += 1UL<<33;
+}
+
 FD_STATIC_ASSERT( offsetof(fd_pack_t, pending_txn_cnt)==FD_PACK_PENDING_TXN_CNT_OFF, txn_cnt_off );
+FD_STATIC_ASSERT( offsetof(fd_pack_t, bundle_evicted_cnt)==FD_PACK_BUNDLE_EVICTED_CNT_OFF, bundle_evicted_cnt_off );
 
 /* Forward-declare some helper functions */
 static ulong delete_transaction( fd_pack_t * pack, fd_pack_ord_txn_t * txn, int delete_full_bundle, int move_from_penalty_treap );
@@ -865,6 +882,7 @@ fd_pack_new( void                   * mem,
   pack->bank_tile_cnt               = bank_tile_cnt;
   pack->lim[0]                      = *limits;
   pack->pending_txn_cnt             = 0UL;
+  pack->bundle_evicted_cnt          = 0UL;
   pack->microblock_cnt              = 0UL;
   pack->data_bytes_consumed         = 0UL;
   pack->alloc_consumed              = 0UL;
@@ -872,9 +890,14 @@ fd_pack_new( void                   * mem,
   pack->rng                         = rng;
   pack->cumulative_block_cost       = 0UL;
   pack->cumulative_vote_cost        = 0UL;
+  pack->reported_block_cost         = 0UL;
   pack->expire_before               = 0UL;
   pack->outstanding_microblock_mask = 0UL;
   pack->cumulative_rebated_cus      = 0UL;
+  pack->initializer_bundle_state    = FD_PACK_IB_STATE_NOT_INITIALIZED;
+  pack->bundle_hint_generation      = 0UL;
+  pack->initializer_bundle_bam      = 0;
+  pack->relative_bundle_idx         = 0UL;
 
   acct_blocklist_new( pack->acct_blocklist );
   int ins_failed = acct_blocklist_cnt>FD_PACK_ACCT_BLOCKLIST_MAX;
@@ -1079,31 +1102,29 @@ fd_pack_estimate_rewards_and_compute( fd_txn_e_t             * txne,
   return fd_int_if( txne->txnp->flags & FD_TXN_P_FLAGS_IS_SIMPLE_VOTE, 1, 2 );
 }
 
-/* Returns 0 on failure, 1 if not a durable nonce transaction, and 2 if
-   it is.  FIXME: These return codes are set to harmonize with
-   estimate_rewards_and_compute but -1/0/1 makes a lot more sense to me.
-   */
+/* Returns 1 for ordinary work, 2 for a canonical nonce with its signer at index 2,
+   and 3 for a possible nonce with a signer elsewhere.  Only result 2 may
+   use noncemap, whose key extraction reads instruction account index 2.
+   The execution bank checks the actual nonce account and authority. */
 static int
 fd_pack_validate_durable_nonce( fd_txn_e_t * txne ) {
   fd_txn_t const * txn = TXN(txne->txnp);
 
-  /* First instruction invokes system program with 4 bytes of
-     instruction data with the little-endian value 4.  It also has 3
-     accounts: the nonce account, recent blockhashes sysvar, and the
-     nonce authority.  It seems like technically the nonce authority may
-     not need to be passed in, but we disallow that.  We also allow
-     trailing data and trailing accounts.  We want to organize the
-     checks somewhat to minimize cache misses. */
+  /* First instruction invokes system program with opcode 4.  The bank can
+     accept an authority signer at any instruction account index, including
+     the nonce account itself.  A one-account form can pass nonce age checks
+     and commit with an instruction failure. */
   if( FD_UNLIKELY( txn->instr_cnt==0            ) ) return 1;
   if( FD_UNLIKELY( txn->instr[ 0 ].data_sz<4UL  ) ) return 1;
-  if( FD_UNLIKELY( txn->instr[ 0 ].acct_cnt<3UL ) ) return 1; /* It seems like technically 2 is allowed, but never used */
   if( FD_LIKELY  ( fd_uint_load_4( txne->txnp->payload + txn->instr[ 0 ].data_off )!=4U ) ) return 1;
   /* The program has to be a static account */
   fd_acct_addr_t const * accts = fd_txn_get_acct_addrs( txn, txne->txnp->payload );
   if( FD_UNLIKELY( !fd_memeq( accts[ txn->instr[ 0 ].program_id ].b, null_addr.b, 32UL       ) ) ) return 1;
-  if( FD_UNLIKELY( !fd_txn_is_signer( txn, txne->txnp->payload[ txn->instr[ 0 ].acct_off+2 ] ) ) ) return 0;
-  /* We could check recent blockhash, but it's not necessary */
-  return 2;
+  uchar const * instr_accts = txne->txnp->payload + txn->instr[ 0 ].acct_off;
+  if( txn->instr[ 0 ].acct_cnt>=3UL && fd_txn_is_signer( txn, instr_accts[ 2 ] ) ) return 2;
+  for( ulong i=0UL; i<txn->instr[ 0 ].acct_cnt; i++ )
+    if( fd_txn_is_signer( txn, instr_accts[ i ] ) ) return 3;
+  return 1;
 }
 
 /* Can the fee payer afford to pay a transaction with the specified
@@ -1306,6 +1327,14 @@ delete_worst( fd_pack_t * pack,
     __builtin_prefetch( TXN( n->txn ),         0, 3 );
   }
 
+  /* Bundles score 1e20*rewards/compute, which is enormous but still finite
+     and so still below a FLT_MAX threshold.  A caller forcing a delete
+     (threshold_score==FLT_MAX, i.e. inserting a bundle into a full pack)
+     can therefore land on a bundle when every sample was a bundle. */
+  if( FD_UNLIKELY( (worst->root & FD_ORD_TXN_ROOT_TAG_MASK)==FD_ORD_TXN_ROOT_PENDING_BUNDLE ) ) {
+    pack->bundle_evicted_cnt++;
+  }
+
   return delete_transaction( pack, worst, 1, 1 );
 }
 
@@ -1316,12 +1345,6 @@ validate_transaction( fd_pack_t               * pack,
                       fd_acct_addr_t    const * accts,
                       fd_acct_addr_t    const * alt_adj,
                       int                       check_bundle_blacklist ) {
-  int writes_to_sysvar = 0;
-  for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
-      iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
-    writes_to_sysvar |= fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) );
-  }
-
   int bundle_blacklist = 0;
   int acct_blocklist   = 0;
   for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_ALL );
@@ -1347,8 +1370,6 @@ validate_transaction( fd_pack_t               * pack,
   if( FD_UNLIKELY( fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_ALL )>64UL     ) ) return FD_PACK_INSERT_REJECT_ACCOUNT_CNT;
   /*           ... that duplicate an account address */
   if( FD_UNLIKELY( fd_chkdup_check( chkdup, accts, imm_cnt, alt, alt_cnt ) ) ) return FD_PACK_INSERT_REJECT_DUPLICATE_ACCT;
-  /*           ... that try to write to a sysvar */
-  if( FD_UNLIKELY( writes_to_sysvar                                        ) ) return FD_PACK_INSERT_REJECT_WRITES_SYSVAR;
   /*           ... that use an account that violates bundle rules */
   if( FD_UNLIKELY( bundle_blacklist & !!check_bundle_blacklist             ) ) return FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST;
   /*           ... that use a blocklisted account */
@@ -1396,6 +1417,7 @@ populate_bitsets( fd_pack_t         * pack,
 
   for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
       iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+    if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
     fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
     fd_pack_bitset_acct_mapping_t * q = bitset_map_query( pack->acct_to_bitset, acct, NULL );
     if( FD_UNLIKELY( q==NULL ) ) {
@@ -1456,6 +1478,7 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
                          fd_txn_e_t * txne,
                          ulong        expires_at,
                          ulong      * delete_cnt ) {
+  fd_pack_invalidate_bundle_hint( pack );
   *delete_cnt = 0UL;
 
   fd_pack_ord_txn_t * ord = (fd_pack_ord_txn_t *)txne;
@@ -1469,15 +1492,14 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
      accessed with adj_lut[n]. */
   fd_acct_addr_t const * alt_adj = ord->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
 
-  ord->expires_at = expires_at;
-
   int est_result = fd_pack_estimate_rewards_and_compute( txne, ord, pack->lim );
   if( FD_UNLIKELY( !est_result ) ) REJECT( ESTIMATION_FAIL );
   int is_vote          = est_result==1;
 
   int nonce_result = fd_pack_validate_durable_nonce( txne );
-  if( FD_UNLIKELY( !nonce_result ) ) REJECT( INVALID_NONCE );
   int is_durable_nonce = nonce_result==2;
+  if( FD_UNLIKELY( nonce_result>=2 || txne->txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) expires_at = ULONG_MAX;
+  ord->expires_at = expires_at;
   ord->txn->flags &= ~FD_TXN_P_FLAGS_DURABLE_NONCE;
   ord->txn->flags |= fd_uint_if( is_durable_nonce, FD_TXN_P_FLAGS_DURABLE_NONCE, 0U );
 
@@ -1593,41 +1615,84 @@ fd_pack_insert_bundle_cancel( fd_pack_t          * pack,
 #define BUNDLE_N       313721UL
 #define RC_TO_REL_BUNDLE_IDX( r, c ) (BUNDLE_N - ((ulong)(r) * 1UL<<32)/((ulong)(c) * BUNDLE_L_PRIME))
 
+/* Reclaim ordinal bands without changing bundle or member order.  The
+   pending transaction count bounds the number of groups, so assign groups
+   descending ordinals from that count, reserving zero for the initializer.
+   Forward iteration visits each group's last member first: use the same
+   priority recurrence as insertion, without buffering or rebuilding groups.
+   Treap iteration follows links, which the priority rewrite leaves intact. */
+static void
+fd_pack_rebase_bundle_ordinals( fd_pack_t * pack ) {
+  ulong ordinal = treap_ele_cnt( pack->pending_bundles );
+  pack->relative_bundle_idx = ordinal+1UL;
+  FD_TEST( pack->relative_bundle_idx<=BUNDLE_N ); /* Pool indices are ushorts. */
+  ulong old_ordinal = ULONG_MAX;
+  ulong prev_reward = 0UL;
+  ulong prev_cost = 0UL;
+  for( treap_fwd_iter_t iter=treap_fwd_iter_init( pack->pending_bundles, pack->pool );
+       !treap_fwd_iter_done( iter ); iter=treap_fwd_iter_next( iter, pack->pool ) ) {
+    fd_pack_ord_txn_t * cur = treap_fwd_iter_ele( iter, pack->pool );
+    ulong group = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+    if( group!=old_ordinal ) {
+      old_ordinal = group;
+      ulong idx = (cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) ? 0UL : ordinal--;
+      prev_reward = BUNDLE_L_PRIME*(BUNDLE_N-idx)-1UL;
+      prev_cost = 1UL<<32;
+    }
+    cur->rewards = (uint)(((ulong)cur->compute_est*(prev_reward+1UL)+prev_cost-1UL)/prev_cost);
+    prev_reward = cur->rewards;
+    prev_cost = cur->compute_est;
+  }
+}
+
 int
 fd_pack_insert_bundle_fini( fd_pack_t          * pack,
                             fd_txn_e_t * const * bundle,
                             ulong                txn_cnt,
                             ulong                expires_at,
-                            int                  initializer_bundle,
+                            int                  initializer_bundle_kind,
                             void         const * bundle_meta,
-                            ulong              * delete_cnt ) {
+                            ulong              * delete_cnt,
+                            ulong              * reject_txn_idx ) {
+
+  fd_pack_invalidate_bundle_hint( pack );
+
+  FD_TEST( initializer_bundle_kind==FD_PACK_IB_TYPE_NONE   ||
+           initializer_bundle_kind==FD_PACK_IB_TYPE_NORMAL ||
+           initializer_bundle_kind==FD_PACK_IB_TYPE_BAM );
+  _Bool initializer_bundle = initializer_bundle_kind!=FD_PACK_IB_TYPE_NONE;
 
   int err = 0;
   *delete_cnt = 0UL;
+  ulong reject_txn_idx_scratch = ULONG_MAX;
+  if( FD_LIKELY( reject_txn_idx ) ) *reject_txn_idx = ULONG_MAX;
+  else                              reject_txn_idx = &reject_txn_idx_scratch;
 
   ulong pending_b_txn_cnt = treap_ele_cnt( pack->pending_bundles );
-    /* We want to prevent bundles from consuming the whole treap, but in
-       general, we assume bundles are lucrative.  We'll set the policy
-       on capping bundles at half of the pack depth.  We assume that the
-       bundles are coming in a pre-prioritized order, so it doesn't make
-       sense to drop an earlier bundle for this one.  That means that
-       really, the best thing to do is drop this one. */
-  if( FD_UNLIKELY( (!initializer_bundle)&(pending_b_txn_cnt+txn_cnt>pack->pack_depth/2UL) ) ) err = FD_PACK_INSERT_REJECT_PRIORITY;
+  /* Ordinary Block Engine bundles are capped at half the pool and cannot
+     displace earlier ones. */
+  if( FD_UNLIKELY( !initializer_bundle &&
+                   bundle[ 0 ]->txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM &&
+                   pending_b_txn_cnt+txn_cnt>pack->pack_depth/2UL ) ) err = FD_PACK_INSERT_REJECT_PRIORITY;
 
+  uchar nonce_results[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  int any_possible_nonce = 0;
+  for( ulong i=0UL; i<txn_cnt; i++ ) {
+    nonce_results[ i ] = (uchar)fd_pack_validate_durable_nonce( bundle[ i ] );
+    any_possible_nonce |= nonce_results[ i ]>=2U;
+  }
+  if( FD_UNLIKELY( any_possible_nonce || initializer_bundle_kind==FD_PACK_IB_TYPE_BAM ||
+                   bundle[ 0 ]->txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) expires_at = ULONG_MAX;
   if( FD_UNLIKELY( expires_at<pack->expire_before                                         ) ) err = FD_PACK_INSERT_REJECT_EXPIRED;
 
 
   int   replaces      = 0;
   ulong nonce_txn_cnt = 0UL;
 
-  /* Collect nonce hashes to detect duplicate nonces.
-     Use a constant-time duplicate-detection algorithm -- Vacant entries
-     have the MSB set, occupied entries are the noncemap hash, with the
-     MSB set to 0. */
+  /* Vacant entries have the MSB set; nonce hashes have it clear. */
   ulong nonce_hash63[ FD_PACK_MAX_TXN_PER_BUNDLE ];
-  for( ulong i=0UL; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) {
-    nonce_hash63[ i ] = ULONG_MAX-i;
-  }
+  fd_pack_ord_txn_t * nonce_replacements[ FD_PACK_MAX_TXN_PER_BUNDLE ] = {0};
+  for( ulong i=0UL; i<FD_PACK_MAX_TXN_PER_BUNDLE; i++ ) nonce_hash63[ i ] = ULONG_MAX-i;
 
   for( ulong i=0UL; (i<txn_cnt) && !err; i++ ) {
     fd_pack_ord_txn_t * ord = (fd_pack_ord_txn_t *)bundle[ i ];
@@ -1639,12 +1704,18 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     fd_acct_addr_t const * alt_adj = ord->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
 
     int est_result = fd_pack_estimate_rewards_and_compute( bundle[ i ], ord, pack->lim );
-    if( FD_UNLIKELY( est_result==0 ) ) { err = FD_PACK_INSERT_REJECT_ESTIMATION_FAIL;  break; }
+    if( FD_UNLIKELY( est_result==0 ) ) {
+      err = FD_PACK_INSERT_REJECT_ESTIMATION_FAIL;
+      *reject_txn_idx = i;
+      break;
+    }
     /* Votes not allowed in bundles */
-    if( FD_UNLIKELY( est_result==1 ) ) { err = FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST; break; }
-    int nonce_result = fd_pack_validate_durable_nonce( ord->txn_e );
-    if( FD_UNLIKELY( !nonce_result ) ) { err = FD_PACK_INSERT_REJECT_INVALID_NONCE;    break; }
-    int is_durable_nonce = nonce_result==2;
+    if( FD_UNLIKELY( est_result==1 ) ) {
+      err = FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST;
+      *reject_txn_idx = i;
+      break;
+    }
+    int is_durable_nonce = nonce_results[ i ]==2U;
     nonce_txn_cnt += !!is_durable_nonce;
 
     bundle[ i ]->txnp->flags |= FD_TXN_P_FLAGS_BUNDLE;
@@ -1662,22 +1733,51 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
            take priority over later bundles. */
         if( FD_UNLIKELY( same_nonce->txn->flags & FD_TXN_P_FLAGS_BUNDLE ) ) {
           err = FD_PACK_INSERT_REJECT_NONCE_PRIORITY;
+          *reject_txn_idx = i;
           break;
         } else {
-          ulong _delete_cnt = delete_transaction( pack, same_nonce, 0, 0 );
-          *delete_cnt += _delete_cnt;
-          replaces = 1;
+          nonce_replacements[ i ] = same_nonce;
         }
       }
     }
 
     int validation_result = validate_transaction( pack, ord, txn, accts, alt_adj, !initializer_bundle );
-    if( FD_UNLIKELY( validation_result ) ) { err = validation_result; break; }
+    if( FD_UNLIKELY( validation_result ) ) {
+      err = validation_result;
+      *reject_txn_idx = i;
+      break;
+    }
   }
 
   if( FD_UNLIKELY( err ) ) {
     fd_pack_insert_bundle_cancel( pack, bundle, txn_cnt );
     return err;
+  }
+
+  if( FD_UNLIKELY( nonce_txn_cnt>1UL ) ) {
+    ulong conflict_txn_idx = ULONG_MAX;
+    for( ulong i=0UL; i<FD_PACK_MAX_TXN_PER_BUNDLE-1UL; i++ ) {
+      for( ulong j=i+1UL; j<FD_PACK_MAX_TXN_PER_BUNDLE; j++ )
+        conflict_txn_idx = fd_ulong_if( nonce_hash63[ i ]==nonce_hash63[ j ], j, conflict_txn_idx );
+    }
+    if( FD_UNLIKELY( conflict_txn_idx!=ULONG_MAX ) ) {
+      *reject_txn_idx = conflict_txn_idx;
+      fd_pack_insert_bundle_cancel( pack, bundle, txn_cnt );
+      return FD_PACK_INSERT_REJECT_NONCE_CONFLICT;
+    }
+  }
+
+  /* Check impossible size before deleting a singleton nonce or initializer. */
+  if( FD_UNLIKELY( txn_cnt>pack->pack_depth ) ) {
+    fd_pack_insert_bundle_cancel( pack, bundle, txn_cnt );
+    return FD_PACK_INSERT_REJECT_PRIORITY;
+  }
+
+  for( ulong i=0UL; i<txn_cnt; i++ ) {
+    if( FD_UNLIKELY( nonce_replacements[ i ] ) ) {
+      *delete_cnt += delete_transaction( pack, nonce_replacements[ i ], 0, 0 );
+      replaces = 1;
+    }
   }
 
   if( FD_UNLIKELY( initializer_bundle && pending_b_txn_cnt>0UL ) ) {
@@ -1690,6 +1790,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     if( FD_UNLIKELY( is_ib && 0UL==RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est ) ) ) {
       ulong _delete_cnt = delete_transaction( pack, cur, 1, 0 );
       *delete_cnt += _delete_cnt;
+      pack->bundle_evicted_cnt++;
     }
   }
 
@@ -1709,23 +1810,6 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
 
   if( FD_LIKELY( bundle_meta ) ) {
     memcpy( (uchar *)pack->bundle_meta + (ulong)((fd_pack_ord_txn_t *)bundle[0]-pack->pool)*pack->bundle_meta_sz, bundle_meta, pack->bundle_meta_sz );
-  }
-
-  if( FD_UNLIKELY( nonce_txn_cnt>1UL ) ) {
-    /* Do a ILP-friendly duplicate detect, naive O(n^2) algo.  With max
-       5 txns per bundle, this requires 10 comparisons.  ~ 25 cycle.  */
-    uint conflict_detected = 0u;
-    for( ulong i=0UL; i<FD_PACK_MAX_TXN_PER_BUNDLE-1; i++ ) {
-      for( ulong j=i+1; j<FD_PACK_MAX_TXN_PER_BUNDLE; j++ ) {
-        ulong const ele_i = nonce_hash63[ i ];
-        ulong const ele_j = nonce_hash63[ j ];
-        conflict_detected |= (ele_i==ele_j);
-      }
-    }
-    if( FD_UNLIKELY( conflict_detected ) ) {
-      fd_pack_insert_bundle_cancel( pack, bundle, txn_cnt );
-      return FD_PACK_INSERT_REJECT_NONCE_CONFLICT;
-    }
   }
 
   /* We put bundles in a treap just like all the other transactions, but
@@ -1806,9 +1890,9 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
      Now all that remains is to determine N.  It's a bit unfortunate
      that we require N, since it limits our capacity, but it's necessary
      in any system that tries to compute priorities to enforce a FIFO
-     order.  If we've inserted more than N bundles without ever having
-     the bundle treap go empty, we'll briefly break the FIFO ordering as
-     we underflow.
+     order.  Before the counter exhausts these bands, renumber the
+     still-pending groups in the same order.  The bounded pool holds
+     far fewer groups than N, so this prevents ordinal reuse.
 
      Thus, we'd like to make N as big as possible, avoiding overflow.
      r_0, ..., r_4 are all uints, and taking the bounds from above,
@@ -1831,15 +1915,10 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
      directly. */
      FD_STATIC_ASSERT( FD_PACK_MIN_TXN_COST==   1020UL, adjust_constants );
      FD_STATIC_ASSERT( FD_PACK_MAX_TXN_COST==1551570UL, adjust_constants );
-#define BUNDLE_L_PRIME 37896771UL
-#define BUNDLE_N       313721UL
 
-  if( FD_UNLIKELY( pack->relative_bundle_idx>BUNDLE_N ) ) {
-    FD_LOG_WARNING(( "Too many bundles inserted without allowing pending bundles to go empty. "
-                     "Ordering of bundles may be incorrect." ));
-    pack->relative_bundle_idx = 1UL;
-  }
+  if( FD_UNLIKELY( pack->relative_bundle_idx>BUNDLE_N ) ) fd_pack_rebase_bundle_ordinals( pack );
   ulong bundle_idx = fd_ulong_if( initializer_bundle, 0UL, pack->relative_bundle_idx );
+  if( FD_UNLIKELY( initializer_bundle ) ) pack->initializer_bundle_bam = initializer_bundle_kind==FD_PACK_IB_TYPE_BAM;
   insert_bundle_impl( pack, bundle_idx, txn_cnt, (fd_pack_ord_txn_t * *)bundle, expires_at );
   /* if IB this is max( 1, x ), which is x.  Otherwise, this is max(x,
      x+1) which is x++ */
@@ -1881,23 +1960,188 @@ insert_bundle_impl( fd_pack_t           * pack,
 
 }
 
-void const *
-fd_pack_peek_bundle_meta( fd_pack_t const * pack ) {
-  int ib_state = pack->initializer_bundle_state;
-  if( FD_UNLIKELY( (ib_state==FD_PACK_IB_STATE_PENDING) | (ib_state==FD_PACK_IB_STATE_FAILED) ) ) return NULL;
+/* Returns the first whole bundle eligible for the selected mode.  Keeping
+   this traversal shared is important: the metadata used to generate an
+   initializer must belong to the bundle the scheduler will select next. */
+static treap_rev_iter_t
+fd_pack_bundle_candidate( fd_pack_t const * pack,
+                          _Bool             bam_only,
+                          ulong *           skipped_txn_cnt ) {
+  fd_pack_ord_txn_t * pool = pack->pool;
+  treap_rev_iter_t   iter = treap_rev_iter_init( pack->pending_bundles, pool );
 
-  treap_rev_iter_t _cur=treap_rev_iter_init( pack->pending_bundles, pack->pool );
+  while( !treap_rev_iter_done( iter ) ) {
+    fd_pack_ord_txn_t * cur = treap_rev_iter_ele( iter, pool );
+    ulong bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+    _Bool is_ib      = !!(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
+    _Bool mode_match = is_ib
+                     ? pack->initializer_bundle_bam==bam_only
+                     : !bam_only || cur->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+
+    if( FD_LIKELY( cur->skip!=pack->compressed_slot_number && mode_match ) ) return iter;
+
+    /* Source filtering and current-slot deferral both operate on whole
+       bundles.  Never return an iterator into the middle of a bundle. */
+    do {
+      if( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) (*skipped_txn_cnt)++;
+      iter = treap_rev_iter_next( iter, pool );
+      if( FD_UNLIKELY( treap_rev_iter_done( iter ) ) ) return iter;
+      cur = treap_rev_iter_ele( iter, pool );
+    } while( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )==bundle_idx );
+  }
+
+  return iter;
+}
+
+fd_txn_p_t const *
+fd_pack_peek_bundle_candidate( fd_pack_t const * pack,
+                               _Bool             bam_only,
+                               ulong *           bundle_hint,
+                               void const **     opt_bundle_meta ) {
+  *bundle_hint = ULONG_MAX;
+  if( opt_bundle_meta ) *opt_bundle_meta = NULL;
+  ulong skipped = 0UL;
+  treap_rev_iter_t _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped );
   if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return NULL; /* empty */
 
   fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pack->pool );
-  int is_ib = !!(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
-  if( FD_UNLIKELY( is_ib ) ) return NULL;
+  /* Pool indices and the number of skipped pool elements each fit in a
+     ushort.  Bit 32 binds the hint to the mode; upper bits bind its lifetime. */
+  *bundle_hint = (ulong)_cur | (skipped<<16) | ((ulong)bam_only<<32) | pack->bundle_hint_generation;
+  if( opt_bundle_meta && !(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) &&
+      pack->initializer_bundle_state!=FD_PACK_IB_STATE_PENDING &&
+      pack->initializer_bundle_state!=FD_PACK_IB_STATE_FAILED )
+    *opt_bundle_meta = (uchar const *)pack->bundle_meta + (ulong)_cur*pack->bundle_meta_sz;
+  return cur->txn;
+}
 
-  return (void const *)((uchar const *)pack->bundle_meta + (ulong)_cur * pack->bundle_meta_sz);
+/* Exact predecessor permissions are required here: the normal fast bitsets
+   omit accounts when their finite mapping is exhausted.  This bounded
+   scratch index contains every predecessor account and resolves hash
+   collisions by comparing full keys.  Each chain has at most 5*64 entries. */
+typedef struct {
+  fd_acct_addr_t const * key;
+  ushort                next;
+  ushort                bucket;
+  uchar                 writable;
+} fd_pack_lookahead_acct_t;
+
+/* Called after a conflict that leaves the pending bundles unchanged.
+   Return the first ready successor independent of all preceding groups.
+   The exact account index covers at most five txns. */
+static ulong
+fd_pack_bam_independent_candidate( fd_pack_t const *    pack,
+                                    int                  schedule_flags,
+                                    ulong                head_hint,
+                                    fd_pack_bam_ready_fn * ready,
+                                    void const *         ready_ctx ) {
+  if( FD_UNLIKELY( !ready || !(schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY) ||
+                   pack->initializer_bundle_state!=FD_PACK_IB_STATE_READY ) ) return ULONG_MAX;
+  ulong generation = pack->bundle_hint_generation;
+  treap_rev_iter_t iter = (treap_rev_iter_t)(head_hint & USHORT_MAX);
+
+  fd_pack_lookahead_acct_t accts[ FD_PACK_MAX_TXN_PER_BUNDLE*FD_TXN_ACCT_ADDR_MAX ];
+  ushort heads[512];
+  fd_memset( heads, 0xff, sizeof(heads) );
+  ulong seed = bitset_map_seed( pack->acct_to_bitset );
+  ulong acct_cnt = 0UL;
+  ulong scanned = 0UL;
+  int is_head = 1;
+  while( !treap_rev_iter_done( iter ) ) {
+    treap_rev_iter_t begin = iter;
+    fd_pack_ord_txn_t const * lead = treap_rev_iter_ele_const( iter, pack->pool );
+    fd_txn_p_t const * txn0 = lead->txn;
+    ulong bundle_idx = RC_TO_REL_BUNDLE_IDX( lead->rewards, lead->compute_est );
+
+    fd_pack_ord_txn_t const * group[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+    ulong txn_cnt = 0UL;
+    do {
+      fd_pack_ord_txn_t const * cur = treap_rev_iter_ele_const( iter, pack->pool );
+      if( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )!=bundle_idx ) break;
+      /* Never enter a partial group or transfer another batch's readiness. */
+      if( FD_UNLIKELY( scanned==FD_PACK_MAX_TXN_PER_BUNDLE ||
+                       cur->txn->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ||
+                       cur->txn->bam.batch_idx!=txn_cnt ||
+                       cur->txn->bam.seq_id!=txn0->bam.seq_id ||
+                       cur->txn->bam.scheduler_gen!=txn0->bam.scheduler_gen ||
+                       cur->txn->bam.revert_on_error!=txn0->bam.revert_on_error ||
+                       (cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) ||
+                       cur->skip==pack->compressed_slot_number ) ) return ULONG_MAX;
+      group[ txn_cnt++ ] = cur;
+      scanned++;
+      iter = treap_rev_iter_next( iter, pack->pool );
+    } while( !treap_rev_iter_done( iter ) );
+
+    if( FD_UNLIKELY( !ready( ready_ctx, txn0, txn_cnt ) || pack->bundle_hint_generation!=generation ) ) return ULONG_MAX;
+
+    ulong predecessor_cnt = acct_cnt;
+    int blocked = is_head || !( (schedule_flags & FD_PACK_SCHEDULE_BUNDLE) || txn_cnt==1UL );
+    for( ulong j=0UL; j<txn_cnt; j++ ) {
+      fd_txn_t const * txn = TXN(group[j]->txn);
+      ulong imm_cnt = txn->acct_addr_cnt;
+      ulong cnt = imm_cnt + txn->addr_table_adtl_cnt;
+      fd_acct_addr_t const * imm = fd_txn_get_acct_addrs( txn, group[j]->txn->payload );
+      for( ulong k=0UL; k<cnt; k++ ) {
+        fd_acct_addr_t const * key = k<imm_cnt ? imm+k : group[j]->txn_e->alt_accts+(k-imm_cnt);
+        if( fd_pack_unwritable_contains( key ) ) continue;
+        int writable = fd_txn_is_writable( txn, (ushort)k );
+        ushort bucket = (ushort)(fd_hash32( key->b, seed ) & 511U);
+        accts[ acct_cnt++ ] = (fd_pack_lookahead_acct_t){ key, USHORT_MAX, bucket, (uchar)writable };
+        if( !blocked ) {
+          fd_pack_addr_use_t const * use = acct_uses_query( pack->acct_in_use, *key, NULL );
+          blocked = use && (writable ? !!use->in_use_by : !!(use->in_use_by & FD_PACK_IN_USE_WRITABLE));
+          if( !blocked ) for( ushort p=heads[bucket]; p!=USHORT_MAX; p=accts[p].next ) {
+            if( (writable || accts[p].writable) && !memcmp( key, accts[p].key, sizeof(fd_acct_addr_t) ) ) {
+              blocked = 1;
+              break;
+            }
+          }
+        }
+      }
+    }
+    if( !blocked )
+      return (ulong)begin | (1UL<<32) | generation; /* Head scan already counted deferred skips. */
+    /* Index only after examining the entire group: conflicts between
+       members of one atomic batch are allowed.  Retain every skipped
+       predecessor, including dependent or worker-ineligible batches. */
+    for( ulong p=predecessor_cnt; p<acct_cnt; p++ ) {
+      ushort bucket = accts[p].bucket;
+      accts[p].next = heads[bucket];
+      heads[bucket] = (ushort)p;
+    }
+    is_head = 0;
+  }
+  return ULONG_MAX;
+}
+
+void const *
+fd_pack_peek_bundle_meta( fd_pack_t const * pack,
+                          _Bool             bam_only,
+                          ulong *           bundle_hint ) {
+  *bundle_hint = ULONG_MAX;
+  int ib_state = pack->initializer_bundle_state;
+  if( FD_UNLIKELY( (ib_state==FD_PACK_IB_STATE_PENDING) | (ib_state==FD_PACK_IB_STATE_FAILED) ) ) return NULL;
+  void const * meta;
+  fd_pack_peek_bundle_candidate( pack, bam_only, bundle_hint, &meta );
+  if( FD_UNLIKELY( !meta ) ) *bundle_hint = ULONG_MAX;
+  return meta;
+}
+
+int
+fd_pack_contains_initializer_bundle( fd_pack_t const *        pack,
+                                     fd_ed25519_sig_t const * sig0,
+                                     _Bool                    bam_only ) {
+  treap_rev_iter_t iter = treap_rev_iter_init( pack->pending_bundles, pack->pool );
+  if( FD_UNLIKELY( treap_rev_iter_done( iter ) ) ) return 0;
+  fd_txn_p_t const * txn = treap_rev_iter_ele( iter, pack->pool )->txn;
+  return !!(txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) &&
+         pack->initializer_bundle_bam==bam_only &&
+         !memcmp( fd_txn_get_signatures( TXN(txn), txn->payload ), sig0, sizeof(fd_ed25519_sig_t) );
 }
 
 void
 fd_pack_set_initializer_bundles_ready( fd_pack_t * pack ) {
+  fd_pack_invalidate_bundle_hint( pack );
   pack->initializer_bundle_state = FD_PACK_IB_STATE_READY;
 }
 
@@ -1914,6 +2158,7 @@ fd_pack_metrics_write( fd_pack_t const * pack ) {
   FD_MGAUGE_SET( PACK, TXN_AVAILABLE_BUNDLES,     pending_bundle              );
   FD_MGAUGE_SET( PACK, TXN_PENDING_SMALLEST_CU,   pack->pending_smallest->cus );
   FD_MGAUGE_SET( PACK, BLOCK_CU_CONSUMED,         pack->cumulative_block_cost );
+  FD_MGAUGE_SET( PACK, PENDING_REBATE_COST,       fd_pack_pending_rebate_cost( pack ) );
 
   FD_MCNT_ENUM_COPY( PACK, TXN_SCHEDULED, pack->sched_results );
 }
@@ -2059,9 +2304,8 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
        it's the compressed slot number of a previous slot.  We don't
        care unless we're going to update the value though, so we don't
        need to eagerly reset it to FD_PACK_MAX_SKIP.
-       compressed_slot_number is a ushort, so it's possible for it to
-       roll over, but the transaction lifetime is much shorter than
-       that, so it won't be a problem. */
+       end_block resets old slot markers before the compressed slot
+       number rolls over, including for indefinitely retained work. */
 
     if( FD_UNLIKELY( cur->txn->payload_sz>byte_limit ) ) {
       byte_limit_c++;
@@ -2076,6 +2320,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
        current readers */
     for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
 
       fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
 
@@ -2147,10 +2392,11 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
     out_txnp->pack_cu.non_execution_cus                 = cur->txn->pack_cu.non_execution_cus;
     out_txnp->pack_alloc                                = cur->txn->pack_alloc;
     out_txnp->scheduler_arrival_time_nanos              = cur->txn->scheduler_arrival_time_nanos;
-    out_txnp->first_seen_nanos                          = cur->txn->first_seen_nanos;
+    out->first_seen_nanos                              = cur->txn_e->first_seen_nanos;
     out_txnp->source_tpu                                = cur->txn->source_tpu;
     out_txnp->source_ipv4                               = cur->txn->source_ipv4;
     out_txnp->flags                                     = cur->txn->flags;
+    out_txnp->bam                                       = cur->txn->bam;
     fd_memcpy( TXN(out_txnp), txn, fd_txn_footprint( txn->instr_cnt, txn->addr_table_lookup_cnt ) );
 
     /* Copy the ALT accounts from the source fd_txn_e_t */
@@ -2160,6 +2406,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
 
     for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
       fd_acct_addr_t acct_addr = *ACCT_ITER_TO_PTR( iter );
 
       fd_pack_wcost_ele_t * in_wcost_table = wcost_map_ele_query( writer_costs, &acct_addr, NULL, writers );
@@ -2366,35 +2613,55 @@ fd_pack_microblock_complete( fd_pack_t * pack,
 #define TRY_BUNDLE_HAS_CONFLICTS       (-1)
 #define TRY_BUNDLE_DOES_NOT_FIT        (-2)
 #define TRY_BUNDLE_SUCCESS(n)          ( n) /* schedule bundle with n transactions */
+
+/* The caller validates the hint and BAM_READY and only calls with BUNDLE
+   or BAM_SINGLE permission. */
 static inline int
 fd_pack_try_schedule_bundle( fd_pack_t  * pack,
                              ulong        bank_tile,
+                             int          schedule_flags,
+                             ulong        bundle_hint,
                              fd_txn_e_t * out ) {
+  _Bool bam_only = !!(schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY);
   int state = pack->initializer_bundle_state;
-  if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_PENDING) | (state==FD_PACK_IB_STATE_FAILED ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
+  if( FD_UNLIKELY( (state==FD_PACK_IB_STATE_PENDING) |
+                   ((state==FD_PACK_IB_STATE_FAILED) & !bam_only) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
 
-  fd_pack_ord_txn_t * pool    = pack->pool;
-  treap_t           * bundles = pack->pending_bundles;
+  fd_pack_ord_txn_t * pool = pack->pool;
 
-  int require_ib;
-  if( FD_UNLIKELY( state==FD_PACK_IB_STATE_NOT_INITIALIZED ) ) { require_ib = 1; }
-  if( FD_LIKELY  ( state==FD_PACK_IB_STATE_READY           ) ) { require_ib = 0; }
+  int require_ib = (state==FD_PACK_IB_STATE_NOT_INITIALIZED) & !bam_only;
 
-  treap_rev_iter_t _cur  = treap_rev_iter_init( bundles, pool );
-  ulong bundle_idx = ULONG_MAX;
-
-  /* Skip any that we've marked as won't fit in this block */
-  while( FD_UNLIKELY( !treap_rev_iter_done( _cur ) && treap_rev_iter_ele( _cur, pool )->skip==pack->compressed_slot_number ) ) {
-    _cur = treap_rev_iter_next( _cur, pool );
-    pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]++;
+  ulong skipped_txn_cnt = 0UL;
+  treap_rev_iter_t _cur;
+  if( FD_UNLIKELY( bundle_hint!=ULONG_MAX ) ) {
+    skipped_txn_cnt = (bundle_hint>>16) & USHORT_MAX;
+    _cur = (treap_rev_iter_t)(bundle_hint & USHORT_MAX);
+  } else {
+    _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped_txn_cnt );
   }
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ] += skipped_txn_cnt;
 
   if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
 
   treap_rev_iter_t   _txn0 = _cur;
   fd_pack_ord_txn_t * txn0 = treap_rev_iter_ele( _txn0, pool );
   int is_ib = !!(txn0->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
-  bundle_idx = RC_TO_REL_BUNDLE_IDX( txn0->rewards, txn0->compute_est );
+  ulong bundle_idx = RC_TO_REL_BUNDLE_IDX( txn0->rewards, txn0->compute_est );
+
+  _Bool is_bam = is_ib ? pack->initializer_bundle_bam : txn0->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  if( FD_UNLIKELY( is_bam && !(schedule_flags & FD_PACK_SCHEDULE_BAM_READY) ) )
+    return TRY_BUNDLE_NO_READY_BUNDLES;
+
+  if( FD_UNLIKELY( !(schedule_flags & FD_PACK_SCHEDULE_BUNDLE) ) ) {
+    if( FD_UNLIKELY( !is_bam || is_ib ) )
+      return TRY_BUNDLE_NO_READY_BUNDLES;
+    treap_rev_iter_t next = treap_rev_iter_next( _txn0, pool );
+    if( FD_LIKELY( !treap_rev_iter_done( next ) ) ) {
+      fd_pack_ord_txn_t const * successor = treap_rev_iter_ele( next, pool );
+      if( FD_UNLIKELY( RC_TO_REL_BUNDLE_IDX( successor->rewards, successor->compute_est )==bundle_idx ) )
+        return TRY_BUNDLE_NO_READY_BUNDLES;
+    }
+  }
 
   if( FD_UNLIKELY( require_ib & !is_ib ) ) return TRY_BUNDLE_NO_READY_BUNDLES;
 
@@ -2434,6 +2701,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
     ulong this_bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
     if( FD_UNLIKELY( this_bundle_idx!=bundle_idx ) ) break;
+    FD_TEST( txn_cnt<FD_PACK_MAX_TXN_PER_BUNDLE );
 
     if( FD_UNLIKELY( cur->compute_est>cu_limit ) ) {
       doesnt_fit = 1;
@@ -2484,6 +2752,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
        current readers */
     for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
 
       fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
 
@@ -2555,9 +2824,13 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     }
     FD_TEST( acct_uses_key_cnt( pack->bundle_temp_map )==0UL );
 
-    if( FD_UNLIKELY( retval==TRY_BUNDLE_DOES_NOT_FIT ) ) {
-      /* Decrement the skip count for the bundle we just tried. */
+    if( FD_UNLIKELY( is_bam && retval==TRY_BUNDLE_HAS_CONFLICTS ) )
+      FD_MCNT_INC( PACK, BAM_CONFLICT_BLOCKED, 1UL );
 
+    if( FD_UNLIKELY( retval==TRY_BUNDLE_DOES_NOT_FIT && (schedule_flags & FD_PACK_SCHEDULE_BUNDLE) ) ) {
+      /* Only full-permission capacity failures may defer a batch.  Worker/
+         slot ineligibility and restricted-secondary attempts cannot spend
+         this budget.  Decrement the skip count for the whole batch. */
       for( _cur=_txn0; !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
         fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
         ulong this_bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
@@ -2566,6 +2839,8 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
         /* See fd_pack_schedule_impl for this line */
         cur->skip = (ushort)(1+fd_ushort_min( (ushort)(pack->compressed_slot_number-1),
               (ushort)(fd_ushort_min( cur->skip, FD_PACK_SKIP_CNT )-2) ) );
+        if( FD_UNLIKELY( is_bam && _cur==_txn0 && cur->skip==pack->compressed_slot_number ) )
+          FD_MCNT_INC( PACK, BAM_CAPACITY_DEFERRED, 1UL );
       }
     }
     return retval;
@@ -2601,10 +2876,13 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     out_txnp->pack_cu.non_execution_cus       = cur->txn->pack_cu.non_execution_cus;
     out_txnp->pack_alloc                      = cur->txn->pack_alloc;
     out_txnp->scheduler_arrival_time_nanos    = cur->txn->scheduler_arrival_time_nanos;
-    out_txnp->first_seen_nanos                = cur->txn->first_seen_nanos;
+    out->first_seen_nanos                    = cur->txn_e->first_seen_nanos;
     out_txnp->source_tpu                      = cur->txn->source_tpu;
     out_txnp->source_ipv4                     = cur->txn->source_ipv4;
     out_txnp->flags                           = cur->txn->flags;
+    out_txnp->bam                             = cur->txn->bam;
+    if( FD_LIKELY( out_txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                   !out_txnp->bam.revert_on_error ) ) out_txnp->flags &= ~FD_TXN_P_FLAGS_BUNDLE;
     /* Copy the ALT accounts from the source fd_txn_e_t */
     ulong alt_acct_cnt = (ulong)txn->addr_table_adtl_cnt;
     if( FD_UNLIKELY( alt_acct_cnt ) ) pack_memcpy_out( out->alt_accts, cur->txn_e->alt_accts, alt_acct_cnt*sizeof(fd_acct_addr_t) );
@@ -2674,12 +2952,28 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
 
 ulong
-fd_pack_schedule_next_microblock( fd_pack_t *  pack,
-                                  ulong        total_cus,
-                                  float        vote_fraction,
-                                  ulong        bank_tile,
-                                  int          schedule_flags,
-                                  fd_txn_e_t * out ) {
+fd_pack_schedule_next_microblock_with_bundle_hint( fd_pack_t *  pack,
+                                                   ulong        total_cus,
+                                                   float        vote_fraction,
+                                                   ulong        bank_tile,
+                                                   int          schedule_flags,
+                                                   ulong        bundle_hint,
+                                                   fd_pack_bam_ready_fn * ready,
+                                                   void const * ready_ctx,
+                                                   fd_txn_e_t * out ) {
+
+  /* Validate before invalidating this call's hint lifetime.  In particular,
+     never fall back to a different candidate carrying another head's
+     target-slot readiness.  Votes remain eligible on an invalid hint. */
+  _Bool hint_valid = bundle_hint!=ULONG_MAX &&
+                     (bundle_hint & ~((1UL<<33)-1UL))==pack->bundle_hint_generation &&
+                     ((bundle_hint>>32)&1UL)==(ulong)!!(schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY) &&
+                     (bundle_hint & USHORT_MAX)<trp_pool_max( pack->pool );
+  if( FD_UNLIKELY( !hint_valid ) ) {
+    bundle_hint = ULONG_MAX;
+    schedule_flags &= ~FD_PACK_SCHEDULE_BAM_READY;
+  }
+  fd_pack_invalidate_bundle_hint( pack );
 
   /* TODO: Decide if these are exactly how we want to handle limits */
   total_cus = fd_ulong_min( total_cus, pack->lim->max_cost_per_block - pack->cumulative_block_cost );
@@ -2737,9 +3031,19 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
 
   /* Bundle can't mix with votes, so only try to schedule a bundle if we
      didn't get any votes. */
-  if( FD_UNLIKELY( !!(schedule_flags & FD_PACK_SCHEDULE_BUNDLE) & (status1.txns_scheduled==0UL) ) ) {
-    int bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, out );
-    if( FD_UNLIKELY( bundle_result>0                         ) ) return (ulong)bundle_result;
+  if( FD_UNLIKELY( !!(schedule_flags & (FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_SINGLE)) & (status1.txns_scheduled==0UL) ) ) {
+    int bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, schedule_flags,
+                                                     bundle_hint, out );
+    if( FD_UNLIKELY( bundle_result==TRY_BUNDLE_HAS_CONFLICTS && hint_valid &&
+                     (schedule_flags & FD_PACK_SCHEDULE_BAM_READY) ) ) {
+      ulong next = fd_pack_bam_independent_candidate( pack, schedule_flags, bundle_hint, ready, ready_ctx );
+      if( next!=ULONG_MAX ) {
+        /* Retire any views obtained by the readiness callback before dispatch. */
+        fd_pack_invalidate_bundle_hint( pack );
+        bundle_result = fd_pack_try_schedule_bundle( pack, bank_tile, schedule_flags, next, out );
+      }
+    }
+    if( FD_UNLIKELY( bundle_result>0 ) ) return (ulong)bundle_result;
     if( FD_UNLIKELY( bundle_result==TRY_BUNDLE_HAS_CONFLICTS ) ) return 0UL;
     /* in the NO_READY_BUNDLES or DOES_NOT_FIT case, we schedule like
        normal. */
@@ -2750,7 +3054,7 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
 
 
   /* Fill any remaining space with non-vote transactions */
-  if( FD_LIKELY( schedule_flags & FD_PACK_SCHEDULE_TXN ) ) {
+  if( FD_UNLIKELY( (schedule_flags & FD_PACK_SCHEDULE_TXN) && !(schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY) ) ) {
     status = fd_pack_schedule_impl( pack, pack->pending,       cu_limit, txn_limit,          byte_limit, alloc_limit, bank_tile,
         pack->pending_smallest,       use_by_bank_txn, out+scheduled );
 
@@ -2772,8 +3076,20 @@ fd_pack_schedule_next_microblock( fd_pack_t *  pack,
   return scheduled;
 }
 
+ulong
+fd_pack_schedule_next_microblock( fd_pack_t *  pack,
+                                  ulong        total_cus,
+                                  float        vote_fraction,
+                                  ulong        bank_tile,
+                                  int          schedule_flags,
+                                  fd_txn_e_t * out ) {
+  return fd_pack_schedule_next_microblock_with_bundle_hint( pack, total_cus, vote_fraction, bank_tile,
+                                                            schedule_flags, ULONG_MAX, NULL, NULL, out );
+}
+
 ulong fd_pack_bank_tile_cnt     ( fd_pack_t const * pack ) { return pack->bank_tile_cnt;         }
 ulong fd_pack_current_block_cost( fd_pack_t const * pack ) { return pack->cumulative_block_cost; }
+ulong fd_pack_pending_rebate_cost( fd_pack_t const * pack ) { return pack->cumulative_block_cost - pack->reported_block_cost; }
 
 
 void
@@ -2816,6 +3132,10 @@ fd_pack_get_pending_smallest( fd_pack_t * pack, fd_pack_smallest_t * opt_pending
 void
 fd_pack_rebate_cus( fd_pack_t              * pack,
                     fd_pack_rebate_t const * rebate ) {
+  fd_pack_invalidate_bundle_hint( pack );
+  ulong pending = fd_pack_pending_rebate_cost( pack );
+  FD_TEST( rebate->consumed_cost<=pending && rebate->total_cost_rebate<=pending-rebate->consumed_cost );
+  pack->reported_block_cost += rebate->consumed_cost;
   if( FD_UNLIKELY( (rebate->ib_result!=0) & (pack->initializer_bundle_state==FD_PACK_IB_STATE_PENDING ) ) ) {
     pack->initializer_bundle_state = fd_int_if( rebate->ib_result==1, FD_PACK_IB_STATE_READY, FD_PACK_IB_STATE_FAILED );
   }
@@ -2856,6 +3176,7 @@ fd_pack_rebate_cus( fd_pack_t              * pack,
 ulong
 fd_pack_expire_before( fd_pack_t * pack,
                        ulong       expire_before ) {
+  fd_pack_invalidate_bundle_hint( pack );
   expire_before = fd_ulong_max( expire_before, pack->expire_before );
   ulong deleted_cnt = 0UL;
   fd_pack_expq_t * prq = pack->expiration_q;
@@ -2877,6 +3198,7 @@ fd_pack_expire_before( fd_pack_t * pack,
 
 void
 fd_pack_end_block( fd_pack_t * pack ) {
+  fd_pack_invalidate_bundle_hint( pack );
   /* rounded division */
   ulong pct_cus_per_block = (pack->cumulative_block_cost*100UL + (pack->lim->max_cost_per_block>>1))/pack->lim->max_cost_per_block;
   fd_histf_sample( pack->pct_cus_per_block,       pct_cus_per_block                                          );
@@ -2888,6 +3210,7 @@ fd_pack_end_block( fd_pack_t * pack ) {
   pack->data_bytes_consumed         = 0UL;
   pack->cumulative_block_cost       = 0UL;
   pack->cumulative_vote_cost        = 0UL;
+  pack->reported_block_cost         = 0UL;
   pack->cumulative_rebated_cus      = 0UL;
   pack->outstanding_microblock_mask = 0UL;
   pack->alloc_consumed              = 0UL;
@@ -2915,6 +3238,15 @@ fd_pack_end_block( fd_pack_t * pack ) {
 
   /* compressed_slot_number is > FD_PACK_SKIP_CNT, which means +1 is the
      max unless it overflows. */
+  if( FD_UNLIKELY( pack->compressed_slot_number==USHORT_MAX ) ) {
+    /* Expiration is controlled by callers; a pending transaction can
+       outlive the compressed counter.  Retire old slot markers before
+       reusing them, preserving partially spent capacity-miss budgets. */
+    for( ulong i=0UL; i<expq_cnt( pack->expiration_q ); i++ ) {
+      fd_pack_ord_txn_t * cur = pack->expiration_q[ i ].txn;
+      if( cur->skip>FD_PACK_SKIP_CNT ) cur->skip = FD_PACK_SKIP_CNT;
+    }
+  }
   pack->compressed_slot_number = fd_ushort_max( (ushort)(pack->compressed_slot_number+1), (ushort)(FD_PACK_SKIP_CNT+1) );
 
   FD_PACK_BITSET_CLEAR( pack->bitset_rw_in_use );
@@ -2958,10 +3290,12 @@ release_tree( treap_t           * treap,
 
 void
 fd_pack_clear_all( fd_pack_t * pack ) {
+  fd_pack_invalidate_bundle_hint( pack );
   pack->pending_txn_cnt        = 0UL;
   pack->microblock_cnt         = 0UL;
   pack->cumulative_block_cost  = 0UL;
   pack->cumulative_vote_cost   = 0UL;
+  pack->reported_block_cost    = 0UL;
   pack->cumulative_rebated_cus = 0UL;
   pack->data_bytes_consumed    = 0UL;
   pack->alloc_consumed         = 0UL;
@@ -3062,22 +3396,22 @@ delete_transaction( fd_pack_t         * pack,
         !treap_fwd_iter_done( _cur ); _cur=treap_fwd_iter_next( _cur, pool ) ) {
       fd_pack_ord_txn_t * cur = treap_fwd_iter_ele( _cur, pool );
       if( FD_LIKELY( bundle_idx==RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est ) ) ) {
+        FD_TEST( cnt<FD_PACK_MAX_TXN_PER_BUNDLE-1UL );
         bundle_ptrs[ cnt++ ] = cur;
       } else {
         break;
       }
-      FD_TEST( cnt<FD_PACK_MAX_TXN_PER_BUNDLE );
     }
 
     for( treap_rev_iter_t _cur=treap_rev_iter_next( (treap_rev_iter_t)treap_idx_fast( containing, pool ), pool );
         !treap_rev_iter_done( _cur ); _cur=treap_rev_iter_next( _cur, pool ) ) {
       fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pool );
       if( FD_LIKELY( bundle_idx==RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est ) ) ) {
+        FD_TEST( cnt<FD_PACK_MAX_TXN_PER_BUNDLE-1UL );
         bundle_ptrs[ cnt++ ] = cur;
       } else {
         break;
       }
-      FD_TEST( cnt<FD_PACK_MAX_TXN_PER_BUNDLE );
     }
 
     /* Delete them each, setting delete_full_bundle to 0 to avoid
@@ -3093,6 +3427,7 @@ delete_transaction( fd_pack_t         * pack,
 
     for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+      if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
       fd_pack_penalty_treap_t * p_trp = penalty_map_query( pack->penalty_treaps, *ACCT_ITER_TO_PTR( iter ), NULL );
       if( FD_UNLIKELY( p_trp ) ) {
         fd_pack_ord_txn_t * best_in_trp = treap_rev_iter_ele( treap_rev_iter_init( p_trp->penalty_treap, pack->pool ), pack->pool );
@@ -3150,25 +3485,79 @@ delete_transaction( fd_pack_t         * pack,
 ulong
 fd_pack_delete_transaction( fd_pack_t              * pack,
                             fd_ed25519_sig_t const * sig0 ) {
+  fd_pack_invalidate_bundle_hint( pack );
   ulong cnt = 0;
-  ulong next = ULONG_MAX;
+  ulong idx;
 
-  fd_txn_e_t query_e = {0};
+  /* sig2txn reads only the signature offset and signature bytes. */
+  fd_txn_e_t query_e;
+  TXN(query_e.txnp)->signature_off = 0U;
   fd_memcpy( query_e.txnp[0].payload, sig0, FD_TXN_SIGNATURE_SZ );
-  for( ulong idx = sig2txn_idx_query_const( pack->signature_map, &query_e, ULONG_MAX, pack->pool );
-      idx!=ULONG_MAX; idx=next ) {
-    /* Iterating while deleting, not just this element, but perhaps the
-       whole bundle, feels a bit dangerous, but is actually fine because
-       a bundle can't contain two transactions with the same signature.
-       That means we know next is not part of the same bundle as idx,
-       which means that deleting idx will not delete next. */
-    next = sig2txn_idx_next_const( idx, ULONG_MAX, pack->pool );
+  while( (idx=sig2txn_idx_query_const( pack->signature_map,
+                                       &query_e,
+                                       ULONG_MAX,
+                                       pack->pool ))!=ULONG_MAX ) {
+    /* Deleting one match may delete its whole bundle, including the map's
+       next matching entry.  Re-query after each deletion to avoid a stale index. */
     cnt += delete_transaction( pack, pack->pool+idx, 1, 1 );
   }
 
   return cnt;
 }
 
+/* Returns the pool index of the pending BAM bundle's leading transaction.
+   sig2txn is a multimap, so every equal-signature entry must be checked:
+   the same signature can also belong to an unrelated transaction or to a
+   non-leading member of another bundle.  When match_identity is zero,
+   seq_id and scheduler_gen are ignored. */
+static ulong
+fd_pack_find_bam_bundle( fd_pack_t const *        pack,
+                         fd_ed25519_sig_t const * sig0,
+                         uint                     seq_id,
+                         ushort                   scheduler_gen,
+                         int                      match_identity ) {
+  fd_txn_e_t query_e;
+  TXN(query_e.txnp)->signature_off = 0U;
+  fd_memcpy( query_e.txnp[0].payload, sig0, FD_TXN_SIGNATURE_SZ );
+  ulong idx = sig2txn_idx_query_const( pack->signature_map,
+                                       &query_e,
+                                       ULONG_MAX,
+                                       pack->pool );
+  while( idx!=ULONG_MAX ) {
+    fd_pack_ord_txn_t const * ord = pack->pool + idx;
+    if( FD_LIKELY( ord->root==FD_ORD_TXN_ROOT_PENDING_BUNDLE &&
+                   ord->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
+                   ord->txn->bam.batch_idx==0U &&
+                   ( !match_identity ||
+                     ( ord->txn->bam.seq_id==seq_id &&
+                       ord->txn->bam.scheduler_gen==scheduler_gen ) ) ) ) return idx;
+    idx = sig2txn_idx_next_const( idx, ULONG_MAX, pack->pool );
+  }
+  return ULONG_MAX;
+}
+
+int
+fd_pack_contains_bam_bundle( fd_pack_t const *        pack,
+                             fd_ed25519_sig_t const * sig0,
+                             uint                     seq_id,
+                             ushort                   scheduler_gen,
+                             int                      match_identity ) {
+  return fd_pack_find_bam_bundle( pack, sig0, seq_id, scheduler_gen, match_identity )!=ULONG_MAX;
+}
+
+ulong
+fd_pack_delete_bam_bundle( fd_pack_t *              pack,
+                           fd_ed25519_sig_t const * sig0,
+                           uint                     seq_id,
+                           ushort                   scheduler_gen ) {
+  fd_pack_invalidate_bundle_hint( pack );
+  ulong cnt = 0UL;
+  for(;;) {
+    ulong idx = fd_pack_find_bam_bundle( pack, sig0, seq_id, scheduler_gen, 1 );
+    if( FD_LIKELY( idx==ULONG_MAX ) ) return cnt;
+    cnt += delete_transaction( pack, pack->pool+idx, 1, 1 );
+  }
+}
 
 int
 fd_pack_verify( fd_pack_t * pack,
@@ -3282,6 +3671,7 @@ fd_pack_verify( fd_pack_t * pack,
       FD_PACK_BITSET_COPY( complement, full );
       for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
           iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
+        if( FD_UNLIKELY( fd_pack_unwritable_contains( ACCT_ITER_TO_PTR( iter ) ) ) ) continue;
         fd_acct_addr_t acct = *ACCT_ITER_TO_PTR( iter );
 
         fd_pack_bitset_acct_mapping_t * q = bitset_map_query( bitset_copy, acct, NULL );
