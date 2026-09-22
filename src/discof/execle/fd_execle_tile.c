@@ -598,19 +598,17 @@ handle_bundle( fd_execle_tile_t *  ctx,
   }
 
 
-  int   execution_success = 1;
-  ulong failed_idx        = ULONG_MAX;
+  ulong failed_idx        = ULONG_MAX; /* No member has failed. */
   _Bool is_bam_revert     = !!( txn_cnt && txns->source_tpu==FD_TXN_M_TPU_SOURCE_BAM && txns[0].bam.revert_on_error );
   fd_bam_bundle_result_t bam_res[1];
   if( FD_UNLIKELY( is_bam_revert ) ) *bam_res = fd_bam_result_base( txns[0].bam.seq_id, txns[0].bam.scheduler_gen, slot, (uchar)txn_cnt );
 
   /* Acquire all accdb resources in order to execute the bundle. */
-  int setup_bundle = 1;
-  int err = fd_runtime_prepare_bundle_accounts( ctx->runtime, bank, ctx->txn_in, ctx->txn_out, txn_cnt );
-  if( FD_UNLIKELY( err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
-    execution_success = 0;
-    failed_idx        = 0;
-    setup_bundle      = 0;
+  int const setup_bundle = fd_runtime_prepare_bundle_accounts( ctx->runtime, bank, ctx->txn_in, ctx->txn_out, txn_cnt )==FD_RUNTIME_EXECUTE_SUCCESS;
+  if( FD_UNLIKELY( !setup_bundle ) ) {
+    for( failed_idx=0UL; failed_idx<txn_cnt; failed_idx++ )
+      if( ctx->txn_out[ failed_idx ].err.txn_err!=FD_RUNTIME_EXECUTE_SUCCESS ) break;
+    FD_TEST( failed_idx<txn_cnt );
   }
 
   /* Every transaction in the bundle should be executed in order against
@@ -621,27 +619,20 @@ handle_bundle( fd_execle_tile_t *  ctx,
     fd_txn_in_t *  txn_in  = &ctx->txn_in[ i ];
     fd_txn_out_t * txn_out = &ctx->txn_out[ i ];
 
-    txn_out->err.txn_err = FD_RUNTIME_EXECUTE_SUCCESS;
-
     txn->flags &= ~FD_TXN_P_FLAGS_SANITIZE_SUCCESS;
     txn->flags &= ~FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
 
-    if( execution_success==0 ) {
-      txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-FD_RUNTIME_TXN_ERR_BUNDLE_PEER)<<24);
+    if( failed_idx!=ULONG_MAX ) {
+      int txn_err = i==failed_idx ? txn_out->err.txn_err : FD_RUNTIME_TXN_ERR_BUNDLE_PEER;
+      txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-txn_err)<<24);
       continue;
     }
-
-    txn_in->txn              = txn;
-    txn_in->bundle.is_bundle = 1;
 
     fd_runtime_prepare_and_execute_txn( ctx->runtime, bank, txn_in, txn_out );
 
     txn->flags = (txn->flags & 0x00FFFFFFU) | ((uint)(-txn_out->err.txn_err)<<24);
-    if( FD_UNLIKELY( !txn_out->err.is_committable || txn_out->err.txn_err!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
-      execution_success = 0;
+    if( FD_UNLIKELY( !txn_out->err.is_committable || txn_out->err.txn_err!=FD_RUNTIME_EXECUTE_SUCCESS ) )
       failed_idx = i;
-      continue;
-    }
   }
 
   /* If all of the transactions in the bundle executed successfully, we
@@ -649,7 +640,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
      accumulate unused CUs to the rebate.  Otherwise, if any transaction
      fails, we need to exclude all the bundle transactions and rebate
      all of the CUs. */
-  if( FD_LIKELY( execution_success ) ) {
+  if( FD_LIKELY( failed_idx==ULONG_MAX ) ) {
     for( ulong i=0UL; i<txn_cnt; i++ ) {
 
       fd_txn_in_t *  txn_in    = &ctx->txn_in[ i ];
@@ -701,7 +692,6 @@ handle_bundle( fd_execle_tile_t *  ctx,
     }
     if( FD_UNLIKELY( is_bam_revert ) ) bam_res->execution_success = 1U;
   } else {
-    FD_TEST( failed_idx != ULONG_MAX );
     /* A failed bundle is dropped in its entirety: every transaction is
        marked non-committable and none of them land in the block. We
        intentionally do NOT emit runtime_txn events here */
@@ -714,7 +704,10 @@ handle_bundle( fd_execle_tile_t *  ctx,
         fd_bam_result_add_txn_error( bam_res, i, bam_types_TransactionErrorReason_COMMIT_CANCELLED );
       }
       fd_bam_result_set_txn_error( bam_res, failed_idx, fd_bam_txn_err_from_runtime_err( ctx->txn_out[ failed_idx ].err.txn_err ) );
-      for( ulong i=0UL; i<=failed_idx; i++ ) bam_fill_txn_result( bam_res, i, &ctx->txn_out[ i ] );
+      /* Preparation failures execute no transactions, so their txn_out
+         execution details have not been initialized for this bundle. */
+      if( FD_LIKELY( setup_bundle ) )
+        for( ulong i=0UL; i<=failed_idx; i++ ) bam_fill_txn_result( bam_res, i, &ctx->txn_out[ i ] );
       fd_bam_publish_result( stem, ctx->out_bam->idx, ctx->out_bam->mem, &ctx->out_bam->chunk,
                              ctx->out_bam->chunk0, ctx->out_bam->wmark, bam_res );
     }
@@ -722,7 +715,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
 
       ctx->txn_out[ i ].err.is_committable = 0;
 
-      if( i>failed_idx ) {
+      if( !setup_bundle || i>failed_idx ) {
         ctx->txn_out[ i ].details.load_start_ticks   = LONG_MAX;
         ctx->txn_out[ i ].details.check_start_ticks  = LONG_MAX;
         ctx->txn_out[ i ].details.exec_start_ticks   = LONG_MAX;

@@ -1020,6 +1020,10 @@ test_execute_bundles( fd_svm_mini_t * mini ) {
 
     int prep_err = fd_runtime_prepare_bundle_accounts( env->runtime, env->bank, alut_bundle_in, env->txn_out, 2UL );
     FD_TEST( prep_err == FD_RUNTIME_TXN_ERR_INVALID_ADDRESS_LOOKUP_TABLE_INDEX );
+    FD_TEST( env->txn_out[0].err.txn_err == FD_RUNTIME_EXECUTE_SUCCESS );
+    FD_TEST( env->txn_out[1].err.txn_err == prep_err );
+    FD_TEST( env->runtime->accounts.account_cnt == 0UL );
+    FD_TEST( env->runtime->accounts.executable_cnt == 0UL );
 
     FD_LOG_NOTICE(( "test bundle ALT peer isolation... ok" ));
   }

@@ -1495,6 +1495,110 @@ FD_UNIT_TEST( execle_bundle_ok ) {
   test_env_destroy( env );
 }
 
+FD_UNIT_TEST( execle_bundle_prepare_fail ) {
+  /* Preparation can fail before any member executes.  Exercise both
+     preparation error exits and reuse outputs from an earlier bundle. */
+  for( ulong variant=0UL; variant<4UL; variant++ ) {
+    test_env_t * env = test_env_create();
+    fd_bank_t * bank = fd_svm_mini_bank( env->mini, env->bank_idx );
+    fd_pubkey_t payer = { .ul = { 0xabc0UL } };
+    fd_pubkey_t recipient = { .ul = { 0xabc1UL } };
+    fd_pubkey_t missing_alt = { .ul = { 0xabc2UL } };
+    ulong const payer_start = 1000000000UL;
+    ulong const recipient_start = 1000000UL;
+    ulong const fee = 5000UL;
+    fd_blockhash_info_t * blockhash_info = (fd_blockhash_info_t *)fd_blockhashes_peek_last( &bank->f.block_hash_queue );
+    FD_TEST( blockhash_info );
+    blockhash_info->lamports_per_signature = fee;
+    test_fund_account( env, &payer, payer_start );
+    test_fund_account( env, &recipient, recipient_start );
+
+    fd_txn_p_t txns[3];
+    for( ulong i=0UL; i<3UL; i++ )
+      test_build_system_transfer_txn( &txns[i], bank, payer, recipient, 11UL+i );
+    test_execle_run( env, txns, 3UL, 0U, 0UL, 1 );
+    test_execle_flush_rebate( env );
+    FD_TEST( test_read_lamports( env, &payer )==payer_start-3UL*fee-36UL );
+    FD_TEST( test_read_lamports( env, &recipient )==recipient_start+36UL );
+
+    ulong failed_idx = variant<3UL ? variant : 1UL;
+    int runtime_err = variant<3UL ? FD_RUNTIME_TXN_ERR_ADDRESS_LOOKUP_TABLE_NOT_FOUND
+                                 : FD_RUNTIME_TXN_ERR_ACCOUNT_LOADED_TWICE;
+    bam_types_TransactionErrorReason bam_err = variant<3UL ? bam_types_TransactionErrorReason_ADDRESS_LOOKUP_TABLE_NOT_FOUND
+                                                         : bam_types_TransactionErrorReason_ACCOUNT_LOADED_TWICE;
+    for( ulong i=0UL; i<3UL; i++ ) {
+      test_build_empty_txn( &txns[i], bank, payer, variant==3UL && i==failed_idx ? payer : recipient, 700UL+i, 0 );
+      txns[i].flags |= FD_TXN_P_FLAGS_SANITIZE_SUCCESS | FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
+      env->execle->txn_out[i].err.txn_err = FD_RUNTIME_TXN_ERR_BLOCKHASH_NOT_FOUND;
+    }
+    if( variant<3UL ) {
+      /* Replace the empty v0 lookup list with a real lookup of a table
+         absent from the parent fork.  Keep the transaction parseable. */
+      fd_txn_p_t * txn = &txns[failed_idx];
+      ulong sz = txn->payload_sz;
+      FD_TEST( txn->payload[sz-1UL]==0U );
+      txn->payload[sz-1UL] = 1U;
+      fd_memcpy( txn->payload+sz, missing_alt.uc, sizeof(fd_pubkey_t) );
+      sz += sizeof(fd_pubkey_t);
+      txn->payload[sz++] = 1U; /* one writable lookup */
+      txn->payload[sz++] = 0U; /* table index */
+      txn->payload[sz++] = 0U; /* no readonly lookups */
+      txn->payload_sz = (ushort)sz;
+      FD_TEST( fd_txn_parse( txn->payload, sz, TXN(txn), NULL ) );
+    }
+    test_mark_bam_batch( txns, 3UL, 106U, 1 );
+    test_execle_run( env, txns, 3UL, 3U, 3UL, 1 );
+    test_assert_bundle_out( env, 3UL, 3U );
+
+    fd_frag_meta_t const * bam_meta = test_topo_link( "bank_bam" )->mcache;
+    FD_TEST( bam_meta->sz==sizeof(fd_bam_bundle_result_t) );
+    fd_bam_bundle_result_t const * result = fd_chunk_to_laddr( env->execle->out_bam->mem, bam_meta->chunk );
+    FD_TEST( result->seq_id==106U && result->bundle_txn_cnt==3U );
+    FD_TEST( !result->execution_success && result->scheduling_error==FD_BAM_SCHED_ERR_NONE );
+    FD_TEST( result->transaction_err_count==3U );
+    FD_TEST( env->execle->txn_out[failed_idx].err.txn_err==runtime_err );
+    for( ulong i=0UL; i<3UL; i++ ) {
+      FD_TEST( result->transaction_err[i]==(i==failed_idx ? bam_err : bam_types_TransactionErrorReason_COMMIT_CANCELLED) );
+      FD_TEST( result->sanitize_success[i] );
+      FD_TEST( !result->consumed_cus[i] && !result->loaded_accounts_data_size[i] && !result->feepayer_balance_lamports[i] );
+      FD_TEST( !env->execle->txn_out[i].err.is_committable );
+      FD_TEST( env->execle->txn_out[i].details.load_start_ticks==LONG_MAX );
+      FD_TEST( env->execle->txn_out[i].details.check_start_ticks==LONG_MAX );
+      FD_TEST( env->execle->txn_out[i].details.exec_start_ticks==LONG_MAX );
+      FD_TEST( env->execle->txn_out[i].details.commit_start_ticks==LONG_MAX );
+      fd_frag_meta_t const * meta = test_out_poh_meta( i );
+      fd_txn_p_t const * out = fd_chunk_to_laddr( env->execle->out_poh->mem, meta->chunk );
+      FD_TEST( !(out->flags & (FD_TXN_P_FLAGS_SANITIZE_SUCCESS | FD_TXN_P_FLAGS_EXECUTE_SUCCESS)) );
+      FD_TEST( (out->flags & FD_TXN_P_FLAGS_RESULT_MASK)==((uint)-(i==failed_idx ? runtime_err : FD_RUNTIME_TXN_ERR_BUNDLE_PEER)<<24) );
+      FD_TEST( !out->execle_cu.actual_consumed_cus );
+      FD_TEST( out->execle_cu.rebated_cus==301000U );
+      fd_microblock_trailer_t const * trailer = test_out_poh_trailer_bundle( env, i );
+      FD_TEST( !trailer->tips );
+      FD_TEST( trailer->txn_ns_dt.load_start==0.f && trailer->txn_ns_dt.check_start==0.f );
+      FD_TEST( trailer->txn_ns_dt.exec_start==0.f && trailer->txn_ns_dt.commit_start==0.f && trailer->txn_ns_dt.commit_end==0.f );
+    }
+    FD_TEST( !env->execle->runtime->accounts.account_cnt && !env->execle->runtime->accounts.executable_cnt );
+    FD_TEST( test_read_lamports( env, &payer )==payer_start-3UL*fee-36UL );
+    FD_TEST( test_read_lamports( env, &recipient )==recipient_start+36UL );
+    FD_TEST( env->execle->metrics.txn_result[fd_execle_err_from_runtime_err( runtime_err )]==1UL );
+    FD_TEST( env->execle->metrics.txn_result[FD_METRICS_ENUM_TRANSACTION_RESULT_V_BUNDLE_PEER_IDX]==2UL );
+    FD_TEST( env->execle->metrics.txn_result[FD_METRICS_ENUM_TRANSACTION_RESULT_V_SUCCESS_IDX]==3UL );
+    FD_TEST( env->execle->metrics.txn_landed[FD_METRICS_ENUM_TRANSACTION_LANDED_V_UNLANDED_IDX]==3UL );
+    test_execle_flush_rebate( env );
+    fd_pack_rebate_t const * rebate = fd_chunk_to_laddr( env->execle->out_pack->mem, test_out_pack_meta( 0UL )->chunk );
+    FD_TEST( rebate->total_cost_rebate==903000UL && rebate->microblock_cnt_rebate==3UL );
+
+    /* A subsequent bundle must still acquire, execute, and commit. */
+    for( ulong i=0UL; i<3UL; i++ )
+      test_build_system_transfer_txn( &txns[i], bank, payer, recipient, 21UL+i );
+    test_execle_run( env, txns, 3UL, 6U, 6UL, 1 );
+    FD_TEST( test_read_lamports( env, &payer )==payer_start-6UL*fee-102UL );
+    FD_TEST( test_read_lamports( env, &recipient )==recipient_start+102UL );
+    FD_TEST( !env->execle->runtime->accounts.account_cnt && !env->execle->runtime->accounts.executable_cnt );
+    test_env_destroy( env );
+  }
+}
+
 FD_UNIT_TEST( execle_bundle_fail ) {
   /* Instruction in a bundle reverts the whole bundle */
   test_env_t * env = test_env_create();

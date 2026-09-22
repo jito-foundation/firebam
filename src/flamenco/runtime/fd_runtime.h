@@ -407,7 +407,11 @@ fd_runtime_cancel_txn( fd_runtime_t *      runtime,
    bundle.  It is responsible for acquiring the union of all accounts
    referenced by all transactions in the bundle.  This is required
    to make sure account acquisition does not get torn across tiles and
-   cause a resource acquisition deadlock. */
+   cause a resource acquisition deadlock.  Returns FD_RUNTIME_EXECUTE_SUCCESS
+   on success.  Each visited txn_out records its preparation result in
+   err.txn_err: success for the prefix, then the concrete error at the
+   first failure.  On failure, no accounts are acquired and later
+   txn_outs are untouched. */
 
 int
 fd_runtime_prepare_bundle_accounts( fd_runtime_t *      runtime,
