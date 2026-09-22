@@ -2070,6 +2070,21 @@ test_bam_pair_sign( fd_txn_p_t *       txnp,
   fd_sha512_delete( fd_sha512_leave( sha ) );
 }
 
+/* Transfer builders put System last as the only readonly static account.
+   Request its write lock in the signed message; runtime must still demote
+   it, while Pack must charge the requested lock and allow parallel users. */
+static void
+test_bam_request_system_write( fd_txn_p_t * txnp ) {
+  fd_txn_t * txn = TXN(txnp);
+  FD_TEST( txn->readonly_unsigned_cnt==1U );
+  fd_acct_addr_t const * keys = fd_txn_get_acct_addrs( txn, txnp->payload );
+  FD_TEST( !memcmp( keys+txn->acct_addr_cnt-1U, &fd_solana_system_program_id, 32UL ) );
+  ulong header = txn->message_off+(ulong)(txn->transaction_version==FD_TXN_V0);
+  txnp->payload[header+2UL] = 0U;
+  FD_TEST( fd_txn_parse( txnp->payload, txnp->payload_sz, txn, NULL ) );
+  FD_TEST( fd_txn_is_writable( txn, (ushort)(txn->acct_addr_cnt-1U) ) );
+}
+
 typedef struct {
   ulong target_slot;
   ulong slot;
@@ -2111,16 +2126,17 @@ test_bam_pair_run( int variant,
   test_env_t * env[2] = { test_env_create(), NULL };
   env[1] = test_env_create_worker( env[0] );
   fd_bank_t * bank = fd_svm_mini_bank( mini, env[0]->bank_idx );
-  int duplicate = variant>=8;
+  int duplicate = variant==8 || variant==9;
+  int reserved_write = variant==10 || variant==11;
   int dependency = variant==7;
   int instruction_failure = variant==3 || variant==4 || variant==5;
   int fees_only = variant==6;
   int atomic_failure = variant==3 || variant==4;
   /* The shared-member retry starts with one landed transaction, then
      retries it alongside a new member.  Match the BAM capture consumer. */
-  ulong next = (variant==2 || variant==4 || variant==8) ? 2UL : 1UL;
+  ulong next = (variant==2 || variant==4 || variant==8 || variant==11) ? 2UL : 1UL;
   ulong second_worker = reverse && !duplicate ? 1UL : 0UL;
-  result->atomic = (variant>=1 && variant<=4) || duplicate;
+  result->atomic = (variant>=1 && variant<=4) || duplicate || variant==11;
   result->slot = result->target_slot = bank->f.slot;
   result->first_batch_cnt = next;
   result->second_batch_cnt = duplicate ? 2UL : 1UL;
@@ -2142,6 +2158,7 @@ test_bam_pair_run( int variant,
     if( instruction_failure && i==next-1UL ) transfer = ULONG_MAX;
     if( fees_only ) test_build_missing_program_txn( &result->forwarded[i], bank, accounts[0], (fd_pubkey_t){ .ul={0xDEADUL} } );
     else test_build_system_transfer_txns( &result->forwarded[i], bank, accounts[0], &accounts[i+1UL], &transfer, 1UL );
+    if( reserved_write ) test_bam_request_system_write( &result->forwarded[i] );
     test_bam_pair_sign( &result->forwarded[i], &accounts[0], private_keys[0] );
   }
   test_mark_bam_batch( result->forwarded, next, 100U+(uint)(2*variant), result->atomic );
@@ -2156,6 +2173,7 @@ test_bam_pair_run( int variant,
     ulong payer = dependency ? 1UL : 3UL;
     ulong transfer = dependency ? 800000UL : 3000UL;
     test_build_system_transfer_txns( &result->forwarded[next], bank, accounts[payer], &accounts[4], &transfer, 1UL );
+    if( reserved_write ) test_bam_request_system_write( &result->forwarded[next] );
     test_bam_pair_sign( &result->forwarded[next], &accounts[payer], private_keys[payer] );
   }
   test_mark_bam_batch( &result->forwarded[next], result->second_batch_cnt, 101U+(uint)(2*variant), duplicate );
@@ -2361,6 +2379,43 @@ FD_UNIT_TEST( execle_bam_two_workers_pack_poh ) {
     FD_LOG_NOTICE(( "BAM two-worker real-Pack/execle/PoH fixture passed: %s", names[variant] ));
   }
   if( file ) { fprintf( file, "]}\n" ); FD_TEST( !fclose( file ) ); }
+}
+
+FD_UNIT_TEST( execle_bam_reserved_system_pack_poh ) {
+  for( int variant=10; variant<=11; variant++ ) {
+    test_bam_pair_result_t parallel, serial;
+    test_bam_pair_run( variant, 1, &parallel );
+    test_bam_pair_run( variant, 0, &serial );
+    FD_TEST( !memcmp( parallel.balances, serial.balances, sizeof(parallel.balances) ) );
+    FD_TEST( parallel.poh.txn_cnt==serial.poh.txn_cnt );
+    for( ulong i=0UL; i<parallel.poh.txn_cnt; i++ ) {
+      FD_TEST( parallel.poh.txns[i].payload_sz==serial.poh.txns[i].payload_sz );
+      FD_TEST( !memcmp( parallel.poh.txns[i].payload, serial.poh.txns[i].payload, parallel.poh.txns[i].payload_sz ) );
+    }
+  }
+}
+
+typedef struct {
+  fd_txn_p_t const * txns;
+  ulong slot;
+} test_bam_lookahead_ready_t;
+
+FD_UNIT_TEST( execle_reserved_fee_payer_rejected ) {
+  /* The pack admission repair must not make a reserved account a usable
+     fee payer.  This directly tests runtime validation; no signature with
+     the reserved address is constructed or presumed valid. */
+  test_env_t * env = test_env_create();
+  fd_bank_t * bank = fd_svm_mini_bank( mini, env->bank_idx );
+  fd_pubkey_t recipient = { .ul={0xaaaabbbbUL} };
+  fd_txn_p_t txn[1];
+  test_build_empty_txn( txn, bank, fd_solana_system_program_id, recipient, 93UL, 0 );
+  ulong before = test_read_lamports( env, &fd_solana_system_program_id );
+  FD_TEST( before>0UL );
+  test_execle_run( env, txn, 1UL, 0U, 0UL, 0 );
+  FD_TEST( !env->execle->txn_out[0].err.is_committable );
+  FD_TEST( env->execle->txn_out[0].err.txn_err==FD_RUNTIME_TXN_ERR_INVALID_ACCOUNT_FOR_FEE );
+  FD_TEST( test_read_lamports( env, &fd_solana_system_program_id )==before );
+  test_env_destroy( env );
 }
 
 
