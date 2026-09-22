@@ -673,10 +673,7 @@ fd_bank_abi_txn_init( fd_bank_abi_txn_t * out_txn,
     int _is_upgradeable_loader_present = is_upgradeable_loader_present( txn, payload, NULL );
     for( ushort i=0; i<txn->acct_addr_cnt; i++ ) {
       int is_writable = fd_txn_is_writable( txn, i ) &&
-                        /* Agave does this check, but we don't need to here because pack
-                           rejects these transactions before they make it to the bank.
-
-                           !fd_pack_unwritable_contains( (const fd_acct_addr_t*)(payload + txn->acct_addr_off + i*32UL) ) */
+                        !fd_pack_unwritable_contains( (const fd_acct_addr_t*)(payload + txn->acct_addr_off + i*32UL) ) &&
                         (!is_key_called_as_program( txn, i ) || _is_upgradeable_loader_present);
       legacy->is_writable_account_cache[ i ] = !!is_writable;
     }
@@ -742,17 +739,12 @@ fd_bank_abi_txn_init( fd_bank_abi_txn_t * out_txn,
     int _is_upgradeable_loader_present = is_upgradeable_loader_present( txn, payload, loaded_addresses->writable );
     for( ushort i=0; i<txn->acct_addr_cnt; i++ ) {
       int is_writable = fd_txn_is_writable( txn, i ) &&
-                        /* Agave does this check, but we don't need to here because pack
-                           rejects these transactions before they make it to the bank.
-
-                           !fd_pack_unwritable_contains( (const fd_acct_addr_t*)(payload + txn->acct_addr_off + i*32UL) ) */
+                        !fd_pack_unwritable_contains( (const fd_acct_addr_t*)(payload + txn->acct_addr_off + i*32UL) ) &&
                         (!is_key_called_as_program( txn, i ) || _is_upgradeable_loader_present);
       v0->is_writable_account_cache[ i ] = !!is_writable;
     }
     for( ushort i=0; i<txn->addr_table_adtl_writable_cnt; i++ ) {
-      /* We do need to check is_builtin_key_or_sysvar here, because pack
-         has not yet loaded the address LUT accounts, so it doesn't
-         reject these yet. */
+      /* ALT write requests are demoted just like static reserved keys. */
       int is_writable = !fd_pack_unwritable_contains( (const fd_acct_addr_t*)(loaded_addresses->writable + i) ) &&
                         (!is_key_called_as_program( txn, (ushort)(txn->acct_addr_cnt+i) ) || _is_upgradeable_loader_present);
       v0->is_writable_account_cache[ txn->acct_addr_cnt+i ] = !!is_writable;
@@ -843,10 +835,7 @@ fd_bank_abi_txn_init( fd_bank_abi_txn_t * out_txn,
     int _is_upgradeable_loader_present = is_upgradeable_loader_present( txn, payload, NULL );
     for( ushort i=0; i<txn->acct_addr_cnt; i++ ) {
       int is_writable = fd_txn_is_writable( txn, i ) &&
-                        /* Agave does this check, but we don't need to here because pack
-                           rejects these transactions before they make it to the bank.
-
-                           !fd_pack_unwritable_contains( (const fd_acct_addr_t*)(payload + txn->acct_addr_off + i*32UL) ) */
+                        !fd_pack_unwritable_contains( (const fd_acct_addr_t*)(payload + txn->acct_addr_off + i*32UL) ) &&
                         (!is_key_called_as_program( txn, i ) || _is_upgradeable_loader_present);
       v1->is_writable_account_cache[ i ] = !!is_writable;
     }
