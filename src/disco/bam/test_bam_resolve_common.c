@@ -254,25 +254,30 @@ test_unknown_hash_stash_and_nonce_bypass( void ) {
   FD_TEST( h->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_INSERTED_IDX ]==8UL );
   FD_TEST( h->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_OVERRUN_IDX ]==4UL );
 
-  for( ulong source=0UL; source<3UL; source++ ) {
+  for( ulong source=0UL; source<5UL; source++ ) {
     fd_txn_m_t * txnm = test_prepare_bam_txn( h, (uchar)(60UL+source), source==1UL, 0U, 1U, 0 );
     if( source ) txnm->source_tpu = FD_TXN_M_TPU_SOURCE_QUIC;
-    if( source==2UL ) {
+    if( source>=2UL ) {
       /* A possible durable nonce uses SystemProgram AdvanceNonceAccount.
          Resolver only recognizes the shape; runtime validates its state. */
-      txnm->payload_sz = 68U;
+      txnm->payload_sz = 104U;
       txnm->txn_t_sz = (ushort)fd_txn_footprint( 1UL, 0UL );
       uchar * payload = fd_txn_m_payload( txnm );
-      fd_memset( payload+32UL, 0, 32UL );
-      fd_memcpy( payload+64UL, (uchar[4]){ 4U, 0U, 0U, 0U }, 4UL );
+      fd_memset( payload+32UL, 0, 72UL );
+      payload[32UL] = 1U; /* static signer; second address is System Program */
+      FD_STORE( uint, payload+96UL, 4U );
+      for( ulong i=0UL; i<3UL; i++ ) payload[101UL+i] = (uchar)(i!=(source==2UL ? 0UL : 1UL));
       fd_txn_t * txn = fd_txn_m_txn_t( txnm );
       fd_memset( txn, 0, txnm->txn_t_sz );
       txn->acct_addr_off = 32U;
-      txn->acct_addr_cnt = 1U;
+      txn->acct_addr_cnt = 2U;
+      txn->signature_cnt = 1U;
       txn->instr_cnt = 1U;
-      txn->instr[0].data_off = 64U;
-      txn->instr[0].data_sz = 4U;
-      txn->instr[0].acct_cnt = 3U;
+      txn->instr[0].program_id = 1U;
+      txn->instr[0].data_off = 96U;
+      txn->instr[0].data_sz = 5U;
+      txn->instr[0].acct_off = 101U;
+      txn->instr[0].acct_cnt = (uchar)(source-1UL);
     }
     after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
     FD_TEST( h->seqs[0]==source+1UL );
