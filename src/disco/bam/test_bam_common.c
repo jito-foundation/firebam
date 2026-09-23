@@ -420,8 +420,10 @@ struct test_bam_env {
 typedef struct test_bam_env test_bam_env_t;
 
 static test_bam_env_t *
-test_bam_env_create( test_bam_env_t * env,
-                     fd_wksp_t *      wksp ) {
+test_bam_env_create_with_grpc_buf_sz( test_bam_env_t * env,
+                                      fd_wksp_t *      wksp,
+                                      ulong            grpc_buf_sz ) {
+  FD_TEST( grpc_buf_sz<=INT_MAX );
   fd_memset( env, 0, sizeof(test_bam_env_t) );
 
   ulong const mcache_depth = fd_ulong_pow2_up( fd_ulong_max( FD_BAM_STEM_BURST + 1UL,
@@ -493,12 +495,12 @@ test_bam_env_create( test_bam_env_t * env,
   state->tcp_sock        = -1;
   state->admin_rpc_fd    = -1;
   state->keylog_fd       = -1;
-  state->so_rcvbuf       = 4096;
+  state->so_rcvbuf       = (int)grpc_buf_sz;
   state->map_seed        = 1UL;
 
-  state->grpc_client_mem = fd_wksp_alloc_laddr( wksp, fd_grpc_client_align(), fd_grpc_client_footprint( 4096UL ), 1UL );
+  state->grpc_client_mem = fd_wksp_alloc_laddr( wksp, fd_grpc_client_align(), fd_grpc_client_footprint( grpc_buf_sz ), 1UL );
   FD_TEST( state->grpc_client_mem );
-  state->grpc_client = fd_grpc_client_new( state->grpc_client_mem, &fd_bam_client_grpc_callbacks, state->grpc_metrics, state, 4096UL, state->map_seed );
+  state->grpc_client = fd_grpc_client_new( state->grpc_client_mem, &fd_bam_client_grpc_callbacks, state->grpc_metrics, state, grpc_buf_sz, state->map_seed );
   FD_TEST( state->grpc_client );
   fd_h2_conn_t * h2_conn = fd_grpc_client_h2_conn( state->grpc_client );
   h2_conn->flags = 0;
@@ -525,6 +527,12 @@ test_bam_env_create( test_bam_env_t * env,
       FD_MHIST_MIN( BAM, SCHEDULER_PONG_SEND_NANOS ),
       FD_MHIST_MAX( BAM, SCHEDULER_PONG_SEND_NANOS ) );
   return env;
+}
+
+FD_FN_UNUSED static test_bam_env_t *
+test_bam_env_create( test_bam_env_t * env,
+                     fd_wksp_t *      wksp ) {
+  return test_bam_env_create_with_grpc_buf_sz( env, wksp, 4096UL );
 }
 
 FD_FN_UNUSED static ulong

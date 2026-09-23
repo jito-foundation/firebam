@@ -144,8 +144,12 @@ typedef struct {
   uint observed_result_drop;
   ulong execle_output_cnt;
 
+  uint   txn_error_checkpoint_first_seq;
+  ulong  txn_error_checkpoint_slot;
+  ushort txn_error_checkpoint_gen;
+  uchar  txn_error_checkpoint_cnt;
+
   uint required_outside_slot;
-  uint required_txn_error;
   uint required_result_drop;
 } bam_fuzz_state_t;
 
@@ -224,7 +228,11 @@ bam_fuzz_shadow_push_result( bam_fuzz_state_t *              f,
   if( FD_UNLIKELY( res->transaction_err_count ) ) {
     for( uchar i=0U; i<res->bundle_txn_cnt; i++ ) {
       if( FD_UNLIKELY( res->transaction_err[ i ]!=bam_types_TransactionErrorReason_COMMIT_CANCELLED ) ) {
-        f->observed_txn_error = 1U;
+        if( FD_LIKELY( !f->txn_error_checkpoint_cnt ) ||
+            FD_UNLIKELY( res->slot==f->txn_error_checkpoint_slot &&
+                         res->scheduler_gen==f->txn_error_checkpoint_gen &&
+                         (uint)(res->seq_id-f->txn_error_checkpoint_first_seq)<f->txn_error_checkpoint_cnt ) )
+          f->observed_txn_error = 1U;
       }
     }
   }
@@ -466,7 +474,7 @@ bam_fuzz_pump_pack( test_bam_env_t *  env,
                     bam_fuzz_execle_t * execle,
                     ulong             max_iter ) {
   for( ulong i=0UL; i<max_iter; i++ ) {
-    bam_fuzz_pack_result_t res = bam_fuzz_pack_credit( pack );
+    bam_fuzz_pack_result_t res = bam_fuzz_pack_credit( pack, g_bam_fuzz_now );
     bam_fuzz_ingest_pack_outputs( env, f, links, execle, &res );
     if( FD_UNLIKELY( res.execle_after==res.execle_before &&
                      res.bam_leader_after==res.bam_leader_before &&
@@ -534,7 +542,7 @@ bam_fuzz_pump_resolv( test_bam_env_t *    env,
                                    links->resolv_pack.wmark,
                                    sizeof(fd_txn_m_t),
                                    FD_TPU_RESOLVED_MTU );
-      bam_fuzz_pack_result_t pack_res = bam_fuzz_pack_frag( pack, pack_meta, pack_seq );
+      bam_fuzz_pack_result_t pack_res = bam_fuzz_pack_frag( pack, pack_meta, pack_seq, g_bam_fuzz_now );
       bam_fuzz_ingest_pack_outputs( env, f, links, execle, &pack_res );
     }
     if( FD_UNLIKELY( res.pack_after==res.pack_before ) ) break;
@@ -576,7 +584,7 @@ bam_fuzz_run_pipeline( test_bam_env_t *       env,
             bam_fuzz_txnm_from_link( &links->resolv_pack, pack_seq, FD_TPU_RESOLVED_MTU, &pack_meta );
         bam_fuzz_assert_txnm_preserved( pack_txnm, bam_txnm );
 
-        bam_fuzz_pack_result_t pack_res = bam_fuzz_pack_frag( pack, pack_meta, pack_seq );
+        bam_fuzz_pack_result_t pack_res = bam_fuzz_pack_frag( pack, pack_meta, pack_seq, g_bam_fuzz_now );
         bam_fuzz_ingest_pack_outputs( env, f, links, execle, &pack_res );
         bam_fuzz_pump_pack( env, f, links, pack, execle, 8UL );
       }
@@ -625,7 +633,6 @@ bam_fuzz_assert_invariants( test_bam_env_t const * env,
   fd_bam_tile_t const * state = env->state;
   bam_fuzz_assert_shadow_queue( f, state );
   if( FD_UNLIKELY( f->required_outside_slot ) ) FD_TEST( f->observed_outside_slot );
-  if( FD_UNLIKELY( f->required_txn_error   ) ) FD_TEST( f->observed_txn_error   );
   if( FD_UNLIKELY( f->required_result_drop ) ) FD_TEST( f->observed_result_drop );
   FD_TEST( bam_pending_txn_cnt( state->pending_txns ) <= bam_pending_txn_max( state->pending_txns ) );
   FD_TEST( state->verify_out.chunk >= state->verify_out.chunk0 );
@@ -1032,22 +1039,38 @@ bam_fuzz_require_txn_error_path( test_bam_env_t *    env,
   bam_fuzz_ensure_scheduler_stream( env );
   bam_fuzz_drain_pending_txns( env, f, links, verify, dedup, resolv, pack, execle, ULONG_MAX );
   bam_fuzz_drain_result_queue( env, f, ULONG_MAX );
-
-  if( FD_UNLIKELY( f->leader_state.slot==ULONG_MAX ) ) {
-    f->leader_state = (fd_bam_leader_state_t) {
-      .slot = f->current_slot,
-      .slot_end_ns = g_bam_fuzz_now + (long)1000000L,
-      .slot_cu_budget_remaining = 1000000U,
-      .tick = (ushort)c,
-      .current_slot_has_bam_work = 0U,
-    };
-    bam_fuzz_sync_pack_leader( env, f, links, resolv, pack, execle );
+  if( FD_UNLIKELY( env->state->feedback_queue_depth ) ) {
+    /* A prior event may have left the mock sender busy.  The durable FIFO
+       survives a stream reset; drain it before creating checkpoint work. */
+    bam_fuzz_reset_preserving_feedback( f, env->state );
+    bam_fuzz_ensure_scheduler_stream( env );
+    bam_fuzz_drain_result_queue( env, f, ULONG_MAX );
   }
+  FD_TEST( !env->state->feedback_queue_depth );
+
+  /* A prior checkpoint may have closed the current slot, and other input
+     events can leave work targeted up to three slots ahead.  Move past
+     both before requiring a fresh execution result. */
+  f->current_slot += 4UL;
+  g_bam_fuzz_now += (long)4000000L;
+  f->leader_state = (fd_bam_leader_state_t) {
+    .slot = f->current_slot,
+    .slot_end_ns = g_bam_fuzz_now + (long)1000000L,
+    .slot_cu_budget_remaining = 1000000U,
+    .tick = (ushort)c,
+    .current_slot_has_bam_work = 0U,
+  };
+  bam_fuzz_sync_pack_leader( env, f, links, resolv, pack, execle );
+  FD_TEST( env->state->bam_leader_state.slot==f->current_slot );
 
   f->observed_txn_error = 0U;
   bam_fuzz_batch_spec_t specs[ BAM_FUZZ_MAX_BATCHES ];
   ulong spec_cnt = 0UL;
   bam_fuzz_make_batch_specs( f, specs, &spec_cnt, 0x42U, 0x43U, c );
+  f->txn_error_checkpoint_first_seq = specs[ 0 ].seq_id;
+  f->txn_error_checkpoint_slot = f->current_slot;
+  f->txn_error_checkpoint_gen = env->state->scheduler_gen;
+  f->txn_error_checkpoint_cnt = (uchar)spec_cnt;
   /* Keep this coverage path in the active slot so Pack dispatches the
      transaction-error fixture during this pump. */
   for( ulong i=0UL; i<spec_cnt; i++ ) specs[ i ].max_schedule_slot = f->current_slot;
@@ -1055,8 +1078,8 @@ bam_fuzz_require_txn_error_path( test_bam_env_t *    env,
   bam_fuzz_drain_pending_txns( env, f, links, verify, dedup, resolv, pack, execle, ULONG_MAX );
   bam_fuzz_pump_pack( env, f, links, pack, execle, 16UL );
 
-  f->required_txn_error = 1U;
   FD_TEST( f->observed_txn_error );
+  f->txn_error_checkpoint_cnt = 0U;
 }
 
 static void
@@ -1305,7 +1328,9 @@ LLVMFuzzerTestOneInput( uchar const * data,
   g_bam_fuzz_now = 1000000000L + (long)( seed & 0xffffU );
 
   test_bam_env_t env[1];
-  test_bam_env_create( env, g_bam_fuzz_wksp );
+  /* The shared unit fixture defaults to a 4 KiB gRPC buffer.  This pipeline
+     checks full outbound result batches, which need the production minimum. */
+  test_bam_env_create_with_grpc_buf_sz( env, g_bam_fuzz_wksp, FD_BAM_GRPC_MIN_BUF_SZ );
   bam_fuzz_links_t links[1];
   fd_memset( links, 0, sizeof(*links) );
 
