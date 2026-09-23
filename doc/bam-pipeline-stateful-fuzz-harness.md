@@ -32,6 +32,7 @@ High-signal extensions:
 - `LEADER_OFF`/`LEADER_ON` plus targeted `SEND_BATCH` events cover non-leader rejection, stale slot hints, missing leader working slot, and bank-unavailable timeout.
 - `RESULT_BURST` uses bounded production-ingress batches unless `a & 0x80`; high-bit `RESULT_BURST` fills the durable result FIFO with synthetic production FIFO entries and asserts one intentional drop counter increment.
 - `DRAIN_QUEUE` drains pending work and outbound results. With `c & 0x80`, the low bits are self-contained coverage checkpoints: `0x01` forces and asserts outside-slot feedback, `0x02` forces a bank transaction-error fixture, `0x04` forces result FIFO drop coverage, and `0x08` forces the alternate pack fixture transaction-error path.
+- Transaction-error checkpoints start a fresh leader slot beyond the preceding input's possible pending targets and require a transaction-error result for one of their own sequence IDs.
 - Harness shutdown drains pending transactions and the durable result queue, so seeds do not need an explicit `DRAIN_QUEUE` event to check outbound result protobuf encoding.
 - Final wire/FIFO comparison includes only results accepted into the durable BAM result queue. Intentionally dropped result attempts are tracked by drop counters.
 - Committed wire results are compared with the harness's shadow FIFO entries per transaction, including consumed CUs and committed transaction status. The target does not implement a separate scheduling model oracle.
