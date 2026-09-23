@@ -147,7 +147,6 @@ enum {
   FD_METRICS_HISTOGRAM_PACK_CU_PCT_OFF_END = FD_METRICS_HISTOGRAM_PACK_CU_PCT_OFF + 16,
   FD_METRICS_COUNTER_PACK_BAM_CONFLICT_BLOCKED_OFF,
   FD_METRICS_COUNTER_PACK_BAM_UNSCHEDULED_AT_SLOT_END_OFF,
-  FD_METRICS_COUNTER_PACK_BAM_REFUND_WAIT_OFF,
   FD_METRICS_COUNTER_PACK_BAM_CAPACITY_DEFERRED_OFF,
   FD_METRICS_GAUGE_PACK_PENDING_REBATE_COST_OFF,
 };
@@ -401,14 +400,9 @@ enum {
 #define FD_METRICS_COUNTER_PACK_BAM_UNSCHEDULED_AT_SLOT_END_DESC "Tracked BAM batches still pending for the closing leader slot before slot-end cleanup. Excludes dispatched and future-slot batches; does not establish validity, schedulability, or lost earnings."
 #define FD_METRICS_COUNTER_PACK_BAM_UNSCHEDULED_AT_SLOT_END_CVT  (FD_METRICS_CONVERTER_NONE)
 
-#define FD_METRICS_COUNTER_PACK_BAM_REFUND_WAIT_NAME "pack_bam_refund_wait"
-#define FD_METRICS_COUNTER_PACK_BAM_REFUND_WAIT_TYPE (FD_METRICS_TYPE_COUNTER)
-#define FD_METRICS_COUNTER_PACK_BAM_REFUND_WAIT_DESC "BAM scheduling attempts that retained the head because outstanding execution reports could cover its whole-batch block-cost shortfall. Counts attempts, not unique batches or lost earnings."
-#define FD_METRICS_COUNTER_PACK_BAM_REFUND_WAIT_CVT  (FD_METRICS_CONVERTER_NONE)
-
 #define FD_METRICS_COUNTER_PACK_BAM_CAPACITY_DEFERRED_NAME "pack_bam_capacity_deferred"
 #define FD_METRICS_COUNTER_PACK_BAM_CAPACITY_DEFERRED_TYPE (FD_METRICS_TYPE_COUNTER)
-#define FD_METRICS_COUNTER_PACK_BAM_CAPACITY_DEFERRED_DESC "BAM candidate groups newly deferred for the current block after exhausting the capacity-miss budget. Counts transitions once per bundle ordinal; ordinal wrap can coalesce original batches."
+#define FD_METRICS_COUNTER_PACK_BAM_CAPACITY_DEFERRED_DESC "BAM candidate groups newly deferred for the current block after exhausting the capacity-miss budget. Counts each candidate group's first deferral."
 #define FD_METRICS_COUNTER_PACK_BAM_CAPACITY_DEFERRED_CVT  (FD_METRICS_CONVERTER_NONE)
 
 #define FD_METRICS_GAUGE_PACK_PENDING_REBATE_COST_NAME "pack_pending_rebate_cost"
@@ -416,7 +410,7 @@ enum {
 #define FD_METRICS_GAUGE_PACK_PENDING_REBATE_COST_DESC "Original reserved CU cost of dispatched transactions without a settled execution report in the current block. Upper bound on possible future refunds, not measured refundable or lost CUs; disabled rebates or lost reports on unreliable inputs retain reservations until block reset."
 #define FD_METRICS_GAUGE_PACK_PENDING_REBATE_COST_CVT  (FD_METRICS_CONVERTER_NONE)
 
-#define FD_METRICS_PACK_TOTAL (120UL)
+#define FD_METRICS_PACK_TOTAL (119UL)
 extern const fd_metrics_meta_t FD_METRICS_PACK[FD_METRICS_PACK_TOTAL];
 
 #endif /* HEADER_fd_src_disco_metrics_generated_fd_metrics_pack_h */
