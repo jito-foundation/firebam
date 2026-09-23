@@ -43,9 +43,11 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
 bam_fuzz_pack_result_t
 bam_fuzz_pack_frag( bam_fuzz_pack_t *    h,
                     fd_frag_meta_t const * meta,
-                    ulong                seq );
+                    ulong                seq,
+                    long                 now_ns );
 
 bam_fuzz_pack_result_t
-bam_fuzz_pack_credit( bam_fuzz_pack_t * h );
+bam_fuzz_pack_credit( bam_fuzz_pack_t * h,
+                      long              now_ns );
 
 #endif /* HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_pack_h */

@@ -577,6 +577,10 @@
 | <span class="metrics-name">pack_&#8203;cu_&#8203;rebated_&#8203;per_&#8203;block</span> | histogram | Compute units rebated for each block pack produced. Compute units are rebated when a transaction fails prior to execution or requests more compute units than it uses |
 | <span class="metrics-name">pack_&#8203;cu_&#8203;net_&#8203;per_&#8203;block</span> | histogram | Net cost units (scheduled - rebated) in each block pack produced |
 | <span class="metrics-name">pack_&#8203;cu_&#8203;pct</span> | histogram | Percent of the total block cost limit used for each block pack produced |
+| <span class="metrics-name">pack_&#8203;bam_&#8203;conflict_&#8203;blocked</span> | counter | Scheduling attempts blocked by account conflicts on the selected BAM candidate. Does not establish that a later independent batch was runnable or measure lost earnings. |
+| <span class="metrics-name">pack_&#8203;bam_&#8203;unscheduled_&#8203;at_&#8203;slot_&#8203;end</span> | counter | Tracked BAM batches still pending for the closing leader slot before slot-end cleanup. Excludes dispatched and future-slot batches; does not establish validity, schedulability, or lost earnings. |
+| <span class="metrics-name">pack_&#8203;bam_&#8203;capacity_&#8203;deferred</span> | counter | BAM candidate groups newly deferred for the current block after exhausting the capacity-miss budget. Counts each candidate group's first deferral. |
+| <span class="metrics-name">pack_&#8203;pending_&#8203;rebate_&#8203;cost</span> | gauge | Original reserved CU cost of dispatched transactions without a settled execution report in the current block. Upper bound on possible future refunds, not measured refundable or lost CUs; disabled rebates or lost reports on unreliable inputs retain reservations until block reset. |
 
 </div>
 
