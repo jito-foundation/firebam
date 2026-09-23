@@ -646,17 +646,15 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
        IB for the selected mode
      * The bundle state is currently [Pending] or [Failed].
 
-   The lifetime of the returned pointer is until the next pack insert,
-   schedule, delete, or expire call.  The size of the region pointed to
-   by the returned pointer is bundle_meta_sz.  If this bundle was
-   inserted with bundle_meta==NULL, then the contents of the region
-   pointed to by the returned pointer are arbitrary, but it will be safe
-   to read.
+   Pointer and hint expire on insert fini, schedule, delete, expire,
+   end/clear block, initializer-state update, or rebate.  Insert init/cancel
+   leave them valid.  The metadata region is bundle_meta_sz bytes.  If this
+   bundle was inserted with bundle_meta==NULL, its contents are arbitrary but
+   safe to read.
 
    bundle_hint receives an opaque value that lets an immediately following
    schedule avoid walking the pending bundle treap a second time.  On failure
-   it receives ULONG_MAX.  The hint has the same lifetime as the returned
-   metadata pointer.
+   it receives ULONG_MAX.  The hint has the lifetime described above.
 
    Pack doesn't do anything special to ensure the returned pointer
    points to memory with any particular alignment.  It will naturally
@@ -668,11 +666,11 @@ void const * fd_pack_peek_bundle_meta( fd_pack_t const * pack,
 /* Returns the actual first whole candidate for the selected ownership
    mode, including initializers and candidates in Pending/Failed state.
    This is a read-only view, not permission to execute.  Pointer and hint
-   expire at the next insert, schedule, delete, expire, end/clear block,
-   initializer-state update or rebate call.  No candidate yields NULL and
-   ULONG_MAX.  Callers must recompute target-slot readiness within this
-   lifetime; the scheduling routine rejects stale or mode-mismatched BAM
-   readiness hints.
+   expire on insert fini, schedule, delete, expire, end/clear block,
+   initializer-state update, or rebate; insert init/cancel leave them valid.
+   No candidate yields NULL and ULONG_MAX.  Callers must recompute target-slot
+   readiness within this lifetime; scheduling rejects stale or mode-mismatched
+   BAM readiness hints.
 
    When opt_bundle_meta is non-NULL, it receives the metadata eligible for
    initializer preparation, or NULL under the same conditions as
