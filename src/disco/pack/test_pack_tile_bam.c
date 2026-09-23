@@ -690,7 +690,7 @@ test_pack_tile_bam_work_partition_mutations( void ) {
 
   ulong work_idx = pack_tile_bam_work_find( h->ctx, sigs[ 1 ], 1, NULL );
   FD_TEST( work_idx<h->ctx->bam_work_cnt );
-  (void)pack_tile_bam_work_swap_remove( h->ctx, work_idx );
+  pack_tile_bam_work_swap_remove( h->ctx, work_idx );
   FD_TEST( h->ctx->bam_scheduled_work_cnt==1UL );
   FD_TEST( pack_tile_bam_pending_work_cnt( h->ctx )==1UL );
   FD_TEST( h->ctx->bam_work[ 0 ].seq_id==2U );
@@ -698,12 +698,12 @@ test_pack_tile_bam_work_partition_mutations( void ) {
 
   work_idx = pack_tile_bam_work_find( h->ctx, sigs[ 0 ], 0, NULL );
   FD_TEST( work_idx<h->ctx->bam_work_cnt );
-  (void)pack_tile_bam_work_swap_remove( h->ctx, work_idx );
+  pack_tile_bam_work_swap_remove( h->ctx, work_idx );
   FD_TEST( h->ctx->bam_work_cnt==1UL );
   FD_TEST( h->ctx->bam_scheduled_work_cnt==1UL );
   FD_TEST( pack_tile_bam_pending_work_cnt( h->ctx )==0UL );
 
-  (void)pack_tile_bam_work_swap_remove( h->ctx, 0UL );
+  pack_tile_bam_work_swap_remove( h->ctx, 0UL );
   FD_TEST( !h->ctx->bam_work_cnt );
   FD_TEST( !h->ctx->bam_scheduled_work_cnt );
   FD_TEST( !pack_tile_bam_pending_work_cnt( h->ctx ) );
@@ -2633,8 +2633,6 @@ test_pack_tile_bam_result_mapping_tracking_reject( void ) {
                                          0U,
                                          201UL,
                                          199UL,
-                                         1U,
-                                         1U,
                                          2U );
 
   test_pack_tile_assert_deleted_sig( sig0 );
@@ -3378,8 +3376,7 @@ test_pack_tile_bam_result_drain_before_skip( void ) {
 
 static void
 test_pack_callbacks_initializer( test_pack_callbacks_t * e,
-                                  uchar                   seed,
-                                  ushort                  ownership_gen ) {
+                                  uchar                   seed ) {
   fd_pack_ctx_t * ctx = e->h->ctx;
   fd_txn_e_t * bundle[1];
   FD_TEST( fd_pack_insert_bundle_init( ctx->pack, bundle, 1UL )==bundle );
@@ -3395,23 +3392,21 @@ test_pack_callbacks_initializer( test_pack_callbacks_t * e,
   ctx->crank->enabled = 1;
   ctx->crank->ib_inserted = 1;
   ctx->bam_ib_associated = 1;
-  ctx->bam_ib_slot = ctx->leader_slot;
-  ctx->bam_ib_ownership_gen = ownership_gen;
   fd_memset( ctx->crank->prev_config_before_ib, 0x11, sizeof(*ctx->crank->prev_config_before_ib) );
   fd_memset( ctx->crank->prev_config,           0x22, sizeof(*ctx->crank->prev_config) );
 }
 
 static void
 test_pack_tile_bam_initializer_generation_callbacks( void ) {
-  /* Queued, deferred, dispatched/success, dispatched/failure, and a newer
-     replacement.  Override stays continuously active for every handoff. */
+  /* Queued, deferred, dispatched/success, dispatched/failure, and slot close.
+     Override stays continuously active for every handoff. */
   for( int scenario=0; scenario<5; scenario++ ) {
     test_pack_callbacks_t e[1];
     test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
     fd_pack_ctx_t * ctx = e->h->ctx;
     test_pack_callbacks_leader( e, 104UL, 0 );
     test_pack_callbacks_insert( e, 81U, 104UL, 1 );
-    test_pack_callbacks_initializer( e, 80U, 7U );
+    test_pack_callbacks_initializer( e, 80U );
     ulong old_hint;
     FD_TEST( fd_pack_peek_bundle_candidate( ctx->pack, 1, &old_hint, NULL ) );
     FD_TEST( fd_pack_contains_initializer_bundle( ctx->pack,
@@ -3444,7 +3439,15 @@ test_pack_tile_bam_initializer_generation_callbacks( void ) {
       FD_TEST( !fd_pack_contains_initializer_bundle( ctx->pack,
                    (fd_ed25519_sig_t const *)ctx->crank->last_sig, 1 ) );
     }
-    if( scenario==4 ) test_pack_callbacks_initializer( e, 83U, 8U );
+    if( scenario==4 ) {
+      pack_tile_finish_leader_slot( ctx, &e->h->out->stem, fd_tickcount(), "initializer-close",
+          FD_PACK_END_SLOT_REASON_TIME, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT );
+      FD_TEST( !ctx->bam_ib_associated && !ctx->crank->ib_inserted && !fd_pack_avail_txn_cnt( ctx->pack ) );
+      FD_TEST( !memcmp( ctx->crank->prev_config, ctx->crank->prev_config_before_ib,
+                       sizeof(*ctx->crank->prev_config) ) );
+      test_pack_callbacks_delete( e );
+      continue;
+    }
     fd_bundle_crank_tip_payment_config_t expected = *ctx->crank->prev_config;
     e->generation = (8UL<<1) | 1UL;
     pack_tile_sync_bam_ownership_generation( ctx );
@@ -3456,18 +3459,7 @@ test_pack_tile_bam_initializer_generation_callbacks( void ) {
       FD_TEST( !memcmp( ctx->crank->prev_config, ctx->crank->prev_config_before_ib, sizeof(expected) ) );
     } else {
       FD_TEST( !memcmp( ctx->crank->prev_config, &expected, sizeof(expected) ) );
-      FD_TEST( ctx->bam_ib_associated==(scenario==4) );
-    }
-    if( scenario==4 ) {
-      FD_TEST( fd_pack_contains_initializer_bundle( ctx->pack,
-                   (fd_ed25519_sig_t const *)ctx->crank->last_sig, 1 ) );
-      /* Slot-close cleanup retires this newer queued initializer too. */
-      pack_tile_finish_leader_slot( ctx, &e->h->out->stem, fd_tickcount(), "initializer-close",
-          FD_PACK_END_SLOT_REASON_TIME, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT );
-      FD_TEST( !ctx->bam_ib_associated && !fd_pack_avail_txn_cnt( ctx->pack ) );
-      FD_TEST( !memcmp( ctx->crank->prev_config, ctx->crank->prev_config_before_ib, sizeof(expected) ) );
-      test_pack_callbacks_delete( e );
-      continue;
+      FD_TEST( !ctx->bam_ib_associated );
     }
     test_pack_callbacks_insert( e, 82U, 104UL, 0 );
     if( scenario==2 || scenario==3 ) {
