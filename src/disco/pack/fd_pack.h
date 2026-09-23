@@ -278,6 +278,11 @@ fd_pack_avail_txn_cnt( fd_pack_t const * pack ) {
    be a valid local join. */
 FD_FN_PURE ulong fd_pack_current_block_cost( fd_pack_t const * pack );
 
+/* Upper bound on CUs still refundable by execution reports for the
+   current block.  Completion of account locking alone does not settle
+   a reservation.  With rebates disabled this grows until block reset. */
+FD_FN_PURE ulong fd_pack_pending_rebate_cost( fd_pack_t const * pack );
+
 /* fd_pack_bank_tile_cnt: returns the value of bank_tile_cnt provided in
    pack when the pack object was initialized with fd_pack_new.  pack
    must be a valid local join.  The result will be in [1,
@@ -389,8 +394,6 @@ void fd_pack_get_pending_smallest( fd_pack_t * pack, fd_pack_smallest_t * opt_pe
       malformed ComputeBudgetProgram instruction.
     * WRITES_SYSVAR: reserved legacy result code; no longer returned.
       Reserved accounts are demoted for locking, as they are at runtime.
-    * INVALID_NONCE: the transaction looks like a durable nonce
-      transaction, but the nonce authority did not sign the transaction.
     * BUNDLE_BLACKLIST: bundles are enabled and the transaction uses an
       account in the bundle blacklist, or the bundle contains a vote.
     * ACCT_BLOCKLIST: the transaction included an account address in the
@@ -420,7 +423,6 @@ void fd_pack_get_pending_smallest( fd_pack_t * pack, fd_pack_smallest_t * opt_pe
 #define FD_PACK_INSERT_REJECT_DUPLICATE_ACCT        ( -9)
 #define FD_PACK_INSERT_REJECT_ESTIMATION_FAIL       (-10)
 #define FD_PACK_INSERT_REJECT_WRITES_SYSVAR         (-11)
-#define FD_PACK_INSERT_REJECT_INVALID_NONCE         (-12)
 #define FD_PACK_INSERT_REJECT_BUNDLE_BLACKLIST      (-13)
 #define FD_PACK_INSERT_REJECT_ACCT_BLOCKLIST        (-14)
 #define FD_PACK_INSERT_REJECT_NONCE_CONFLICT        (-15)
@@ -682,6 +684,15 @@ fd_txn_p_t const * fd_pack_peek_bundle_candidate( fd_pack_t const * pack,
                                                   ulong *           bundle_hint,
                                                   void const **     opt_bundle_meta );
 
+/* Read-only BAM admission check used for each whole group considered by
+   bounded conflict lookahead.  Return nonzero only when this exact batch,
+   including txn_cnt members, is ready in the current slot and ownership
+   generation.  A zero result is a barrier.  This callback must not mutate
+   pack or retain any pointer it receives. */
+typedef int fd_pack_bam_ready_fn( void const *       ctx,
+                                 fd_txn_p_t const * candidate,
+                                 ulong              txn_cnt );
+
 /* Tests the queued initializer's full signature and ownership mode, even
    when it is deferred.  A dispatched initializer is no longer queued. */
 int fd_pack_contains_initializer_bundle( fd_pack_t const *        pack,
@@ -707,14 +718,17 @@ void fd_pack_set_initializer_bundles_ready( fd_pack_t * pack );
 #define FD_PACK_SCHEDULE_BAM_SINGLE 16
 #define FD_PACK_SCHEDULE_BAM_READY  32
 
-/* BAM_SINGLE grants worker eligibility only for the common candidate
-   when it is a non-initializer, one-transaction BAM batch.  It does not
-   bypass earlier batches or spend their capacity-deferral budget.
+/* BAM_SINGLE grants worker eligibility only for a non-initializer,
+   one-transaction BAM batch.  Only bounded conflict lookahead can select
+   a younger candidate.  It does not spend earlier batches'
+   capacity-deferral budget.
    BUNDLE retains full worker eligibility and ordinary capacity deferral.
    Both require BAM_READY for BAM batches and BAM initializers.  BAM_READY
    certifies that this exact candidate is ready in the active leader bank
    and must be passed with a live mode-matched candidate hint.  The
-   unhinted scheduling entry point cannot dispatch BAM work. */
+   unhinted scheduling entry point cannot dispatch BAM work.  Capacity
+   failures retain their normal policy; deferred batches
+   are never resurrected. */
 
 /* fd_pack_schedule_next_microblock schedules pending transactions.
    These transaction either form a microblock, which is a set of
@@ -733,8 +747,8 @@ void fd_pack_set_initializer_bundles_ready( fd_pack_t * pack );
     2. If BUNDLE or BAM_SINGLE is set, and step 1 did not schedule votes,
        attempt to schedule bundles.  This is the bundle case.
     3. If the TXN bit is set, and step 2 did not schedule any bundles
-       for a reason other than account conflicts, attempt to schedule
-       normal transactions.  This is the microblock case.
+       for a reason other than account conflicts,
+       attempt to schedule normal transactions.  This is the microblock case.
    Note that it is possible to schedule a microblock containing both
    votes and normal transactions, but bundles cannot be combined with
    either other type.  Additionally, if neither BUNDLE nor BAM_SINGLE is
@@ -785,7 +799,16 @@ fd_pack_schedule_next_microblock( fd_pack_t  * pack,
 /* fd_pack_schedule_next_microblock_with_bundle_hint is identical to
    fd_pack_schedule_next_microblock, except that it reuses a bundle candidate
    returned through fd_pack_peek_bundle_candidate or fd_pack_peek_bundle_meta.
-   Pass ULONG_MAX to opt out of the hint (and BAM readiness). */
+   Pass ULONG_MAX to opt out of the hint (and BAM readiness).
+
+   When ready is non-NULL, a conflict on the common BAM head may trigger
+   lookahead over at most five transactions.  This applies only in BAM_ONLY
+   mode with initializer state Ready.  Every complete predecessor and the
+   candidate must pass ready(ready_ctx,...).  Skipped batches remain account
+   dependencies, including batches this worker cannot execute.  Initializers,
+   deferred, incomplete and foreign batches remain barriers.  Capacity
+   failures never authorize lookahead and deferred work is never revived.
+   The ordinary successful path does not invoke the callback or scan. */
 ulong
 fd_pack_schedule_next_microblock_with_bundle_hint( fd_pack_t  * pack,
                                                    ulong        total_cus,
@@ -793,6 +816,8 @@ fd_pack_schedule_next_microblock_with_bundle_hint( fd_pack_t  * pack,
                                                    ulong        bank_tile,
                                                    int          schedule_flags,
                                                    ulong        bundle_hint,
+                                                   fd_pack_bam_ready_fn * ready,
+                                                   void const * ready_ctx,
                                                    fd_txn_e_t * out );
 
 
@@ -819,7 +844,9 @@ fd_pack_schedule_next_microblock_with_bundle_hint( fd_pack_t  * pack,
    rebate_cus is optional and has much more relaxed ordering
    constraints.  The restriction about intervening calls to end_block
    and that this must come after schedule_next_microblock are the only
-   ordering constraints. */
+   ordering constraints.  Each reservation must be settled only once.
+   Block reset discards
+   outstanding reservations along with the other block accounting. */
 void fd_pack_rebate_cus( fd_pack_t * pack, fd_pack_rebate_t const * rebate );
 
 /* fd_pack_microblock_complete signals that the bank_tile with index

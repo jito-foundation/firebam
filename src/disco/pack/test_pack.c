@@ -1,6 +1,7 @@
 #include "../../ballet/fd_ballet.h"
 #include "fd_pack.h"
 #include "fd_pack_cost.h"
+#include "fd_pack_bitset.h"
 #include "fd_compute_budget_program.h"
 #include "../../ballet/txn/fd_txn.h"
 #include "../../ballet/base58/fd_base58.h"
@@ -1526,8 +1527,11 @@ test_reject( void ) {
   bundle = fd_pack_insert_bundle_init( pack, _bundle, 2UL );
   make_transaction1      ( bundle[ 0 ]->txnp, 100UL, 1000U, 100U, 12.0, "A", "B", NULL, NULL );
   make_nonce_transaction1( bundle[ 1 ]->txnp, 101UL, 11.0, 4, 5, 'h' );
+  TXN( bundle[ 1 ]->txnp )->addr_table_lookup_cnt        = 1U;
+  TXN( bundle[ 1 ]->txnp )->addr_table_adtl_writable_cnt = 20U;
+  TXN( bundle[ 1 ]->txnp )->addr_table_adtl_cnt          = 60U;
   result = fd_pack_insert_bundle_fini( pack, bundle, 2UL, 1000UL, 0, NULL, &_deleted, &reject_txn_idx );
-  FD_TEST( result==FD_PACK_INSERT_REJECT_INVALID_NONCE );
+  FD_TEST( result==FD_PACK_INSERT_REJECT_ACCOUNT_CNT );
   FD_TEST( reject_txn_idx==1UL );
 
   bundle = fd_pack_insert_bundle_init( pack, _bundle, 2UL );
@@ -1666,8 +1670,9 @@ test_duplicate_sig_bam_bundle_delete( void ) {
   FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
 }
 
-/* Treating a nonsigner nonce authority as a transaction-signature failure
-   reports the wrong BAM error.  Reject it as INVALID_NONCE for blockhash mapping. */
+/* An AdvanceNonce instruction without an instruction signer is ordinary
+   work when it carries a valid recent blockhash; the bank can commit its
+   instruction failure. */
 static inline void
 test_nonce( void ) {
   FD_LOG_NOTICE(( "TEST DUPLICATE NONCE" ));
@@ -1682,8 +1687,107 @@ test_nonce( void ) {
   make_nonce_transaction( i, 11.0, 4, 1, 'h' );   FD_TEST( insert( i++, pack )==FD_PACK_INSERT_ACCEPT_NONCE_NONVOTE_ADD     );
   make_nonce_transaction( i, 11.0, 4, 0, 'j' );   FD_TEST( insert( i++, pack )==FD_PACK_INSERT_ACCEPT_NONCE_NONVOTE_ADD     );
 
-  make_nonce_transaction( i, 11.0, 4, 5, 'h' );   FD_TEST( insert( i++, pack )==FD_PACK_INSERT_REJECT_INVALID_NONCE         );
+  make_nonce_transaction( i, 11.0, 4, 5, 'h' );   FD_TEST( insert( i++, pack )==FD_PACK_INSERT_ACCEPT_NONVOTE_ADD           );
   FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+}
+
+static void
+test_nonce_retention_shapes( void ) {
+  FD_LOG_NOTICE(( "TEST NONCE RETENTION SHAPES" ));
+  fd_pack_t * pack = init_all( 128UL, 1UL, 128UL, &outcome );
+  fd_pack_set_initializer_bundles_ready( pack );
+  FD_TEST( !fd_pack_expire_before( pack, 300UL ) );
+
+  ulong deleted;
+  fd_txn_e_t * txn = fd_pack_insert_txn_init( pack );
+  make_nonce_transaction1( txn->txnp, 8000UL, 11.0, 4U, 0U, 'a' );
+  FD_TEST( fd_pack_insert_txn_fini( pack, txn, 100UL, &deleted )==FD_PACK_INSERT_ACCEPT_NONCE_NONVOTE_ADD );
+
+  for( ulong i=0UL; i<3UL; i++ ) {
+    txn = fd_pack_insert_txn_init( pack );
+    make_nonce_transaction1( txn->txnp, 8001UL+i, 11.0, 0U, 0U, (char)('b'+i) );
+    fd_txn_t * parsed = TXN( txn->txnp );
+    if( i<2UL ) parsed->instr[0].acct_cnt = (uchar)(i+1UL);
+    else        txn->txnp->payload[ parsed->instr[0].acct_off+2UL ] = 5U;
+    FD_TEST( fd_pack_insert_txn_fini( pack, txn, 100UL, &deleted )==FD_PACK_INSERT_ACCEPT_NONVOTE_ADD );
+  }
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==4UL );
+
+  txn = fd_pack_insert_txn_init( pack );
+  make_nonce_transaction1( txn->txnp, 8004UL, 11.0, 4U, 5U, 'e' );
+  FD_TEST( fd_pack_insert_txn_fini( pack, txn, 100UL, &deleted )==FD_PACK_INSERT_REJECT_EXPIRED );
+  txn = fd_pack_insert_txn_init( pack );
+  make_nonce_transaction1( txn->txnp, 8005UL, 11.0, 4U, 5U, 'f' );
+  TXN( txn->txnp )->instr[0].acct_cnt = 2U;
+  FD_TEST( fd_pack_insert_txn_fini( pack, txn, 100UL, &deleted )==FD_PACK_INSERT_REJECT_EXPIRED );
+
+  fd_txn_e_t * bundle_storage[ 2 ];
+  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, bundle_storage, 2UL );
+  make_transaction1( bundle[0]->txnp, 8010UL, 1000U, 500U, 11.0, "A", "B", NULL, NULL );
+  make_transaction1( bundle[1]->txnp, 8011UL, 1000U, 500U, 11.0, "C", "D", NULL, NULL );
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 100UL, 0, NULL, &deleted, NULL )==FD_PACK_INSERT_REJECT_EXPIRED );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==4UL );
+
+  bundle = fd_pack_insert_bundle_init( pack, bundle_storage, 2UL );
+  make_transaction1( bundle[0]->txnp, 8012UL, 1000U, 500U, 11.0, "E", "F", NULL, NULL );
+  make_nonce_transaction1( bundle[1]->txnp, 8013UL, 11.0, 0U, 0U, 'g' );
+  TXN( bundle[1]->txnp )->instr[0].acct_cnt = 2U;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 100UL, 0, NULL, &deleted, NULL )==FD_PACK_INSERT_ACCEPT_NONVOTE_ADD );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==6UL );
+
+  bundle = fd_pack_insert_bundle_init( pack, bundle_storage, 1UL );
+  make_transaction1( bundle[0]->txnp, 8014UL, 1000U, 500U, 11.0, "G", "H", NULL, NULL );
+  bundle[0]->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 100UL, 0, NULL, &deleted, NULL )>=0 );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==7UL );
+  FD_TEST( !fd_pack_expire_before( pack, ULONG_MAX ) );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+}
+
+static void
+test_rejected_bundle_preserves_singleton_nonce( void ) {
+  FD_LOG_NOTICE(( "TEST REJECTED BUNDLE PRESERVES SINGLETON NONCE" ));
+  fd_pack_t * pack = init_all( 16UL, 1UL, 16UL, &outcome );
+  fd_txn_e_t * singleton = fd_pack_insert_txn_init( pack );
+  make_nonce_transaction1( singleton->txnp, 9000UL, 11.0, 4U, 0U, 'q' );
+  fd_ed25519_sig_t sig;
+  fd_memcpy( sig, txnp_get_signatures( singleton->txnp ), sizeof(sig) );
+  ulong deleted;
+  FD_TEST( fd_pack_insert_txn_fini( pack, singleton, 100UL, &deleted )==FD_PACK_INSERT_ACCEPT_NONCE_NONVOTE_ADD );
+
+  fd_txn_e_t * storage[ 2 ];
+  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, storage, 2UL );
+  make_nonce_transaction1( bundle[0]->txnp, 9001UL, 11.0, 4U, 0U, 'q' );
+  make_nonce_transaction1( bundle[1]->txnp, 9002UL, 11.0, 4U, 5U, 'r' );
+  TXN( bundle[1]->txnp )->addr_table_lookup_cnt        = 1U;
+  TXN( bundle[1]->txnp )->addr_table_adtl_writable_cnt = 20U;
+  TXN( bundle[1]->txnp )->addr_table_adtl_cnt          = 60U;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 100UL, 0, NULL, &deleted, NULL )==FD_PACK_INSERT_REJECT_ACCOUNT_CNT );
+  FD_TEST( !deleted && fd_pack_avail_txn_cnt( pack )==1UL );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+
+  bundle = fd_pack_insert_bundle_init( pack, storage, 2UL );
+  make_nonce_transaction1( bundle[0]->txnp, 9003UL, 11.0, 4U, 0U, 'q' );
+  make_nonce_transaction1( bundle[1]->txnp, 9004UL, 11.0, 4U, 0U, 'q' );
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 2UL, 100UL, 0, NULL, &deleted, NULL )==FD_PACK_INSERT_REJECT_NONCE_CONFLICT );
+  FD_TEST( !deleted && fd_pack_avail_txn_cnt( pack )==1UL );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+  FD_TEST( fd_pack_delete_transaction( pack, fd_type_pun( &sig ) )==1UL );
+
+  pack = init_all( 4UL, 1UL, 5UL, &outcome );
+  singleton = fd_pack_insert_txn_init( pack );
+  make_nonce_transaction1( singleton->txnp, 9010UL, 11.0, 4U, 0U, 's' );
+  fd_memcpy( sig, txnp_get_signatures( singleton->txnp ), sizeof(sig) );
+  FD_TEST( fd_pack_insert_txn_fini( pack, singleton, 100UL, &deleted )==FD_PACK_INSERT_ACCEPT_NONCE_NONVOTE_ADD );
+  fd_txn_e_t * storage5[ 5 ];
+  bundle = fd_pack_insert_bundle_init( pack, storage5, 5UL );
+  make_nonce_transaction1( bundle[0]->txnp, 9011UL, 11.0, 4U, 0U, 's' );
+  for( ulong i=1UL; i<5UL; i++ )
+    make_transaction1( bundle[i]->txnp, 9011UL+i, 1000U, 500U, 11.0, "A", "B", NULL, NULL );
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 5UL, 100UL, FD_PACK_IB_TYPE_NORMAL, NULL, &deleted, NULL )==FD_PACK_INSERT_REJECT_PRIORITY );
+  FD_TEST( !deleted && fd_pack_avail_txn_cnt( pack )==1UL );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+  FD_TEST( fd_pack_delete_transaction( pack, fd_type_pun( &sig ) )==1UL );
 }
 
 static void
@@ -1930,7 +2034,7 @@ schedule_slot_ready_bam( fd_pack_t *  pack,
   ulong hint;
   fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( pack, !!(flags & FD_PACK_SCHEDULE_BAM_ONLY), &hint, NULL );
   if( candidate ) flags |= FD_PACK_SCHEDULE_BAM_READY;
-  return fd_pack_schedule_next_microblock_with_bundle_hint( pack, total_cus, vote_fraction, bank_tile, flags, hint, out );
+  return fd_pack_schedule_next_microblock_with_bundle_hint( pack, total_cus, vote_fraction, bank_tile, flags, hint, NULL, NULL, out );
 }
 
 /* Reserved permissions apply to ordinary bundles and both BAM execution
@@ -2239,7 +2343,7 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
                                                                0.0f,
                                                                0UL,
                                                                FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
-                                                               bundle_hint,
+                                                               bundle_hint, NULL, NULL,
                                                                outcome.results )==1UL );
   FD_TEST( outcome.results[0].txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
   fd_pack_microblock_complete( pack, 0UL );
@@ -2251,7 +2355,7 @@ test_bam_only_schedule_filters_non_bam_work( void ) {
                                                                0.0f,
                                                                0UL,
                                                                FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
-                                                               bundle_hint,
+                                                               bundle_hint, NULL, NULL,
                                                                outcome.results )==0UL );
 
   selected_meta = fd_pack_peek_bundle_meta( pack, 0, &bundle_hint );
@@ -2567,9 +2671,8 @@ test_bam_secondary_fifo_head( void ) {
   fd_pack_delete( fd_pack_leave( pack ) );
 }
 
-/* Fill the block using real dispatches, retain the last worker's locks, then
-   make >50 genuine capacity failures.  Restricted attempts preserve the
-   head until a rebate; ordinary full-permission attempts retain deferral. */
+/* A worker never reports its last reservation.  Full-permission BAM capacity
+   failures still defer the head and eventually allow a smaller successor. */
 static void
 test_bam_secondary_capacity_deferral( void ) {
   for( int restricted=0; restricted<2; restricted++ ) {
@@ -2588,6 +2691,7 @@ test_bam_secondary_capacity_deferral( void ) {
       FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
     }
     ulong cost_before = fd_pack_current_block_cost( pack );
+    FD_TEST( fd_pack_pending_rebate_cost( pack )>0UL );
     insert_bam_candidate_test( pack, 700UL, 1UL, 1400000U, 1U, "X", "", 0 );
     insert_bam_candidate_test( pack, 701UL, 1UL, 2000U, 0U, "X", "", 0 );
     int flags = FD_PACK_SCHEDULE_BAM_ONLY | (restricted ? FD_PACK_SCHEDULE_BAM_SINGLE : FD_PACK_SCHEDULE_BUNDLE);
@@ -2631,6 +2735,535 @@ test_bam_secondary_capacity_deferral( void ) {
   }
 }
 
+static void
+fill_for_bam_capacity_test( fd_pack_t * pack, pack_outcome_t * outcome ) {
+  for( ulong i=0UL;; i++ ) {
+    ulong cost;
+    ulong deleted;
+    fd_txn_e_t * txn = fd_pack_insert_txn_init( pack );
+    make_transaction1( txn->txnp, i, 1000000U, 32U, 5.0, "", "", NULL, &cost );
+    FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &deleted )>=0 );
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                                               FD_PACK_SCHEDULE_TXN, outcome->results )==1UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+    if( FD_PACK_TEST_MAX_COST_PER_BLOCK-fd_pack_current_block_cost( pack )<cost ) return;
+    fd_pack_rebate_t settled = { .consumed_cost=cost };
+    fd_pack_rebate_cus( pack, &settled );
+  }
+}
+
+static void
+insert_lookahead_batch( fd_pack_t * pack,
+                        ulong id, ulong cnt, char const * writes, char const * reads,
+                        int alt, int reserved ) {
+  fd_txn_e_t * slots[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, slots, cnt );
+  for( ulong j=0UL; j<cnt; j++ ) {
+    make_transaction1( bundle[j]->txnp, id+j, 1000U, 32U, 5.0, writes, reads, NULL, NULL );
+    bundle[j]->txnp->source_tpu        = FD_TXN_M_TPU_SOURCE_BAM;
+    bundle[j]->txnp->bam.seq_id        = (uint)id;
+    bundle[j]->txnp->bam.scheduler_gen = 1U;
+    bundle[j]->txnp->bam.batch_idx     = (uchar)j;
+    if( alt ) {
+      TXN(bundle[j]->txnp)->transaction_version         = FD_TXN_V0;
+      TXN(bundle[j]->txnp)->addr_table_adtl_cnt          = 1U;
+      TXN(bundle[j]->txnp)->addr_table_adtl_writable_cnt = 1U;
+      fd_memset( bundle[j]->alt_accts[0].b, 'X', 32UL );
+    }
+    if( reserved ) fd_memset( bundle[j]->txnp->payload+TXN(bundle[j]->txnp)->acct_addr_off+32UL, 0, 32UL );
+  }
+  ulong deleted;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, cnt, 1000UL, 0, &id, &deleted, NULL )>=0 );
+  FD_TEST( !deleted );
+}
+
+typedef struct {
+  ulong barrier_id;
+  ulong multi_id;
+  ulong multi_cnt;
+  ulong * calls;
+} test_lookahead_ready_t;
+
+static int
+test_lookahead_ready( void const * ctx, fd_txn_p_t const * candidate, ulong txn_cnt ) {
+  test_lookahead_ready_t const * r = ctx;
+  if( r->calls ) (*r->calls)++;
+  ulong id = candidate_test_txn_id( candidate );
+  return id!=r->barrier_id && txn_cnt==(id==r->multi_id ? r->multi_cnt : 1UL);
+}
+
+/* Use every bit in the finite conflict accelerator, so dependencies added
+   afterward must be resolved from exact static/ALT addresses. */
+static void
+fill_lookahead_bitsets( fd_pack_t * pack ) {
+  for( ulong k=0UL; k<FD_PACK_BITSET_MAX; k++ ) for( ulong j=0UL; j<2UL; j++ ) {
+    fd_txn_e_t * slot = fd_pack_insert_txn_init( pack );
+    make_transaction1( slot->txnp, 10000UL+2UL*k+j, 1000U, 32U, 5.0, "A", "", NULL, NULL );
+    uchar * key = slot->txnp->payload+TXN(slot->txnp)->acct_addr_off+32UL;
+    fd_memset( key, 0xcc, 32UL );
+    fd_memcpy( key, &k, sizeof(k) );
+    ulong deleted;
+    FD_TEST( fd_pack_insert_txn_fini( pack, slot, 1000UL, &deleted )>=0 );
+  }
+}
+
+static void
+test_bam_conflict_lookahead( void ) {
+  /* Independent work; transitive X->XY->Y; shared reads; ALT; exhausted
+     bitsets; reserved System; future predecessor; secondary permission;
+     prefix bound; invalidated hint; released conflict; bad group
+     count; and a queued initializer barrier. */
+  for( int kind=0; kind<13; kind++ ) {
+    fd_pack_t * pack = init_all_with_meta( 2048UL, 2UL, 1UL, sizeof(ulong), &outcome );
+    fd_pack_set_initializer_bundles_ready( pack );
+    if( kind==4 ) fill_lookahead_bitsets( pack );
+    fd_txn_e_t * live = fd_pack_insert_txn_init( pack );
+    make_transaction1( live->txnp, 900UL, 1000U, 32U, 12.0, kind==2 ? "A" : "X", "", NULL, NULL );
+    ulong deleted;
+    FD_TEST( fd_pack_insert_txn_fini( pack, live, 1000UL, &deleted )>=0 );
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                              0UL, FD_PACK_SCHEDULE_TXN, outcome.results )==1UL );
+    ulong head_cnt = kind==8 ? 5UL : 1UL;
+    if( kind==2 ) {
+      insert_lookahead_batch( pack, 700UL, 1UL, "A", "X", 0, 0 );
+      insert_lookahead_batch( pack, 701UL, 1UL, "Y", "X", 0, 0 );
+    } else {
+      insert_lookahead_batch( pack, 700UL, head_cnt, kind==3 ? "" : kind==5 ? "RX" : "X", "", kind==3, kind==5 );
+      if( kind==1 || kind==4 ) {
+        insert_lookahead_batch( pack, 701UL, 1UL, "XY", "", 0, 0 );
+        insert_lookahead_batch( pack, 702UL, 1UL, "Y", "", 0, 0 );
+        insert_lookahead_batch( pack, 703UL, 1UL, "Z", "", 0, 0 );
+      } else {
+        insert_lookahead_batch( pack, 705UL, kind==7 ? 2UL : 1UL, kind==5 ? "RY" : "Y", "", 0, kind==5 );
+        if( kind==7 ) {
+          insert_lookahead_batch( pack, 707UL, 1UL, "Y", "", 0, 0 ); /* Depends on worker-ineligible batch. */
+          insert_lookahead_batch( pack, 708UL, 1UL, "Z", "", 0, 0 );
+        }
+      }
+    }
+    if( kind==12 ) {
+      fd_txn_e_t * slots[1];
+      fd_txn_e_t * const * ib = fd_pack_insert_bundle_init( pack, slots, 1UL );
+      make_transaction1( ib[0]->txnp, 799UL, 1000U, 32U, 5.0, "X", "", NULL, NULL );
+      FD_TEST( fd_pack_insert_bundle_fini( pack, ib, 1UL, 1000UL, FD_PACK_IB_TYPE_BAM, NULL, &deleted, NULL )>=0 );
+    }
+    int flags = FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BUNDLE;
+    ulong calls = 0UL;
+    test_lookahead_ready_t ready = { .barrier_id=kind==6 ? 705UL : ULONG_MAX,
+                                     .multi_id=kind==7 ? 705UL : 700UL,
+                                     .multi_cnt=kind==7 ? 2UL : head_cnt,
+                                     .calls=&calls };
+    /* The unhinted API and a hinted call without a readiness callback
+       still cannot bypass the blocked head. */
+    FD_TEST( !fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                               1UL, flags | FD_PACK_SCHEDULE_BAM_READY, outcome.results ) );
+    FD_TEST( !schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                      1UL, flags, outcome.results ) );
+    ulong hint;
+    FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
+    if( kind==7 ) flags = FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_SINGLE;
+    if( kind==9 ) { fd_pack_rebate_t rebate = {0}; fd_pack_rebate_cus( pack, &rebate ); }
+    if( kind==10 ) {
+      FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+      FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
+    }
+    if( kind==11 ) ready.multi_cnt = 2UL; /* incomplete sidecar identity */
+    ulong scheduled = fd_pack_schedule_next_microblock_with_bundle_hint( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                          1UL, flags | FD_PACK_SCHEDULE_BAM_READY, hint, test_lookahead_ready, &ready, outcome.results );
+    if( kind==6 || (kind>=8 && kind!=10) ) {
+      FD_TEST( !scheduled );
+      if( kind==9 ) FD_TEST( !calls );
+    } else {
+      ulong expected = (kind==1 || kind==4) ? 703UL : kind==7 ? 708UL : kind==2 ? 701UL : kind==10 ? 700UL : 705UL;
+      FD_TEST( scheduled==1UL && candidate_test_txn_id( outcome.results[0].txnp )==expected );
+      if( kind==10 ) FD_TEST( !calls ); /* Released head dispatches without a scan. */
+      else FD_TEST( calls>=2UL );
+      FD_TEST( fd_pack_microblock_complete( pack, 1UL ) );
+    }
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+    fd_pack_delete( fd_pack_leave( pack ) );
+  }
+
+  /* Capacity failure provides no lookahead authorization, even if later
+     batches are independent and smaller. */
+  fd_pack_t * pack = init_all_with_meta( 64UL, 2UL, 8UL, sizeof(ulong), &outcome );
+  fd_pack_set_initializer_bundles_ready( pack );
+  fill_for_bam_capacity_test( pack, &outcome );
+  insert_bam_candidate_test( pack, 700UL, 1UL, 1400000U, 1U, "X", "", 0 );
+  insert_lookahead_batch( pack, 705UL, 1UL, "Y", "", 0, 0 );
+  int flags = FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_READY;
+  ulong calls = 0UL;
+  test_lookahead_ready_t ready = { .barrier_id=ULONG_MAX, .multi_id=ULONG_MAX, .multi_cnt=1UL, .calls=&calls };
+  ulong hint;
+  FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
+  FD_TEST( !fd_pack_schedule_next_microblock_with_bundle_hint( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+              1UL, flags, hint, test_lookahead_ready, &ready, outcome.results ) );
+  FD_TEST( !calls );
+  fd_pack_delete( fd_pack_leave( pack ) );
+}
+
+static void
+insert_lookahead_permission_bundle( fd_pack_t * pack,
+                                    ulong       id,
+                                    char const * writes,
+                                    char const * reads,
+                                    int         alt_mode,
+                                    int         bam ) {
+  fd_txn_e_t * slots[1];
+  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, slots, 1UL );
+  make_transaction1( bundle[0]->txnp, id, 1000U, 32U, 5.0, writes, reads, NULL, NULL );
+  bundle[0]->txnp->source_tpu = bam ? FD_TXN_M_TPU_SOURCE_BAM : FD_TXN_M_TPU_SOURCE_BUNDLE;
+  if( bam ) {
+    bundle[0]->txnp->bam.seq_id        = (uint)id;
+    bundle[0]->txnp->bam.scheduler_gen = 1U;
+    bundle[0]->txnp->bam.batch_idx     = 0U;
+  }
+  if( alt_mode ) {
+    fd_txn_t * txn = TXN( bundle[0]->txnp );
+    txn->transaction_version          = FD_TXN_V0;
+    txn->addr_table_adtl_cnt           = 1U;
+    txn->addr_table_adtl_writable_cnt  = (uchar)(alt_mode==2);
+    fd_memset( bundle[0]->alt_accts[0].b, 'X', sizeof(fd_acct_addr_t) );
+  }
+  ulong deleted;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, FD_PACK_IB_TYPE_NONE,
+                                       &id, &deleted, NULL )>=0 );
+  FD_TEST( !deleted );
+}
+
+static void
+test_bam_lookahead_permissions( void ) {
+  struct permission_case {
+    char const * name;
+    char const * head_writes;
+    char const * head_reads;
+    char const * successor_writes;
+    char const * successor_reads;
+    int head_alt;
+    int successor_alt;
+    int live_reads_q;
+    int extra_successor;
+    int be_barrier;
+    ulong expected;
+  } const cases[9] = {
+    { "head_write_successor_read",  "AX", "",  "Y",  "X", 0, 0, 0, 0, 0, 0UL   },
+    { "head_read_successor_write",  "A",  "X", "XY", "",  0, 0, 0, 0, 0, 0UL   },
+    { "head_write_successor_write", "AX", "",  "X",  "",  0, 0, 0, 0, 0, 0UL   },
+    { "head_alt_write",            "A",  "",  "Y",  "X", 2, 0, 0, 0, 0, 0UL   },
+    { "successor_alt_write",       "A",  "X", "Y",  "",  0, 2, 0, 0, 0, 0UL   },
+    { "successor_alt_read",        "AX", "",  "Y",  "",  0, 1, 0, 0, 0, 0UL   },
+    { "shared_alt_read",           "A",  "X", "Y",  "",  0, 1, 0, 0, 0, 705UL },
+    { "inflight_read_barrier",     "A",  "",  "Q",  "",  0, 0, 1, 1, 0, 706UL },
+    { "block_engine_barrier",      "A",  "",  "Z",  "",  0, 0, 0, 0, 1, 0UL   },
+  };
+  for( ulong kind=0UL; kind<9UL; kind++ ) for( int worker=0; worker<2; worker++ ) {
+    struct permission_case const * c = &cases[kind];
+    fd_pack_t * pack = init_all_with_meta( 64UL, 2UL, 1UL, sizeof(ulong), &outcome );
+    fd_pack_set_initializer_bundles_ready( pack );
+    fd_txn_e_t * live = fd_pack_insert_txn_init( pack );
+    make_transaction1( live->txnp, 900UL, 1000U, 32U, 12.0, "A", c->live_reads_q ? "Q" : "", NULL, NULL );
+    ulong deleted;
+    FD_TEST( fd_pack_insert_txn_fini( pack, live, 1000UL, &deleted )>=0 );
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                               0UL, FD_PACK_SCHEDULE_TXN, outcome.results )==1UL );
+    insert_lookahead_permission_bundle( pack, 700UL, c->head_writes, c->head_reads, c->head_alt, 1 );
+    if( c->be_barrier ) insert_lookahead_permission_bundle( pack, 704UL, "Y", "", 0, 0 );
+    insert_lookahead_permission_bundle( pack, 705UL, c->successor_writes, c->successor_reads,
+                                        c->successor_alt, 1 );
+    if( c->extra_successor ) insert_lookahead_permission_bundle( pack, 706UL, "Z", "", 0, 1 );
+    int flags = FD_PACK_SCHEDULE_BAM_ONLY | (worker ? FD_PACK_SCHEDULE_BAM_SINGLE : FD_PACK_SCHEDULE_BUNDLE) |
+                FD_PACK_SCHEDULE_BAM_READY;
+    test_lookahead_ready_t ready = { .barrier_id=ULONG_MAX, .multi_id=700UL,
+                                     .multi_cnt=1UL, .calls=NULL };
+    ulong hint;
+    FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
+    ulong scheduled = fd_pack_schedule_next_microblock_with_bundle_hint( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK,
+                        0.0f, 1UL, flags, hint, test_lookahead_ready, &ready, outcome.results );
+    ulong got = scheduled ? candidate_test_txn_id( outcome.results[0].txnp ) : 0UL;
+    if( got!=c->expected ) FD_LOG_ERR(( "lookahead permission %s worker=%d got=%lu expected=%lu",
+                                       c->name, worker, got, c->expected ));
+    if( scheduled ) FD_TEST( fd_pack_microblock_complete( pack, 1UL ) );
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+    fd_pack_delete( fd_pack_leave( pack ) );
+  }
+}
+
+static void
+insert_ordinal_test_bundle_capture( fd_pack_t * pack, ulong id, ulong cnt, int bam, int initializer,
+                                    char const * writes, fd_ed25519_sig_t * member_sig ) {
+  fd_txn_e_t * slots[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+  fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, slots, cnt );
+  for( ulong j=0UL; j<cnt; j++ ) {
+    /* Exercise integer priority rounding with widely differing costs. */
+    make_transaction1( bundle[j]->txnp, id+j, (j&1UL) ? 1U : 1400000U, 32U, 5.0, writes, "", NULL, NULL );
+    if( member_sig && j==1UL )
+      fd_memcpy( *member_sig, fd_txn_get_signatures( TXN(bundle[j]->txnp), bundle[j]->txnp->payload ), sizeof(*member_sig) );
+    if( bam ) {
+      bundle[j]->txnp->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
+      bundle[j]->txnp->bam.seq_id = (uint)id;
+      bundle[j]->txnp->bam.scheduler_gen = 1U;
+      bundle[j]->txnp->bam.batch_idx = (uchar)j;
+    }
+  }
+  ulong deleted;
+  FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, cnt, 1000UL, initializer, &id, &deleted, NULL )>=0 );
+  FD_TEST( !deleted );
+}
+
+static void
+insert_ordinal_test_bundle( fd_pack_t * pack, ulong id, ulong cnt, int bam, int initializer, char const * writes ) {
+  insert_ordinal_test_bundle_capture( pack, id, cnt, bam, initializer, writes, NULL );
+}
+
+static void
+churn_bundle_ordinals( fd_pack_t * pack, ulong count ) {
+  fd_txn_p_t churn[1];
+  make_transaction1( churn, 900UL, 1000U, 32U, 5.0, "", "", NULL, NULL );
+  churn->source_tpu = FD_TXN_M_TPU_SOURCE_BAM;
+  churn->bam.seq_id = 900U;
+  churn->bam.scheduler_gen = 1U;
+  fd_ed25519_sig_t sig;
+  fd_memcpy( sig, fd_txn_get_signatures( TXN(churn), churn->payload ), sizeof(sig) );
+  for( ulong i=0UL; i<count; i++ ) {
+    fd_txn_e_t * slots[1];
+    fd_txn_e_t * const * bundle = fd_pack_insert_bundle_init( pack, slots, 1UL );
+    *bundle[0]->txnp = *churn;
+    ulong deleted;
+    FD_TEST( fd_pack_insert_bundle_fini( pack, bundle, 1UL, 1000UL, FD_PACK_IB_TYPE_NONE,
+                                         NULL, &deleted, NULL )>=0 );
+    FD_TEST( !deleted );
+    FD_TEST( fd_pack_delete_bam_bundle( pack, (fd_ed25519_sig_t const *)(void const *)&sig,
+                                        900U, 1U )==1UL );
+  }
+}
+
+/* A retained five-member batch plus one reused ordinal used to exceed the
+   scheduler/deleter's bounded scratch.  Cross the real insertion counter
+   through the public API, keeping original BAM/BE identities and metadata. */
+static void
+test_bundle_ordinal_rebase( void ) {
+  for( int mode=0; mode<4; mode++ ) {
+    fd_pack_t * pack = init_all_with_meta( 64UL, 2UL, 8UL, sizeof(ulong), &outcome );
+    fd_pack_set_initializer_bundles_ready( pack );
+    if( mode==3 ) {
+      ulong written_cost = 0UL;
+      for( ulong i=0UL;; i++ ) {
+        fd_txn_e_t * txn = fd_pack_insert_txn_init( pack );
+        ulong cost, deleted;
+        make_transaction1( txn->txnp, 10000UL+i, 1000000U, 32U, 5.0, "X", "", NULL, &cost );
+        FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &deleted )>=0 );
+        FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                                  0UL, FD_PACK_SCHEDULE_TXN, outcome.results )==1UL );
+        FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+        written_cost += cost;
+        if( FD_PACK_TEST_MAX_WRITE_COST_PER_ACCT-written_cost<1400000UL ) break;
+      }
+    }
+    if( mode==1 || mode==2 ) {
+      insert_ordinal_test_bundle( pack, 600UL, 1UL, 0, FD_PACK_IB_TYPE_BAM, "" );
+    }
+    if( mode==2 ) {
+      FD_TEST( schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==1UL );
+      FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+    }
+    insert_ordinal_test_bundle( pack, 700UL, 5UL, 1, FD_PACK_IB_TYPE_NONE, mode==3 ? "X" : "" );
+    insert_ordinal_test_bundle( pack, 800UL, 2UL, 0, FD_PACK_IB_TYPE_NONE, "" );
+    if( mode==3 ) {
+      for( ulong i=0UL; i<50UL; i++ )
+        FD_TEST( !schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                   FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results ) );
+    }
+
+    for( ulong round=0UL; round<(mode==0 ? 2UL : 1UL); round++ ) {
+      churn_bundle_ordinals( pack, 313721UL );
+      FD_TEST( fd_pack_avail_txn_cnt( pack )==(mode==1 ? 8UL : 7UL) );
+      FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+      ulong hint;
+      void const * meta;
+      fd_txn_p_t const * head = fd_pack_peek_bundle_candidate( pack, 1, &hint, &meta );
+      if( mode==3 ) FD_TEST( !head ); /* rebase must not reset deferral */
+      else {
+        FD_TEST( head && candidate_test_txn_id( head )==(mode==1 ? 600UL : 700UL) );
+        if( mode==1 || mode==2 ) FD_TEST( !meta ); /* queued/Pending initializer */
+        else FD_TEST( meta && *(ulong const *)meta==700UL );
+      }
+    }
+    if( mode==1 ) {
+      FD_TEST( schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==1UL );
+      FD_TEST( candidate_test_txn_id( outcome.results[0].txnp )==600UL );
+      FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+    }
+    if( mode==1 || mode==2 ) {
+      FD_TEST( !schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
+                 FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results ) );
+      fd_pack_rebate_t rebate = { .consumed_cost=fd_pack_pending_rebate_cost( pack ), .ib_result=1 };
+      fd_pack_rebate_cus( pack, &rebate );
+    }
+    if( mode==3 ) { fd_pack_end_block( pack ); fd_pack_set_initializer_bundles_ready( pack ); }
+    for( ulong group=0UL; group<2UL; group++ ) {
+      ulong hint;
+      void const * meta;
+      fd_txn_p_t const * head = fd_pack_peek_bundle_candidate( pack, 0, &hint, &meta );
+      ulong id = group ? 800UL : 700UL;
+      FD_TEST( head && candidate_test_txn_id( head )==id && meta && *(ulong const *)meta==id );
+      ulong cnt = group ? 2UL : 5UL;
+      FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                0UL, FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_READY, hint, NULL, NULL, outcome.results )==cnt );
+      for( ulong j=0UL; j<cnt; j++ ) FD_TEST( candidate_test_txn_id( outcome.results[j].txnp )==id+j );
+      FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+    }
+    FD_TEST( !fd_pack_avail_txn_cnt( pack ) && !fd_pack_verify( pack, pack_verify_scratch ) );
+    fd_pack_delete( fd_pack_leave( pack ) );
+  }
+}
+
+static void
+test_bundle_ordinal_rebase_group_boundaries( void ) {
+  enum { ORDINAL_LIMIT = 313721 };
+  fd_pack_t * pack = init_all_with_meta( 128UL, 2UL, 8UL, sizeof(ulong), &outcome );
+  fd_pack_set_initializer_bundles_ready( pack );
+  for( ulong group=0UL; group<12UL; group++ )
+    insert_ordinal_test_bundle( pack, 1000UL+10UL*group, group%5UL+1UL,
+                                (int)(group&1UL), FD_PACK_IB_TYPE_NONE, "" );
+  /* Relative ordinal is now 13.  Place two retained groups at N-1 and N,
+     then make the next insert rebase them with every earlier group. */
+  churn_bundle_ordinals( pack, ORDINAL_LIMIT-14UL );
+  insert_ordinal_test_bundle( pack, 2000UL, 4UL, 1, FD_PACK_IB_TYPE_NONE, "" );
+  fd_ed25519_sig_t member_sig;
+  insert_ordinal_test_bundle_capture( pack, 2010UL, 5UL, 0, FD_PACK_IB_TYPE_NONE, "", &member_sig );
+  insert_ordinal_test_bundle( pack, 2020UL, 1UL, 1, FD_PACK_IB_TYPE_NONE, "" );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+
+  FD_TEST( fd_pack_delete_transaction( pack, (fd_ed25519_sig_t const *)(void const *)&member_sig )==5UL );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+
+  for( ulong group=0UL; group<14UL; group++ ) {
+    ulong id  = group<12UL ? 1000UL+10UL*group : group==12UL ? 2000UL : 2020UL;
+    ulong cnt = group<12UL ? group%5UL+1UL      : group==12UL ? 4UL    : 1UL;
+    ulong hint;
+    void const * meta;
+    fd_txn_p_t const * head = fd_pack_peek_bundle_candidate( pack, 0, &hint, &meta );
+    FD_TEST( head && candidate_test_txn_id( head )==id && meta && *(ulong const *)meta==id );
+    FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK,
+              0.0f, 0UL, FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_READY,
+              hint, NULL, NULL, outcome.results )==cnt );
+    for( ulong i=0UL; i<cnt; i++ ) FD_TEST( candidate_test_txn_id( outcome.results[i].txnp )==id+i );
+    FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+  }
+  FD_TEST( !fd_pack_avail_txn_cnt( pack ) && !fd_pack_verify( pack, pack_verify_scratch ) );
+  fd_pack_delete( fd_pack_leave( pack ) );
+}
+
+static void
+test_bundle_ordinal_rebase_initializer_replacement( void ) {
+  enum { ORDINAL_LIMIT = 313721 };
+  for( int with_group=0; with_group<2; with_group++ ) {
+    fd_pack_t * pack = init_all_with_meta( 64UL, 2UL, 8UL, sizeof(ulong), &outcome );
+    fd_pack_set_initializer_bundles_ready( pack );
+    insert_ordinal_test_bundle( pack, 3000UL, 3UL, 1, FD_PACK_IB_TYPE_BAM, "" );
+    if( with_group ) insert_ordinal_test_bundle( pack, 3200UL, 2UL, 0, FD_PACK_IB_TYPE_NONE, "" );
+    churn_bundle_ordinals( pack, ORDINAL_LIMIT-(ulong)with_group );
+
+    fd_txn_e_t * slots[3];
+    fd_txn_e_t * const * replacement = fd_pack_insert_bundle_init( pack, slots, 3UL );
+    for( ulong i=0UL; i<3UL; i++ ) {
+      make_transaction1( replacement[i]->txnp, 3100UL+i, i&1UL ? 1U : 1400000U,
+                         32U, 5.0, "", "", NULL, NULL );
+      replacement[i]->txnp->source_tpu    = FD_TXN_M_TPU_SOURCE_BAM;
+      replacement[i]->txnp->bam.seq_id    = 3100U;
+      replacement[i]->txnp->bam.batch_idx = (uchar)i;
+    }
+    fd_ed25519_sig_t ib_sig;
+    fd_memcpy( ib_sig, fd_txn_get_signatures( TXN(replacement[0]->txnp), replacement[0]->txnp->payload ),
+               sizeof(ib_sig) );
+    ulong id = 3100UL;
+    ulong deleted;
+    FD_TEST( fd_pack_insert_bundle_fini( pack, replacement, 3UL, 1000UL, FD_PACK_IB_TYPE_BAM,
+                                         &id, &deleted, NULL )>=0 );
+    FD_TEST( deleted==3UL && !fd_pack_verify( pack, pack_verify_scratch ) );
+    ulong hint;
+    fd_txn_p_t const * head = fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL );
+    FD_TEST( head && candidate_test_txn_id( head )==3100UL );
+    FD_TEST( fd_pack_delete_transaction( pack, (fd_ed25519_sig_t const *)(void const *)&ib_sig )==3UL );
+    if( with_group ) {
+      void const * meta;
+      head = fd_pack_peek_bundle_candidate( pack, 0, &hint, &meta );
+      FD_TEST( head && candidate_test_txn_id( head )==3200UL && meta && *(ulong const *)meta==3200UL );
+    }
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+    fd_pack_delete( fd_pack_leave( pack ) );
+  }
+}
+
+static void
+test_deferred_slot_rollover( void ) {
+  pack_outcome_t outcome;
+  fd_pack_t * pack = init_all_with_meta( 64UL, 2UL, 8UL, 48UL, &outcome );
+  fd_pack_set_initializer_bundles_ready( pack );
+  ulong written_cost = 0UL;
+  ulong deleted;
+  for( ulong i=0UL;; i++ ) {
+    ulong cost;
+    fd_txn_e_t * txn = fd_pack_insert_txn_init( pack );
+    make_transaction1( txn->txnp, i, 1000000U, 32U, 5.0, "X", "", NULL, &cost );
+    FD_TEST( fd_pack_insert_txn_fini( pack, txn, ULONG_MAX, &deleted )>=0 );
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                               0UL, FD_PACK_SCHEDULE_TXN, outcome.results )==1UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+    written_cost += cost;
+    if( FD_PACK_TEST_MAX_WRITE_COST_PER_ACCT-written_cost<1400000UL ) break;
+  }
+  fd_txn_e_t * txn = fd_pack_insert_txn_init( pack );
+  make_transaction1( txn->txnp, 700UL, 1400000U, 32U, 5.0, "X", "", NULL, NULL );
+  FD_TEST( fd_pack_insert_txn_fini( pack, txn, ULONG_MAX, &deleted )>=0 );
+  insert_bam_candidate_test( pack, 701UL, 1UL, 1400000U, 1U, "X", "", 0 );
+  int flags = FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BUNDLE;
+  for( ulong i=0UL; i<64UL; i++ ) {
+    FD_TEST( !fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                                0UL, FD_PACK_SCHEDULE_TXN, outcome.results ) );
+    FD_TEST( !schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                      0UL, flags, outcome.results ) );
+  }
+  ulong hint;
+  FD_TEST( !fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
+  /* Compressed slots start at 51 and cycle through [51,65535]. */
+  for( ulong i=0UL; i<USHORT_MAX-50UL; i++ ) fd_pack_end_block( pack );
+  fd_pack_set_initializer_bundles_ready( pack );
+  FD_TEST( fd_pack_avail_txn_cnt( pack )==2UL );
+  FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                             0UL, FD_PACK_SCHEDULE_TXN, outcome.results )==1UL );
+  FD_TEST( candidate_test_txn_id( outcome.results[0].txnp )==700UL );
+  FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+  FD_TEST( schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                   0UL, flags, outcome.results )==1UL );
+  FD_TEST( candidate_test_txn_id( outcome.results[0].txnp )==701UL );
+  FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+  fd_pack_delete( fd_pack_leave( pack ) );
+
+  /* A partially spent budget must survive the same rollover. */
+  pack = init_all_with_meta( 64UL, 2UL, 8UL, 48UL, &outcome );
+  for( ulong i=0UL; i<USHORT_MAX-51UL; i++ ) fd_pack_end_block( pack );
+  fd_pack_set_initializer_bundles_ready( pack );
+  fill_for_bam_capacity_test( pack, &outcome );
+  insert_bam_candidate_test( pack, 700UL, 1UL, 1400000U, 1U, "X", "", 0 );
+  insert_bam_candidate_test( pack, 701UL, 1UL, 2000U, 0U, "X", "", 0 );
+  for( ulong i=0UL; i<49UL; i++ )
+    FD_TEST( !schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                      0UL, flags, outcome.results ) );
+  FD_TEST( candidate_test_txn_id( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) )==700UL );
+  fd_pack_end_block( pack );
+  fd_pack_set_initializer_bundles_ready( pack );
+  fill_for_bam_capacity_test( pack, &outcome );
+  FD_TEST( !schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
+                                    0UL, flags, outcome.results ) );
+  FD_TEST( candidate_test_txn_id( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) )==701UL );
+  FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+  fd_pack_delete( fd_pack_leave( pack ) );
+}
+
 /* Neither readiness from another mode nor readiness from a stale pool index
    permits dispatch.  Every mutating API ends the view's documented lifetime. */
 static void
@@ -2672,13 +3305,13 @@ test_bam_candidate_hint_lifetime( void ) {
     }
     int flags = FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY;
     FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
-                                                               0UL, flags, hint, outcome.results )==0UL );
+                                                               0UL, flags, hint, NULL, NULL, outcome.results )==0UL );
     /* No hint and no readiness are separately fail-closed, even with full permission. */
     FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
                                                0UL, flags, outcome.results )==0UL );
     (void)fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL );
     FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
-                                                               0UL, flags & ~FD_PACK_SCHEDULE_BAM_READY, hint, outcome.results )==0UL );
+                                                               0UL, flags & ~FD_PACK_SCHEDULE_BAM_READY, hint, NULL, NULL, outcome.results )==0UL );
     FD_TEST( !fd_pack_current_block_cost( pack ) );
     FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
     fd_pack_delete( fd_pack_leave( pack ) );
@@ -2722,7 +3355,7 @@ test_bam_candidate_initializer_states( void ) {
   FD_TEST( candidate && candidate_test_txn_id( candidate )==700UL );
   FD_TEST( !meta && hint!=ULONG_MAX ); /* Failed BAM retains dispatch readiness. */
   FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
-                                                             1UL, single, hint, outcome.results )==0UL );
+                                                             1UL, single, hint, NULL, NULL, outcome.results )==0UL );
   FD_TEST( schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, single, outcome.results )==1UL );
   FD_TEST( outcome.results[0].txnp->flags & FD_TXN_P_FLAGS_BUNDLE );
   FD_TEST( fd_pack_microblock_complete( pack, 1UL )==1 );
@@ -2740,96 +3373,6 @@ test_bam_candidate_initializer_states( void ) {
   FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
   FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
   fd_pack_delete( fd_pack_leave( pack ) );
-}
-
-/* This is a bounded scheduler-cost benchmark, not an end-to-end latency
-   measurement.  In particular it excludes the tile's indexed work sidecar,
-   worker execution, PoH, and transport.  Batch timing amortizes timestamp
-   overhead; quantiles describe mean attempt cost across the measured batches. */
-static void
-benchmark_bam_candidate( void ) {
-  static char const * names[5] = { "empty", "held_without_ready", "restricted_multi", "capacity_failure", "account_conflict" };
-  static ulong const queue_sizes[3] = { 1UL, 64UL, 1024UL };
-  ulong const warmup = 8192UL;
-  ulong const sample_cnt = 101UL;
-  ulong const attempts_per_sample = 1024UL;
-  FD_LOG_NOTICE(( "BAM_CANDIDATE_BENCH scope=pack_view_schedule_only_no_sidecar_execution_poh_transport unit=fd_tickcount_ticks warmup=%lu samples=%lu attempts_per_sample=%lu",
-                   warmup, sample_cnt, attempts_per_sample ));
-  for( int kind=0; kind<5; kind++ ) {
-    for( ulong depth_idx=0UL; depth_idx<(kind ? 3UL : 1UL); depth_idx++ ) {
-      ulong queued = kind ? queue_sizes[depth_idx] : 0UL;
-      if( kind==2 && queued==1UL ) queued = 2UL;
-      fd_pack_t * pack = init_all_with_meta( 1024UL, 2UL, 8UL, 48UL, &outcome );
-      fd_pack_set_initializer_bundles_ready( pack );
-      int flags = FD_PACK_SCHEDULE_VOTE | FD_PACK_SCHEDULE_BAM_SINGLE | FD_PACK_SCHEDULE_BAM_ONLY;
-      if( kind==3 ) {
-        /* Consume real capacity; do not fabricate counters or rely on a
-           global-limit early return that never reaches the bundle attempt. */
-        for( ulong i=0UL;; i++ ) {
-          ulong cost, deleted;
-          fd_txn_e_t * txn = fd_pack_insert_txn_init( pack );
-          make_transaction1( txn->txnp, 4000UL+i, 1000000U, 32U, 5.0, "", "", NULL, &cost );
-          FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &deleted )>=0 );
-          FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
-                                                     FD_PACK_SCHEDULE_TXN, outcome.results )==1UL );
-          if( FD_PACK_TEST_MAX_COST_PER_BLOCK-fd_pack_current_block_cost( pack )<cost ) break;
-          FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
-        }
-      } else if( kind==4 ) {
-        insert_bam_candidate_test( pack, 4000UL, 1UL, 2000U, 0U, "X", "", 0 );
-        FD_TEST( schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL,
-                                         FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY, outcome.results )==1UL );
-      }
-      if( queued ) {
-        ulong first_cnt = kind==2 ? 2UL : 1UL;
-        insert_bam_candidate_test( pack, 700UL, first_cnt, kind==3 ? 1400000U : 2000U,
-                                   (uchar)(kind==2), kind==4 ? "X" : "", "", 0 );
-        for( ulong i=first_cnt; i<queued; i++ )
-          insert_bam_candidate_test( pack, 2000UL+i, 1UL, 2000U, 0U, "", "", 0 );
-      }
-      FD_TEST( fd_pack_avail_txn_cnt( pack )==queued );
-      ulong cost_before = fd_pack_current_block_cost( pack );
-      ulong elapsed[101];
-      for( ulong sample=0UL; sample<=sample_cnt; sample++ ) {
-        ulong attempts = sample ? attempts_per_sample : warmup;
-        ulong scheduled = 0UL;
-        ulong candidates = 0UL;
-        FD_COMPILER_MFENCE();
-        long begin = fd_tickcount();
-        for( ulong i=0UL; i<attempts; i++ ) {
-          ulong hint;
-          fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL );
-          candidates += (ulong)!!candidate;
-          int ready_flags = flags | ((candidate && kind!=1) ? FD_PACK_SCHEDULE_BAM_READY : 0);
-          scheduled += fd_pack_schedule_next_microblock_with_bundle_hint( pack, 1500000UL, 0.75f, 1UL,
-                                                                          ready_flags, hint, outcome.results );
-        }
-        FD_COMPILER_MFENCE();
-        ulong ticks = (ulong)(fd_tickcount()-begin);
-        FD_TEST( !scheduled && candidates==(queued ? attempts : 0UL) );
-        if( sample ) elapsed[sample-1UL] = ticks;
-      }
-      /* Sort the fixed 101 timing batches outside the measured region. */
-      for( ulong i=1UL; i<sample_cnt; i++ ) {
-        ulong value = elapsed[i];
-        ulong j = i;
-        while( j && value<elapsed[j-1UL] ) { elapsed[j]=elapsed[j-1UL]; j--; }
-        elapsed[j] = value;
-      }
-      FD_TEST( fd_pack_avail_txn_cnt( pack )==queued );
-      FD_TEST( fd_pack_current_block_cost( pack )==cost_before );
-      if( queued ) {
-        ulong hint;
-        fd_txn_p_t const * candidate = fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL );
-        FD_TEST( candidate && candidate_test_txn_id( candidate )==700UL );
-      }
-      FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
-      double divisor = (double)attempts_per_sample;
-      FD_LOG_NOTICE(( "BAM_CANDIDATE_BENCH kind=%s queued=%lu p50=%.2f p95=%.2f p99=%.2f ticks_per_attempt",
-                       names[kind], queued, (double)elapsed[50]/divisor, (double)elapsed[95]/divisor, (double)elapsed[99]/divisor ));
-      fd_pack_delete( fd_pack_leave( pack ) );
-    }
-  }
 }
 
 /* Generic pack regression: initializer-bundle state machine behavior. */
@@ -2994,7 +3537,6 @@ main( int     argc,
   fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
 
   int extra_benchmark = fd_env_strip_cmdline_contains( &argc, &argv, "--extra-bench" );
-  int bam_candidate_benchmark = fd_env_strip_cmdline_contains( &argc, &argv, "--bam-candidate-bench" );
   extra_verify = fd_env_strip_cmdline_contains( &argc, &argv, "--extra-verify" );
 
   test0();
@@ -3015,6 +3557,7 @@ main( int     argc,
   test_duplicate_sig();
   test_duplicate_sig_bam_bundle_delete();
   test_nonce();
+  test_nonce_retention_shapes();
   test_bundle_nonce();
   test_bam_nonrevert_seq_conflict_order();
   test_bam_nonrevert_multi_clears_bundle_flag();
@@ -3025,6 +3568,12 @@ main( int     argc,
   test_bam_secondary_fee_payer_and_nonce_locks();
   test_bam_secondary_fifo_head();
   test_bam_secondary_capacity_deferral();
+  test_bam_conflict_lookahead();
+  test_bam_lookahead_permissions();
+  test_bundle_ordinal_rebase();
+  test_bundle_ordinal_rebase_group_boundaries();
+  test_bundle_ordinal_rebase_initializer_replacement();
+  test_deferred_slot_rollover();
   test_bam_candidate_hint_lifetime();
   test_bam_candidate_initializer_states();
 
@@ -3032,14 +3581,13 @@ main( int     argc,
   test_bundle_account_conflicts();
   test_initializer_bundle_state_machine();
   test_bundle_metadata_persistence();
+  test_rejected_bundle_preserves_singleton_nonce();
 
   if( extra_benchmark ) {
     performance_test( extra_benchmark );
     performance_test2();
     performance_end_block();
   }
-
-  if( bam_candidate_benchmark ) benchmark_bam_candidate();
 
   fd_rng_delete( fd_rng_leave( rng ) );
 

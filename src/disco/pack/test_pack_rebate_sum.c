@@ -41,6 +41,7 @@ fake_transaction( fd_txn_p_t     * txnp,
   txnp->payload_sz = 111UL;
   txnp->flags = flags;
   txnp->execle_cu.rebated_cus = (uint)rebate_cus;
+  txnp->execle_cu.actual_consumed_cus = 0U;
   txnp->pack_alloc = 1111UL;
 }
 
@@ -99,6 +100,29 @@ test_fixed_seed_collisions_are_distributed( fd_pack_rebate_sum_t * sum ) {
 # undef COLLISION_CNT
 }
 
+static void
+test_settled_reservations( fd_pack_rebate_sum_t * sum ) {
+  fd_txn_p_t txn[1] = {0};
+  fd_acct_addr_t const * alt[1] = { NULL };
+  fd_pack_rebate_t report[1];
+
+  /* Zero-refund completions must still release their reservation. */
+  fake_transaction( txn, NULL, 0UL, SANITIZE | EXECUTE, "", "" );
+  txn->execle_cu.actual_consumed_cus = 5000U;
+  FD_TEST( !fd_pack_rebate_sum_add_txn( sum, txn, alt, 1UL ) );
+  FD_TEST( fd_pack_rebate_sum_report( sum, report )==FD_PACK_REBATE_MIN_SZ );
+  FD_TEST( report->consumed_cost==5000UL && !report->total_cost_rebate );
+  FD_TEST( !fd_pack_rebate_sum_report( sum, report ) );
+
+  /* Frankendancer retains diagnostic consumed CUs on successful members
+     of an atomic batch that rolled back.  They are already fully rebated. */
+  fake_transaction( txn, NULL, 5000UL, SANITIZE | BUNDLE, "", "" );
+  txn->execle_cu.actual_consumed_cus = 3000U;
+  FD_TEST( !fd_pack_rebate_sum_add_txn( sum, txn, alt, 1UL ) );
+  FD_TEST( fd_pack_rebate_sum_report( sum, report )==FD_PACK_REBATE_MIN_SZ );
+  FD_TEST( !report->consumed_cost && report->total_cost_rebate==5000UL );
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -110,6 +134,7 @@ main( int     argc,
   fd_pack_rebate_sum_t * sum = fd_pack_rebate_sum_join( fd_pack_rebate_sum_new( _sum, TEST_SEED ) );
 
   test_fixed_seed_collisions_are_distributed( sum );
+  test_settled_reservations( sum );
 
   union{ fd_pack_rebate_t rebate[1]; uchar footprint[USHORT_MAX]; } report;
 
@@ -223,6 +248,7 @@ main( int     argc,
     microblock[i].payload_sz            = 111UL;
     microblock[i].flags                 = SANITIZE | EXECUTE;
     microblock[i].execle_cu.rebated_cus = 100U;
+    microblock[i].execle_cu.actual_consumed_cus = 200U;
   }
   ulong const alt_byte_cnt = sizeof(alt);
   for( ulong batch=0UL; batch<2UL; batch++ ) {
@@ -231,7 +257,9 @@ main( int     argc,
     FD_TEST( 0UL==fd_pack_rebate_sum_add_txn( sum, microblock, _alt, MAX_TXN_PER_MICROBLOCK ) );
   }
   FD_TEST( SZ(FD_PACK_REBATE_MAX_ENTRIES)==fd_pack_rebate_sum_report ( sum, report.rebate         ) );
+  FD_TEST( report.rebate->consumed_cost==2UL*MAX_TXN_PER_MICROBLOCK*200UL );
   FD_TEST( SZ(FD_PACK_REBATE_MAX_ENTRIES)==fd_pack_rebate_sum_report ( sum, report.rebate         ) );
+  FD_TEST( !report.rebate->consumed_cost );
   FD_TEST(                            0UL==fd_pack_rebate_sum_report ( sum, report.rebate         ) );
   FD_TEST(                            0UL==fd_pack_rebate_sum_add_txn( sum, microblock, _alt, 0UL ) );
 
