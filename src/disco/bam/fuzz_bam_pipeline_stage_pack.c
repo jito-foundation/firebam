@@ -472,6 +472,7 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
   }
 
   if( FD_LIKELY( h->ctx->leader_slot==slot ) ) {
+    fd_clock_tile_set( h->ctx->clock, now_ns );
     res.execle_after       = h->stem_seqs[ BAM_FUZZ_PACK_OUT_EXECLE_IDX ];
     res.poh_after          = h->stem_seqs[ BAM_FUZZ_PACK_OUT_POH_IDX ];
     res.bam_leader_after   = h->stem_seqs[ BAM_FUZZ_PACK_OUT_BAM_LEADER_IDX ];
@@ -537,7 +538,8 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
 bam_fuzz_pack_result_t
 bam_fuzz_pack_frag( bam_fuzz_pack_t *    h,
                     fd_frag_meta_t const * meta,
-                    ulong                seq ) {
+                    ulong                seq,
+                    long                 now_ns ) {
   bam_fuzz_pack_result_t res = {
     .execle_before      = h->stem_seqs[ BAM_FUZZ_PACK_OUT_EXECLE_IDX ],
     .execle_after       = h->stem_seqs[ BAM_FUZZ_PACK_OUT_EXECLE_IDX ],
@@ -550,6 +552,7 @@ bam_fuzz_pack_frag( bam_fuzz_pack_t *    h,
     .pending_work_cnt   = pack_tile_bam_pending_work_cnt( h->ctx ),
     .scheduled_work_cnt = h->ctx->bam_scheduled_work_cnt,
   };
+  fd_clock_tile_set( h->ctx->clock, now_ns );
   during_frag( h->ctx, BAM_FUZZ_PACK_IN_RESOLV_IDX, seq, meta->sig, meta->chunk, meta->sz, meta->ctl );
   after_frag( h->ctx,
               BAM_FUZZ_PACK_IN_RESOLV_IDX,
@@ -569,7 +572,8 @@ bam_fuzz_pack_frag( bam_fuzz_pack_t *    h,
 }
 
 bam_fuzz_pack_result_t
-bam_fuzz_pack_credit( bam_fuzz_pack_t * h ) {
+bam_fuzz_pack_credit( bam_fuzz_pack_t * h,
+                      long              now_ns ) {
   bam_fuzz_pack_result_t res = {
     .execle_before      = h->stem_seqs[ BAM_FUZZ_PACK_OUT_EXECLE_IDX ],
     .execle_after       = h->stem_seqs[ BAM_FUZZ_PACK_OUT_EXECLE_IDX ],
@@ -582,6 +586,9 @@ bam_fuzz_pack_credit( bam_fuzz_pack_t * h ) {
     .pending_work_cnt   = pack_tile_bam_pending_work_cnt( h->ctx ),
     .scheduled_work_cnt = h->ctx->bam_scheduled_work_cnt,
   };
+  /* Keep Pack on the harness timeline even after an expensive result-queue
+     check; elapsed host time must not close a simulated leader slot. */
+  fd_clock_tile_set( h->ctx->clock, now_ns );
   int charge_busy = 0;
   before_credit( h->ctx, h->stem, &charge_busy );
   int opt_poll_in = 1;
