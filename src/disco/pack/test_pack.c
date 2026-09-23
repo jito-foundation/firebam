@@ -3265,7 +3265,7 @@ test_deferred_slot_rollover( void ) {
 }
 
 /* Neither readiness from another mode nor readiness from a stale pool index
-   permits dispatch.  Every mutating API ends the view's documented lifetime. */
+   permits dispatch.  Pool reservations alone leave the view valid. */
 static void
 test_bam_candidate_hint_lifetime( void ) {
   for( int mutation=0; mutation<12; mutation++ ) {
@@ -3297,6 +3297,8 @@ test_bam_candidate_hint_lifetime( void ) {
         fd_txn_e_t * slots[1];
         fd_pack_insert_bundle_init( pack, slots, 1UL );
         fd_pack_insert_bundle_cancel( pack, slots, 1UL );
+        fd_txn_e_t * txn = fd_pack_insert_txn_init( pack );
+        fd_pack_insert_txn_cancel( pack, txn );
         break;
       }
       case 9: FD_TEST( fd_pack_schedule_next_microblock( pack, 0UL, 0.0f, 0UL, 0, outcome.results )==0UL ); break;
@@ -3305,14 +3307,15 @@ test_bam_candidate_hint_lifetime( void ) {
     }
     int flags = FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY;
     FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
-                                                               0UL, flags, hint, NULL, NULL, outcome.results )==0UL );
+                                                               0UL, flags, hint, NULL, NULL, outcome.results )==(mutation==8) );
+    if( mutation==8 ) FD_TEST( candidate_test_txn_id( outcome.results[0].txnp )==700UL );
     /* No hint and no readiness are separately fail-closed, even with full permission. */
     FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
                                                0UL, flags, outcome.results )==0UL );
     (void)fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL );
     FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f,
                                                                0UL, flags & ~FD_PACK_SCHEDULE_BAM_READY, hint, NULL, NULL, outcome.results )==0UL );
-    FD_TEST( !fd_pack_current_block_cost( pack ) );
+    FD_TEST( !!fd_pack_current_block_cost( pack )==(mutation==8) );
     FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
     fd_pack_delete( fd_pack_leave( pack ) );
   }
