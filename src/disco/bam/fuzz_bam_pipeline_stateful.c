@@ -93,6 +93,13 @@ bam_fuzz_wksp_new_lazy( ulong footprint ) {
     FD_LOG_ERR(( "mmap(NULL,%lu KiB,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS) failed (%i-%s)",
                  footprint>>10, errno, fd_io_strerror( errno ) ));
   }
+#ifdef MADV_NOHUGEPAGE
+  /* Sparse touches of this lazy workspace can fault in whole huge pages
+     under THP=always, increasing RSS severalfold.  Advice is best effort. */
+  if( FD_UNLIKELY( madvise( mem, footprint, MADV_NOHUGEPAGE ) ) ) {
+    FD_LOG_WARNING(( "madvise(MADV_NOHUGEPAGE) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+  }
+#endif
 
   ulong part_max = fd_wksp_part_max_est( footprint, 64UL<<10 );
   FD_TEST( part_max );
@@ -1041,6 +1048,9 @@ bam_fuzz_require_txn_error_path( test_bam_env_t *    env,
   bam_fuzz_batch_spec_t specs[ BAM_FUZZ_MAX_BATCHES ];
   ulong spec_cnt = 0UL;
   bam_fuzz_make_batch_specs( f, specs, &spec_cnt, 0x42U, 0x43U, c );
+  /* Keep this coverage path in the active slot so Pack dispatches the
+     transaction-error fixture during this pump. */
+  for( ulong i=0UL; i<spec_cnt; i++ ) specs[ i ].max_schedule_slot = f->current_slot;
   bam_fuzz_deliver_specs( env, f, links, verify, dedup, resolv, pack, execle, specs, spec_cnt, ULONG_MAX );
   bam_fuzz_drain_pending_txns( env, f, links, verify, dedup, resolv, pack, execle, ULONG_MAX );
   bam_fuzz_pump_pack( env, f, links, pack, execle, 16UL );

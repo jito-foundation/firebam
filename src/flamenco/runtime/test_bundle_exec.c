@@ -1,5 +1,6 @@
 #include "tests/fd_svm_mini.h"
 #include "fd_runtime.h"
+#include "fd_runtime_const.h"
 #include "fd_bank.h"
 #include "fd_system_ids.h"
 #include "fd_alut.h"
@@ -11,6 +12,7 @@
 #include "sysvar/fd_sysvar.h"
 #include "sysvar/fd_sysvar_base.h"
 #include "sysvar/fd_sysvar_cache.h"
+#include "sysvar/fd_sysvar_recent_hashes.h"
 #include "../accdb/fd_accdb.h"
 #include "../features/fd_features.h"
 #include "../../disco/fd_txn_p.h"
@@ -341,6 +343,44 @@ test_execute_bundles( fd_svm_mini_t * mini ) {
     FD_TEST( fd_txn_parse( _repr.payload, _sz, TXN( &_repr ), NULL ) );                           \
     bundle_acquire( env, &_repr, (txn_cnt) );                                                     \
   } while(0)
+
+  /* Prepare distinct members: a later write upgrades the bundle-wide
+     acquire, while shared reads and a requested-writable sysvar do not. */
+  {
+    fd_txn_p_t perms_txn[2] = {0};
+    fd_txn_in_t perms_in[2] = {0};
+    fd_pubkey_t keys0[4] = { pubkey1, pubkey2, pubkey3, fd_sysvar_clock_id };
+    fd_pubkey_t keys1[4] = { pubkey1, pubkey2, fd_sysvar_clock_id, pubkey3 };
+    fd_pubkey_t * keys[2] = { keys0, keys1 };
+    ulong readonly_cnt[2] = { 3UL, 1UL };
+    for( ulong i=0UL; i<2UL; i++ ) {
+      ulong sz = txn_serialize( perms_txn[i].payload, 1UL, &signature, 1UL, 0UL,
+                                readonly_cnt[i], 4UL, keys[i], &dummy_hash );
+      perms_txn[i].payload_sz = (ushort)sz;
+      FD_TEST( fd_txn_parse( perms_txn[i].payload, sz, TXN( &perms_txn[i] ), NULL ) );
+      perms_in[i].txn              = &perms_txn[i];
+      perms_in[i].bundle.is_bundle = 1;
+    }
+    FD_TEST( fd_runtime_prepare_bundle_accounts( env->runtime, env->bank, perms_in, env->txn_out, 2UL )==FD_RUNTIME_EXECUTE_SUCCESS );
+    int saw_read = 0;
+    int saw_upgrade = 0;
+    int saw_reserved = 0;
+    for( ulong i=0UL; i<env->runtime->accounts.account_cnt; i++ ) {
+      fd_acc_t const * acc = &env->runtime->accounts.account[i];
+      if( fd_pubkey_eq( fd_type_pun_const( &acc->pubkey ), &pubkey3 ) ) {
+        FD_TEST( !acc->_writable );
+        saw_read = 1;
+      } else if( fd_pubkey_eq( fd_type_pun_const( &acc->pubkey ), &pubkey2 ) ) {
+        FD_TEST( acc->_writable );
+        saw_upgrade = 1;
+      } else if( fd_pubkey_eq( fd_type_pun_const( &acc->pubkey ), &fd_sysvar_clock_id ) ) {
+        FD_TEST( !acc->_writable );
+        saw_reserved = 1;
+      }
+    }
+    FD_TEST( saw_read && saw_upgrade && saw_reserved );
+    fd_runtime_fini_bundle( env->runtime );
+  }
 
   /* ==========================================================================
      Test 1: rw -> rw — bundle reuses a writable account as writable
@@ -1018,7 +1058,23 @@ test_execute_bundles( fd_svm_mini_t * mini ) {
     alut_bundle_in[1].txn              = &txn1_p;
     alut_bundle_in[1].bundle.is_bundle = 1;
 
+    /* A parent-visible ALT address receives the writable permission from
+       tx1's resolved key, even though tx0 does not reference it. */
+    pl[writable_off] = 1U;
     int prep_err = fd_runtime_prepare_bundle_accounts( env->runtime, env->bank, alut_bundle_in, env->txn_out, 2UL );
+    FD_TEST( prep_err==FD_RUNTIME_EXECUTE_SUCCESS );
+    int saw_writable_alt = 0;
+    for( ulong i=0UL; i<env->runtime->accounts.account_cnt; i++ ) {
+      fd_acc_t const * acc = &env->runtime->accounts.account[i];
+      if( FD_LIKELY( memcmp( acc->pubkey, alut_addrs[1].b, 32UL ) ) ) continue;
+      FD_TEST( acc->_writable );
+      saw_writable_alt = 1;
+    }
+    FD_TEST( saw_writable_alt );
+    fd_runtime_fini_bundle( env->runtime );
+
+    pl[writable_off] = 3U;
+    prep_err = fd_runtime_prepare_bundle_accounts( env->runtime, env->bank, alut_bundle_in, env->txn_out, 2UL );
     FD_TEST( prep_err == FD_RUNTIME_TXN_ERR_INVALID_ADDRESS_LOOKUP_TABLE_INDEX );
 
     FD_LOG_NOTICE(( "test bundle ALT peer isolation... ok" ));
@@ -1115,6 +1171,125 @@ test_execute_bundles( fd_svm_mini_t * mini ) {
     fd_runtime_fini_bundle( env->runtime );
 
     FD_LOG_NOTICE(( "test bundle-forwarded nonce... ok" ));
+  }
+
+  /* A self-authorized AdvanceNonce can use two instruction accounts: the
+     nonce account (also signer/fee payer) and RecentBlockhashes.  With
+     only the nonce account, age checks still pass, but execution fails
+     because the RecentBlockhashes instruction account is missing. */
+  for( ulong instr_acct_cnt=2UL; instr_acct_cnt>=1UL; instr_acct_cnt-- ) {
+    reset_world();
+    fd_pubkey_t nonce_key = { .ul[0] = 0x5E1FA17UL };
+    fd_hash_t old_blockhash = {0};
+    fd_memset( old_blockhash.uc, 0x11, FD_HASH_FOOTPRINT );
+    fd_hash_t old_nonce;
+    durable_nonce_from_blockhash( &old_nonce, &old_blockhash );
+    FD_TEST( !fd_blockhashes_check_age( &env->bank->f.block_hash_queue, &old_nonce,
+                                        FD_SYSVAR_RECENT_HASHES_CAP ) );
+    create_test_account( env->mini->runtime->accdb, env->fork_id, &fd_solana_system_program_id, 1UL,
+                         0UL, NULL, &fd_solana_native_loader_id );
+    create_nonce_account_initialized( env, &nonce_key, &nonce_key, &old_nonce );
+
+    fd_pubkey_t nonce_keys[3] = {
+      nonce_key, fd_sysvar_recent_block_hashes_id, fd_solana_system_program_id
+    };
+    if( instr_acct_cnt==1UL ) nonce_keys[1] = fd_solana_system_program_id;
+    uchar ix_accts[2] = { 0, 1 };
+    uchar ix_data[4];
+    FD_STORE( uint, ix_data, (uint)FD_SYSTEM_PROGRAM_INSTR_ADVANCE_NONCE_ACCOUNT );
+    txn_instr_t nonce_instr = {
+      .program_id_idx   = (uchar)instr_acct_cnt,
+      .account_idxs     = ix_accts,
+      .account_idxs_cnt = (ushort)instr_acct_cnt,
+      .data             = ix_data,
+      .data_sz          = sizeof(ix_data)
+    };
+    fd_txn_p_t nonce_txn = {0};
+    sz = txn_serialize_with_instrs( nonce_txn.payload, 1, &signature,
+                                    1UL, 0UL, instr_acct_cnt, instr_acct_cnt+1UL, nonce_keys,
+                                    &old_nonce, &nonce_instr, 1U );
+    nonce_txn.payload_sz = (ushort)sz;
+    FD_TEST( fd_txn_parse( nonce_txn.payload, sz, TXN( &nonce_txn ), NULL ) );
+
+    env->txn_in.txn              = &nonce_txn;
+    env->txn_in.bundle.is_bundle = 0;
+    fd_runtime_prepare_and_execute_txn( env->runtime, env->bank, &env->txn_in, &env->txn_out[0] );
+    FD_TEST( env->txn_out[0].err.is_committable );
+    FD_TEST( env->txn_out[0].err.txn_err==(instr_acct_cnt==2UL
+                                          ? FD_RUNTIME_EXECUTE_SUCCESS
+                                          : FD_RUNTIME_TXN_ERR_INSTRUCTION_ERROR) );
+    fd_runtime_commit_txn( env->runtime, env->bank, NULL, &env->txn_out[0], 0 );
+
+    fd_acc_t acc = fd_accdb_read_one( env->mini->runtime->accdb, env->fork_id, nonce_key.key );
+    fd_nonce_state_versions_t state[1];
+    FD_TEST( !fd_nonce_state_versions_decode( state, acc.data, acc.data_len ) );
+    fd_hash_t const * latest_blockhash = fd_blockhashes_peek_last_hash( &env->bank->f.block_hash_queue );
+    FD_TEST( latest_blockhash );
+    fd_hash_t expected_nonce;
+    durable_nonce_from_blockhash( &expected_nonce, latest_blockhash );
+    FD_TEST( fd_pubkey_eq( &state->authority, &nonce_key ) );
+    FD_TEST( !memcmp( &state->durable_nonce, &expected_nonce, sizeof(fd_hash_t) ) );
+    FD_TEST( memcmp( &state->durable_nonce, &old_nonce, sizeof(fd_hash_t) ) );
+    fd_accdb_unread_one( env->mini->runtime->accdb, &acc );
+    FD_LOG_NOTICE(( "test self-authorized %lu-account nonce... ok", instr_acct_cnt ));
+  }
+
+  /* A nonce-shaped instruction with no instruction-account signer is not
+     a durable nonce, but its fresh blockhash lets the ordinary bank age
+     path accept it.  The instruction fails and still pays its fee. */
+  {
+    reset_world();
+    fd_pubkey_t fee_payer = { .ul[0] = 0xFEE2UL };
+    fd_pubkey_t nonce_key = { .ul[0] = 0x5E1FA18UL };
+    fd_hash_t old_blockhash = {0};
+    fd_memset( old_blockhash.uc, 0x11, FD_HASH_FOOTPRINT );
+    fd_hash_t old_nonce;
+    durable_nonce_from_blockhash( &old_nonce, &old_blockhash );
+    FD_TEST( fd_blockhashes_check_age( &env->bank->f.block_hash_queue, &dummy_hash,
+                                       FD_SYSVAR_RECENT_HASHES_CAP ) );
+    create_test_account( env->mini->runtime->accdb, env->fork_id, &fee_payer, 10000000UL,
+                         0UL, NULL, &fd_solana_system_program_id );
+    create_test_account( env->mini->runtime->accdb, env->fork_id, &fd_solana_system_program_id, 1UL,
+                         0UL, NULL, &fd_solana_native_loader_id );
+    create_nonce_account_initialized( env, &nonce_key, &fee_payer, &old_nonce );
+
+    fd_pubkey_t nonce_keys[5] = {
+      fee_payer, nonce_key, fd_sysvar_recent_block_hashes_id, filler[0], fd_solana_system_program_id
+    };
+    uchar ix_accts[3] = { 1, 2, 3 };
+    uchar ix_data[4];
+    FD_STORE( uint, ix_data, (uint)FD_SYSTEM_PROGRAM_INSTR_ADVANCE_NONCE_ACCOUNT );
+    txn_instr_t nonce_instr = {
+      .program_id_idx   = 4,
+      .account_idxs     = ix_accts,
+      .account_idxs_cnt = 3,
+      .data             = ix_data,
+      .data_sz          = sizeof(ix_data)
+    };
+    fd_txn_p_t nonce_txn = {0};
+    sz = txn_serialize_with_instrs( nonce_txn.payload, 1, &signature,
+                                    1UL, 0UL, 3UL, 5UL, nonce_keys,
+                                    &dummy_hash, &nonce_instr, 1U );
+    nonce_txn.payload_sz = (ushort)sz;
+    FD_TEST( fd_txn_parse( nonce_txn.payload, sz, TXN( &nonce_txn ), NULL ) );
+    for( ulong i=0UL; i<3UL; i++ ) FD_TEST( !fd_txn_is_signer( TXN( &nonce_txn ), ix_accts[i] ) );
+
+    env->txn_in.txn              = &nonce_txn;
+    env->txn_in.bundle.is_bundle = 0;
+    fd_runtime_prepare_and_execute_txn( env->runtime, env->bank, &env->txn_in, &env->txn_out[0] );
+    FD_TEST( env->txn_out[0].err.is_committable );
+    FD_TEST( env->txn_out[0].err.txn_err==FD_RUNTIME_TXN_ERR_INSTRUCTION_ERROR );
+    fd_runtime_commit_txn( env->runtime, env->bank, NULL, &env->txn_out[0], 0 );
+
+    fd_acc_t payer = fd_accdb_read_one( env->mini->runtime->accdb, env->fork_id, fee_payer.key );
+    FD_TEST( payer.lamports==10000000UL-FD_RUNTIME_FEE_STRUCTURE_LAMPORTS_PER_SIGNATURE );
+    fd_accdb_unread_one( env->mini->runtime->accdb, &payer );
+    fd_acc_t nonce = fd_accdb_read_one( env->mini->runtime->accdb, env->fork_id, nonce_key.key );
+    fd_nonce_state_versions_t state[1];
+    FD_TEST( !fd_nonce_state_versions_decode( state, nonce.data, nonce.data_len ) );
+    FD_TEST( !memcmp( &state->durable_nonce, &old_nonce, sizeof(fd_hash_t) ) );
+    fd_accdb_unread_one( env->mini->runtime->accdb, &nonce );
+    FD_LOG_NOTICE(( "test fresh-hash unsigned AdvanceNonce pays fee... ok" ));
   }
 
   /* Test: stake_update queued by a non-owner txn must still fire once,

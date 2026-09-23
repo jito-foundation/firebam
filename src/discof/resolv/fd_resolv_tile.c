@@ -393,11 +393,13 @@ fd_resolv_is_durable_nonce( fd_txn_t const * txn,
   fd_acct_addr_t const system_program[1] = { { { SYS_PROG_ID } } };
   if( FD_LIKELY( memcmp( prog0, system_program, sizeof(fd_acct_addr_t) ) ) )        return 0;
 
-  /* instruction with three accounts and a four byte instruction data, a
-     little-endian uint value 4 */
-  if( FD_UNLIKELY( (ix0->data_sz!=4) | (ix0->acct_cnt!=3) ) ) return 0;
-
-  return fd_uint_load_4( payload + ix0->data_off )==4U;
+  /* A nonce authority may sign at any instruction account index, including
+     the nonce account itself.  A shape without an instruction signer is
+     ordinary work when its recent blockhash is valid. */
+  if( FD_UNLIKELY( ix0->data_sz<4UL || fd_uint_load_4( payload + ix0->data_off )!=4U ) ) return 0;
+  for( ulong i=0UL; i<ix0->acct_cnt; i++ )
+    if( fd_txn_is_signer( txn, payload[ ix0->acct_off+i ] ) ) return 1;
+  return 0;
 }
 
 static inline void
@@ -515,10 +517,8 @@ after_frag( fd_resolv_ctx_t *   ctx,
     txnm->reference_slot = blockhash->slot;
   }
 
-  int is_bundle_member = !!txnm->block_engine.bundle_id;
-  int is_durable_nonce = fd_resolv_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
-
-  if( FD_UNLIKELY( !is_bundle_member && !is_bam && !is_durable_nonce && !blockhash ) ) {
+  if( FD_UNLIKELY( !blockhash && !is_bam && !txnm->block_engine.bundle_id &&
+                   !fd_resolv_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) ) ) ) {
     ulong pool_idx;
     if( FD_UNLIKELY( !pool_free( ctx->pool ) ) ) {
       pool_idx = lru_list_idx_pop_tail( ctx->lru_list, ctx->pool );
