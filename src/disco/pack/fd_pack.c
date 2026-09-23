@@ -791,8 +791,8 @@ struct fd_pack_private {
      bundle meta, it's located at bundle_meta[j] for j in
      [i*bundle_meta_sz, (i+1)*bundle_meta_sz). */
   void * bundle_meta;
-  /* Upper 31 hint bits; advances on mutations, including failed calls.
-     Hints are callback-local and must never be retained across a mutation. */
+  /* Upper 31 hint bits; advances on calls that may change the selected
+     bundle or its scheduling state.  Hints are callback-local. */
   ulong bundle_hint_generation;
 };
 
@@ -1176,8 +1176,8 @@ fd_pack_can_fee_payer_afford( fd_acct_addr_t const * acct_addr,
 
 
 
-fd_txn_e_t * fd_pack_insert_txn_init(   fd_pack_t * pack                   ) { fd_pack_invalidate_bundle_hint( pack ); return trp_pool_ele_acquire( pack->pool )->txn_e; }
-void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn ) { fd_pack_invalidate_bundle_hint( pack ); trp_pool_ele_release( pack->pool, (fd_pack_ord_txn_t*)txn ); }
+fd_txn_e_t * fd_pack_insert_txn_init(   fd_pack_t * pack                   ) { return trp_pool_ele_acquire( pack->pool )->txn_e; }
+void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn ) { trp_pool_ele_release( pack->pool, (fd_pack_ord_txn_t*)txn ); }
 
 #define REJECT( reason ) do {                                       \
                            trp_pool_ele_release( pack->pool, ord ); \
@@ -1583,7 +1583,6 @@ fd_txn_e_t * const *
 fd_pack_insert_bundle_init( fd_pack_t          * pack,
                             fd_txn_e_t *       * bundle,
                             ulong                txn_cnt ) {
-  fd_pack_invalidate_bundle_hint( pack );
   FD_TEST( txn_cnt<=FD_PACK_MAX_TXN_PER_BUNDLE  );
   FD_TEST( trp_pool_free( pack->pool )>=txn_cnt );
   for( ulong i=0UL; i<txn_cnt; i++ ) bundle[ i ] = trp_pool_ele_acquire( pack->pool )->txn_e;
@@ -1594,7 +1593,6 @@ void
 fd_pack_insert_bundle_cancel( fd_pack_t          * pack,
                               fd_txn_e_t * const * bundle,
                               ulong                txn_cnt ) {
-  fd_pack_invalidate_bundle_hint( pack );
   /* There's no real reason these have to be released in reverse, but it
      seems fitting to release them in the opposite order they were
      acquired. */
@@ -2031,7 +2029,7 @@ fd_pack_bam_independent_candidate( fd_pack_t const *    pack,
   ulong generation = pack->bundle_hint_generation;
   treap_rev_iter_t iter = (treap_rev_iter_t)(head_hint & USHORT_MAX);
 
-  fd_pack_lookahead_acct_t accts[ FD_PACK_MAX_TXN_PER_BUNDLE*64UL ];
+  fd_pack_lookahead_acct_t accts[ FD_PACK_MAX_TXN_PER_BUNDLE*FD_TXN_ACCT_ADDR_MAX ];
   ushort heads[512];
   fd_memset( heads, 0xff, sizeof(heads) );
   ulong seed = bitset_map_seed( pack->acct_to_bitset );
@@ -2043,8 +2041,6 @@ fd_pack_bam_independent_candidate( fd_pack_t const *    pack,
     fd_pack_ord_txn_t const * lead = treap_rev_iter_ele_const( iter, pack->pool );
     fd_txn_p_t const * txn0 = lead->txn;
     ulong bundle_idx = RC_TO_REL_BUNDLE_IDX( lead->rewards, lead->compute_est );
-    if( FD_UNLIKELY( txn0->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM || txn0->bam.batch_idx ||
-                     (txn0->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) ) ) return ULONG_MAX;
 
     fd_pack_ord_txn_t const * group[ FD_PACK_MAX_TXN_PER_BUNDLE ];
     ulong txn_cnt = 0UL;
@@ -2073,7 +2069,6 @@ fd_pack_bam_independent_candidate( fd_pack_t const *    pack,
       fd_txn_t const * txn = TXN(group[j]->txn);
       ulong imm_cnt = txn->acct_addr_cnt;
       ulong cnt = imm_cnt + txn->addr_table_adtl_cnt;
-      if( FD_UNLIKELY( cnt>64UL ) ) return ULONG_MAX;
       fd_acct_addr_t const * imm = fd_txn_get_acct_addrs( txn, group[j]->txn->payload );
       for( ulong k=0UL; k<cnt; k++ ) {
         fd_acct_addr_t const * key = k<imm_cnt ? imm+k : group[j]->txn_e->alt_accts+(k-imm_cnt);
