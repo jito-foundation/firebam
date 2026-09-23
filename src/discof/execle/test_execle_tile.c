@@ -2197,7 +2197,7 @@ test_bam_pair_run( int variant,
   FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
   FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, 0UL,
                FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
-               hint, dispatch[0] )==next );
+               hint, NULL, NULL, dispatch[0] )==next );
   if( duplicate ) test_bam_pair_insert( pack, &result->forwarded[next], result->second_batch_cnt, bank->f.slot );
   test_bam_worker_output_t output[2];
   test_bam_worker_output_init( &output[0], 0UL );
@@ -2208,7 +2208,7 @@ test_bam_pair_run( int variant,
     FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
     FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, 1UL,
                  FD_PACK_SCHEDULE_BAM_SINGLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
-                 hint, dispatch[1] )==0UL );
+                 hint, NULL, NULL, dispatch[1] )==0UL );
     FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
   }
   if( !reverse || dependency || duplicate ) {
@@ -2220,7 +2220,7 @@ test_bam_pair_run( int variant,
   FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
   FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, second_worker,
                (duplicate ? FD_PACK_SCHEDULE_BUNDLE : FD_PACK_SCHEDULE_BAM_SINGLE) | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY,
-               hint, dispatch[1] )==result->second_batch_cnt );
+               hint, NULL, NULL, dispatch[1] )==result->second_batch_cnt );
   FD_TEST( !fd_pack_avail_txn_cnt( pack ) );
   ulong first_poh_cnt = output[0].seqs[0];
   ulong second_poh_begin = output[second_worker].seqs[0];
@@ -2307,6 +2307,28 @@ test_bam_pair_run( int variant,
                        variant, reverse, i, result->balances[i], expected[i] ));
     FD_TEST( result->balances[i]==expected[i] );
   }
+  /* Settle actual executor reports after lock completion, including fully
+     rebated atomic failures.  Lock release alone does not settle CU costs. */
+  ulong actual_cost = 0UL;
+  for( ulong worker=0UL; worker<2UL; worker++ ) {
+    for( ulong seq=0UL; seq<output[worker].seqs[0]; seq++ ) {
+      fd_frag_meta_t const * m = output[worker].mcaches[0]+fd_mcache_line_idx( seq, output[worker].depths[0] );
+      fd_bam_microblock_view_t view[1];
+      fd_txn_p_t const * txns = fd_chunk_to_laddr_const( env[worker]->execle->out_poh->mem, m->chunk );
+      FD_TEST( fd_bam_microblock_parse( txns, m->sz, view ) );
+      for( ulong i=0UL; i<view->txn_cnt; i++ )
+        if( txns[i].flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS ) actual_cost += txns[i].execle_cu.actual_consumed_cus;
+    }
+    for( ulong seq=0UL; seq<output[worker].seqs[1]; seq++ ) {
+      fd_frag_meta_t const * m = output[worker].mcaches[1]+fd_mcache_line_idx( seq, output[worker].depths[1] );
+      FD_TEST( fd_frag_meta_seq_query( m )==seq && m->sig==bank->f.slot );
+      fd_pack_rebate_t const * rebate = fd_chunk_to_laddr_const( env[worker]->execle->out_pack->mem, m->chunk );
+      fd_pack_rebate_cus( pack, rebate );
+    }
+  }
+  FD_TEST( fd_pack_current_block_cost( pack )==actual_cost );
+  FD_TEST( fd_bank_cost_tracker_query( bank )->block_cost==actual_cost );
+  FD_TEST( !fd_pack_pending_rebate_cost( pack ) );
   fd_pack_delete( fd_pack_leave( pack ) );
   fd_rng_delete( fd_rng_leave( rng ) );
   test_env_destroy( env[0] ); /* frees both contexts and all fixture outputs */
@@ -2399,6 +2421,186 @@ typedef struct {
   fd_txn_p_t const * txns;
   ulong slot;
 } test_bam_lookahead_ready_t;
+
+static int
+test_bam_lookahead_ready( void const *       _ctx,
+                          fd_txn_p_t const * candidate,
+                          ulong              txn_cnt ) {
+  test_bam_lookahead_ready_t const * ctx = _ctx;
+  FD_TEST( ctx->slot!=ULONG_MAX );
+  FD_TEST( candidate->source_tpu==FD_TXN_M_TPU_SOURCE_BAM );
+  FD_TEST( candidate->bam.seq_id>=700U && candidate->bam.seq_id<703U );
+  FD_TEST( candidate->bam.scheduler_gen==7U && !candidate->bam.batch_idx && txn_cnt==1UL );
+  fd_txn_p_t const * expected = &ctx->txns[candidate->bam.seq_id-700U];
+  FD_TEST( candidate->bam.revert_on_error==expected->bam.revert_on_error );
+  FD_TEST( candidate->payload_sz==expected->payload_sz );
+  FD_TEST( !memcmp( candidate->payload, expected->payload, candidate->payload_sz ) );
+  return 1;
+}
+
+typedef struct {
+  ulong balances[5];
+  ulong actual_cost;
+  fd_bam_bundle_result_t terminal[3];
+} test_bam_lookahead_result_t;
+
+/* A writes X, B spends from X, and C touches independent Y.  Keep A's pack
+   locks outstanding while C executes on worker1.  PoH must still reconstruct
+   A,C,B by dispatch index, and the final state must match serial A,B,C. */
+static void
+test_bam_lookahead_execute( int                          atomic,
+                            int                          lookahead,
+                            test_bam_lookahead_result_t * result ) {
+  fd_memset( result, 0, sizeof(*result) );
+  test_env_t * env[2] = { test_env_create(), NULL };
+  env[1] = test_env_create_worker( env[0] );
+  fd_bank_t * bank = fd_svm_mini_bank( mini, env[0]->bank_idx );
+  ulong const fee = 5000UL;
+  ((fd_blockhash_info_t *)fd_blockhashes_peek_last( &bank->f.block_hash_queue ))->lamports_per_signature = fee;
+  uchar private_keys[5][32];
+  fd_pubkey_t accounts[5];
+  ulong initial[5] = { 1000000000UL, 1000000UL, 1000000UL, 1000000000UL, 1000000UL };
+  for( ulong i=0UL; i<5UL; i++ ) {
+    fd_memset( private_keys[i], (int)(i+11UL), 32UL );
+    fd_sha512_t sha[1];
+    FD_TEST( fd_ed25519_public_from_private( accounts[i].uc, private_keys[i], fd_sha512_join( fd_sha512_new( sha ) ) ) );
+    fd_sha512_delete( fd_sha512_leave( sha ) );
+    test_fund_account( env[0], &accounts[i], initial[i] );
+  }
+  fd_txn_p_t txns[3];
+  ulong const payer[3] = { 0UL, 1UL, 3UL };
+  ulong const recipient[3] = { 1UL, 2UL, 4UL };
+  ulong const transfer[3] = { 1000000UL, 800000UL, 3000UL };
+  for( ulong i=0UL; i<3UL; i++ ) {
+    test_build_system_transfer_txns( &txns[i], bank, accounts[payer[i]], &accounts[recipient[i]], &transfer[i], 1UL );
+    test_bam_pair_sign( &txns[i], &accounts[payer[i]], private_keys[payer[i]] );
+    test_mark_bam_batch( &txns[i], 1UL, 700U+(uint)i, atomic );
+    txns[i].bam.scheduler_gen = 7U;
+  }
+  fd_pack_limits_t limits = { .max_cost_per_block=48000000UL, .max_vote_cost_per_block=36000000UL,
+      .max_write_cost_per_acct=12000000UL, .max_data_bytes_per_block=5UL<<20,
+      .max_txn_per_microblock=8UL, .max_microblocks_per_block=32UL,
+      .max_allocated_data_per_block=FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK };
+  void * mem = fd_wksp_alloc_laddr( mini->wksp, fd_pack_align(), fd_pack_footprint( 64UL, 48UL, 2UL, &limits ), TOPO_TAG );
+  FD_TEST( mem );
+  fd_rng_t rng[1];
+  FD_TEST( fd_rng_join( fd_rng_new( rng, 0U, 0UL ) ) );
+  fd_pack_t * pack = fd_pack_join( fd_pack_new( mem, 64UL, 48UL, 2UL, &limits, NULL, 0UL, rng ) );
+  FD_TEST( pack );
+  fd_pack_set_initializer_bundles_ready( pack );
+  for( ulong i=0UL; i<3UL; i++ ) test_bam_pair_insert( pack, &txns[i], 1UL, bank->f.slot );
+  int full_flags = FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY;
+  int secondary_flags = FD_PACK_SCHEDULE_BAM_SINGLE | FD_PACK_SCHEDULE_BAM_ONLY | FD_PACK_SCHEDULE_BAM_READY;
+  test_bam_lookahead_ready_t ready = { .txns=txns, .slot=bank->f.slot };
+  test_bam_worker_output_t output[2];
+  test_bam_worker_output_init( &output[0], 0UL );
+  test_bam_worker_output_init( &output[1], 1UL );
+  uint start_idx = UINT_MAX-1U;
+  test_bam_poh_fixture_t * poh = test_bam_poh_fixture_new( mini->wksp, bank->f.slot, start_idx );
+  fd_txn_e_t dispatch[3];
+  ulong hint;
+  FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL )->bam.seq_id==700U );
+  FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, 0UL,
+                                                             full_flags, hint, NULL, NULL, &dispatch[0] )==1UL );
+  if( lookahead ) {
+    FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL )->bam.seq_id==701U );
+    FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, 1UL,
+                 secondary_flags, hint, test_bam_lookahead_ready, &ready, &dispatch[2] )==1UL );
+    FD_TEST( dispatch[2].txnp->bam.seq_id==702U );
+    test_bam_execute_pack_output( env[1], &output[1], &dispatch[2], 1UL, start_idx+1U, 1UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 1UL )==1 );
+    FD_TEST( test_read_lamports( env[0], &accounts[1] )==initial[1] ); /* A has not run. */
+    FD_TEST( test_read_lamports( env[0], &accounts[4] )==initial[4]+transfer[2] );
+    FD_TEST( test_bam_poll_poh( poh, env[1], &output[1], 0UL ) );
+    FD_TEST( !test_bam_poh_fixture_summary( poh )->txn_cnt );
+    FD_TEST( !test_bam_poh_fixture_summary( poh )->result_cnt );
+    /* Finishing C cannot release A's dependency on B. */
+    FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL )->bam.seq_id==701U );
+    FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, 1UL,
+                 secondary_flags, hint, test_bam_lookahead_ready, &ready, &dispatch[1] )==0UL );
+  }
+  test_bam_execute_pack_output( env[0], &output[0], &dispatch[0], 1UL, start_idx, 0UL );
+  FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+  FD_TEST( !test_bam_poll_poh( poh, env[0], &output[0], 0UL ) );
+  if( lookahead ) FD_TEST( !test_bam_poll_poh( poh, env[1], &output[1], 0UL ) );
+  FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL )->bam.seq_id==701U );
+  ulong worker = lookahead ? 1UL : 0UL;
+  FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, worker,
+                                                             full_flags, hint, NULL, NULL, &dispatch[1] )==1UL );
+  test_bam_execute_pack_output( env[worker], &output[worker], &dispatch[1], 1UL,
+                                start_idx+(lookahead ? 2U : 1U), lookahead ? 2UL : 1UL );
+  FD_TEST( fd_pack_microblock_complete( pack, worker )==1 );
+  FD_TEST( !test_bam_poll_poh( poh, env[worker], &output[worker], 1UL ) );
+  if( !lookahead ) {
+    FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL )->bam.seq_id==702U );
+    FD_TEST( fd_pack_schedule_next_microblock_with_bundle_hint( pack, 48000000UL, 0.0f, 0UL,
+                                                               full_flags, hint, NULL, NULL, &dispatch[2] )==1UL );
+    test_bam_execute_pack_output( env[0], &output[0], &dispatch[2], 1UL, start_idx+2U, 2UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 0UL )==1 );
+    FD_TEST( !test_bam_poll_poh( poh, env[0], &output[0], 2UL ) );
+  }
+  FD_TEST( !fd_pack_avail_txn_cnt( pack ) );
+  test_bam_poh_summary_t const * summary = test_bam_poh_fixture_summary( poh );
+  FD_TEST( summary->txn_cnt==3UL && summary->result_cnt==3UL && summary->expect_pack_idx==start_idx+3U );
+  ulong const dispatch_order[3] = { 0UL, lookahead ? 2UL : 1UL, lookahead ? 1UL : 2UL };
+  ulong seen = 0UL;
+  for( ulong i=0UL; i<3UL; i++ ) {
+    fd_txn_p_t const * expected = &txns[dispatch_order[i]];
+    FD_TEST( summary->txns[i].payload_sz==expected->payload_sz );
+    FD_TEST( !memcmp( summary->txns[i].payload, expected->payload, expected->payload_sz ) );
+    fd_bam_bundle_result_t const * r = &summary->results[i];
+    ulong batch = (ulong)(r->seq_id-700U);
+    FD_TEST( batch<3UL && !(seen & (1UL<<batch)) );
+    FD_TEST( r->execution_success && !r->transaction_err_count && r->scheduler_gen==7U && r->slot==bank->f.slot );
+    seen |= 1UL<<batch;
+    result->terminal[batch] = *r;
+  }
+  FD_TEST( seen==7UL );
+  ulong expected[5];
+  fd_memcpy( expected, initial, sizeof(expected) );
+  for( ulong i=0UL; i<3UL; i++ ) { expected[payer[i]]-=fee+transfer[i]; expected[recipient[i]]+=transfer[i]; }
+  for( ulong i=0UL; i<5UL; i++ ) FD_TEST( (result->balances[i]=test_read_lamports( env[0], &accounts[i] ))==expected[i] );
+  for( ulong w=0UL; w<2UL; w++ ) {
+    FD_TEST( !output[w].seqs[2] ); /* All terminal successes come from PoH. */
+    for( ulong seq=0UL; seq<output[w].seqs[0]; seq++ ) {
+      fd_frag_meta_t const * m = output[w].mcaches[0]+fd_mcache_line_idx( seq, output[w].depths[0] );
+      fd_txn_p_t const * txn = fd_chunk_to_laddr_const( env[w]->execle->out_poh->mem, m->chunk );
+      FD_TEST( txn->flags & FD_TXN_P_FLAGS_EXECUTE_SUCCESS );
+      result->actual_cost += txn->execle_cu.actual_consumed_cus;
+    }
+    for( ulong seq=0UL; seq<output[w].seqs[1]; seq++ ) {
+      fd_frag_meta_t const * m = output[w].mcaches[1]+fd_mcache_line_idx( seq, output[w].depths[1] );
+      FD_TEST( fd_frag_meta_seq_query( m )==seq && m->sig==bank->f.slot );
+      fd_pack_rebate_cus( pack, fd_chunk_to_laddr_const( env[w]->execle->out_pack->mem, m->chunk ) );
+    }
+  }
+  FD_TEST( fd_pack_current_block_cost( pack )==result->actual_cost );
+  FD_TEST( fd_bank_cost_tracker_query( bank )->block_cost==result->actual_cost );
+  FD_TEST( !fd_pack_pending_rebate_cost( pack ) );
+  fd_pack_delete( fd_pack_leave( pack ) );
+  fd_rng_delete( fd_rng_leave( rng ) );
+  test_env_destroy( env[0] );
+}
+
+FD_UNIT_TEST( execle_bam_independent_lookahead_pack_poh ) {
+  for( int atomic=0; atomic<2; atomic++ ) {
+    test_bam_lookahead_result_t parallel, serial;
+    test_bam_lookahead_execute( atomic, 1, &parallel );
+    test_bam_lookahead_execute( atomic, 0, &serial );
+    FD_TEST( !memcmp( parallel.balances, serial.balances, sizeof(parallel.balances) ) );
+    FD_TEST( parallel.actual_cost==serial.actual_cost );
+    for( ulong i=0UL; i<3UL; i++ ) {
+      fd_bam_bundle_result_t const * p = &parallel.terminal[i];
+      fd_bam_bundle_result_t const * s = &serial.terminal[i];
+      FD_TEST( p->seq_id==s->seq_id && p->scheduler_gen==s->scheduler_gen && p->slot==s->slot );
+      FD_TEST( p->execution_success==s->execution_success && p->bundle_txn_cnt==s->bundle_txn_cnt );
+      FD_TEST( p->transaction_err_count==s->transaction_err_count && p->sanitize_success[0]==s->sanitize_success[0] );
+      FD_TEST( p->consumed_cus[0]==s->consumed_cus[0] );
+      FD_TEST( p->feepayer_balance_lamports[0]==s->feepayer_balance_lamports[0] );
+      FD_TEST( p->loaded_accounts_data_size[0]==s->loaded_accounts_data_size[0] );
+    }
+  }
+}
 
 FD_UNIT_TEST( execle_bank_blockhash_validity ) {
   /* Exercise the actual runtime, after conservative resolver/pack admission.

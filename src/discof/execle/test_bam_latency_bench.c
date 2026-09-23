@@ -221,7 +221,7 @@ bench_run( int             dual,
       ulong hint;
       FD_TEST( fd_pack_peek_bundle_candidate( pack, 1, &hint, NULL ) );
       ulong count = fd_pack_schedule_next_microblock_with_bundle_hint( pack, 1500000UL, 0.75f, i,
-                                        flags | FD_PACK_SCHEDULE_BAM_READY, hint, worker->txn );
+                                        flags | FD_PACK_SCHEDULE_BAM_READY, hint, NULL, NULL, worker->txn );
       if( count ) {
         FD_TEST( count==1UL && worker->txn[0].txnp->bam.seq_id==1000UL+next );
         worker->txn_index = next++;

@@ -104,12 +104,15 @@ test_serialize_txn( fd_txn_m_t *    txnm,
 }
 
 static void
-test_make_txnm( fd_txn_m_t *    txnm,
-                fd_hash_t const * recent_blockhash,
-                int              durable_nonce,
-                uint             nonce_discriminant,
-                ushort           nonce_acct_cnt,
-                uchar            program_id_idx ) {
+test_make_txnm_shape( fd_txn_m_t *     txnm,
+                      fd_hash_t const * recent_blockhash,
+                      int               durable_nonce,
+                      uint              nonce_discriminant,
+                      ushort            nonce_acct_cnt,
+                      uchar             program_id_idx,
+                      uchar             first_acct_idx,
+                      uchar             third_acct_idx,
+                      ushort            data_sz ) {
   fd_memset( txnm, 0, FD_TPU_PARSED_MTU );
 
   fd_pubkey_t keys[4] = {
@@ -119,17 +122,29 @@ test_make_txnm( fd_txn_m_t *    txnm,
     { { SYS_PROG_ID } }
   };
 
-  uchar acct_idxs[3] = { 1U, 2U, 0U };
-  uint  ix_data      = nonce_discriminant;
+  uchar acct_idxs[4] = { first_acct_idx, 2U, third_acct_idx, 0U };
+  uchar ix_data[5] = {0};
+  FD_STORE( uint, ix_data, nonce_discriminant );
   test_instr_t instr = {
     .program_id_idx    = program_id_idx,
     .account_idxs      = acct_idxs,
     .account_idxs_cnt  = nonce_acct_cnt,
-    .data              = (uchar *)&ix_data,
-    .data_sz           = 4U
+    .data              = ix_data,
+    .data_sz           = data_sz
   };
 
   test_serialize_txn( txnm, recent_blockhash, keys, 4U, &instr, (ushort)durable_nonce );
+}
+
+static void
+test_make_txnm( fd_txn_m_t *     txnm,
+                fd_hash_t const * recent_blockhash,
+                int               durable_nonce,
+                uint              nonce_discriminant,
+                ushort            nonce_acct_cnt,
+                uchar             program_id_idx ) {
+  test_make_txnm_shape( txnm, recent_blockhash, durable_nonce, nonce_discriminant,
+                        nonce_acct_cnt, program_id_idx, 1U, 0U, 4U );
 }
 
 static test_env_t *
@@ -313,6 +328,16 @@ FD_UNIT_TEST( resolv_is_durable_nonce ) {
   test_make_txnm( txnm, &hash, 1, 4U, 2U, 3U );
   FD_TEST( !fd_resolv_is_durable_nonce( fd_txn_m_txn_t( txnm ), fd_txn_m_payload( txnm ) ) );
 
+  test_make_txnm_shape( txnm, &hash, 1, 4U, 1U, 3U, 0U, 0U, 4U );
+  FD_TEST( fd_resolv_is_durable_nonce( fd_txn_m_txn_t( txnm ), fd_txn_m_payload( txnm ) ) );
+  test_make_txnm_shape( txnm, &hash, 1, 4U, 2U, 3U, 0U, 0U, 4U );
+  FD_TEST( fd_resolv_is_durable_nonce( fd_txn_m_txn_t( txnm ), fd_txn_m_payload( txnm ) ) );
+  test_make_txnm_shape( txnm, &hash, 1, 4U, 3U, 3U, 0U, 1U, 5U );
+  FD_TEST( fd_resolv_is_durable_nonce( fd_txn_m_txn_t( txnm ), fd_txn_m_payload( txnm ) ) );
+
+  test_make_txnm_shape( txnm, &hash, 1, 4U, 3U, 3U, 1U, 1U, 4U );
+  FD_TEST( !fd_resolv_is_durable_nonce( fd_txn_m_txn_t( txnm ), fd_txn_m_payload( txnm ) ) );
+
   test_make_txnm( txnm, &hash, 1, 4U, 3U, 2U );
   FD_TEST( !fd_resolv_is_durable_nonce( fd_txn_m_txn_t( txnm ), fd_txn_m_payload( txnm ) ) );
 }
@@ -334,6 +359,18 @@ FD_UNIT_TEST( resolv_durable_nonce_passthrough ) {
   fd_txn_m_t const * published = fd_chunk_to_laddr_const( env->ctx->out_pack->mem, meta->chunk );
   FD_TEST( published->reference_slot==env->ctx->completed_slot );
 
+  test_env_destroy( env );
+}
+
+FD_UNIT_TEST( resolv_unsigned_nonce_shape_stashes_unknown_hash ) {
+  test_env_t env[1];
+  test_env_create( env );
+  fd_hash_t unknown_hash = { .ul = { 0x9abcUL } };
+  fd_txn_m_t * txnm = fd_chunk_to_laddr( env->ctx->out_pack->mem, env->ctx->out_pack->chunk );
+  test_make_txnm_shape( txnm, &unknown_hash, 1, 4U, 3U, 3U, 1U, 1U, 4U );
+  after_frag( env->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, env->stem );
+  FD_TEST( env->stem_seqs[0]==0UL );
+  FD_TEST( env->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_INSERTED_IDX ]==1UL );
   test_env_destroy( env );
 }
 
