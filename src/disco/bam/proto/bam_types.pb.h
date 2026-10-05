@@ -129,6 +129,7 @@ typedef struct _bam_types_AtomicTxnBatch {
  meaning that batches can be evaluated independently from each other */
 typedef struct _bam_types_MultipleAtomicTxnBatch {
     pb_callback_t batches;
+    pb_callback_t mss_padding; /* Ignored by receivers; pads the first message of a leader window to >= 2 MSS. */
 } bam_types_MultipleAtomicTxnBatch;
 
 /* The result of processing multiple atomic transaction batches
@@ -279,7 +280,7 @@ extern "C" {
 #define bam_types_Socket_init_default            {"", 0}
 #define bam_types_LeaderState_init_default       {0, 0, 0}
 #define bam_types_AtomicTxnBatch_init_default    {0, 0, {{NULL}, NULL}}
-#define bam_types_MultipleAtomicTxnBatch_init_default {{{NULL}, NULL}}
+#define bam_types_MultipleAtomicTxnBatch_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
 #define bam_types_AtomicTxnBatchResult_init_default {0, 0, {bam_types_Committed_init_default}}
 #define bam_types_MultipleAtomicTxnBatchResult_init_default {{{NULL}, NULL}}
 #define bam_types_Packet_init_default            {{0, {0}}, false, bam_types_Meta_init_default}
@@ -302,7 +303,7 @@ extern "C" {
 #define bam_types_Socket_init_zero               {"", 0}
 #define bam_types_LeaderState_init_zero          {0, 0, 0}
 #define bam_types_AtomicTxnBatch_init_zero       {0, 0, {{NULL}, NULL}}
-#define bam_types_MultipleAtomicTxnBatch_init_zero {{{NULL}, NULL}}
+#define bam_types_MultipleAtomicTxnBatch_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
 #define bam_types_AtomicTxnBatchResult_init_zero {0, 0, {bam_types_Committed_init_zero}}
 #define bam_types_MultipleAtomicTxnBatchResult_init_zero {{{NULL}, NULL}}
 #define bam_types_Packet_init_zero               {{0, {0}}, false, bam_types_Meta_init_zero}
@@ -335,6 +336,7 @@ extern "C" {
 #define bam_types_AtomicTxnBatch_max_schedule_slot_tag 2
 #define bam_types_AtomicTxnBatch_packets_tag     3
 #define bam_types_MultipleAtomicTxnBatch_batches_tag 3
+#define bam_types_MultipleAtomicTxnBatch_mss_padding_tag 15
 #define bam_types_MultipleAtomicTxnBatchResult_results_tag 1
 #define bam_types_PacketFlags_simple_vote_tx_tag 1
 #define bam_types_PacketFlags_revert_on_error_tag 2
@@ -417,7 +419,8 @@ X(a, CALLBACK, REPEATED, MESSAGE,  packets,           3)
 #define bam_types_AtomicTxnBatch_packets_MSGTYPE bam_types_Packet
 
 #define bam_types_MultipleAtomicTxnBatch_FIELDLIST(X, a) \
-X(a, CALLBACK, REPEATED, MESSAGE,  batches,           3)
+X(a, CALLBACK, REPEATED, MESSAGE,  batches,           3) \
+X(a, CALLBACK, SINGULAR, BYTES,    mss_padding,      15)
 #define bam_types_MultipleAtomicTxnBatch_CALLBACK pb_default_field_callback
 #define bam_types_MultipleAtomicTxnBatch_DEFAULT NULL
 #define bam_types_MultipleAtomicTxnBatch_batches_MSGTYPE bam_types_AtomicTxnBatch

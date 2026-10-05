@@ -385,6 +385,8 @@ test_bam_encode_scheduler_multi_batch_response_raw( uchar const * const * batche
   bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
   resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
   resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag;
+  resp.versioned_msg.v0.resp.multiple_atomic_txn_batch =
+      (bam_types_MultipleAtomicTxnBatch)bam_types_MultipleAtomicTxnBatch_init_default;
   resp.versioned_msg.v0.resp.multiple_atomic_txn_batch.batches.funcs.encode = test_bam_encode_raw_batches_cb;
   resp.versioned_msg.v0.resp.multiple_atomic_txn_batch.batches.arg          = &batches_ctx;
 
@@ -513,6 +515,20 @@ test_bam_encode_scheduler_response_v0_raw( uchar const * v0_payload,
     FD_LOG_ERR(( "SchedulerResponse v0 raw encode failed (payload, out_sz=%lu): %s", out_sz, PB_GET_ERROR( &ostream ) ));
   }
   return ostream.bytes_written;
+}
+
+static size_t
+test_bam_encode_scheduler_multi_payload_raw( uchar const * multi_payload,
+                                             size_t        multi_payload_sz,
+                                             uchar *       out,
+                                             size_t        out_sz ) {
+  uchar v0_payload[ 8192 ];
+  pb_ostream_t v0_stream = pb_ostream_from_buffer( v0_payload, sizeof(v0_payload) );
+  test_bam_encode_string_field_raw( &v0_stream,
+                                    bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag,
+                                    multi_payload,
+                                    multi_payload_sz );
+  return test_bam_encode_scheduler_response_v0_raw( v0_payload, v0_stream.bytes_written, out, out_sz );
 }
 
 static size_t
@@ -1460,7 +1476,192 @@ test_bam_scheduler_rejects_invalid_custom_decode_fields( fd_wksp_t * wksp ) {
                                                            sizeof( protobuf ) );
   test_bam_expect_scheduler_decode_failure( env, protobuf, protobuf_sz, ++expected_failure_cnt );
 
+  multi_stream = pb_ostream_from_buffer( multi_payload, sizeof( multi_payload ) );
+  test_bam_encode_varint_field_raw( &multi_stream, bam_types_MultipleAtomicTxnBatch_mss_padding_tag, 1UL );
+  test_bam_encode_string_field_raw( &multi_stream,
+                                    bam_types_MultipleAtomicTxnBatch_batches_tag,
+                                    batch,
+                                    batch_sz );
+  protobuf_sz = test_bam_encode_scheduler_multi_payload_raw( multi_payload,
+                                                              multi_stream.bytes_written,
+                                                              protobuf,
+                                                              sizeof( protobuf ) );
+  test_bam_expect_scheduler_decode_failure( env, protobuf, protobuf_sz, ++expected_failure_cnt );
+
   test_bam_env_destroy( env );
+}
+
+static void
+test_bam_scheduler_accepts_mss_padding( fd_wksp_t * wksp ) {
+  uchar batch[ 2 ][ 256 ];
+  size_t batch_sz[ 2 ];
+  batch_sz[ 0 ] = test_bam_encode_one_packet_atomic_batch_raw( 601U, (uchar)'a', batch[ 0 ], sizeof(batch[ 0 ]) );
+  batch_sz[ 1 ] = test_bam_encode_one_packet_atomic_batch_raw( 602U, (uchar)'b', batch[ 1 ], sizeof(batch[ 1 ]) );
+
+  uchar plain_multi[ 512 ];
+  pb_ostream_t plain = pb_ostream_from_buffer( plain_multi, sizeof(plain_multi) );
+  for( ulong i=0UL; i<2UL; i++ )
+    test_bam_encode_string_field_raw( &plain, bam_types_MultipleAtomicTxnBatch_batches_tag, batch[ i ], batch_sz[ i ] );
+  FD_TEST( plain.bytes_written<3000UL );
+
+  /* The node pads the first message of a leader window by the gap from its
+     unpadded MultipleAtomicTxnBatch size to 3000 bytes.  The field tag and
+     length prefix make the final nested message 3000..3003 bytes. */
+  uchar padding[ 3200 ] = {0};
+  size_t padding_sz = 3000UL - plain.bytes_written;
+
+  for( ulong placement=0UL; placement<5UL; placement++ ) {
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    fd_bam_tile_t * state = env->state;
+    zero_meta_ts( env->out_mcache, 2UL );
+
+    uchar multi_payload[ 4096 ];
+    pb_ostream_t multi = pb_ostream_from_buffer( multi_payload, sizeof(multi_payload) );
+    if( placement==4UL )
+      test_bam_encode_string_field_raw( &multi, bam_types_MultipleAtomicTxnBatch_mss_padding_tag, padding, 0UL );
+    for( ulong i=0UL; i<=2UL; i++ ) {
+      if( i==placement || ( placement==3UL && i==2UL ) )
+        test_bam_encode_string_field_raw( &multi, bam_types_MultipleAtomicTxnBatch_mss_padding_tag,
+                                          padding, placement==3UL ? sizeof(padding) : padding_sz );
+      if( i<2UL )
+        test_bam_encode_string_field_raw( &multi, bam_types_MultipleAtomicTxnBatch_batches_tag, batch[ i ], batch_sz[ i ] );
+    }
+    if( placement==4UL )
+      test_bam_encode_string_field_raw( &multi, bam_types_MultipleAtomicTxnBatch_mss_padding_tag, padding, 0UL );
+    if( placement<3UL ) FD_TEST( multi.bytes_written>=3000UL && multi.bytes_written<=3003UL );
+    if( placement==3UL ) FD_TEST( multi.bytes_written>3200UL );
+
+    uchar protobuf[ 4200 ];
+    size_t protobuf_sz = test_bam_encode_scheduler_multi_payload_raw( multi_payload, multi.bytes_written,
+                                                                      protobuf, sizeof(protobuf) );
+    fd_bam_client_grpc_rx_msg( state, protobuf, protobuf_sz, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ]==0UL );
+    FD_TEST( state->metrics.ingress_multi_message_received_cnt==1UL );
+    FD_TEST( state->metrics.ingress_batch_commit_attempt_cnt==2UL );
+    FD_TEST( state->metrics.ingress_batch_published_cnt==0UL );
+    FD_TEST( state->metrics.transaction_published_cnt==0UL );
+    FD_TEST( bam_pending_txn_cnt( state->pending_txns )==2UL );
+    FD_TEST( test_bam_env_drain_all_pending_txns( env )==2UL );
+    FD_TEST( state->metrics.ingress_batch_published_cnt==2UL );
+    FD_TEST( state->metrics.transaction_published_cnt==2UL );
+    FD_TEST( state->feedback_queue_depth==0U );
+
+    test_bam_env_destroy( env );
+  }
+}
+
+static void
+test_bam_scheduler_malformed_mss_padding_rolls_back( fd_wksp_t * wksp ) {
+  /* A rejected Packet stages both a decode metric and an attributable
+     result.  Invalid trailing padding must discard both before commit. */
+  uchar oversized_payload[ FD_TXN_MTU+1UL ] = {0};
+  uchar raw_packet[ FD_TXN_MTU+32UL ];
+  pb_ostream_t packet = pb_ostream_from_buffer( raw_packet, sizeof(raw_packet) );
+  test_bam_encode_string_field_raw( &packet, bam_types_Packet_data_tag,
+                                    oversized_payload, sizeof(oversized_payload) );
+
+  uchar raw_batch[ FD_TXN_MTU+64UL ];
+  pb_ostream_t batch = pb_ostream_from_buffer( raw_batch, sizeof(raw_batch) );
+  test_bam_encode_varint_field_raw( &batch, bam_types_AtomicTxnBatch_seq_id_tag, 603U );
+  test_bam_encode_varint_field_raw( &batch, bam_types_AtomicTxnBatch_max_schedule_slot_tag, 1UL );
+  test_bam_encode_string_field_raw( &batch, bam_types_AtomicTxnBatch_packets_tag,
+                                    raw_packet, packet.bytes_written );
+
+  uchar multi_payload[ FD_TXN_MTU+128UL ];
+  pb_ostream_t multi = pb_ostream_from_buffer( multi_payload, sizeof(multi_payload) );
+  test_bam_encode_string_field_raw( &multi, bam_types_MultipleAtomicTxnBatch_batches_tag,
+                                    raw_batch, batch.bytes_written );
+  FD_TEST( pb_encode_tag( &multi, PB_WT_STRING, bam_types_MultipleAtomicTxnBatch_mss_padding_tag ) );
+  FD_TEST( pb_encode_varint( &multi, 10UL ) ); /* no ten bytes follow */
+
+  uchar protobuf[ FD_TXN_MTU+256UL ];
+  size_t protobuf_sz = test_bam_encode_scheduler_multi_payload_raw( multi_payload, multi.bytes_written,
+                                                                    protobuf, sizeof(protobuf) );
+
+  for( int full=0; full<2; full++ ) {
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    fd_bam_tile_t * state = env->state;
+    if( full ) {
+      for( uint i=0U; i<FD_BAM_MAX_PENDING_RESULTS; i++ )
+        state->bam_results[ i ] = fd_bam_result_base( 10000U+i, state->scheduler_gen, 1UL, 1U );
+      state->bam_results_head  = 0U;
+      state->bam_results_tail  = 0U;
+      state->feedback_queue_depth = FD_BAM_MAX_PENDING_RESULTS;
+    } else {
+      ushort last = FD_BAM_MAX_PENDING_RESULTS-1U;
+      state->bam_results[ last ] = fd_bam_result_base( 604U, state->scheduler_gen, 1UL, 1U );
+      state->bam_results_head  = last;
+      state->bam_results_tail  = 0U; /* staged result would cross the ring boundary */
+      state->feedback_queue_depth = 1U;
+    }
+
+    ushort head_before  = state->bam_results_head;
+    ushort tail_before  = state->bam_results_tail;
+    ushort depth_before = state->feedback_queue_depth;
+    ulong dropped_before = state->metrics.feedback_results_dropped_cnt;
+    fd_bam_client_grpc_rx_msg( state, protobuf, protobuf_sz, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+    FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ]==1UL );
+    FD_TEST( state->metrics.ingress_multi_message_received_cnt==0UL );
+    FD_TEST( state->metrics.ingress_packet_oversize_cnt==0UL );
+    FD_TEST( state->metrics.ingress_batch_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_BATCH_REJECT_REASON_V_INVALID_BATCH_IDX ]==0UL );
+    FD_TEST( state->metrics.feedback_results_dropped_cnt==dropped_before );
+    FD_TEST( state->metrics.transaction_published_cnt==0UL );
+    FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
+    FD_TEST( state->bam_results_head==head_before );
+    FD_TEST( state->bam_results_tail==tail_before );
+    FD_TEST( state->feedback_queue_depth==depth_before );
+    FD_TEST( state->bam_results[ head_before ].seq_id==(full ? 10000U : 604U) );
+
+    test_bam_env_destroy( env );
+  }
+}
+
+static void
+test_bam_scheduler_mss_padding_does_not_raise_batch_limit( fd_wksp_t * wksp ) {
+  uchar batch[ FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE+1UL ][ 256 ];
+  size_t batch_sz[ FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE+1UL ];
+  for( ulong i=0UL; i<FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE+1UL; i++ )
+    batch_sz[ i ] = test_bam_encode_one_packet_atomic_batch_raw( 605U+(uint)i, (uchar)'v', batch[ i ], sizeof(batch[ i ]) );
+  uchar const zero = 0U;
+  for( ulong batch_cnt=FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE;
+       batch_cnt<=FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE+1UL; batch_cnt++ ) {
+    uchar multi_payload[ 1024 ];
+    pb_ostream_t multi = pb_ostream_from_buffer( multi_payload, sizeof(multi_payload) );
+    for( ulong i=0UL; i<batch_cnt; i++ ) {
+      if( i==4UL )
+        test_bam_encode_string_field_raw( &multi, bam_types_MultipleAtomicTxnBatch_mss_padding_tag, &zero, 1UL );
+      test_bam_encode_string_field_raw( &multi, bam_types_MultipleAtomicTxnBatch_batches_tag, batch[ i ], batch_sz[ i ] );
+    }
+
+    uchar protobuf[ 1200 ];
+    size_t protobuf_sz = test_bam_encode_scheduler_multi_payload_raw( multi_payload, multi.bytes_written,
+                                                                      protobuf, sizeof(protobuf) );
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    fd_bam_tile_t * state = env->state;
+    if( batch_cnt==FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ) zero_meta_ts( env->out_mcache, batch_cnt );
+    fd_bam_client_grpc_rx_msg( state, protobuf, protobuf_sz, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+
+    if( batch_cnt==FD_BAM_MAX_ATOMIC_BATCHES_PER_MESSAGE ) {
+      FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ]==0UL );
+      FD_TEST( state->metrics.ingress_multi_message_received_cnt==1UL );
+      FD_TEST( state->metrics.ingress_batch_commit_attempt_cnt==batch_cnt );
+      FD_TEST( state->metrics.ingress_batch_published_cnt==0UL );
+      FD_TEST( test_bam_env_drain_all_pending_txns( env )==batch_cnt );
+      FD_TEST( state->metrics.ingress_batch_published_cnt==batch_cnt );
+    } else {
+      FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_SCHEDULER_ENVELOPE_DECODE_IDX ]==1UL );
+      FD_TEST( state->metrics.ingress_message_rejected_cnt[ FD_METRICS_ENUM_BAM_INGRESS_MESSAGE_REJECT_REASON_V_OVERFLOW_MESSAGE_IDX ]==1UL );
+      FD_TEST( state->metrics.ingress_multi_message_received_cnt==0UL );
+      FD_TEST( state->metrics.transaction_published_cnt==0UL );
+      FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
+    }
+    FD_TEST( state->feedback_queue_depth==0U );
+    test_bam_env_destroy( env );
+  }
 }
 
 static void
@@ -6557,6 +6758,9 @@ main( int     argc,
   test_bam_scheduler_truncated_message_dropped( wksp );
   test_bam_scheduler_trailing_corruption_does_not_publish( wksp );
   test_bam_scheduler_rejects_invalid_custom_decode_fields( wksp );
+  test_bam_scheduler_accepts_mss_padding( wksp );
+  test_bam_scheduler_malformed_mss_padding_rolls_back( wksp );
+  test_bam_scheduler_mss_padding_does_not_raise_batch_limit( wksp );
   test_bam_scheduler_v0_oneof_uses_last_field( wksp );
   test_bam_multiple_batches_isolate_nested_decode_failures( wksp );
   test_bam_multiple_batches_accept_message_limit( wksp );

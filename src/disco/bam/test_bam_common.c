@@ -62,6 +62,8 @@ test_bam_encode_scheduler_multi_batch_response( bam_types_AtomicTxnBatch * batch
   bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
   resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
   resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_multiple_atomic_txn_batch_tag;
+  resp.versioned_msg.v0.resp.multiple_atomic_txn_batch =
+      (bam_types_MultipleAtomicTxnBatch)bam_types_MultipleAtomicTxnBatch_init_default;
   resp.versioned_msg.v0.resp.multiple_atomic_txn_batch.batches.funcs.encode = test_bam_encode_batches_cb;
   resp.versioned_msg.v0.resp.multiple_atomic_txn_batch.batches.arg          = &batches_ctx;
 

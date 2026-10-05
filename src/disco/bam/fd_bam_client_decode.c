@@ -671,6 +671,16 @@ fd_bam_decode_multiple_atomic_txn_batch( fd_bam_tile_t * ctx,
       PB_SET_ERROR( stream, "zero tag" );
       FD_BAM_MULTI_DECODE_FAIL();
     }
+    if( FD_UNLIKELY( tag==bam_types_MultipleAtomicTxnBatch_mss_padding_tag ) ) {
+      /* The node may pad the first scheduler message of a leader window.
+         Padding does not count toward the atomic-batch limit. */
+      if( FD_UNLIKELY( wire_type!=PB_WT_STRING ) ) {
+        PB_SET_ERROR( stream, "wrong wire type" );
+        FD_BAM_MULTI_DECODE_FAIL();
+      }
+      if( FD_UNLIKELY( !pb_skip_field( stream, wire_type ) ) ) FD_BAM_MULTI_DECODE_FAIL();
+      continue;
+    }
     if( FD_UNLIKELY( tag != bam_types_MultipleAtomicTxnBatch_batches_tag ) ) {
       PB_SET_ERROR( stream, "unexpected tag" );
       FD_BAM_MULTI_DECODE_FAIL();
