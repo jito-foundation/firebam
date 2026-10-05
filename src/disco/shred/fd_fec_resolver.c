@@ -6,10 +6,16 @@
 #include "../metrics/fd_metrics.h"
 #include "fd_fec_resolver.h"
 
-typedef union {
+/* Network shreds and the packed FEC-set arrays can place signatures at
+   any byte alignment.  Keep both the map hash load and the signature
+   copy valid for those inputs without copying every lookup key. */
+typedef union __attribute__((packed)) {
   fd_ed25519_sig_t u;
   ulong            l;
 } wrapped_sig_t;
+
+FD_STATIC_ASSERT( sizeof(wrapped_sig_t)==FD_ED25519_SIG_SZ, wrapped_signature_size );
+FD_STATIC_ASSERT( alignof(wrapped_sig_t)==1UL, wrapped_signature_byte_alignment );
 
 typedef struct __attribute__((packed)) {
   ulong slot;

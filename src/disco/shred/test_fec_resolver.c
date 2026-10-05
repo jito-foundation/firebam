@@ -236,6 +236,67 @@ test_interleaved( void ) {
   fd_fec_resolver_delete( fd_fec_resolver_leave( resolver ) );
 }
 
+/* UDP payloads and consecutive data shreds are byte aligned.  Exercise
+   admission, in-progress lookup, completion/removal and the completed
+   signature hash with every alignment of the wire signature. */
+static void
+test_unaligned_shreds( void ) {
+  signer_ctx_t signer_ctx[ 1 ];
+  signer_ctx_init( signer_ctx, test_private_key );
+  FD_TEST( _shredder==fd_shredder_new( _shredder ) );
+  fd_shredder_t * shredder = fd_shredder_join( _shredder );
+  FD_TEST( shredder );
+  fd_shredder_set_shred_version( shredder, SHRED_VER );
+
+  fd_entry_batch_meta_t meta[1] = {{ .block_complete = 1 }};
+  FD_TEST( fd_shredder_init_batch( shredder, test_bin, test_bin_sz, 0UL, meta ) );
+  uchar chained_merkle_root[32] = { 0 };
+  fd_fec_set_t * set = next_fec_set_signed( shredder, _set, chained_merkle_root, signer_ctx );
+  FD_TEST( set );
+  FD_TEST( fd_shredder_fini_batch( shredder ) );
+
+  uchar wire_buf[ FD_SHRED_MAX_SZ+7UL ] __attribute__((aligned(8)));
+  fd_fec_set_t const * out_fec[1];
+  fd_shred_t const * out_shred[1];
+  fd_bmtree_node_t out_merkle_root[1];
+  uchar const * pubkey = test_private_key+32UL;
+
+  for( ulong offset=0UL; offset<8UL; offset++ ) {
+    fd_fec_resolver_t * resolver = fd_fec_resolver_join( fd_fec_resolver_new( res_mem, 2UL, 1UL, 1UL, 1UL, out_sets, SEED ) );
+    FD_TEST( resolver );
+    fd_fec_resolver_set_shred_version( resolver, SHRED_VER );
+
+    uchar * wire = wire_buf+offset;
+    fd_memcpy( wire, set->data_shreds[ 0 ].b, FD_SHRED_MIN_SZ );
+    fd_shred_t const * shred = fd_shred_parse( wire, FD_SHRED_MIN_SZ, FD_SHRED_BLK_MAX );
+    FD_TEST( shred );
+    FD_TEST( FD_FEC_RESOLVER_SHRED_OKAY==fd_fec_resolver_add_shred( resolver, shred, FD_SHRED_MIN_SZ, MAX,
+               FD_FEC_RESOLVER_SHRED_SRC_TURBINE, pubkey, out_fec, out_shred, out_merkle_root, NULL ) );
+    FD_TEST( FD_FEC_RESOLVER_SHRED_DUPLICATE==fd_fec_resolver_add_shred( resolver, shred, FD_SHRED_MIN_SZ, MAX,
+               FD_FEC_RESOLVER_SHRED_SRC_REPAIR, pubkey, out_fec, out_shred, out_merkle_root, NULL ) );
+
+    for( ulong i=1UL; i<FD_FEC_SHRED_CNT; i++ ) {
+      wire = wire_buf+((offset+i)%8UL);
+      fd_memcpy( wire, set->data_shreds[ i ].b, FD_SHRED_MIN_SZ );
+      shred = fd_shred_parse( wire, FD_SHRED_MIN_SZ, FD_SHRED_BLK_MAX );
+      FD_TEST( shred );
+      int expected = i==FD_FEC_SHRED_CNT-1UL ? FD_FEC_RESOLVER_SHRED_COMPLETES : FD_FEC_RESOLVER_SHRED_OKAY;
+      FD_TEST( expected==fd_fec_resolver_add_shred( resolver, shred, FD_SHRED_MIN_SZ, MAX,
+                 FD_FEC_RESOLVER_SHRED_SRC_TURBINE, pubkey, out_fec, out_shred, out_merkle_root, NULL ) );
+    }
+    FD_TEST( *out_fec==out_sets );
+    FD_TEST( sets_eq( set, *out_fec ) );
+
+    wire = wire_buf+offset;
+    fd_memcpy( wire, set->data_shreds[ 0 ].b, FD_SHRED_MIN_SZ );
+    shred = fd_shred_parse( wire, FD_SHRED_MIN_SZ, FD_SHRED_BLK_MAX );
+    FD_TEST( FD_FEC_RESOLVER_SHRED_IGNORED==fd_fec_resolver_add_shred( resolver, shred, FD_SHRED_MIN_SZ, MAX,
+               FD_FEC_RESOLVER_SHRED_SRC_TURBINE, pubkey, out_fec, out_shred, out_merkle_root, NULL ) );
+    FD_TEST( fd_fec_resolver_delete( fd_fec_resolver_leave( resolver ) )==res_mem );
+  }
+  FD_LOG_NOTICE(( "pass: test_unaligned_shreds" ));
+}
+
 
 static void
 test_rolloff( void ) {
@@ -823,6 +884,7 @@ main( int     argc,
 
   (void)perf_test;
 
+  test_unaligned_shreds();
   test_interleaved();
   test_one_batch();
   test_rolloff();
