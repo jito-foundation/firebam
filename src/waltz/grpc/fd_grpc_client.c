@@ -218,8 +218,8 @@ fd_grpc_client_stream_release( fd_grpc_client_t *    client,
                                fd_grpc_h2_stream_t * stream ) {
   if( FD_UNLIKELY( !client->stream_cnt ) ) FD_LOG_CRIT(( "stream map corrupt" )); /* unreachable */
 
-  if( client->header_block_active && client->header_block_stream_id==stream->s.stream_id ) {
-    client->header_block_active = 0U;
+  if( client->header_block_stream_id==stream->s.stream_id ) {
+    client->header_block_stream_id = 0U;
     client->header_block_used = 0UL;
   }
 
@@ -250,7 +250,7 @@ void
 fd_grpc_client_reset( fd_grpc_client_t * client ) {
   client->generation++;
   client->now_mono = fd_grpc_client_mono_now();
-  client->header_block_active = 0U;
+  client->header_block_stream_id = 0U;
   client->header_block_used = 0UL;
   client->observed_header_serial = 0UL;
   client->has_block_deadline = 0U;
@@ -406,12 +406,7 @@ fd_grpc_client_service_deadlines( fd_grpc_client_t * client, long now ) {
 long
 fd_grpc_client_next_deadline( fd_grpc_client_t const * client ) {
   long deadline = LONG_MAX;
-  if( client->has_block_deadline ) {
-    ulong remaining = client->block_deadline_mono>client->now_mono
-                    ? (ulong)client->block_deadline_mono-(ulong)client->now_mono : 0UL;
-    ulong room = (ulong)LONG_MAX-(ulong)client->now_nanos;
-    deadline = remaining>room ? LONG_MAX : (long)((ulong)client->now_nanos+remaining);
-  }
+  if( client->has_block_deadline ) deadline = fd_grpc_client_epoch_at( client, client->block_deadline_mono );
   for( ulong i=0UL; i<(client->stream_cnt); i++ ) {
     fd_grpc_h2_stream_t const * stream = client->streams[ i ];
     if( stream->has_header_deadline ) deadline = fd_long_min( deadline, stream->header_deadline_nanos );
@@ -501,7 +496,7 @@ fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
   fd_grpc_client_service_deadlines( client, fd_grpc_client_now(client) );
   if( client->generation!=generation || (client->conn->flags & FD_H2_CONN_FLAGS_DEAD) ) return -1;
   fd_grpc_client_service_streams( client, fd_grpc_client_now(client) );
-  if( client->generation!=generation ) return -1;
+  if( client->generation!=generation || (client->conn->flags & FD_H2_CONN_FLAGS_DEAD) ) return -1;
   if( fd_grpc_client_rx_pending( client ) ) *charge_busy = 1;
 
   int tx_err = fd_h2_rbuf_sendmsg( client->frame_tx, sock_fd, MSG_NOSIGNAL|MSG_DONTWAIT );
@@ -606,7 +601,7 @@ fd_grpc_client_rxtx_tls( fd_grpc_client_t * client,
   fd_grpc_client_service_deadlines( client, fd_grpc_client_now(client) );
   if( client->generation!=generation || (client->conn->flags & FD_H2_CONN_FLAGS_DEAD) ) return -1;
   fd_grpc_client_service_streams( client, fd_grpc_client_now(client) );
-  if( client->generation!=generation ) return -1;
+  if( client->generation!=generation || (client->conn->flags & FD_H2_CONN_FLAGS_DEAD) ) return -1;
   if( fd_grpc_client_rx_pending( client ) ) *charge_busy = 1;
 
   /* HTTP/2 bytes wait behind parked ciphertext until EPOLLOUT */
@@ -1044,8 +1039,7 @@ fd_grpc_h2_cb_headers( fd_h2_conn_t * conn, fd_h2_stream_t * h2_stream,
   ulong generation = client->generation;
   uint id = h2_stream->stream_id;
   fd_grpc_observe_block( client );
-  if( !client->header_block_active ) {
-    client->header_block_active = 1U;
+  if( !client->header_block_stream_id ) {
     client->header_block_stream_id = id;
     client->header_block_flags = (uint)flags;
     client->header_block_used = 0UL;
@@ -1070,7 +1064,7 @@ fd_grpc_h2_cb_headers( fd_h2_conn_t * conn, fd_h2_stream_t * h2_stream,
   int err = fd_grpc_h2_read_response_hdrs_ex( &candidate, client->matcher,
         client->header_block, client->header_block_used,
         client->frame_scratch, client->frame_scratch_max, trailers, &status_cnt );
-  client->header_block_active = 0U;
+  client->header_block_stream_id = 0U;
   client->header_block_used = 0UL;
   if( err==FD_H2_ERR_COMPRESSION || err==FD_H2_ERR_ENHANCE_YOUR_CALM ) {
     fd_h2_conn_error( conn, (uint)err );

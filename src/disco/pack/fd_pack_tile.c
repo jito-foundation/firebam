@@ -620,15 +620,6 @@ pack_tile_enqueue_bam_result( fd_pack_ctx_t *               ctx,
   return 1;
 }
 
-/* Preprocessing caches are shared with queued Block Engine traffic.  Retain
-   the terminal BAM cohort through result draining and interleaved sources. */
-static inline void
-pack_tile_latch_bam_terminal( fd_pack_ctx_t * ctx, uint seq, ushort gen ) {
-  ctx->bam_terminal_seq   = seq;
-  ctx->bam_terminal_gen   = gen;
-  ctx->bam_terminal_valid = 1U;
-}
-
 static inline fd_bam_bundle_result_t
 pack_tile_make_bam_outside_slot_result( uint   seq_id,
                                         ushort scheduler_gen,
@@ -2209,8 +2200,12 @@ during_frag( fd_pack_ctx_t * ctx,
       res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
       res.deser_index  = txnm->bam.batch_idx;
       res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
-      if( FD_LIKELY( pack_tile_enqueue_bam_result( ctx, &res ) ) )
-        pack_tile_latch_bam_terminal( ctx, txnm->bam.seq_id, txnm->bam.scheduler_gen );
+      /* Keep the terminal cohort after draining and interleaved sources. */
+      if( FD_LIKELY( pack_tile_enqueue_bam_result( ctx, &res ) ) ) {
+        ctx->bam_terminal_seq   = txnm->bam.seq_id;
+        ctx->bam_terminal_gen   = txnm->bam.scheduler_gen;
+        ctx->bam_terminal_valid = 1U;
+      }
       ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
       return;
     }

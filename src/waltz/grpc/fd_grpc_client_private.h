@@ -132,9 +132,8 @@ struct fd_grpc_client_private {
      pointer in this collector; ownership is checked by generation and ID. */
   uchar * header_block;
   ulong   header_block_used;
-  uint    header_block_stream_id;
+  uint    header_block_stream_id; /* zero when inactive */
   uint    header_block_flags;
-  uint    header_block_active;
   ulong   generation;
   ulong   observed_header_serial;
   long    now_nanos;           /* last supplied caller epoch */

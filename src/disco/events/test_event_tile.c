@@ -102,26 +102,47 @@ test_partial_header( test_env_t *env ) {
 }
 
 FD_UNIT_TEST( housekeeping_scope_matrix ) {
-  for(uint scenario=0U;scenario<6U;scenario++) {
+  for(uint scenario=0U;scenario<7U;scenario++) {
     test_env_t env[1];test_env_init(env,scenario!=0U);
-    if(scenario>=2U) {test_partial_header(env);test_mono+=6000000000L;}
+    fd_grpc_client_t *grpc=env->client->grpc_client;
+    if(scenario>=2U) {
+      test_partial_header(env);
+      if(scenario==6U) { /* Projection saturation must not hide an active block. */
+        fd_grpc_client_service_deadlines(grpc,LONG_MAX-10L);
+        FD_TEST(fd_grpc_client_next_deadline(grpc)==LONG_MAX && grpc->has_block_deadline);
+      }
+      test_mono+=scenario==6U ? 5000000000L : 6000000000L;
+      if(scenario==6U) {
+        ulong reads=test_mono_reads;
+        FD_TEST(fd_event_client_service_deadlines(env->client,-10000000000L) && test_mono_reads==reads+1UL);
+      }
+    }
     if(scenario==3U) env->tile->clock->shmem->recal_next=LONG_MIN;
     if(scenario==4U) env->keyswitch.state=FD_KEYSWITCH_STATE_SWITCH_PENDING;
     if(scenario==5U) env->client->state=FD_EVENT_CLIENT_STATE_CONNECTING;
     ulong before=test_mono_reads;test_wall_reads=test_recal_calls=0UL;
     during_housekeeping(env->tile);
+    ulong mono_reads=test_mono_reads-before;
     FD_TEST(test_wall_reads==(scenario==3U ? 2UL : 1UL));
     FD_TEST(test_recal_calls==(scenario==3U ? 1UL : 0UL));
-    if(scenario==2U || scenario==3U || scenario==5U) {
-      FD_TEST(test_mono_reads>before && env->tile->next_poll_deadline==LONG_MIN);
-      FD_TEST(env->client->grpc_client->conn->flags & FD_H2_CONN_FLAGS_DEAD);
-      FD_TEST(env->client->defer_disconnect!=INT_MAX);
-    } else {
-      FD_TEST(test_mono_reads==before);
-      if(scenario==0U || scenario==4U) FD_TEST(env->client->sockfd<0 && env->client->defer_disconnect==INT_MAX);
+    int expired=scenario==2U || scenario==3U || scenario>=5U;
+    FD_TEST(test_mono_reads==before+(ulong)(expired && scenario!=6U));
+    if(expired) FD_TEST(env->tile->next_poll_deadline==LONG_MIN && (grpc->conn->flags & FD_H2_CONN_FLAGS_DEAD) && env->client->defer_disconnect!=INT_MAX);
+    before=test_mono_reads;
+    FD_TEST(fd_event_client_service_deadlines(env->client,0L)==expired && test_mono_reads==before);
+    if(expired) disconnect(env->client,0L,DISCONNECT_REASON_IDENTITY_CHANGED,0,0);
+    if(expired || scenario==0U || scenario==4U) {
+      FD_TEST(env->client->sockfd<0 && env->client->defer_disconnect==INT_MAX);
+      FD_TEST(!fd_event_client_service_deadlines(env->client,0L) && test_mono_reads==before);
+    }
+    if(scenario==4U) {
+      FD_TEST(grpc->has_block_deadline && grpc->conn->rx_hdrs_observed);
+      fd_grpc_client_reset(grpc);FD_TEST(!grpc->has_block_deadline && !grpc->conn->rx_hdrs_observed);
+      before=test_mono_reads; /* reset itself takes its existing M sample */
+      FD_TEST(!fd_event_client_service_deadlines(env->client,0L) && test_mono_reads==before);
     }
     if(scenario==3U) FD_TEST(test_wall_samples[0]<0L && test_wall_samples[1]>1000000000000L && env->client->now==test_wall_samples[1]);
-    FD_LOG_NOTICE(("Event HK scenario=%u wall_samples=%lu mono_reads=%lu",scenario,test_wall_reads,test_mono_reads-before));
+    FD_LOG_NOTICE(("Event HK scenario=%u wall_samples=%lu mono_reads=%lu",scenario,test_wall_reads,mono_reads));
     test_env_fini(env);
   }
 }
@@ -200,30 +221,6 @@ FD_UNIT_TEST( failed_recal_request_composition ) {
     fd_event_client_grpc_callbacks.rx_timeout=old_timeout;test_reset_callback=0;
     test_virtual_wall=test_recal_failure=0;test_env_fini(env);
   }
-}
-
-FD_UNIT_TEST( wrapper_retired_reset_and_saturated_projection ) {
-  test_env_t env[1];test_env_init(env,1);test_partial_header(env);
-  fd_grpc_client_t *grpc=env->client->grpc_client;
-  fd_grpc_client_service_deadlines(grpc,LONG_MAX-10L);
-  FD_TEST(fd_grpc_client_next_deadline(grpc)==LONG_MAX && grpc->has_block_deadline);
-  test_mono+=5000000000L;ulong before=test_mono_reads;
-  FD_TEST(fd_event_client_service_deadlines(env->client,-10000000000L));
-  FD_TEST(test_mono_reads==before+1UL && (grpc->conn->flags & FD_H2_CONN_FLAGS_DEAD));
-  /* Pending defer does not require another M read, even after block clear. */
-  before=test_mono_reads;FD_TEST(fd_event_client_service_deadlines(env->client,0L));FD_TEST(test_mono_reads==before);
-  disconnect(env->client,0L,DISCONNECT_REASON_IDENTITY_CHANGED,0,0);
-  before=test_mono_reads;FD_TEST(!fd_event_client_service_deadlines(env->client,0L));FD_TEST(test_mono_reads==before);
-  test_env_fini(env);
-  test_env_init(env,1);test_partial_header(env);grpc=env->client->grpc_client;
-  disconnect(env->client,0L,DISCONNECT_REASON_IDENTITY_CHANGED,0,0);
-  FD_TEST(grpc->has_block_deadline && grpc->conn->rx_hdrs_observed);
-  test_mono+=6000000000L;before=test_mono_reads;
-  FD_TEST(!fd_event_client_service_deadlines(env->client,0L) && test_mono_reads==before);
-  fd_grpc_client_reset(grpc);FD_TEST(!grpc->has_block_deadline && !grpc->conn->rx_hdrs_observed);
-  before=test_mono_reads; /* reset itself takes its existing M sample */
-  FD_TEST(!fd_event_client_service_deadlines(env->client,0L) && test_mono_reads==before);
-  test_env_fini(env);
 }
 
 /* This peer drives real TCP/H2/TLS and Event protobuf authentication.  The
@@ -440,6 +437,20 @@ test_authenticate_until_ready( test_server_t *server, test_env_t *env ) {
   FD_TEST(env->client->state==FD_EVENT_CLIENT_STATE_CONNECTED && env->client->defer_disconnect==INT_MAX);
 }
 
+static void
+test_expire_partial_header( test_server_t *server, test_env_t *env, uint id, int connected, long limit ) {
+  fd_h2_frame_hdr_t partial={.typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),.r_stream_id=fd_uint_bswap(id),.flags=connected ? FD_H2_FLAG_END_STREAM : 0U};
+  test_server_send(server,&partial,sizeof(partial));
+  while(!env->client->grpc_client->has_block_deadline) {
+    FD_TEST(fd_log_wallclock()<limit);int busy=0;fd_event_client_poll(env->client,fd_log_wallclock(),&busy);
+  }
+  FD_TEST(env->client->state==(connected ? FD_EVENT_CLIENT_STATE_CONNECTED : FD_EVENT_CLIENT_STATE_CONNECTING) && (connected || !env->client->grpc_client->h2_hs_done));
+  test_mono+=5000000000L;fd_clock_tile_set(env->tile->clock,-10000000000L);env->tile->clock->shmem->recal_next=LONG_MAX;
+  during_housekeeping(env->tile);FD_TEST(env->tile->next_poll_deadline==LONG_MIN);
+  int busy=0;env->tile->idle_cnt=1UL;before_credit(env->tile,NULL,&busy);
+  FD_TEST(env->client->sockfd<0 && env->client->defer_disconnect==INT_MAX);
+}
+
 FD_UNIT_TEST( connecting_withheld_settings_ack ) {
   test_env_t env[1];test_env_init(env,0);
   test_server_t *server=aligned_alloc(alignof(test_server_t),fd_ulong_align_up(sizeof(test_server_t),alignof(test_server_t)));FD_TEST(server);
@@ -448,15 +459,8 @@ FD_UNIT_TEST( connecting_withheld_settings_ack ) {
   while(!server->preface) {
     FD_TEST(fd_log_wallclock()<limit);int busy=0;fd_event_client_poll(env->client,fd_log_wallclock(),&busy);test_server_step(server);
   }
-  fd_h2_frame_hdr_t partial={.typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),.r_stream_id=fd_uint_bswap(1U)};
-  test_server_send(server,&partial,sizeof(partial));
-  while(!env->client->grpc_client->has_block_deadline) {
-    FD_TEST(fd_log_wallclock()<limit);int busy=0;fd_event_client_poll(env->client,fd_log_wallclock(),&busy);
-  }
-  FD_TEST(env->client->state==FD_EVENT_CLIENT_STATE_CONNECTING && !env->client->grpc_client->h2_hs_done);
-  test_mono+=5000000000L;during_housekeeping(env->tile);FD_TEST(env->tile->next_poll_deadline==LONG_MIN);
-  int busy=0;env->tile->idle_cnt=1UL;before_credit(env->tile,NULL,&busy);
-  FD_TEST(env->client->sockfd<0 && env->client->defer_disconnect==INT_MAX && !env->client->metrics.transport_success_cnt);
+  test_expire_partial_header(server,env,1U,0U,limit);
+  FD_TEST(!env->client->metrics.transport_success_cnt);
   FD_TEST(!close(server->socket) && !close(server->listener));free(server);test_env_fini(env);
   FD_LOG_NOTICE(("Event real CONNECTING withheld_SETTINGS_ACK partial_block_expired=1 retired=1"));
 }
@@ -489,17 +493,7 @@ FD_UNIT_TEST( authenticated_reconnect_plain_and_tls ) {
     if(tls) FD_TEST(env->client->tls->ca_store && fd_tlsrec_conn_is_ready(env->client->tls_conn) && env->client->tls_conn->hs.cli.alpn_negotiated && !env->client->tls_conn->hs.cli.cert_verify_err);
     /* A real connected, signed stream now receives an incomplete trailer;
        expire only M and require actual HK + ordinary poll retirement. */
-    uint id=env->client->event_stream->s.stream_id;
-    fd_h2_frame_hdr_t partial={.typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),.r_stream_id=fd_uint_bswap(id),.flags=FD_H2_FLAG_END_STREAM};
-    test_server_send(server,&partial,sizeof(partial));
-    long limit=fd_log_wallclock()+2000000000L;
-    while(!env->client->grpc_client->has_block_deadline) {
-      FD_TEST(fd_log_wallclock()<limit);int busy=0;fd_event_client_poll(env->client,fd_log_wallclock(),&busy);
-    }
-    test_mono+=5000000000L;fd_clock_tile_set(env->tile->clock,-10000000000L);env->tile->clock->shmem->recal_next=LONG_MAX;
-    during_housekeeping(env->tile);FD_TEST(env->tile->next_poll_deadline==LONG_MIN);
-    int busy=0;env->tile->idle_cnt=1UL;before_credit(env->tile,NULL,&busy);
-    FD_TEST(env->client->sockfd<0 && env->client->defer_disconnect==INT_MAX);
+    test_expire_partial_header(server,env,env->client->event_stream->s.stream_id,1,fd_log_wallclock()+2000000000L);
     FD_TEST(!close(server->socket));server->socket=-1;server->used=0UL;
     for(uint i=0U;i<sizeof(server->challenge);i++) server->challenge[i]^=0x5a;
     test_authenticate_until_ready(server,env);

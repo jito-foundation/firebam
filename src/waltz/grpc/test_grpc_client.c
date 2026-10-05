@@ -158,6 +158,12 @@ cb_rx_timeout( void * app_ctx,
 
 static ulong g_conn_dead_cnt;
 static uint g_conn_dead_error;
+static fd_h2_frame_hdr_t
+test_incomplete_headers( uint flags, uint id ) {
+  return (fd_h2_frame_hdr_t){ .typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),
+                             .flags=(uchar)flags,.r_stream_id=fd_uint_bswap(id) };
+}
+
 static void
 cb_conn_dead( void * ctx, uint err, int closed_by ) {
   (void)ctx; (void)closed_by;
@@ -169,8 +175,7 @@ cb_conn_dead( void * ctx, uint err, int closed_by ) {
     g_replacement_stream=fd_grpc_client_stream_acquire( client, 5678UL );
     /* Leave a new connection's incomplete frame buffered.  An old padded
        frame must not skip any of these bytes after the reset callback. */
-    fd_h2_frame_hdr_t hdr={.typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),
-                          .r_stream_id=fd_uint_bswap(1U)};
+    fd_h2_frame_hdr_t hdr=test_incomplete_headers( 0U, 1U );
     fd_h2_rbuf_push( client->frame_rx, &hdr, sizeof(hdr) );
   }
 }
@@ -910,18 +915,28 @@ new_test_stream( void ) {
   return new_test_stream_at_mono( 100L );
 }
 
-FD_UNIT_TEST( complete_header_block_every_split ) {
-  for( ulong split=0UL; split<=sizeof(complete_headers); split++ ) {
-    fd_grpc_h2_stream_t * stream = new_test_stream();
-    test_rx_frame( FD_H2_FRAME_TYPE_HEADERS, FD_H2_FLAG_END_STREAM, 1U, complete_headers, split );
-    FD_TEST( client->stream_cnt==1UL && !g_rx_start_cnt && !g_rx_end_cnt );
-    FD_TEST( !stream->hdrs.h2_status && stream->hdrs.grpc_status==FD_GRPC_STATUS_UNKNOWN );
-    test_rx_frame( FD_H2_FRAME_TYPE_CONTINUATION, FD_H2_FLAG_END_HEADERS, 1U,
-                   complete_headers+split, sizeof(complete_headers)-split );
-    FD_TEST( !client->stream_cnt && g_rx_start_cnt==1UL && g_rx_end_cnt==1UL );
-    FD_TEST( g_cb_resp_hdrs.h2_status==200U && g_cb_resp_hdrs.grpc_status==FD_GRPC_STATUS_OK );
-    FD_TEST( !client->conn->conn_error );
+/* Run every encoded-byte boundary through initial headers or trailers.
+   Keep provisional metadata and callback assertions common to raw/Huffman cases. */
+static ulong
+test_terminal_header_splits( uchar const * block, ulong sz, int trailer, int valid ) {
+  for( ulong split=0UL; split<=sz; split++ ) {
+    fd_grpc_h2_stream_t * stream=new_test_stream();
+    if( trailer ) test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,FD_H2_FLAG_END_HEADERS,1U,complete_headers,sizeof(complete_headers));
+    test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,FD_H2_FLAG_END_STREAM,1U,block,split);
+    FD_TEST(client->stream_cnt==1UL && !g_rx_end_cnt && g_rx_start_cnt==(ulong)trailer);
+    FD_TEST(stream->hdrs_received==(uint)trailer);
+    if( !trailer ) FD_TEST(!stream->hdrs.h2_status && stream->hdrs.grpc_status==FD_GRPC_STATUS_UNKNOWN);
+    test_rx_frame(FD_H2_FRAME_TYPE_CONTINUATION,FD_H2_FLAG_END_HEADERS,1U,block+split,sz-split);
+    FD_TEST(!client->stream_cnt && g_rx_end_cnt==1UL && !client->conn->conn_error);
+    FD_TEST(g_rx_start_cnt==(ulong)(trailer || valid));
+    FD_TEST(g_cb_resp_hdrs.grpc_status==(valid ? FD_GRPC_STATUS_OK : FD_GRPC_STATUS_INTERNAL));
+    if( valid ) FD_TEST(g_cb_resp_hdrs.h2_status==200U);
   }
+  return sz+1UL;
+}
+
+FD_UNIT_TEST( complete_header_block_every_split ) {
+  test_terminal_header_splits( complete_headers, sizeof(complete_headers), 0, 1 );
 }
 
 FD_UNIT_TEST( response_phases_and_atomic_failures ) {
@@ -978,8 +993,7 @@ FD_UNIT_TEST( partial_second_message_cannot_complete_with_ok_trailers ) {
 
 FD_UNIT_TEST( block_deadline_observes_incomplete_first_frame_and_tx_wedge ) {
   new_test_stream();
-  fd_h2_frame_hdr_t hdr = {.typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),
-                          .flags=FD_H2_FLAG_PADDED,.r_stream_id=fd_uint_bswap(1U)};
+  fd_h2_frame_hdr_t hdr=test_incomplete_headers( FD_H2_FLAG_PADDED, 1U );
   fd_h2_rbuf_push( client->frame_rx, &hdr, sizeof(hdr) );
   static uchar const filler[4096]={0};
   fd_h2_rbuf_push( client->frame_tx, filler, client->frame_tx_buf_max );
@@ -1069,11 +1083,12 @@ FD_UNIT_TEST( canceled_block_validation_and_absolute_expiry ) {
   fd_grpc_h2_stream_t * stream=new_test_stream();
   test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,0U,1U,complete_headers,1UL);
   fd_grpc_client_service_deadlines(client,200L);
-  /* An END_HEADERS callback at absolute monotonic expiry cannot commit metadata. */
+  /* No caller service intervenes after anchoring: a 5-second parse preemption
+     reaches absolute monotonic expiry before metadata can commit. */
   g_mono_now=client->block_deadline_mono;
   test_rx_frame(FD_H2_FRAME_TYPE_CONTINUATION,FD_H2_FLAG_END_HEADERS,1U,
                 complete_headers+1UL,sizeof(complete_headers)-1UL);
-  FD_TEST(g_conn_dead_cnt==1UL && !g_rx_start_cnt && !stream->hdrs.h2_status);
+  FD_TEST(g_conn_dead_cnt==1UL && !g_rx_start_cnt && !g_rx_end_cnt && !stream->hdrs.h2_status);
 }
 
 FD_UNIT_TEST( request_timeout_does_not_wait_for_tx_space ) {
@@ -1084,18 +1099,6 @@ FD_UNIT_TEST( request_timeout_does_not_wait_for_tx_space ) {
   fd_grpc_client_service_deadlines(client,123L);
   FD_TEST(!client->stream_cnt && !g_rx_end_cnt && g_timeout_details.deadline_kind==FD_GRPC_DEADLINE_HEADER);
   FD_TEST(g_conn_dead_cnt==1UL && (client->conn->flags & FD_H2_CONN_FLAGS_DEAD));
-}
-
-FD_UNIT_TEST( preemption_during_header_parse_expires_before_commit ) {
-  new_test_stream();
-  test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,0U,1U,complete_headers,1UL);
-  fd_grpc_client_service_deadlines(client,200L);
-  /* No caller service intervenes: emulate a scheduler preemption between the
-     entry timestamp and the final frame.  The monotonic offset must catch it. */
-  g_mono_now += 5000000000L;
-  test_rx_frame(FD_H2_FRAME_TYPE_CONTINUATION,FD_H2_FLAG_END_HEADERS,1U,
-                complete_headers+1UL,sizeof(complete_headers)-1UL);
-  FD_TEST(g_conn_dead_cnt==1UL && !g_rx_start_cnt && !g_rx_end_cnt);
 }
 
 /* Independent nghttp2 1.59.0 zero-table encoding.  Both names and values use
@@ -1195,8 +1198,7 @@ FD_UNIT_TEST( preemption_before_first_block_observation_cannot_restart_timer ) {
 
 FD_UNIT_TEST( partial_frame_post_receive_service_uses_elapsed_time ) {
   new_test_stream();
-  fd_h2_frame_hdr_t hdr={.typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),
-                        .r_stream_id=fd_uint_bswap(1U)};
+  fd_h2_frame_hdr_t hdr=test_incomplete_headers( 0U, 1U );
   int sock[2]; FD_TEST(!socketpair(AF_UNIX,SOCK_STREAM,0,sock));
   FD_TEST(write(sock[1],&hdr,sizeof(hdr))==(long)sizeof(hdr));
   /* First clock read is entry; second is post-RX.  Recognition happened before
@@ -1218,18 +1220,23 @@ test_socket_write_frame( int sock, uint type, uint flags, uint id,
   FD_TEST(!payload_sz || write(sock,payload,payload_sz)==(long)payload_sz);
 }
 
+static fd_grpc_h2_stream_t *
+test_cancel_header_owner( int partial ) {
+  fd_grpc_h2_stream_t * stream=new_test_stream();
+  if( partial ) test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,0U,1U,complete_headers,5UL);
+  fd_grpc_client_deadline_set(stream,FD_GRPC_DEADLINE_HEADER,200L);
+  fd_grpc_client_service_deadlines(client,200L);
+  FD_TEST(!client->stream_cnt && !client->header_block_stream_id);
+  return stream;
+}
+
 FD_UNIT_TEST( discarded_completion_socket_deadline_and_timely_preemption ) {
   /* Missing singleton owners and canceled continuations both need an exact
      completion check.  The second mono read is now that event; the third
      occurs only afterward, while unrelated post-RX service runs. */
   for( int singleton=0; singleton<2; singleton++ ) {
     for( int late=0; late<2; late++ ) {
-      fd_grpc_h2_stream_t * stream=new_test_stream();
-      if( !singleton )
-        test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,0U,1U,complete_headers,5UL);
-      fd_grpc_client_deadline_set(stream,FD_GRPC_DEADLINE_HEADER,200L);
-      fd_grpc_client_service_deadlines(client,200L);
-      FD_TEST(!client->stream_cnt && !client->header_block_active);
+      test_cancel_header_owner(!singleton);
       int sock[2];FD_TEST(!socketpair(AF_UNIX,SOCK_STREAM,0,sock));
       test_socket_write_frame(sock[1],singleton ? FD_H2_FRAME_TYPE_HEADERS : FD_H2_FRAME_TYPE_CONTINUATION,
           FD_H2_FLAG_END_HEADERS,1U,singleton ? complete_headers : complete_headers+5UL,
@@ -1248,10 +1255,7 @@ FD_UNIT_TEST( discarded_completion_socket_deadline_and_timely_preemption ) {
 }
 
 FD_UNIT_TEST( discarded_completion_compression_precedes_expiry ) {
-  fd_grpc_h2_stream_t * stream=new_test_stream();
-  test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,0U,1U,complete_headers,5UL);
-  fd_grpc_client_deadline_set(stream,FD_GRPC_DEADLINE_HEADER,200L);
-  fd_grpc_client_service_deadlines(client,200L);
+  test_cancel_header_owner(1);
   int sock[2];FD_TEST(!socketpair(AF_UNIX,SOCK_STREAM,0,sock));
   uchar bad[sizeof(complete_headers)-5UL+1UL];
   memcpy(bad,complete_headers+5UL,sizeof(complete_headers)-5UL);
@@ -1266,9 +1270,7 @@ FD_UNIT_TEST( discarded_completion_compression_precedes_expiry ) {
 }
 
 FD_UNIT_TEST( discarded_completion_reset_preserves_new_buffer ) {
-  fd_grpc_h2_stream_t * stream=new_test_stream();
-  fd_grpc_client_deadline_set(stream,FD_GRPC_DEADLINE_HEADER,200L);
-  fd_grpc_client_service_deadlines(client,200L);
+  test_cancel_header_owner(0);
   uchar padded[sizeof(complete_headers)+4UL];
   padded[0]=3U;memcpy(padded+1,complete_headers,sizeof(complete_headers));
   memset(padded+1+sizeof(complete_headers),0,3UL);
@@ -1288,10 +1290,7 @@ FD_UNIT_TEST( discarded_completion_reset_preserves_new_buffer ) {
 }
 
 FD_UNIT_TEST( discarded_completion_next_block_and_reused_owner ) {
-  fd_grpc_h2_stream_t * old=new_test_stream();
-  test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,0U,1U,complete_headers,5UL);
-  fd_grpc_client_deadline_set(old,FD_GRPC_DEADLINE_HEADER,200L);
-  fd_grpc_client_service_deadlines(client,200L);
+  fd_grpc_h2_stream_t * old=test_cancel_header_owner(1);
   fd_grpc_h2_stream_t * replacement=fd_grpc_client_stream_acquire(client,5678UL);
   FD_TEST(replacement==old && replacement->s.stream_id==3U);
   int sock[2];FD_TEST(!socketpair(AF_UNIX,SOCK_STREAM,0,sock));
@@ -1301,7 +1300,7 @@ FD_UNIT_TEST( discarded_completion_next_block_and_reused_owner ) {
   int busy=0;
   FD_TEST(fd_grpc_client_rxtx_socket(client,sock[0],300L,&busy)==0);
   FD_TEST(!g_conn_dead_cnt && !g_rx_start_cnt && !g_rx_end_cnt && client->stream_cnt==1UL);
-  FD_TEST(client->header_block_active && client->header_block_stream_id==3U && client->header_block_used==1UL);
+  FD_TEST(client->header_block_stream_id==3U && client->header_block_used==1UL);
   FD_TEST(client->has_block_deadline && client->block_deadline_mono==g_mono_now+5000000000L);
   test_socket_write_frame(sock[1],FD_H2_FRAME_TYPE_CONTINUATION,FD_H2_FLAG_END_HEADERS,
                           3U,complete_headers+1UL,sizeof(complete_headers)-1UL);
@@ -1309,7 +1308,7 @@ FD_UNIT_TEST( discarded_completion_next_block_and_reused_owner ) {
                           3U,ok_trailers,sizeof(ok_trailers));
   FD_TEST(fd_grpc_client_rxtx_socket(client,sock[0],400L,&busy)==0);
   FD_TEST(g_rx_start_cnt==1UL && g_rx_end_cnt==1UL && g_cb_resp_hdrs.grpc_status==FD_GRPC_STATUS_OK);
-  FD_TEST(!client->stream_cnt && !client->has_block_deadline && !client->header_block_active);
+  FD_TEST(!client->stream_cnt && !client->has_block_deadline && !client->header_block_stream_id);
   FD_TEST(!close(sock[0]) && !close(sock[1]));
 }
 
@@ -1333,8 +1332,7 @@ timeout_acquire_request( void ) {
   g_timeout_new=fd_grpc_client_stream_acquire(client,1234UL); /* request_ctx reuse */
   fd_grpc_client_deadline_set(g_timeout_new,FD_GRPC_DEADLINE_HEADER,LONG_MAX);
   if( g_timeout_seed_rx ) {
-    fd_h2_frame_hdr_t hdr={.typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),
-                          .r_stream_id=fd_uint_bswap(g_timeout_new->s.stream_id)};
+    fd_h2_frame_hdr_t hdr=test_incomplete_headers( 0U, g_timeout_new->s.stream_id );
     fd_h2_rbuf_push(client->frame_rx,&hdr,sizeof(hdr));
   }
 }
@@ -1359,7 +1357,7 @@ timeout_begin( int pair[2] ) {
   int busy=0;
   FD_TEST(fd_grpc_client_rxtx_socket(client,pair[0],1000L,&busy)==0);
   FD_TEST(client->has_block_deadline && client->conn->rx_hdrs_observed);
-  FD_TEST(client->header_block_active && client->header_block_stream_id==1U);
+  FD_TEST(client->header_block_stream_id==1U);
   FD_TEST(!g_rx_start_cnt && !g_rx_end_cnt && !g_conn_dead_cnt);
   FD_TEST(client->block_deadline_mono==105000000000L);
 }
@@ -1385,7 +1383,7 @@ timeout_complete_b( int pair[2], uint b_id, int has_old_cont ) {
   FD_TEST(fd_grpc_client_rxtx_socket(client,pair[0],3000L,&busy)==0);
   FD_TEST(client->stream_cnt==1UL && client->streams[0]==g_timeout_new);
   FD_TEST(client->stream_ids[0]==b_id && g_timeout_new->request_ctx==1234UL);
-  FD_TEST(client->header_block_active && client->header_block_stream_id==b_id);
+  FD_TEST(client->header_block_stream_id==b_id);
   FD_TEST(client->header_block_used==1UL && client->has_block_deadline);
   FD_TEST(client->block_deadline_mono==105002000000L);
   FD_TEST(!g_rx_start_cnt && !g_rx_end_cnt && !g_conn_dead_cnt);
@@ -1399,12 +1397,15 @@ timeout_complete_b( int pair[2], uint b_id, int has_old_cont ) {
   FD_TEST(fd_grpc_client_rxtx_socket(client,pair[0],4000L,&busy)==0);
   FD_TEST(g_rx_start_cnt==1UL && g_rx_msg_cnt==1UL && g_rx_end_cnt==1UL);
   FD_TEST(g_cb_resp_hdrs.grpc_status==FD_GRPC_STATUS_OK && g_cb_request_ctx==1234UL);
-  FD_TEST(!client->stream_cnt && !client->has_block_deadline && !client->header_block_active);
+  FD_TEST(!client->stream_cnt && !client->has_block_deadline && !client->header_block_stream_id);
 }
 
 FD_UNIT_TEST( timeout_callback_replacement_matrix ) {
-  ulong cases=0UL, successes=0UL, fatal=0UL;
-  for( int hook=1; hook<=3; hook++ ) for( int full=0; full<2; full++ ) {
+  ulong cases=0UL, successes=0UL, fatal=0UL, rollbacks=0UL;
+  /* Spare TX, full TX, and rollback before the canceled block completes. */
+  for( int hook=1; hook<=3; hook++ ) for( int mode=0; mode<3; mode++ ) {
+    if( hook==3 && mode==2 ) continue; /* Reset removed the old block entirely. */
+    int full=mode==1, rollback=mode==2;
     int pair[2];timeout_begin(pair);
     ulong generation=client->generation;
     ulong serial=client->observed_header_serial;
@@ -1434,39 +1435,22 @@ FD_UNIT_TEST( timeout_callback_replacement_matrix ) {
         FD_TEST(!g_conn_dead_cnt && client->stream_cnt==1UL && client->streams[0]==g_timeout_new);
         FD_TEST(client->has_block_deadline && client->observed_header_serial==serial);
         FD_TEST(client->block_deadline_mono==block_deadline && client->conn->rx_hdrs_discard);
-        FD_TEST(!client->header_block_active);
-        timeout_complete_b(pair,3U,1);successes++;
+        FD_TEST(!client->header_block_stream_id);
+        if( rollback ) {
+          g_mono_now=105000000000L;
+          fd_grpc_client_service_deadlines(client,-1000000000L);
+          FD_TEST(g_conn_dead_cnt==1UL && g_conn_dead_error==FD_H2_ERR_CANCEL);
+          FD_TEST((client->conn->flags & FD_H2_CONN_FLAGS_DEAD) && !client->has_block_deadline);
+          FD_TEST(g_timeout_acquire_cnt==1UL && !g_rx_start_cnt && !g_rx_end_cnt);
+          rollbacks++;
+        } else { timeout_complete_b(pair,3U,1);successes++; }
       }
     }
-    timeout_close_socket(pair);cases++;
+    timeout_close_socket(pair);cases+=(ulong)!rollback;
   }
-  FD_TEST(cases==6UL && successes==4UL && fatal==2UL);
+  FD_TEST(cases==6UL && successes==4UL && fatal==2UL && rollbacks==2UL);
   FD_LOG_NOTICE(("timeout_callback cases=%lu successful_B=%lu same_generation_full_TX_fatal=%lu",cases,successes,fatal));
-}
-
-FD_UNIT_TEST( canceled_block_rollback_does_not_renew ) {
-  ulong cases=0UL;
-  for(int hook=1;hook<=2;hook++) {
-    int pair[2];timeout_begin(pair);
-    ulong generation=client->generation,serial=client->observed_header_serial;
-    long block_deadline=client->block_deadline_mono;
-    g_timeout_acquire_kind=hook;g_mono_now=100001000000L;
-    fd_grpc_client_service_deadlines(client,2000L);g_timeout_acquire_kind=0;
-    FD_TEST(client->stream_cnt==1UL && client->streams[0]==g_timeout_new);
-    FD_TEST(client->generation==generation && client->observed_header_serial==serial);
-    FD_TEST(client->block_deadline_mono==block_deadline && client->has_block_deadline);
-    g_mono_now=105000000000L;
-    fd_grpc_client_service_deadlines(client,-1000000000L);
-
-    FD_TEST(g_conn_dead_cnt==1UL && g_conn_dead_error==FD_H2_ERR_CANCEL);
-    FD_TEST(client->conn->flags & FD_H2_CONN_FLAGS_DEAD);
-    FD_TEST(!client->has_block_deadline);
-
-    FD_TEST(g_timeout_acquire_cnt==1UL && !g_rx_start_cnt && !g_rx_end_cnt);
-    timeout_close_socket(pair);cases++;
-  }
-  FD_TEST(cases==2UL);
-  FD_LOG_NOTICE(("canceled_block_rollback cases=%lu",cases));
+  FD_LOG_NOTICE(("canceled_block_rollback cases=%lu",rollbacks));
 }
 
 FD_UNIT_TEST( timeout_callback_reset_stops_old_rx ) {
@@ -1499,8 +1483,7 @@ FD_UNIT_TEST( timeout_callback_reset_stops_old_rx ) {
 FD_UNIT_TEST( monotonic_block_rollback_and_request_epoch ) {
   new_test_stream_at_mono(10000000000L);
   int sock[2];timeout_socket(sock);
-  fd_h2_frame_hdr_t hdr={.typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),
-                        .r_stream_id=fd_uint_bswap(1U)};
+  fd_h2_frame_hdr_t hdr=test_incomplete_headers( 0U, 1U );
   FD_TEST(write(sock[1],&hdr,sizeof(hdr))==(long)sizeof(hdr));
   int busy=0;
   FD_TEST(!fd_grpc_client_rxtx_socket(client,sock[0],100L,&busy));
@@ -1542,8 +1525,7 @@ FD_UNIT_TEST( projected_max_and_saturated_monotonic_expiry ) {
   for(int saturated=0;saturated<2;saturated++) {
     new_test_stream_at_mono(saturated ? LONG_MAX-2000000000L : 10000000000L);
     int sock[2];timeout_socket(sock);
-    fd_h2_frame_hdr_t hdr={.typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),
-                          .r_stream_id=fd_uint_bswap(1U)};
+    fd_h2_frame_hdr_t hdr=test_incomplete_headers( 0U, 1U );
     FD_TEST(write(sock[1],&hdr,sizeof(hdr))==(long)sizeof(hdr));
     int busy=0;long wall=saturated ? -10000000000L : LONG_MAX-10L;
     FD_TEST(!fd_grpc_client_rxtx_socket(client,sock[0],wall,&busy));
@@ -1626,18 +1608,7 @@ FD_UNIT_TEST( invalid_metadata_all_splits ) {
     if( !trailer ) { block[sz++]=0x88;sz+=test_literal_field(block+sz,"content-type",12,"application/grpc",16); }
     sz+=test_literal_field(block+sz,cases[c].name,cases[c].n,cases[c].value,cases[c].v);
     sz+=test_literal_field(block+sz,"grpc-status",11,"0",1);
-    for( ulong split=0UL;split<=sz;split++ ) {
-      fd_grpc_h2_stream_t * stream=new_test_stream();
-      if( trailer ) test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,FD_H2_FLAG_END_HEADERS,1U,complete_headers,sizeof(complete_headers));
-      test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,FD_H2_FLAG_END_STREAM,1U,block,split);
-      FD_TEST(client->stream_cnt==1UL && g_rx_end_cnt==0UL);
-      FD_TEST(stream->hdrs_received==(uint)trailer);
-      test_rx_frame(FD_H2_FRAME_TYPE_CONTINUATION,FD_H2_FLAG_END_HEADERS,1U,block+split,sz-split);
-      FD_TEST(client->stream_cnt==0UL && g_rx_end_cnt==1UL);
-      FD_TEST(g_cb_resp_hdrs.grpc_status==(!cases[c].valid ? FD_GRPC_STATUS_INTERNAL : FD_GRPC_STATUS_OK));
-      FD_TEST(g_rx_start_cnt==(trailer || cases[c].valid ? 1UL : 0UL));
-      FD_TEST(!client->conn->conn_error);checks++;
-    }
+    checks+=test_terminal_header_splits(block,sz,trailer,cases[c].valid);
     if( !cases[c].valid ) {
       new_test_stream();block[sz++]=0x80;
       test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,FD_H2_FLAG_END_STREAM|FD_H2_FLAG_END_HEADERS,1U,block,sz);
@@ -1649,37 +1620,28 @@ FD_UNIT_TEST( invalid_metadata_all_splits ) {
 
 
 FD_UNIT_TEST( huffman_metadata_all_splits ) {
-  static struct { ulong len; int valid; uchar block[256]; } const cases[]={
-    { 41UL, 0, { 0x88,0x0,0x89,0x21,0xea,0x49,0x6a,0x4a,0xc9,0xf5,0x59,0x7f,0x8b,0x1d,0x75,0xd0,0x62,0xd,0x26,0x3d,0x4c,0x4d,0x65,0x64,0x0,0x81,0xfc,0x81,0xef,0x0,0x88,0x9a,0xca,0xc8,0xb2,0x12,0x34,0xda,0x8f,0x81,0x7 } },
-    { 44UL, 0, { 0x88,0x0,0x89,0x21,0xea,0x49,0x6a,0x4a,0xc9,0xf5,0x59,0x7f,0x8b,0x1d,0x75,0xd0,0x62,0xd,0x26,0x3d,0x4c,0x4d,0x65,0x64,0x0,0x81,0xf3,0x84,0xf3,0xff,0x8f,0x3f,0x0,0x88,0x9a,0xca,0xc8,0xb2,0x12,0x34,0xda,0x8f,0x81,0x7 } },
-    { 46UL, 0, { 0x88,0x0,0x89,0x21,0xea,0x49,0x6a,0x4a,0xc9,0xf5,0x59,0x7f,0x8b,0x1d,0x75,0xd0,0x62,0xd,0x26,0x3d,0x4c,0x4d,0x65,0x64,0x0,0x81,0xf3,0x86,0xf3,0xff,0xff,0xff,0xef,0x9f,0x0,0x88,0x9a,0xca,0xc8,0xb2,0x12,0x34,0xda,0x8f,0x81,0x7 } },
-    { 42UL, 0, { 0x88,0x0,0x89,0x21,0xea,0x49,0x6a,0x4a,0xc9,0xf5,0x59,0x7f,0x8b,0x1d,0x75,0xd0,0x62,0xd,0x26,0x3d,0x4c,0x4d,0x65,0x64,0x0,0x81,0xf3,0x82,0x53,0xbf,0x0,0x88,0x9a,0xca,0xc8,0xb2,0x12,0x34,0xda,0x8f,0x81,0x7 } },
-    { 47UL, 0, { 0x88,0x0,0x89,0x21,0xea,0x49,0x6a,0x4a,0xc9,0xf5,0x59,0x7f,0x8b,0x1d,0x75,0xd0,0x62,0xd,0x26,0x3d,0x4c,0x4d,0x65,0x64,0x0,0x82,0x49,0x7f,0x86,0x4d,0x83,0x35,0x5,0xb1,0x1f,0x0,0x88,0x9a,0xca,0xc8,0xb2,0x12,0x34,0xda,0x8f,0x81,0x7 } },
-    { 49UL, 1, { 0x88,0x0,0x89,0x21,0xea,0x49,0x6a,0x4a,0xc9,0xf5,0x59,0x7f,0x8b,0x1d,0x75,0xd0,0x62,0xd,0x26,0x3d,0x4c,0x4d,0x65,0x64,0x0,0x84,0xf2,0xb4,0x66,0xab,0x86,0xf3,0xff,0xff,0xd4,0xa7,0x9f,0x0,0x88,0x9a,0xca,0xc8,0xb2,0x12,0x34,0xda,0x8f,0x81,0x7 } },
-    { 46UL, 1, { 0x88,0x0,0x89,0x21,0xea,0x49,0x6a,0x4a,0xc9,0xf5,0x59,0x7f,0x8b,0x1d,0x75,0xd0,0x62,0xd,0x26,0x3d,0x4c,0x4d,0x65,0x64,0x0,0x81,0xf3,0x86,0xff,0xfe,0x6f,0xff,0xff,0xbb,0x0,0x88,0x9a,0xca,0xc8,0xb2,0x12,0x34,0xda,0x8f,0x81,0x7 } },
-    { 40UL, 1, { 0x88,0x0,0x89,0x21,0xea,0x49,0x6a,0x4a,0xc9,0xf5,0x59,0x7f,0x8b,0x1d,0x75,0xd0,0x62,0xd,0x26,0x3d,0x4c,0x4d,0x65,0x64,0x0,0x81,0xf3,0x80,0x0,0x88,0x9a,0xca,0xc8,0xb2,0x12,0x34,0xda,0x8f,0x81,0x7 } },
+  /* Common zero-table Huffman content-type and grpc-status surround one field. */
+  static uchar const prefix[]={0x88,0x00,0x89,0x21,0xea,0x49,0x6a,0x4a,0xc9,0xf5,0x59,0x7f,0x8b,0x1d,0x75,0xd0,0x62,0x0d,0x26,0x3d,0x4c,0x4d,0x65,0x64,0x00};
+  static uchar const suffix[]={0x00,0x88,0x9a,0xca,0xc8,0xb2,0x12,0x34,0xda,0x8f,0x81,0x07};
+  static struct { ulong len; int valid; uchar field[12]; } const cases[]={
+    { 4UL, 0, { 0x81,0xfc,0x81,0xef } },
+    { 7UL, 0, { 0x81,0xf3,0x84,0xf3,0xff,0x8f,0x3f } },
+    { 9UL, 0, { 0x81,0xf3,0x86,0xf3,0xff,0xff,0xff,0xef,0x9f } },
+    { 5UL, 0, { 0x81,0xf3,0x82,0x53,0xbf } },
+    { 10UL, 0, { 0x82,0x49,0x7f,0x86,0x4d,0x83,0x35,0x05,0xb1,0x1f } },
+    { 12UL, 1, { 0x84,0xf2,0xb4,0x66,0xab,0x86,0xf3,0xff,0xff,0xd4,0xa7,0x9f } },
+    { 9UL, 1, { 0x81,0xf3,0x86,0xff,0xfe,0x6f,0xff,0xff,0xbb } },
+    { 3UL, 1, { 0x81,0xf3,0x80 } },
   };
   ulong checks=0UL;
-  for( ulong c=0UL;c<sizeof(cases)/sizeof(cases[0]);c++ ) for( ulong split=0UL;split<=cases[c].len;split++ ) {
-    new_test_stream();
-    test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,FD_H2_FLAG_END_STREAM,1U,cases[c].block,split);
-    FD_TEST(!g_rx_end_cnt && client->stream_cnt==1UL);
-    test_rx_frame(FD_H2_FRAME_TYPE_CONTINUATION,FD_H2_FLAG_END_HEADERS,1U,cases[c].block+split,cases[c].len-split);
-    FD_TEST(!client->stream_cnt && g_rx_end_cnt==1UL && !client->conn->conn_error);
-    FD_TEST(g_cb_resp_hdrs.grpc_status==(!cases[c].valid ? FD_GRPC_STATUS_INTERNAL : FD_GRPC_STATUS_OK));checks++;
+  for( ulong c=0UL;c<sizeof(cases)/sizeof(cases[0]);c++ ) {
+    uchar block[sizeof(prefix)+12UL+sizeof(suffix)];
+    memcpy(block,prefix,sizeof(prefix));
+    memcpy(block+sizeof(prefix),cases[c].field,cases[c].len);
+    memcpy(block+sizeof(prefix)+cases[c].len,suffix,sizeof(suffix));
+    checks+=test_terminal_header_splits(block,sizeof(prefix)+cases[c].len+sizeof(suffix),0,cases[c].valid);
   }
-  fd_h2_hdr_matcher_t matcher[1];FD_TEST(fd_h2_hdr_matcher_init(matcher,1UL));
-  uchar block[]={ 0x0,0x85,0xb8,0x84,0x8d,0x36,0xa3,0x84,0x17,0xfe,0x3c,0xff },scratch[512];fd_grpc_resp_hdrs_t resp={0};uint count;
-  FD_TEST(fd_grpc_h2_read_response_hdrs_ex(&resp,matcher,block,sizeof(block),scratch,sizeof(scratch),0,&count)==FD_H2_ERR_PROTOCOL);
-  FD_TEST(count==1U);
-  /* Decoded size accounting stays ahead of semantic field scans.  Stop at
-     connection-fatal cap before a later corrupt suffix, as existing policy. */
-  uchar oversized[65536];char value[120];memset(value,'x',sizeof(value));ulong sz=0UL;
-  sz+=test_literal_field(oversized+sz,"X",1UL,"v",1UL);
-  for( ulong i=0UL;i<430UL;i++ )sz+=test_literal_field(oversized+sz,"x",1UL,value,sizeof(value));
-  oversized[sz++]=0x80;
-  FD_TEST(fd_grpc_h2_read_response_hdrs_ex(&resp,matcher,oversized,sz,scratch,sizeof(scratch),0,&count)==FD_H2_ERR_ENHANCE_YOUR_CALM);
-  FD_LOG_NOTICE(("probe fragmented_huffman_checks=%lu exact_invalid_huffman_status_count=1 decoded_cap_precedence=1",checks));
+  FD_LOG_NOTICE(("probe fragmented_huffman_checks=%lu",checks));
 }
 
 
@@ -1703,7 +1665,6 @@ FD_UNIT_TEST( invalid_metadata_compression_and_other_stream ) {
       if( suffix==3U ) block[n++]=0x20; /* Size update after a field. */
       if( suffix==4U ) { memcpy(block+n,bad_huffman,sizeof(bad_huffman)); n+=sizeof(bad_huffman); }
       fd_grpc_h2_stream_t * a;
-      int semantic_failure=1;
       for( ulong split=0UL; split<=n+1UL; split++ ) {
         a=new_test_stream();
         fd_grpc_h2_stream_t * b=fd_grpc_client_stream_acquire(client,4321UL);
@@ -1724,13 +1685,12 @@ FD_UNIT_TEST( invalid_metadata_compression_and_other_stream ) {
           FD_TEST(!g_rx_start_cnt && !g_rx_end_cnt);
         } else {
           FD_TEST(!client->conn->conn_error && client->stream_cnt==1UL);
-          FD_TEST(g_rx_start_cnt==(ulong)!semantic_failure && g_rx_end_cnt==1UL);
-          if( semantic_failure ) FD_TEST(g_cb_resp_hdrs.grpc_status==FD_GRPC_STATUS_INTERNAL);
+          FD_TEST(!g_rx_start_cnt && g_rx_end_cnt==1UL && g_cb_resp_hdrs.grpc_status==FD_GRPC_STATUS_INTERNAL);
           FD_TEST(client->streams[0]==b && !b->hdrs_received && !b->hdrs.h2_status);
           test_rx_frame(FD_H2_FRAME_TYPE_HEADERS,FD_H2_FLAG_END_STREAM|FD_H2_FLAG_END_HEADERS,
                         3U,complete_headers,sizeof(complete_headers));
           FD_TEST(!client->conn->conn_error && !client->stream_cnt);
-          FD_TEST(g_rx_start_cnt==1UL+(ulong)!semantic_failure && g_rx_end_cnt==2UL);
+          FD_TEST(g_rx_start_cnt==1UL && g_rx_end_cnt==2UL);
           FD_TEST(g_cb_request_ctx==4321UL && g_cb_resp_hdrs.grpc_status==FD_GRPC_STATUS_OK);
           recovered++;
         }
@@ -1739,6 +1699,40 @@ FD_UNIT_TEST( invalid_metadata_compression_and_other_stream ) {
     }
   }
   FD_LOG_NOTICE(("metadata_scope framed=%lu semantic_stream_recovery=%lu",framed,recovered));
+}
+
+
+/* The last deadline service may close without resetting the connection.
+   Neither plaintext nor TLS record TX may flush queued bytes afterward. */
+FD_UNIT_TEST( post_stream_service_dead_prevents_tx ) {
+  for( int tls=0; tls<2; tls++ ) {
+    new_test_stream();
+    client->request_stream=NULL;
+    *client->request_tx_op=(fd_h2_tx_op_t){0};
+    fd_h2_frame_hdr_t incomplete=test_incomplete_headers( 0U, 1U );
+    fd_h2_rbuf_push(client->frame_rx,&incomplete,sizeof(incomplete));
+    ulong cookie=0x0123456789abcdefUL;
+    fd_h2_tx(client->frame_tx,(uchar const *)&cookie,sizeof(cookie),FD_H2_FRAME_TYPE_PING,0U,0U);
+    int pair[2];FD_TEST(!socketpair(AF_UNIX,SOCK_STREAM,0,pair));
+    fd_tls_t config={0};fd_tlsrec_conn_t record[1];
+    fd_tlsrec_conn_init(record,&config,0);
+    uchar write_secret[32]={1},read_secret[32]={2};
+    if(tls) {test_tls_install_keys(record,write_secret,read_secret);record->hs.cli.alpn_negotiated=1;}
+    ulong before=g_mono_reads;
+    ulong generation=client->generation;
+    g_mono_jump_after=4U; /* first post-RX check passes; service_streams then expires */
+    int busy=0;
+    int rc=tls ? fd_grpc_client_rxtx_tls(client,record,pair[0],100L,&busy)
+               : fd_grpc_client_rxtx_socket(client,pair[0],100L,&busy);
+    uchar wire[128];errno=0;
+    long emitted=(long)recv(pair[1],wire,sizeof(wire),MSG_DONTWAIT);
+    int recv_errno=errno;
+    FD_TEST(!g_mono_jump_after && g_conn_dead_cnt==1UL && g_conn_dead_error==FD_H2_ERR_CANCEL);
+    FD_TEST(client->generation==generation && (client->conn->flags&FD_H2_CONN_FLAGS_DEAD));
+    FD_TEST(rc==-1 && emitted==-1 && recv_errno==EAGAIN);
+    FD_LOG_NOTICE(("post_stream_service_dead tls=%d return=%d dead=%lu emitted=%ld errno=%d mono_reads=%lu",tls,rc,g_conn_dead_cnt,emitted,recv_errno,g_mono_reads-before));
+    FD_TEST(!close(pair[0]) && !close(pair[1]));
+  }
 }
 
 

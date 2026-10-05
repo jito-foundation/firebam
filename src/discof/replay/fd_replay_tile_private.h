@@ -486,7 +486,7 @@ struct fd_replay_tile {
   ulong             votor_leader_seq;                                               /* original external ParentReady receipt, inherited by continuations */
   ulong             votor_window_start_slot;
   int               votor_leader_valid;
-  fd_replay_reward_t votor_reward[ FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL ];
+  fd_replay_reward_t votor_reward[ AG_SLOTS_PER_WINDOW ]; /* pending window, indexed by leader-slot offset */
   struct {
     ulong              slot;
     ulong              seq;

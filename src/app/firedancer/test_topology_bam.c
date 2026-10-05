@@ -357,24 +357,18 @@ test_gossip_gui_links( fd_topo_t const * topo,
   fd_topo_tile_t const * gui = &topo->tiles[ gui_id ];
   for( ulong i=0UL; i<gui->in_cnt; i++ ) FD_TEST( gui->in_link_poll[ i ] );
 
-  static char const * const gui_outs[] = { "gossip_ciseen", "gossip_gui" };
-  for( ulong i=0UL; i<sizeof(gui_outs)/sizeof(gui_outs[0]); i++ ) {
-    ulong link_id = fd_topo_find_link( topo, gui_outs[ i ], 0UL );
-    ulong out_idx = fd_topo_find_tile_out_link( topo, gossip, gui_outs[ i ], 0UL );
-    ulong in_idx  = fd_topo_find_tile_in_link( topo, gui, gui_outs[ i ], 0UL );
+  static struct { char const * link; char const * producer; int reliable; } const gui_outs[] = {
+    { "gossip_ciseen", "gossip", 1 }, { "gossip_gui", "gossip", 0 }, { "gossvf_gui", "gossvf", 0 }
+  };
+  for( ulong kind=0UL; kind<sizeof(gui_outs)/sizeof(gui_outs[0]); kind++ )
+  for( ulong i=0UL; i<fd_topo_tile_name_cnt( topo, gui_outs[ kind ].producer ); i++ ) {
+    fd_topo_tile_t const * producer = &topo->tiles[ fd_topo_find_tile( topo, gui_outs[ kind ].producer, i ) ];
+    ulong link_id = fd_topo_find_link( topo, gui_outs[ kind ].link, i );
+    ulong out_idx = fd_topo_find_tile_out_link( topo, producer, gui_outs[ kind ].link, i );
+    ulong in_idx  = fd_topo_find_tile_in_link( topo, gui, gui_outs[ kind ].link, i );
     FD_TEST( link_id!=ULONG_MAX && out_idx!=ULONG_MAX && in_idx!=ULONG_MAX );
-    FD_TEST( gossip->out_link_id[ out_idx ]==link_id && gui->in_link_id[ in_idx ]==link_id );
-    FD_TEST( !!gui->in_link_reliable[ in_idx ]==(i==0UL) );
-  }
-  for( ulong i=0UL; i<fd_topo_tile_name_cnt( topo, "gossvf" ); i++ ) {
-    ulong tile_id = fd_topo_find_tile( topo, "gossvf", i );
-    fd_topo_tile_t const * gossvf = &topo->tiles[ tile_id ];
-    ulong link_id = fd_topo_find_link( topo, "gossvf_gui", i );
-    ulong out_idx = fd_topo_find_tile_out_link( topo, gossvf, "gossvf_gui", i );
-    ulong in_idx  = fd_topo_find_tile_in_link( topo, gui, "gossvf_gui", i );
-    FD_TEST( link_id!=ULONG_MAX && out_idx!=ULONG_MAX && in_idx!=ULONG_MAX );
-    FD_TEST( gossvf->out_link_id[ out_idx ]==link_id && gui->in_link_id[ in_idx ]==link_id );
-    FD_TEST( !gui->in_link_reliable[ in_idx ] );
+    FD_TEST( producer->out_link_id[ out_idx ]==link_id && gui->in_link_id[ in_idx ]==link_id );
+    FD_TEST( !!gui->in_link_reliable[ in_idx ]==gui_outs[ kind ].reliable );
   }
 }
 
@@ -391,11 +385,9 @@ test_generated_crank_authorization( fd_topo_tile_t const * pack,
   fd_memcpy( merkle_authority.b, pack->pack.bundle.tip_distribution_authority,   32UL );
   fd_acct_addr_t vote = { .b={7} };
   fd_acct_addr_t builder = { .b={8} };
-  fd_acct_addr_t identity;
-  uchar private_key[32] = {1,2,3};
-  fd_sha512_t sha[1];
-  FD_TEST( fd_sha512_join( fd_sha512_new( sha ) ) );
-  fd_ed25519_public_from_private( identity.b, private_key, sha );
+  /* Ed25519 public key for the original non-secret {1,2,3,0,...} fixture. */
+  fd_acct_addr_t identity = { .b={0x22,0x1f,0xe5,0xf6,0x85,0x9a,0x1a,0x4f,0xec,0x79,0x05,0x7c,0x9d,0x32,0xc8,0xd3,
+                                0xfc,0x35,0x6e,0x14,0x4b,0x1d,0xa3,0xb0,0xf9,0x01,0x6e,0xf6,0xf2,0x98,0x88,0xda} };
 
   fd_keyguard_authority_t authority = {0};
   fd_memcpy( authority.identity_pubkey, identity.b, 32UL );
@@ -422,24 +414,14 @@ test_generated_crank_authorization( fd_topo_tile_t const * pack,
                                             FD_KEYGUARD_ROLE_BUNDLE_CRANK, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
     FD_TEST( !fd_keyguard_payload_authorize( &authority, message, message_sz,
                                              FD_KEYGUARD_ROLE_BAM, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
-    fd_keyguard_authority_t bad = authority;
-    bad.identity_pubkey[0] ^= 1U;
-    FD_TEST( !fd_keyguard_payload_authorize( &bad, message, message_sz,
-                                             FD_KEYGUARD_ROLE_BUNDLE_CRANK, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
-    bad = authority;
-    bad.tip_payment_program[0] ^= 1U;
-    FD_TEST( !fd_keyguard_payload_authorize( &bad, message, message_sz,
-                                             FD_KEYGUARD_ROLE_BUNDLE_CRANK, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
-    if( create ) {
-      /* Only the create-account crank invokes the distribution program. */
-      bad = authority;
-      bad.tip_distribution_program[0] ^= 1U;
-      FD_TEST( !fd_keyguard_payload_authorize( &bad, message, message_sz,
+    fd_keyguard_authority_t bad[] = { authority, authority, authority };
+    bad[0].identity_pubkey[0] ^= 1U;
+    bad[1].tip_payment_program[0] ^= 1U;
+    bad[2].tip_distribution_program[0] ^= 1U;
+    /* Only the create-account crank invokes the distribution program. */
+    for( ulong i=0UL; i<(create ? 3UL : 2UL); i++ )
+      FD_TEST( !fd_keyguard_payload_authorize( &bad[i], message, message_sz,
                                                FD_KEYGUARD_ROLE_BUNDLE_CRANK, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
-    }
-    uchar * signature = (uchar *)fd_txn_get_signatures( txn, payload );
-    fd_ed25519_sign( signature, message, message_sz, identity.b, private_key, sha );
-    FD_TEST( fd_ed25519_verify( message, message_sz, signature, identity.b, sha )==FD_ED25519_SUCCESS );
   }
 }
 

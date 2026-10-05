@@ -1554,23 +1554,19 @@ maybe_switch_identity( fd_replay_tile_t * ctx ) {
   fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
 }
 
-/* A future leader window may alias the ring while our current window is
-   still producing.  Active pins remain authoritative until footer commit;
-   neither a cache hit nor a late receipt creates a leader candidate. */
+/* Pending receipts belong to the latest accepted ParentReady.  Active
+   pins survive its replacement; neither cache creates a leader candidate. */
 static fd_replay_reward_t const *
 replay_reward_for_slot( fd_replay_tile_t const * ctx,
                         ulong                    slot ) {
   if( FD_UNLIKELY( slot<FD_NUM_SLOTS_FOR_REWARD || !ctx->votor_leader_valid ) ) return NULL;
-  ulong reward_slot = slot-FD_NUM_SLOTS_FOR_REWARD;
-  if( ctx->leader_reward_window.valid &&
+  ulong i = slot-ctx->votor_window_start_slot;
+  if( FD_UNLIKELY( i>=AG_SLOTS_PER_WINDOW ) ) return NULL;
+  fd_replay_reward_t const * reward = ctx->leader_reward_window.valid &&
       ctx->leader_reward_window.slot==ctx->votor_window_start_slot &&
-      ctx->leader_reward_window.seq==ctx->votor_leader_seq &&
-      slot>=ctx->leader_reward_window.slot && slot-ctx->leader_reward_window.slot<AG_SLOTS_PER_WINDOW ) {
-    fd_replay_reward_t const * reward = &ctx->leader_reward_window.reward[ slot-ctx->leader_reward_window.slot ];
-    return reward->valid && reward->msg.slot==reward_slot && fd_seq_gt( reward->seq, ctx->votor_leader_seq ) ? reward : NULL;
-  }
-  fd_replay_reward_t const * reward = &ctx->votor_reward[ reward_slot%(FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL) ];
-  return reward->valid && reward->msg.slot==reward_slot && fd_seq_gt( reward->seq, ctx->votor_leader_seq ) ? reward : NULL;
+      ctx->leader_reward_window.seq==ctx->votor_leader_seq
+      ? &ctx->leader_reward_window.reward[ i ] : &ctx->votor_reward[ i ];
+  return reward->valid && reward->msg.slot==slot-FD_NUM_SLOTS_FOR_REWARD && fd_seq_gt( reward->seq, ctx->votor_leader_seq ) ? reward : NULL;
 }
 
 static inline int
@@ -1584,18 +1580,14 @@ replay_pin_reward_window( fd_replay_tile_t * ctx ) {
   if( ctx->leader_reward_window.valid &&
       ctx->leader_reward_window.slot==ctx->votor_window_start_slot &&
       ctx->leader_reward_window.seq==ctx->votor_leader_seq ) return;
-  fd_memset( &ctx->leader_reward_window, 0, sizeof(ctx->leader_reward_window) );
   ctx->leader_reward_window.slot     = ctx->votor_window_start_slot;
   ctx->leader_reward_window.seq      = ctx->votor_leader_seq;
   ctx->leader_reward_window.start_ns = ctx->leader_window_start_ns;
   ctx->leader_reward_window.valid    = ctx->votor_leader_valid;
-  if( !ctx->votor_leader_valid || ctx->votor_window_start_slot<FD_NUM_SLOTS_FOR_REWARD ) return;
-  ulong first_reward = ctx->votor_window_start_slot-FD_NUM_SLOTS_FOR_REWARD;
   for( ulong i=0UL; i<AG_SLOTS_PER_WINDOW; i++ ) {
-    ulong reward_slot = first_reward+i;
-    fd_replay_reward_t const * reward = &ctx->votor_reward[ reward_slot%(FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL) ];
-    if( reward->valid && reward->msg.slot==reward_slot && fd_seq_gt( reward->seq, ctx->votor_leader_seq ) )
-      ctx->leader_reward_window.reward[ i ] = *reward;
+    fd_replay_reward_t * pin = &ctx->leader_reward_window.reward[ i ];
+    if( ctx->votor_reward[ i ].valid ) *pin = ctx->votor_reward[ i ];
+    else                             pin->valid = pin->frozen = 0;
   }
 }
 
@@ -5083,6 +5075,7 @@ returnable_frag( fd_replay_tile_t *  ctx,
         if( leader->slot==ULONG_MAX ||
             ( ctx->highwater_leader_slot!=ULONG_MAX && leader->slot<=ctx->highwater_leader_slot ) ||
             ( ctx->votor_leader_valid && ctx->next_leader_slot!=ULONG_MAX && leader->slot==ctx->votor_window_start_slot ) ) break;
+        for( ulong i=0UL; i<AG_SLOTS_PER_WINDOW; i++ ) ctx->votor_reward[ i ].valid = 0;
         *ctx->votor_leader          = *leader;
         ctx->next_leader_slot       = leader->slot;
         ctx->leader_window_start_ns = fd_clock_tile_now( ctx->clock );
@@ -5107,13 +5100,14 @@ returnable_frag( fd_replay_tile_t *  ctx,
       } else if( FD_UNLIKELY( sig==FD_VOTOR_SIG_REWARD ) ) {
         fd_votor_reward_t const * reward = fd_chunk_to_laddr( ctx->in[ in_idx ].mem, chunk );
         int was_ready = replay_reward_ready( ctx );
-        fd_replay_reward_t * ring = &ctx->votor_reward[ reward->slot%(FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL) ];
-        if( !ring->valid || reward->slot>ring->msg.slot ||
-            ( reward->slot==ring->msg.slot && fd_seq_gt( seq, ring->seq ) ) )
-          *ring = (fd_replay_reward_t){ .msg = *reward, .seq = seq, .valid = 1 };
+        ulong i = reward->slot-fd_ulong_sat_sub( ctx->votor_window_start_slot, FD_NUM_SLOTS_FOR_REWARD );
+        if( ctx->votor_leader_valid && i<AG_SLOTS_PER_WINDOW && fd_seq_gt( seq, ctx->votor_leader_seq ) ) {
+          fd_replay_reward_t * pending = &ctx->votor_reward[ i ];
+          if( !pending->valid || fd_seq_gt( seq, pending->seq ) )
+            *pending = (fd_replay_reward_t){ .msg = *reward, .seq = seq, .valid = 1 };
+        }
 
-        /* A future window can win the global ring alias.  Independently
-           refresh the active window until its own footer freezes. */
+        /* Refresh active pins independently of a newer pending window. */
         if( ctx->leader_reward_window.valid && ctx->leader_reward_window.slot>=FD_NUM_SLOTS_FOR_REWARD ) {
           ulong first_reward = ctx->leader_reward_window.slot-FD_NUM_SLOTS_FOR_REWARD;
           if( reward->slot>=first_reward && reward->slot-first_reward<AG_SLOTS_PER_WINDOW &&

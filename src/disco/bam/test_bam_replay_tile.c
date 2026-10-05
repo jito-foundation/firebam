@@ -433,10 +433,9 @@ test_ag_reward_admission_and_pins( fd_wksp_t * wksp ) {
   long future_anchor = ctx->leader_window_start_ns;
   FD_TEST( future_anchor>anchor && ctx->leader_reward_window.start_ns==anchor );
   for( ulong i=0UL; i<AG_SLOTS_PER_WINDOW; i++ ) deliver_reward( ctx, 17UL+i, 12UL+i, 0xF000UL+i, 1 );
-  FD_TEST( ctx->votor_reward[ 0 ].msg.slot==13UL ); /* global ring evicted reward0 */
-  FD_TEST( ctx->votor_reward[ 1 ].msg.slot==14UL ); /* and reward1 */
-  deliver_reward( ctx, 21UL, 1UL, 0xD201UL, 1 ); /* refresh despite newer ring alias */
-  FD_TEST( ctx->votor_reward[ 1 ].msg.slot==14UL );
+  FD_TEST( ctx->votor_reward[ 0 ].msg.slot==12UL && ctx->votor_reward[ 1 ].msg.slot==13UL );
+  deliver_reward( ctx, 21UL, 1UL, 0xD201UL, 1 ); /* refresh only the active window */
+  FD_TEST( ctx->votor_reward[ 1 ].msg.slot==13UL );
   FD_TEST( ctx->leader_reward_window.reward[ 1 ].msg.block_id.ul[ 0 ]==0xD201UL );
   fd_block_footer_t footer = {0};
   construct_footer_certs( ctx, 9UL, 0UL, &footer );
@@ -455,8 +454,21 @@ test_ag_reward_admission_and_pins( fd_wksp_t * wksp ) {
   FD_TEST( ctx->is_leader && ctx->leader_bank->f.slot==10UL );
   complete_reward_leader( ctx );
   FD_TEST( ctx->is_leader && ctx->leader_bank->f.slot==11UL );
-  complete_reward_leader( ctx );
+  fd_bank_t * completed = complete_reward_leader( ctx );
   FD_TEST( !ctx->is_leader && ctx->next_leader_slot==ULONG_MAX );
+
+  /* A new window must clear old frozen bits even when later receipts
+     have not arrived.  Its active update still enables continuation. */
+  deliver_leader( ctx, 23UL, 12UL, completed->f.slot, &ctx->block_id_arr[ completed->idx ].dmr );
+  deliver_reward( ctx, 24UL, 4UL, 0UL, 0 );
+  FD_TEST( ctx->is_leader && ctx->leader_reward_window.slot==12UL );
+  FD_TEST( !ctx->leader_reward_window.reward[ 1 ].valid && !ctx->leader_reward_window.reward[ 1 ].frozen );
+  deliver_reward( ctx, 25UL, 5UL, 0xD405UL, 1 );
+  fd_memset( &footer, 0, sizeof(footer) );
+  construct_footer_certs( ctx, 13UL, 0UL, &footer );
+  FD_TEST( footer.has_notar_reward_cert && footer.notar_reward_cert.block_id.ul[ 0 ]==0xD405UL );
+  complete_reward_leader( ctx );
+  FD_TEST( ctx->is_leader && ctx->leader_bank->f.slot==13UL );
   FD_LOG_NOTICE(( "pass: test_ag_reward_admission_and_pins" ));
 }
 
@@ -534,30 +546,6 @@ test_ag_reward_sequence_wrap_and_unaligned_window( fd_wksp_t * wksp ) {
   FD_TEST( !ctx->is_leader && ctx->next_leader_slot==ULONG_MAX );
   FD_LOG_NOTICE(( "pass: test_ag_reward_sequence_wrap_and_unaligned_window" ));
 }
-/* Bounded local callback measurement, excluding fixture allocation. This
-   reports the actual replay callback/bank/cache/publication work; the
-   inherited execution-prepare mock means it is not a cluster latency claim. */
-static void
-test_ag_reward_callback_latency( fd_wksp_t * wksp ) {
-  static fd_replay_tile_t ctx[1];
-  fd_hash_t parent_id = { .ul = { 0xD099UL } };
-  long samples[32];
-  for( ulong i=0UL; i<32UL; i++ ) {
-    setup_reward_ctx( ctx, wksp, &parent_id );
-    deliver_leader( ctx, 10UL, 8UL, 0UL, &parent_id );
-    long start = fd_log_wallclock();
-    deliver_reward( ctx, 11UL, 0UL, 0UL, 0 );
-    samples[i] = fd_log_wallclock()-start;
-    FD_TEST( ctx->is_leader );
-  }
-  for( ulong i=1UL; i<32UL; i++ ) {
-    long value=samples[i]; ulong j=i;
-    while( j && samples[j-1UL]>value ) { samples[j]=samples[j-1UL]; j--; }
-    samples[j]=value;
-  }
-  FD_LOG_NOTICE(( "reward credited callback local32: median %ld ns, p95 %ld ns, max %ld ns (runtime prepare mocked)",
-                   samples[16], samples[30], samples[31] ));
-}
 
 int
 main( int     argc,
@@ -575,7 +563,6 @@ main( int     argc,
   test_ag_reward_admission_and_pins( wksp );
   test_ag_reward_wait_cancel_and_parent_lifetime( wksp );
   test_ag_reward_sequence_wrap_and_unaligned_window( wksp );
-  test_ag_reward_callback_latency( wksp );
 
   FD_TEST( mock_store_view_success_cnt==mock_store_view_release_cnt );
 

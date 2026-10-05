@@ -548,6 +548,15 @@ FD_UNIT_TEST( decoded_resource_limit_precedes_field_scans ) {
   ulong off = hpack_literal( block, "X", 1UL, "v", 1UL );
   sz = off+hpack_literal( block+off, "x", 1UL, value, len-33UL ); block[sz++] = 0x80;
   FD_TEST( fd_grpc_h2_read_response_hdrs_ex( &resp, matcher, block, sz, scratch, sizeof(scratch), 0, &count )==FD_H2_ERR_ENHANCE_YOUR_CALM );
+  /* Preserve the transport fixture's aggregate 430-field cap vector here:
+     semantic-invalid first field, many small fields, then corrupt suffix. */
+  memset(value,'x',120UL);
+  sz=hpack_literal(block,"X",1UL,"v",1UL);
+  for( ulong i=0UL;i<430UL;i++ ) sz+=hpack_literal(block+sz,"x",1UL,value,120UL);
+  block[sz++]=0x80;
+  FD_TEST(fd_grpc_h2_read_response_hdrs_ex(&resp,matcher,block,sz,scratch,sizeof(scratch),0,&count)==FD_H2_ERR_ENHANCE_YOUR_CALM);
+  FD_LOG_NOTICE(("decoded_cap_precedence single_field=1 semantic_prefix=1 aggregate_fields=430"));
+
 }
 
 int

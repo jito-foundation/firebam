@@ -585,16 +585,13 @@ test_deadline_with_pending_output( fd_wksp_t * wksp ) {
   FD_TEST(next_deadline(ctx)!=LONG_MAX);
   ulong queued=pending_txn_cnt(ctx->pending_txns);
   g_bundle_wall -= 1000000000L;
-  g_bundle_mono += 4999999999L;
-  int busy=0;
-  before_credit(ctx,env->stem,&busy);
-  FD_TEST(ctx->tcp_sock>=0 && ctx->tcp_sock_connected);
-  FD_TEST(pending_txn_cnt(ctx->pending_txns)==queued && env->stem_seqs[0]==0UL);
-  g_bundle_mono++;
-  busy=0;
-  before_credit(ctx,env->stem,&busy);
-  FD_TEST(busy && ctx->tcp_sock==-1 && !ctx->tcp_sock_connected);
-  FD_TEST(pending_txn_cnt(ctx->pending_txns)==queued && env->stem_seqs[0]==0UL);
+  for( int expired=0; expired<2; expired++ ) {
+    g_bundle_mono=6000000000L-!expired;
+    int busy=0;
+    before_credit(ctx,env->stem,&busy);
+    FD_TEST(expired ? (busy && ctx->tcp_sock==-1 && !ctx->tcp_sock_connected) : (ctx->tcp_sock>=0 && ctx->tcp_sock_connected));
+    FD_TEST(pending_txn_cnt(ctx->pending_txns)==queued && env->stem_seqs[0]==0UL);
+  }
   test_bundle_env_destroy(env);
   g_bundle_wall = saved_wall;
   g_bundle_mono = saved_mono;
@@ -607,19 +604,18 @@ test_deadline_with_pending_output( fd_wksp_t * wksp ) {
    must die before sending that report. */
 static void
 test_monotonic_clock_seccomp( void ) {
+  ulong const counts[] = { sock_filter_policy_fd_bam_tile_instr_cnt,
+                          sock_filter_policy_fd_bundle_tile_instr_cnt,
+                          sock_filter_policy_fd_event_tile_instr_cnt };
   for( uint policy=0U; policy<3U; policy++ ) for( uint fault=0U; fault<5U; fault++ ) {
     int pipefd[2]; FD_TEST(!pipe(pipefd));
-    struct sock_filter filter[256]; ulong count;
-    if( policy==0U ) {
-      count=sock_filter_policy_fd_bam_tile_instr_cnt;
+    struct sock_filter filter[256];
+    if( policy==0U )
       populate_sock_filter_policy_fd_bam_tile(256UL,filter,(uint)pipefd[1],UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX);
-    } else if( policy==1U ) {
-      count=sock_filter_policy_fd_bundle_tile_instr_cnt;
+    else if( policy==1U )
       populate_sock_filter_policy_fd_bundle_tile(256UL,filter,(uint)pipefd[1],UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX);
-    } else {
-      count=sock_filter_policy_fd_event_tile_instr_cnt;
+    else
       populate_sock_filter_policy_fd_event_tile(256UL,filter,(uint)pipefd[1],UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX);
-    }
     /* The generated architecture check is at instruction1. */
     if( fault==4U ) filter[1].k^=1U;
     pid_t pid=fork(); FD_TEST(pid>=0);
@@ -628,7 +624,7 @@ test_monotonic_clock_seccomp( void ) {
       FD_TEST(!setrlimit(RLIMIT_CORE,&core_limit));
       FD_TEST(signal(SIGSYS,SIG_DFL)!=SIG_ERR);
       FD_TEST(!close(pipefd[0]));
-      struct sock_fprog prog={.len=(ushort)count,.filter=filter};
+      struct sock_fprog prog={.len=(ushort)counts[policy],.filter=filter};
       FD_TEST(!prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0));
       FD_TEST(!prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&prog));
       clockid_t clock=fault==1U ? CLOCK_REALTIME : fault==2U ? CLOCK_BOOTTIME : CLOCK_MONOTONIC;

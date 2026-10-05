@@ -3944,26 +3944,19 @@ test_bam_config_h2_continuation_and_timeout( fd_wksp_t * wksp ) {
     ulong protobuf_sz = test_bam_encode_config_candidate( protobuf, sizeof(protobuf) );
     uchar framed[256+sizeof(fd_grpc_hdr_t)];
     ulong framed_sz = test_bam_frame_grpc_message( framed, sizeof(framed), protobuf, protobuf_sz );
-    uchar const * field_block;
-    ulong field_block_sz;
-    /* These splits also exercise response phase and request lifetime across
-       a field block. Mid-field splits are covered by the transport tests. */
+    uchar const * field_block = kind==1UL ? test_bam_h2_initial_headers : test_bam_h2_ok_trailers;
+    ulong field_block_sz = kind==1UL ? sizeof(test_bam_h2_initial_headers) : sizeof(test_bam_h2_ok_trailers);
+    /* Header timeout splits the initial response; success/end timeout split
+       its trailers after provisional DATA. Mid-field splits are transport tests. */
     ulong fragment_sz = kind==1UL ? 1UL : 15UL;
-    if( kind==1UL ) {
-      field_block = test_bam_h2_initial_headers;
-      field_block_sz = sizeof(test_bam_h2_initial_headers);
-      test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_HEADERS, 0U, config_id, field_block, fragment_sz );
-      FD_TEST( !state->bam_config_pending_received );
-    } else {
+    if( kind!=1UL ) {
       test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_HEADERS, FD_H2_FLAG_END_HEADERS,
                             config_id, test_bam_h2_initial_headers, sizeof(test_bam_h2_initial_headers) );
       test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_DATA, 0U, config_id, framed, framed_sz );
-      FD_TEST( state->bam_config_pending_received && !state->bam_config_pending_invalid );
-      field_block = test_bam_h2_ok_trailers;
-      field_block_sz = sizeof(test_bam_h2_ok_trailers);
-      test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_HEADERS, FD_H2_FLAG_END_STREAM,
-                            config_id, field_block, fragment_sz );
     }
+    test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_HEADERS, kind==1UL ? 0U : FD_H2_FLAG_END_STREAM,
+                          config_id, field_block, fragment_sz );
+    FD_TEST( !!state->bam_config_pending_received==(kind!=1UL) && !state->bam_config_pending_invalid );
     FD_TEST( client->conn->flags & FD_H2_CONN_FLAGS_CONTINUATION );
     FD_TEST( client->stream_cnt==2UL && state->bam_config_inflight );
     FD_TEST( state->builder_commission==commission_before && state->bam_tpu.l==tpu_before.l );
@@ -9035,13 +9028,12 @@ test_bam_v0_session_retirement( fd_wksp_t * wksp ) {
     FD_TEST( !fd_bam_flush_results( ctx ) && ctx->feedback_queue_depth==1U );
     FD_TEST( ctx->scheduler_gen==old_gen && ctx->scheduler_session_active );
     if( kind==0U ) fd_bam_client_reset( ctx );
-    else if( kind==1U ) {
-      fd_grpc_resp_hdrs_t end = { .h2_status=200U, .grpc_status=FD_GRPC_STATUS_OK };
+    else if( kind==3U ) fd_bam_client_grpc_rx_timeout( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, FD_GRPC_DEADLINE_HEADER );
+    else {
+      fd_grpc_resp_hdrs_t end = { .h2_status=200U,
+          .grpc_status=kind==1U ? FD_GRPC_STATUS_OK : FD_GRPC_STATUS_UNAVAILABLE };
       fd_bam_client_grpc_rx_end( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &end );
-    } else if( kind==2U ) {
-      fd_grpc_resp_hdrs_t end = { .h2_status=200U, .grpc_status=FD_GRPC_STATUS_UNAVAILABLE };
-      fd_bam_client_grpc_rx_end( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &end );
-    } else fd_bam_client_grpc_rx_timeout( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, FD_GRPC_DEADLINE_HEADER );
+    }
     FD_TEST( ctx->scheduler_gen==old_gen+1U && !ctx->scheduler_session_active );
     FD_TEST( !ctx->feedback_queue_depth && bam_pending_txn_empty( ctx->pending_txns ) );
     FD_TEST( ctx->metrics.feedback_results_dropped_cnt==1UL && !env->stem_seqs[0] );
@@ -9173,16 +9165,15 @@ test_bam_paused_partial_header_deadline( fd_wksp_t * wksp ) {
   FD_TEST( fd_bam_test_next_deadline( ctx )!=LONG_MAX );
   /* Frozen/backward wall time, no socket edge and no Verify credits. */
   g_clock -= 1000000000L;
-  g_mono_clock += 4999999999L;
-  int busy = 0;
-  fd_bam_test_before_credit( ctx, env->stem, &busy );
-  FD_TEST( ctx->tcp_sock>=0 && bam_pending_txn_cnt( ctx->pending_txns )==1UL );
-  FD_TEST( !env->stem_seqs[0] && fd_fseq_query( status )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
-  g_mono_clock++;
-  busy = 0;
-  fd_bam_test_before_credit( ctx, env->stem, &busy );
-  FD_TEST( ctx->tcp_sock==-1 && bam_pending_txn_empty( ctx->pending_txns ) );
-  FD_TEST( !env->stem_seqs[0] && !fd_fseq_query( status ) );
+  long deadline = g_mono_clock+5000000000L;
+  for( int expired=0; expired<2; expired++ ) {
+    g_mono_clock=deadline-!expired;
+    int busy = 0;
+    fd_bam_test_before_credit( ctx, env->stem, &busy );
+    FD_TEST( expired ? (ctx->tcp_sock==-1 && bam_pending_txn_empty( ctx->pending_txns ))
+                     : (ctx->tcp_sock>=0 && bam_pending_txn_cnt( ctx->pending_txns )==1UL) );
+    FD_TEST( !env->stem_seqs[0] && fd_fseq_query( status )==(expired ? 0UL : FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE) );
+  }
   ctx->bam_status_fseq = NULL;
   test_bam_env_destroy( env );
   g_clock = saved_clock;

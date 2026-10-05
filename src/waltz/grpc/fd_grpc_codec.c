@@ -63,7 +63,6 @@ fd_grpc_h2_parse_num( char const * num,
    only response pseudo-header is :status; its placement is checked below. */
 static int
 fd_grpc_h2_name_valid( fd_h2_hdr_t const * hdr ) {
-  if( hdr->name_len==7U && fd_memeq( hdr->name, ":status", 7UL ) ) return 1;
   if( !hdr->name_len ) return 0;
   for( ulong i=0UL; i<hdr->name_len; i++ ) {
     uchar c = (uchar)hdr->name[i];
@@ -143,14 +142,15 @@ fd_grpc_h2_read_response_hdrs_ex( fd_grpc_resp_hdrs_t *       resp,
     decoded_sz += field_sz;
     /* Count exact decoded :status even when its value is invalid.  Invalid
        bytes must not reach the matcher or status-value diagnostics. */
-    if( hdr->name_len==7U && hdr->name[0]==':' && fd_memeq( hdr->name, ":status", 7UL ) ) (*status_cnt)++;
-    if( FD_UNLIKELY( !fd_grpc_h2_name_valid( hdr ) || !fd_grpc_h2_value_valid( hdr ) ||
+    int is_status = hdr->name_len==7U && hdr->name[0]==':' && fd_memeq( hdr->name, ":status", 7UL );
+    *status_cnt += (uint)is_status;
+    if( FD_UNLIKELY( (!is_status && !fd_grpc_h2_name_valid( hdr )) || !fd_grpc_h2_value_valid( hdr ) ||
                      fd_grpc_h2_connection_field( hdr ) ) ) {
       semantic_err = 1;
       continue; /* Complete HPACK validation still takes precedence. */
     }
-    if( hdr->name_len && hdr->name[0]==':' ) {
-      if( observed_regular || trailers || hdr->name_len!=7U || !fd_memeq(hdr->name, ":status", 7UL) ) semantic_err = 1;
+    if( is_status ) {
+      if( observed_regular || trailers ) semantic_err = 1;
     } else observed_regular = 1;
 
     int hdr_idx = fd_h2_hdr_match( matcher, hdr->name, hdr->name_len, hdr->hint );
