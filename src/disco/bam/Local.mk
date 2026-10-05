@@ -17,6 +17,8 @@ $(call make-unit-test,test_bam_event_tile,test_bam_event_tile,fd_disco fd_waltz 
 $(call run-unit-test,test_bam_event_tile)
 $(call make-unit-test,test_bam_replay_tile,test_bam_replay_tile,fd_discof fd_choreo fd_disco fd_flamenco fd_vinyl fd_tango fd_ballet fd_util_extra fd_util)
 $(call run-unit-test,test_bam_replay_tile)
+$(call make-unit-test,test_bam_reward_runtime,test_bam_reward_runtime,fd_discof fd_choreo fd_disco fd_flamenco_test fd_flamenco fd_vinyl fd_tango fd_ballet fd_util_extra fd_util)
+$(call run-unit-test,test_bam_reward_runtime)
 $(call make-unit-test,test_bam_gossip_glue,test_bam_gossip_glue,fd_discof fd_choreo fd_disco fd_flamenco fd_waltz fd_tango fd_ballet fd_util)
 $(call run-unit-test,test_bam_gossip_glue)
 $(call make-unit-test,test_bam_verify_tile,test_bam_verify_tile,fd_disco fd_waltz fd_ballet fd_tango fd_util)

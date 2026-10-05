@@ -56,9 +56,11 @@ typedef struct fd_votor_repair fd_votor_repair_t;
 /* fd_votor_reward notifies Votor has produced a new reward cert (agg of
    all skip / reward votes).  Votor publishes a fd_votor_reward_t for
    every slot of a leader window right after the window's
-   fd_votor_leader_t (replay only reads them at block end, for the
-   footer), and may publish add'l reward certs that include more votes
-   later. */
+   fd_votor_leader_t on the same reliable input, including empty records.
+   Replay waits for the matching receipt before admitting each leader slot,
+   then selects its latest verified aggregate at footer construction.
+   Votor may publish additional reward certs that include more votes later;
+   no replay response is needed to publish the initial four receipts. */
 
 struct fd_votor_reward {
   ulong        slot;

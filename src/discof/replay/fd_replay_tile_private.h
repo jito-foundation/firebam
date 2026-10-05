@@ -147,6 +147,16 @@ typedef struct fd_replay_txn_timing_slot fd_replay_txn_timing_slot_t;
 
 FD_STATIC_ASSERT( FD_EVENT_BLOCK_COMPLETED_TXN_TIMING_MAX>=FD_MAX_TXN_PER_SLOT, txn_timing_ships_full_block );
 
+/* Reward provenance is local to the reliable Votor input.  Sequence zero
+   is valid, and an empty aggregate is still an authoritative receipt. */
+struct fd_replay_reward {
+  fd_votor_reward_t msg;
+  ulong             seq;
+  int               valid;
+  int               frozen;
+};
+typedef struct fd_replay_reward fd_replay_reward_t;
+
 struct fd_replay_tile {
   fd_wksp_t * wksp;
 
@@ -473,7 +483,17 @@ struct fd_replay_tile {
   fd_votor_certed_t votor_final[ 1 ];                                                /* ALPENGLOW-ONLY: highest finalization, fast over slow at the same slot */
   fd_votor_leader_t votor_leader[ 1 ];                                               /* ALPENGLOW-ONLY: ParentReady trigger behind next_leader_slot     */
   long              leader_window_start_ns;                                          /* ALPENGLOW-ONLY: when ParentReady started our leader window      */
-  fd_votor_reward_t votor_reward[ FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL ];
+  ulong             votor_leader_seq;                                               /* original external ParentReady receipt, inherited by continuations */
+  ulong             votor_window_start_slot;
+  int               votor_leader_valid;
+  fd_replay_reward_t votor_reward[ FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL ];
+  struct {
+    ulong              slot;
+    ulong              seq;
+    long               start_ns;
+    int                valid;
+    fd_replay_reward_t reward[ AG_SLOTS_PER_WINDOW ];
+  } leader_reward_window; /* independent of a newer pending ParentReady */
 
   ulong       next_leader_slot;
   long        next_leader_tickcount;

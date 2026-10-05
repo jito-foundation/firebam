@@ -1506,6 +1506,12 @@ maybe_switch_identity( fd_replay_tile_t * ctx ) {
 
   FD_LOG_DEBUG(( "keyswitch: switching identity" ));
 
+  if( FD_UNLIKELY( ctx->alpenglow && memcmp( ctx->identity_pubkey, ctx->keyswitch->bytes, 32UL ) ) ) {
+    ctx->next_leader_slot   = ULONG_MAX;
+    ctx->votor_leader_valid = 0;
+    ctx->leader_reward_window.valid = 0;
+    fd_memset( ctx->votor_reward, 0, sizeof(ctx->votor_reward) );
+  }
   memcpy( ctx->identity_pubkey, ctx->keyswitch->bytes, 32UL );
   ctx->identity_dirty = 1;
 
@@ -1548,6 +1554,51 @@ maybe_switch_identity( fd_replay_tile_t * ctx ) {
   fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
 }
 
+/* A future leader window may alias the ring while our current window is
+   still producing.  Active pins remain authoritative until footer commit;
+   neither a cache hit nor a late receipt creates a leader candidate. */
+static fd_replay_reward_t const *
+replay_reward_for_slot( fd_replay_tile_t const * ctx,
+                        ulong                    slot ) {
+  if( FD_UNLIKELY( slot<FD_NUM_SLOTS_FOR_REWARD || !ctx->votor_leader_valid ) ) return NULL;
+  ulong reward_slot = slot-FD_NUM_SLOTS_FOR_REWARD;
+  if( ctx->leader_reward_window.valid &&
+      ctx->leader_reward_window.slot==ctx->votor_window_start_slot &&
+      ctx->leader_reward_window.seq==ctx->votor_leader_seq &&
+      slot>=ctx->leader_reward_window.slot && slot-ctx->leader_reward_window.slot<AG_SLOTS_PER_WINDOW ) {
+    fd_replay_reward_t const * reward = &ctx->leader_reward_window.reward[ slot-ctx->leader_reward_window.slot ];
+    return reward->valid && reward->msg.slot==reward_slot && fd_seq_gt( reward->seq, ctx->votor_leader_seq ) ? reward : NULL;
+  }
+  fd_replay_reward_t const * reward = &ctx->votor_reward[ reward_slot%(FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL) ];
+  return reward->valid && reward->msg.slot==reward_slot && fd_seq_gt( reward->seq, ctx->votor_leader_seq ) ? reward : NULL;
+}
+
+static inline int
+replay_reward_ready( fd_replay_tile_t const * ctx ) {
+  return ctx->next_leader_slot!=ULONG_MAX &&
+         ( ctx->next_leader_slot<FD_NUM_SLOTS_FOR_REWARD || !!replay_reward_for_slot( ctx, ctx->next_leader_slot ) );
+}
+
+static void
+replay_pin_reward_window( fd_replay_tile_t * ctx ) {
+  if( ctx->leader_reward_window.valid &&
+      ctx->leader_reward_window.slot==ctx->votor_window_start_slot &&
+      ctx->leader_reward_window.seq==ctx->votor_leader_seq ) return;
+  fd_memset( &ctx->leader_reward_window, 0, sizeof(ctx->leader_reward_window) );
+  ctx->leader_reward_window.slot     = ctx->votor_window_start_slot;
+  ctx->leader_reward_window.seq      = ctx->votor_leader_seq;
+  ctx->leader_reward_window.start_ns = ctx->leader_window_start_ns;
+  ctx->leader_reward_window.valid    = ctx->votor_leader_valid;
+  if( !ctx->votor_leader_valid || ctx->votor_window_start_slot<FD_NUM_SLOTS_FOR_REWARD ) return;
+  ulong first_reward = ctx->votor_window_start_slot-FD_NUM_SLOTS_FOR_REWARD;
+  for( ulong i=0UL; i<AG_SLOTS_PER_WINDOW; i++ ) {
+    ulong reward_slot = first_reward+i;
+    fd_replay_reward_t const * reward = &ctx->votor_reward[ reward_slot%(FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL) ];
+    if( reward->valid && reward->msg.slot==reward_slot && fd_seq_gt( reward->seq, ctx->votor_leader_seq ) )
+      ctx->leader_reward_window.reward[ i ] = *reward;
+  }
+}
+
 static void
 construct_footer_certs( fd_replay_tile_t const * ctx,
                         ulong                    leader_slot,
@@ -1571,7 +1622,11 @@ construct_footer_certs( fd_replay_tile_t const * ctx,
                   leader_slot>=migration_slot+FD_NUM_SLOTS_FOR_REWARD+1UL;
   if( FD_LIKELY( reward_ok ) ) {
     ulong                     reward_slot = leader_slot-FD_NUM_SLOTS_FOR_REWARD;
-    fd_votor_reward_t const * reward      = &ctx->votor_reward[ reward_slot%(FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL) ];
+    FD_TEST( ctx->leader_reward_window.valid && leader_slot>=ctx->leader_reward_window.slot &&
+             leader_slot-ctx->leader_reward_window.slot<AG_SLOTS_PER_WINDOW );
+    fd_replay_reward_t const * pin = &ctx->leader_reward_window.reward[ leader_slot-ctx->leader_reward_window.slot ];
+    FD_TEST( pin->valid && pin->msg.slot==reward_slot && fd_seq_gt( pin->seq, ctx->leader_reward_window.seq ) );
+    fd_votor_reward_t const * reward = &pin->msg;
     footer->has_notar_reward_cert = reward->slot==reward_slot && !fd_bls_set_is_null( reward->agg_notar.set ) && fd_block_footer_cert_from_agg( &footer->notar_reward_cert, reward_slot, reward->block_id.uc, &reward->agg_notar );
     footer->has_skip_reward_cert  = reward->slot==reward_slot && !fd_bls_set_is_null( reward->agg_skip.set  ) && fd_block_footer_cert_from_agg( &footer->skip_reward_cert,  reward_slot, NULL,                &reward->agg_skip  );
   }
@@ -1620,7 +1675,6 @@ try_become_leader_ag( fd_replay_tile_t *  ctx,
   if( FD_UNLIKELY( !fd_banks_can_start_bank( ctx->banks ) ) ) return 0;
   if( FD_UNLIKELY( ctx->halt_replay ) ) return 0;
   if( !ctx->supports_leader ) return 0;
-  ctx->use_nominal_slot_duration = fd_bam_ctrl_nominal_slot_duration( ctx->bam_ctrl, ctx->use_nominal_slot_duration );
 
   /* Don't become leader if the slot is not scheduled for the identity.
      This can only happen in cases where the identity just switched. */
@@ -1629,6 +1683,13 @@ try_become_leader_ag( fd_replay_tile_t *  ctx,
     ctx->next_leader_slot = ULONG_MAX;
     return 0;
   }
+
+  /* LEADER deliberately precedes reward verification in Votor.  Wait for
+     this slot's exact causal receipt before creating any execution state.
+     Empty receipts qualify, including before economic migration. */
+  if( FD_UNLIKELY( !replay_reward_ready( ctx ) ) ) return 0;
+  replay_pin_reward_window( ctx );
+  ctx->use_nominal_slot_duration = fd_bam_ctrl_nominal_slot_duration( ctx->bam_ctrl, ctx->use_nominal_slot_duration );
 
   /* In Alpenglow, the "reset" block is signaled by ParentReady (a state
      transition in the Votor consensus logic).  ParentReady can occur
@@ -1919,6 +1980,10 @@ try_fini_leader( fd_replay_tile_t *  ctx,
       .parent_block_id = ctx->block_id_arr[ completed->idx ].dmr
     };
     ctx->next_leader_slot = curr_slot+1UL;
+    ctx->votor_window_start_slot = ctx->leader_reward_window.slot;
+    ctx->votor_leader_seq        = ctx->leader_reward_window.seq;
+    ctx->votor_leader_valid      = ctx->leader_reward_window.valid;
+    ctx->leader_window_start_ns  = ctx->leader_reward_window.start_ns;
     try_become_leader_ag( ctx, stem );
   }
 
@@ -2349,6 +2414,7 @@ process_poh_message( fd_replay_tile_t *                 ctx,
     ctx->leader_bank = NULL;
     ctx->recv_poh    = 0;
     ctx->is_leader   = 0;
+    if( ctx->alpenglow ) ctx->leader_reward_window.valid = 0;
     mark_bank_dead( ctx, stem, bank_idx, FD_EVENT_BLOCK_COMPLETED_DEAD_REASON_NOT_DEAD, FD_EVENT_BLOCK_COMPLETED_ABANDONED_REASON_RESET, NULL );
     return;
   }
@@ -2384,6 +2450,10 @@ process_poh_message( fd_replay_tile_t *                 ctx,
       FD_LOG_WARNING(( "slot %lu: our own block footer certs did not apply; the block we produce will be dead to the cluster", ctx->leader_bank->f.slot ));
     }
     footer->bank_hash = ctx->leader_bank->f.bank_hash;
+
+    if( ctx->leader_reward_window.valid && ctx->leader_bank->f.slot>=ctx->leader_reward_window.slot &&
+        ctx->leader_bank->f.slot-ctx->leader_reward_window.slot<AG_SLOTS_PER_WINDOW )
+      ctx->leader_reward_window.reward[ ctx->leader_bank->f.slot-ctx->leader_reward_window.slot ].frozen = 1;
 
     publish_leader_footer( ctx, stem, ctx->leader_bank->f.slot, footer );
   }
@@ -5008,9 +5078,17 @@ returnable_frag( fd_replay_tile_t *  ctx,
     case IN_KIND_VOTOR: {
       if( FD_UNLIKELY( sig==FD_VOTOR_SIG_LEADER ) ) {
         fd_votor_leader_t const * leader = fd_chunk_to_laddr( ctx->in[ in_idx ].mem, chunk );
+        /* A duplicate must neither replace the original receipt/clock
+           nor install an already consumed slot as pending work. */
+        if( leader->slot==ULONG_MAX ||
+            ( ctx->highwater_leader_slot!=ULONG_MAX && leader->slot<=ctx->highwater_leader_slot ) ||
+            ( ctx->votor_leader_valid && ctx->next_leader_slot!=ULONG_MAX && leader->slot==ctx->votor_window_start_slot ) ) break;
         *ctx->votor_leader          = *leader;
         ctx->next_leader_slot       = leader->slot;
         ctx->leader_window_start_ns = fd_clock_tile_now( ctx->clock );
+        ctx->votor_window_start_slot = leader->slot;
+        ctx->votor_leader_seq        = seq;
+        ctx->votor_leader_valid      = 1;
         try_become_leader_ag( ctx, stem );
       } else if( FD_LIKELY( sig==FD_VOTOR_SIG_CERTED ) ) {
         fd_votor_certed_t const * certed = fd_chunk_to_laddr( ctx->in[ in_idx ].mem, chunk );
@@ -5028,8 +5106,27 @@ returnable_frag( fd_replay_tile_t *  ctx,
         }
       } else if( FD_UNLIKELY( sig==FD_VOTOR_SIG_REWARD ) ) {
         fd_votor_reward_t const * reward = fd_chunk_to_laddr( ctx->in[ in_idx ].mem, chunk );
-        fd_votor_reward_t *       ring   = &ctx->votor_reward[ reward->slot%(FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL) ];
-        if( ring->slot==ULONG_MAX || reward->slot>=ring->slot ) *ring = *reward;
+        int was_ready = replay_reward_ready( ctx );
+        fd_replay_reward_t * ring = &ctx->votor_reward[ reward->slot%(FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL) ];
+        if( !ring->valid || reward->slot>ring->msg.slot ||
+            ( reward->slot==ring->msg.slot && fd_seq_gt( seq, ring->seq ) ) )
+          *ring = (fd_replay_reward_t){ .msg = *reward, .seq = seq, .valid = 1 };
+
+        /* A future window can win the global ring alias.  Independently
+           refresh the active window until its own footer freezes. */
+        if( ctx->leader_reward_window.valid && ctx->leader_reward_window.slot>=FD_NUM_SLOTS_FOR_REWARD ) {
+          ulong first_reward = ctx->leader_reward_window.slot-FD_NUM_SLOTS_FOR_REWARD;
+          if( reward->slot>=first_reward && reward->slot-first_reward<AG_SLOTS_PER_WINDOW &&
+              fd_seq_gt( seq, ctx->leader_reward_window.seq ) ) {
+            fd_replay_reward_t * pin = &ctx->leader_reward_window.reward[ reward->slot-first_reward ];
+            if( !pin->frozen && ( !pin->valid || fd_seq_gt( seq, pin->seq ) ) )
+              *pin = (fd_replay_reward_t){ .msg = *reward, .seq = seq, .valid = 1 };
+          }
+        }
+        if( !ctx->is_leader && ctx->next_leader_slot!=ULONG_MAX &&
+            ctx->next_leader_slot>=FD_NUM_SLOTS_FOR_REWARD &&
+            reward->slot==ctx->next_leader_slot-FD_NUM_SLOTS_FOR_REWARD &&
+            !was_ready && replay_reward_ready( ctx ) ) try_become_leader_ag( ctx, stem );
       }
       break;
     }
@@ -5508,7 +5605,11 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->highwater_leader_slot = ULONG_MAX;
 
   ctx->votor_final->slot = ULONG_MAX;
-  for( ulong i=0UL; i<FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL; i++ ) ctx->votor_reward[ i ].slot = ULONG_MAX;
+  ctx->votor_leader_valid = 0;
+  ctx->votor_leader_seq = 0UL;
+  ctx->votor_window_start_slot = 0UL;
+  fd_memset( ctx->votor_reward, 0, sizeof(ctx->votor_reward) );
+  fd_memset( &ctx->leader_reward_window, 0, sizeof(ctx->leader_reward_window) );
 
   ctx->caught_up                = 0;
   ctx->catch_up_max_fec_slot    = ULONG_MAX;
