@@ -85,8 +85,12 @@ hpack_literal( uchar * out, char const * name, ulong name_len,
   FD_TEST( name_len<127UL );
   *p++ = (uchar)name_len;
   fd_memcpy( p, name, name_len ); p += name_len;
-  FD_TEST( val_len <127UL );
-  *p++ = (uchar)val_len;
+  *p++ = (uchar)fd_ulong_min( val_len, 127UL );
+  if( val_len>=127UL ) {
+    ulong remain = val_len-127UL;
+    while( remain>=128UL ) { *p++ = (uchar)((remain&127UL)|128UL); remain >>= 7; }
+    *p++ = (uchar)remain;
+  }
   fd_memcpy( p, val, val_len );   p += val_len;
   return (ulong)(p - out);
 }
@@ -350,12 +354,12 @@ FD_UNIT_TEST( read_response_hdrs ) {
     PARSE( buf, off );
     FD_TEST( rc==FD_H2_ERR_PROTOCOL ); }
 
-  /* grpc-status: " 0" (leading whitespace, mapped to UNKNOWN) */
+  /* grpc-status: " 0" violates generic HTTP field validity. */
   { off = 0;
     buf[off++] = 0x88;
     off += hpack_literal( buf+off, "grpc-status", 11, " 0", 2 );
     PARSE( buf, off );
-    FD_TEST( rc==FD_H2_SUCCESS );
+    FD_TEST( rc==FD_H2_ERR_PROTOCOL );
     FD_TEST( resp.grpc_status==FD_GRPC_STATUS_UNKNOWN ); }
 
   /* grpc-status: +0 (leading plus, mapped to UNKNOWN) */
@@ -369,9 +373,181 @@ FD_UNIT_TEST( read_response_hdrs ) {
   /* Corrupt HPACK payload */
   { uchar corrupt[] = { 0xff, 0xff, 0xff };
     PARSE( corrupt, sizeof(corrupt) );
-    FD_TEST( rc==FD_H2_ERR_PROTOCOL ); }
+    FD_TEST( rc==FD_H2_ERR_COMPRESSION ); }
 
 # undef PARSE
+}
+
+FD_UNIT_TEST( compression_error_overrides_semantic_error ) {
+  fd_h2_hdr_matcher_t matcher[1];
+  fd_h2_hdr_matcher_init( matcher, 1UL );
+  uchar block[] = {0x08,3,'x','y','z',0x80};
+  fd_grpc_resp_hdrs_t resp = {.grpc_status=FD_GRPC_STATUS_UNKNOWN};
+  FD_TEST( fd_grpc_h2_read_response_hdrs( &resp, matcher, block, sizeof(block) )==FD_H2_ERR_COMPRESSION );
+  fd_hpack_skip_t skip[1];
+  for( ulong split=0UL; split<=sizeof(block); split++ ) {
+    fd_hpack_skip_init( skip );
+    uint err = fd_hpack_skip_feed( skip, block, split, 0 );
+    if( !err ) err = fd_hpack_skip_feed( skip, block+split, sizeof(block)-split, 1 );
+    FD_TEST( err==FD_H2_ERR_COMPRESSION );
+  }
+}
+
+FD_UNIT_TEST( pseudo_order_and_singleton_metadata_preserve_compression_scope ) {
+  fd_h2_hdr_matcher_t matcher[1];
+  FD_TEST(fd_h2_hdr_matcher_init(matcher,1UL)==matcher);
+  fd_h2_hdr_matcher_insert_literal(matcher,FD_GRPC_HDR_STATUS,"grpc-status");
+  uchar buf[256]; uchar scratch[256]; fd_grpc_resp_hdrs_t resp; uint status_cnt;
+  for( int fault=0; fault<3; fault++ ) {
+    ulong off=0UL;
+    if( !fault ) {
+      off+=hpack_literal(buf+off,"x",1,"v",1); buf[off++]=0x88;
+    } else {
+      buf[off++]=0x88;
+      char const * name=fault==1 ? "grpc-status" : "content-type";
+      ulong name_len=fault==1 ? 11UL : 12UL;
+      off+=hpack_literal(buf+off,name,name_len,"0",1);
+      off+=hpack_literal(buf+off,name,name_len,"0",1);
+    }
+    memset(&resp,0,sizeof(resp));
+    FD_TEST(fd_grpc_h2_read_response_hdrs_ex(&resp,matcher,buf,off,scratch,sizeof(scratch),0,&status_cnt)==FD_H2_ERR_PROTOCOL);
+    /* A semantic error never hides a subsequent malformed HPACK instruction. */
+    buf[off++]=0x80;
+    FD_TEST(fd_grpc_h2_read_response_hdrs_ex(&resp,matcher,buf,off,scratch,sizeof(scratch),0,&status_cnt)==FD_H2_ERR_COMPRESSION);
+  }
+  ulong off=hpack_literal(buf,"content-type",12,"text/plain",10);
+  resp=(fd_grpc_resp_hdrs_t){.h2_status=200U,.is_grpc_proto=1};
+  FD_TEST(fd_grpc_h2_read_response_hdrs_ex(&resp,matcher,buf,off,scratch,sizeof(scratch),1,&status_cnt)==FD_H2_SUCCESS);
+  FD_TEST(resp.h2_status==200U && resp.is_grpc_proto);
+}
+
+static int
+parse_literal_field( char const * name, ulong name_len,
+                     char const * value, ulong value_len,
+                     int trailers, int corrupt_suffix,
+                     uint * status_cnt, fd_grpc_resp_hdrs_t * resp ) {
+  fd_h2_hdr_matcher_t matcher[1];
+  FD_TEST( fd_h2_hdr_matcher_init( matcher, 1UL )==matcher );
+  fd_h2_hdr_matcher_insert_literal( matcher, FD_GRPC_HDR_STATUS,  "grpc-status" );
+  fd_h2_hdr_matcher_insert_literal( matcher, FD_GRPC_HDR_MESSAGE, "grpc-message" );
+  uchar block[256], scratch[512];
+  FD_TEST( name_len<127UL && value_len<127UL );
+  ulong sz = hpack_literal( block, name, name_len, value, value_len );
+  if( corrupt_suffix ) block[sz++] = 0x80; /* nonexistent indexed field0 */
+  *resp = (fd_grpc_resp_hdrs_t){ .grpc_status=FD_GRPC_STATUS_UNKNOWN };
+  return fd_grpc_h2_read_response_hdrs_ex( resp, matcher, block, sz,
+                                         scratch, sizeof(scratch), trailers, status_cnt );
+}
+
+FD_UNIT_TEST( decoded_field_octets_and_connection_fields ) {
+  /* Exercise each octet in unknown names and values, including both value
+     edges.  HTTP token punctuation/obs-text must survive stricter checking. */
+  char const * token = "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyz";
+  uint count; fd_grpc_resp_hdrs_t resp; ulong cases = 0UL;
+  for( uint c=0U; c<256U; c++ ) {
+    char name[3] = {'x',(char)c,'x'};
+    int valid = c && strchr( token, (int)c )!=NULL;
+    FD_TEST( parse_literal_field( name, 3UL, "v", 1UL, 0, 0, &count, &resp )==
+             (valid ? FD_H2_SUCCESS : FD_H2_ERR_PROTOCOL) ); cases++;
+    char value[3] = {'x',(char)c,'x'};
+    valid = (c>=32U && c!=127U) || c==9U;
+    FD_TEST( parse_literal_field( "x", 1UL, value, 3UL, 1, 0, &count, &resp )==
+             (valid ? FD_H2_SUCCESS : FD_H2_ERR_PROTOCOL) ); cases++;
+    for( uint edge=0U; edge<2U; edge++ ) {
+      char edge_value[2] = {'x','x'}; edge_value[edge] = (char)c;
+      valid = c>=33U && c!=127U;
+      FD_TEST( parse_literal_field( "x", 1UL, edge_value, 2UL, 0, 0, &count, &resp )==
+               (valid ? FD_H2_SUCCESS : FD_H2_ERR_PROTOCOL) ); cases++;
+    }
+  }
+  FD_TEST( parse_literal_field( "", 0UL, "", 0UL, 0, 0, &count, &resp )==FD_H2_ERR_PROTOCOL ); cases++;
+  FD_TEST( parse_literal_field( "x", 1UL, "", 0UL, 1, 0, &count, &resp )==FD_H2_SUCCESS ); cases++;
+  char const * forbidden[] = {"connection","proxy-connection","keep-alive","transfer-encoding","upgrade","te"};
+  for( ulong i=0UL; i<sizeof(forbidden)/sizeof(forbidden[0]); i++ ) for( int trailer=0; trailer<2; trailer++ ) {
+    FD_TEST( parse_literal_field( forbidden[i], strlen(forbidden[i]), "trailers", 8UL,
+                                 trailer, 0, &count, &resp )==FD_H2_ERR_PROTOCOL ); cases++;
+    FD_TEST( parse_literal_field( forbidden[i], strlen(forbidden[i]), "trailers", 8UL,
+                                 trailer, 1, &count, &resp )==FD_H2_ERR_COMPRESSION ); cases++;
+  }
+  /* A recognized field is also checked before copying invalid value bytes. */
+  for( uint c=0U; c<256U; c++ ) {
+    char value[3] = {'x',(char)c,'x'};
+    int valid = (c>=32U && c!=127U) || c==9U;
+    FD_TEST( parse_literal_field( "grpc-message", 12UL, value, 3UL, 1, 0, &count, &resp )==
+             (valid ? FD_H2_SUCCESS : FD_H2_ERR_PROTOCOL) );
+    FD_TEST( resp.grpc_msg_len==(valid ? 3U : 0U) );
+    if( valid ) FD_TEST( fd_memeq( resp.grpc_msg, value, 3UL ) );
+    cases++;
+  }
+  FD_TEST( cases==1306UL );
+  FD_LOG_NOTICE(( "decoded field validity checks=%lu", cases ));
+}
+
+FD_UNIT_TEST( invalid_status_count_and_huffman ) {
+  static char const values[][4] = {{'2',0,'0',0},{'2','\r','0',0},{'2','\n','0',0},{' ','2','0','0'},{'2','0','0','\t'}};
+  uint count; fd_grpc_resp_hdrs_t resp; ulong cases = 0UL;
+  for( ulong i=0UL; i<sizeof(values)/sizeof(values[0]); i++ ) for( int trailer=0; trailer<2; trailer++ ) {
+    ulong len = i<3UL ? 3UL : 4UL;
+    FD_TEST( parse_literal_field( ":status", 7UL, values[i], len, trailer, 0, &count, &resp )==FD_H2_ERR_PROTOCOL );
+    FD_TEST( count==1U ); cases++;
+    FD_TEST( parse_literal_field( ":status", 7UL, values[i], len, trailer, 1, &count, &resp )==FD_H2_ERR_COMPRESSION );
+    FD_TEST( count==1U ); cases++;
+  }
+  FD_TEST( parse_literal_field( ":Status", 7UL, "200", 3UL, 0, 0, &count, &resp )==FD_H2_ERR_PROTOCOL );
+  FD_TEST( !count ); cases++;
+  fd_h2_hdr_matcher_t matcher[1]; FD_TEST( fd_h2_hdr_matcher_init( matcher, 1UL )==matcher );
+  uchar block[256], scratch[512];
+  ulong sz = hpack_literal( block, ":status", 7UL, " 200", 4UL ); block[sz++] = 0x88;
+  FD_TEST( fd_grpc_h2_read_response_hdrs_ex( &resp, matcher, block, sz, scratch, sizeof(scratch), 0, &count )==FD_H2_ERR_PROTOCOL );
+  FD_TEST( count==2U ); cases++;
+  /* Duplicate valid statuses retain codec count2; the client rejects cardinality. */
+  block[0]=0x88; block[1]=0x88;
+  FD_TEST( fd_grpc_h2_read_response_hdrs_ex( &resp, matcher, block, 2UL, scratch, sizeof(scratch), 0, &count )==FD_H2_SUCCESS );
+  FD_TEST( count==2U ); cases++;
+  /* HPACK Huffman name=:status, value="2\n0": count after decoding, before skip. */
+  static uchar const huffman[] = {0,0x85,0xb8,0x84,0x8d,0x36,0xa3,0x84,0x17,0xfe,0x3c,0xff};
+  memcpy( block, huffman, sizeof(huffman) );
+  for( int trailer=0; trailer<2; trailer++ ) {
+    FD_TEST( fd_grpc_h2_read_response_hdrs_ex( &resp, matcher, block, sizeof(huffman), scratch, sizeof(scratch), trailer, &count )==FD_H2_ERR_PROTOCOL );
+    FD_TEST( count==1U ); cases++;
+    block[sizeof(huffman)] = 0x80;
+    FD_TEST( fd_grpc_h2_read_response_hdrs_ex( &resp, matcher, block, sizeof(huffman)+1UL, scratch, sizeof(scratch), trailer, &count )==FD_H2_ERR_COMPRESSION );
+    FD_TEST( count==1U ); cases++;
+  }
+  FD_LOG_NOTICE(( "invalid status count checks=%lu", cases ));
+}
+
+FD_UNIT_TEST( canonical_grpc_statuses ) {
+  uint count; fd_grpc_resp_hdrs_t resp;
+  for( uint code=0U; code<=16U; code++ ) {
+    char value[2]; ulong len = code<10U ? 1UL : 2UL;
+    value[0] = code<10U ? (char)('0'+code) : '1'; value[1] = (char)('0'+code%10U);
+    FD_TEST( parse_literal_field( "grpc-status", 11UL, value, len, 0, 0, &count, &resp )==FD_H2_SUCCESS );
+    FD_TEST( resp.grpc_status==code );
+  }
+  char const * noncanonical[] = {"00","03","010","016","0000000000","17","+0","-1","abc","","1\t0"};
+  for( ulong i=0UL; i<sizeof(noncanonical)/sizeof(noncanonical[0]); i++ ) {
+    FD_TEST( parse_literal_field( "grpc-status", 11UL, noncanonical[i], strlen(noncanonical[i]), 1, 0, &count, &resp )==FD_H2_SUCCESS );
+    FD_TEST( resp.grpc_status==FD_GRPC_STATUS_UNKNOWN );
+  }
+  FD_LOG_NOTICE(( "canonical grpc statuses=17 noncanonical=11" ));
+}
+
+FD_UNIT_TEST( decoded_resource_limit_precedes_field_scans ) {
+  fd_h2_hdr_matcher_t matcher[1]; FD_TEST( fd_h2_hdr_matcher_init( matcher, 1UL )==matcher );
+  static uchar block[FD_GRPC_HEADER_LIST_MAX+16UL];
+  static char value[FD_GRPC_HEADER_LIST_MAX]; memset( value, 'x', sizeof(value) );
+  uchar scratch[512]; uint count; fd_grpc_resp_hdrs_t resp = {0};
+  ulong len = FD_GRPC_HEADER_LIST_MAX-33UL; /* one-byte name plus accounting overhead */
+  ulong sz = hpack_literal( block, "x", 1UL, value, len );
+  FD_TEST( fd_grpc_h2_read_response_hdrs_ex( &resp, matcher, block, sz, scratch, sizeof(scratch), 0, &count )==FD_H2_SUCCESS );
+  sz = hpack_literal( block, "x", 1UL, value, len+1UL ); block[sz++] = 0x80;
+  FD_TEST( fd_grpc_h2_read_response_hdrs_ex( &resp, matcher, block, sz, scratch, sizeof(scratch), 0, &count )==FD_H2_ERR_ENHANCE_YOUR_CALM );
+  /* A prior semantic failure must not prevent accounting for the next field,
+     nor require parsing an already connection-fatal oversized block's tail. */
+  ulong off = hpack_literal( block, "X", 1UL, "v", 1UL );
+  sz = off+hpack_literal( block+off, "x", 1UL, value, len-33UL ); block[sz++] = 0x80;
+  FD_TEST( fd_grpc_h2_read_response_hdrs_ex( &resp, matcher, block, sz, scratch, sizeof(scratch), 0, &count )==FD_H2_ERR_ENHANCE_YOUR_CALM );
 }
 
 int

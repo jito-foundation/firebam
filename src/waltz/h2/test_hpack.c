@@ -265,6 +265,24 @@ FD_UNIT_TEST( hpack_skip ) {
   fd_hpack_rd_init( rd, (uchar const *)"\x3f\x01\x00", 3UL );
   FD_TEST( fd_hpack_rd_next( rd, hdr, &scratch, NULL )==FD_H2_ERR_COMPRESSION );
 
+  /* Plain-only callers may pass NULL scratch.  Valid Huffman names/values
+     must return out-of-scratch before subtracting or advancing NULL pointers. */
+  struct { uchar bytes[4]; ulong size; } const huffman_no_scratch[] = {
+    { {0x00,0x81,0x07,0x00},4UL }, /* literal Huffman name "0", empty value */
+    { {0x01,0x81,0x07,0x00},3UL }  /* indexed name, Huffman value "0" */
+  };
+  for( ulong i=0UL; i<2UL; i++ ) {
+    scratch=NULL;
+    fd_hpack_rd_init(rd,huffman_no_scratch[i].bytes,huffman_no_scratch[i].size);
+    FD_TEST(fd_hpack_rd_next(rd,hdr,&scratch,NULL)==FD_H2_ERR_COMPRESSION && !scratch);
+    uchar output[8]; scratch=output;
+    fd_hpack_rd_init(rd,huffman_no_scratch[i].bytes,huffman_no_scratch[i].size);
+    FD_TEST(fd_hpack_rd_next(rd,hdr,&scratch,output)==FD_H2_ERR_COMPRESSION && scratch==output);
+    fd_hpack_rd_init(rd,huffman_no_scratch[i].bytes,huffman_no_scratch[i].size);
+    FD_TEST(fd_hpack_rd_next(rd,hdr,&scratch,output+sizeof(output))==FD_H2_SUCCESS);
+    FD_TEST(i ? (hdr->value_len==1U && hdr->value[0]=='0') : (hdr->name_len==1U && hdr->name[0]=='0'));
+  }
+
   /* These prefixes cannot become valid with further fragments.  Fail
      immediately instead of waiting for END_HEADERS or a string tail. */
   struct { uchar bin[ 8 ]; ulong sz; } const bad_prefixes[] = {

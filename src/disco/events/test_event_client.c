@@ -9,6 +9,11 @@
 
 static int g_epoll_fd;
 
+/* Caller epochs in these fixtures are virtual.  Freeze elapsed time so a
+   one-nanosecond request deadline does not depend on host scheduling. */
+long
+fd_grpc_client_mono_now( void ) { return 1L; }
+
 /* test_tls_pair_handshake drives a TLS 1.3 handshake between two
    fd_tlsrec conns in memory, using throwaway Ed25519 identities and
    mock X.509 certs.  On return both conns are ready for app data. */
@@ -70,9 +75,8 @@ test_tls_pair_handshake( fd_tlsrec_conn_t * client_conn,
   FD_TEST( client_conn->hs.cli.alpn_negotiated );
 }
 
-/* A GOAWAY that fires conn_dead synchronously during rx must not stop
-   the pending PING ACK from being flushed through the still-live TLS
-   conn, and the disconnect must be deferred to the poll loop. */
+/* A live connection flushes an encrypted PING ACK.  A subsequent GOAWAY
+   reports failure while retaining TLS state until the poll loop retires it. */
 
 FD_UNIT_TEST( conn_tls_lifecycle ) {
   static uchar circq_mem[ 4096UL+512UL ] __attribute__((aligned(FD_CIRCQ_ALIGN)));
@@ -118,10 +122,10 @@ FD_UNIT_TEST( conn_tls_lifecycle ) {
     .error_code     = fd_uint_bswap( FD_H2_SUCCESS )
   };
 
-  /* PING queues an ACK; GOAWAY synchronously fires conn_dead during rx. */
-  uchar h2[ sizeof(ping)+sizeof(goaway) ];
-  fd_memcpy( h2,              &ping,   sizeof(ping)   );
-  fd_memcpy( h2+sizeof(ping), &goaway, sizeof(goaway) );
+  /* PING is acknowledged while H2 is live.  A connection already marked
+     DEAD intentionally returns before flushing further queued H2 output. */
+  uchar h2[ sizeof(ping) ];
+  fd_memcpy( h2, &ping, sizeof(ping) );
   fd_tlsrec_slice_t app_tx[1];
   fd_tlsrec_slice_init( app_tx, h2, sizeof(h2) );
   static uchar wire[ FD_TLSREC_CAP ];
@@ -135,8 +139,8 @@ FD_UNIT_TEST( conn_tls_lifecycle ) {
   FD_TEST( rc==0 );
   FD_TEST( charge_busy );
   FD_TEST( client->state==FD_EVENT_CLIENT_STATE_CONNECTED );
-  FD_TEST( client->defer_disconnect==DISCONNECT_REASON_PEER_CLOSED );
-  FD_TEST( grpc->conn->flags & FD_H2_CONN_FLAGS_DEAD );
+  FD_TEST( client->defer_disconnect==INT_MAX );
+  FD_TEST( !(grpc->conn->flags & FD_H2_CONN_FLAGS_DEAD) );
   FD_TEST( fd_h2_rbuf_used_sz( grpc->frame_tx )==0UL );
   FD_TEST( !fd_grpc_client_tls_tx_pending( grpc ) );
   FD_TEST( fd_tlsrec_conn_is_ready( client->tls_conn ) );
@@ -154,6 +158,19 @@ FD_UNIT_TEST( conn_tls_lifecycle ) {
   FD_TEST( fd_h2_frame_type( ack_ping.hdr.typlen )==FD_H2_FRAME_TYPE_PING );
   FD_TEST( ack_ping.hdr.flags & FD_H2_FLAG_ACK );
   FD_TEST( ack_ping.payload==ping.payload );
+
+  /* GOAWAY fires conn_dead synchronously, but does not retire TLS or the
+     Event socket from inside the RX callback. */
+  fd_tlsrec_slice_init( app_tx, (uchar *)&goaway, sizeof(goaway) );
+  wire_sz = sizeof(wire);
+  FD_TEST( fd_tlsrec_conn_tx( server_conn, wire, &wire_sz, app_tx )==FD_TLSREC_SUCCESS );
+  FD_TEST( fd_tlsrec_slice_is_empty( app_tx ) );
+  FD_TEST( (long)wire_sz==send( sv[1], wire, wire_sz, 0 ) );
+  rc = fd_grpc_client_rxtx_tls( grpc, client->tls_conn, sv[0], fd_log_wallclock(), &charge_busy );
+  FD_TEST( rc==-1 && (grpc->conn->flags & FD_H2_CONN_FLAGS_DEAD) );
+  FD_TEST( client->state==FD_EVENT_CLIENT_STATE_CONNECTED && client->sockfd==sv[0] );
+  FD_TEST( client->defer_disconnect==DISCONNECT_REASON_PEER_CLOSED );
+  FD_TEST( fd_tlsrec_conn_is_ready( client->tls_conn ) );
 
   /* The poll loop then performs the deferred disconnect. */
   int poll_busy = 0;
@@ -340,6 +357,7 @@ FD_UNIT_TEST( tx_pacing ) {
   }
   FD_TEST( wire2>0UL && wire2<=((ulong)FD_EVENT_CLIENT_TX_BURST/msg_sz+1UL)*frame_sz );
 
+  free( client );
   fd_rng_delete( fd_rng_leave( rng ) );
 }
 
@@ -385,6 +403,7 @@ FD_UNIT_TEST( tx_pacing_large_msg ) {
   FD_TEST( client->metrics.events_sent==2UL );
   FD_TEST( test_drain( grpc )==16UL+sizeof(fd_grpc_hdr_t)+sizeof(fd_h2_frame_hdr_t) );
 
+  free( client );
   fd_rng_delete( fd_rng_leave( rng ) );
 }
 
@@ -456,6 +475,7 @@ FD_UNIT_TEST( credit_stall ) {
   FD_TEST( client->sockfd==-1 );
 
   close( sv[1] );
+  free( client );
   fd_rng_delete( fd_rng_leave( rng ) );
 }
 
@@ -480,6 +500,7 @@ FD_UNIT_TEST( stream_deadline_clock ) {
   FD_TEST( !client->event_stream && client->defer_disconnect==DISCONNECT_REASON_TRANSPORT_FAILED );
 
   close( sv[0] ); close( sv[1] );
+  free( client );
   fd_rng_delete( fd_rng_leave( rng ) );
 }
 

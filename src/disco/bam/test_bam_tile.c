@@ -137,7 +137,13 @@ __attribute__((weak)) ulong const firedancer_patch_version = 0UL;
 __attribute__((weak)) uint  const firedancer_commit_ref    = 0U;
 
 static long g_clock = 1L;
+static long g_mono_clock = 1L;
 static ulong g_clock_read_cnt;
+
+/* Advance caller and elapsed clocks independently: a wall rollback must not
+   extend the lifetime of a partial header block. */
+long
+fd_grpc_client_mono_now( void ) { return g_mono_clock; }
 
 __attribute__((weak)) long
 fd_bam_now( void ) {
@@ -3414,7 +3420,7 @@ test_bam_polls_socket_without_waker( fd_wksp_t * wksp ) {
   g_clock = state->backoff_until-1L;
   g_clock_read_cnt = 0UL;
   fd_bam_test_before_credit( state, env->stem, &busy );
-  FD_TEST( g_clock_read_cnt==1UL && state->tcp_sock==-1 ); /* no step */
+  FD_TEST( state->tcp_sock==-1 && state->next_step_deadline==state->backoff_until ); /* no transport step */
 
   test_bam_env_destroy( env );
   g_clock = saved_clock;
@@ -3471,6 +3477,7 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   FD_TEST( stream );
   stream->hdrs.h2_status     = 200;
   stream->hdrs.is_grpc_proto = 1;
+  stream->hdrs_received      = 1U;
   state->bam_stream = stream;
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->bam_stream_live == 1U );
@@ -3494,6 +3501,7 @@ test_bam_grpc_end_handling( fd_wksp_t * wksp ) {
   FD_TEST( stream );
   stream->hdrs.h2_status     = 200;
   stream->hdrs.is_grpc_proto = 1;
+  stream->hdrs_received      = 1U;
   state->bam_stream = stream;
   fd_bam_client_grpc_rx_start( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( state->bam_stream_live == 1U );
@@ -3817,6 +3825,196 @@ test_bam_encode_config_candidate( uchar * protobuf,
   pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, protobuf_max );
   FD_TEST( pb_encode( &ostream, bam_api_ConfigResponse_fields, &resp ) );
   return ostream.bytes_written;
+}
+
+/* Drive the real H2 and gRPC parsers with server frames.  These helpers do
+   not call the BAM response callbacks directly. */
+static void
+test_bam_rx_h2_frame( fd_bam_tile_t * state,
+                      uint            type,
+                      uint            flags,
+                      uint            stream_id,
+                      uchar const *   data,
+                      ulong           data_sz ) {
+  fd_grpc_client_t * client = state->grpc_client;
+  fd_grpc_client_service_deadlines( client, g_clock );
+  FD_TEST( fd_h2_rbuf_free_sz( client->frame_rx )>=sizeof(fd_h2_frame_hdr_t)+data_sz );
+  fd_h2_tx( client->frame_rx, data, data_sz, type, flags, stream_id );
+  fd_h2_rx( client->conn, client->frame_rx, client->frame_tx,
+            client->frame_scratch, client->frame_scratch_max, &fd_grpc_client_h2_callbacks );
+  FD_TEST( !client->conn->conn_error );
+  FD_TEST( !(client->conn->flags & (FD_H2_CONN_FLAGS_SEND_GOAWAY|FD_H2_CONN_FLAGS_DEAD)) );
+  FD_TEST( fd_h2_rbuf_is_empty( client->frame_rx ) );
+}
+
+static ulong
+test_bam_frame_grpc_message( uchar *       framed,
+                             ulong         framed_max,
+                             uchar const * protobuf,
+                             ulong         protobuf_sz ) {
+  FD_TEST( protobuf_sz<=UINT_MAX && framed_max>=sizeof(fd_grpc_hdr_t)+protobuf_sz );
+  fd_grpc_hdr_t hdr = { .compressed=0U, .msg_sz=fd_uint_bswap( (uint)protobuf_sz ) };
+  fd_memcpy( framed, &hdr, sizeof(hdr) );
+  fd_memcpy( framed+sizeof(hdr), protobuf, protobuf_sz );
+  return sizeof(hdr)+protobuf_sz;
+}
+
+/* :status=200 and content-type=application/grpc, then the two trailer
+   fields grpc-message="" and grpc-status=0. */
+static uchar const test_bam_h2_initial_headers[] = {
+  0x88, 0x5f, 0x10, 'a', 'p', 'p', 'l', 'i', 'c', 'a', 't', 'i', 'o', 'n', '/', 'g', 'r', 'p', 'c'
+};
+static uchar const test_bam_h2_ok_trailers[] = {
+  0x00, 0x0c, 'g', 'r', 'p', 'c', '-', 'm', 'e', 's', 's', 'a', 'g', 'e', 0x00,
+  0x00, 0x0b, 'g', 'r', 'p', 'c', '-', 's', 't', 'a', 't', 'u', 's', 0x01, '0'
+};
+
+static ulong
+test_bam_encode_builder_heartbeat( uchar * protobuf,
+                                   ulong   protobuf_max ) {
+  bam_api_SchedulerResponse resp = bam_api_SchedulerResponse_init_default;
+  resp.which_versioned_msg = bam_api_SchedulerResponse_v0_tag;
+  resp.versioned_msg.v0.which_resp = bam_api_SchedulerResponseV0_heart_beat_tag;
+  resp.versioned_msg.v0.resp.heart_beat.time_sent_microseconds = (ulong)g_clock/1000UL;
+  pb_ostream_t ostream = pb_ostream_from_buffer( protobuf, protobuf_max );
+  FD_TEST( pb_encode( &ostream, bam_api_SchedulerResponse_fields, &resp ) );
+  return ostream.bytes_written;
+}
+
+static void
+test_bam_rx_builder_heartbeat( fd_bam_tile_t * state ) {
+  uchar protobuf[64];
+  ulong protobuf_sz = test_bam_encode_builder_heartbeat( protobuf, sizeof(protobuf) );
+  uchar framed[64+sizeof(fd_grpc_hdr_t)];
+  ulong framed_sz = test_bam_frame_grpc_message( framed, sizeof(framed), protobuf, protobuf_sz );
+  test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_DATA, 0U, state->bam_stream->s.stream_id, framed, framed_sz );
+  FD_TEST( state->bam_builder_heartbeat_received );
+}
+
+/* The config RPC can end in a fragmented field block, or time out before
+   that block completes.  Neither case may disturb the accepted scheduler
+   stream or let late config bytes replace the last successful config. */
+static void
+test_bam_config_h2_continuation_and_timeout( fd_wksp_t * wksp ) {
+  for( ulong kind=0UL; kind<3UL; kind++ ) {
+    g_clock = (long)10e9;
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    test_bam_env_mock_conn( env );
+    fd_bam_tile_t * state = env->state;
+    test_bam_prepare_scheduler_stream( state );
+    fd_grpc_client_t * client = state->grpc_client;
+    fd_grpc_h2_stream_t * scheduler = state->bam_stream;
+    test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_HEADERS, FD_H2_FLAG_END_HEADERS,
+                          scheduler->s.stream_id, test_bam_h2_initial_headers, sizeof(test_bam_h2_initial_headers) );
+    FD_TEST( state->bam_stream_live && !state->bam_builder_heartbeat_received );
+    test_bam_rx_builder_heartbeat( state );
+    test_bam_keepalive_sync( state, g_clock );
+    state->keepalive->interval = 0L;
+
+    uchar commission_before = state->builder_commission;
+    fd_ip4_port_t tpu_before = state->bam_tpu;
+    uint fee_version_before = state->fee_cfg_version;
+    long backoff_before = state->backoff_until;
+    state->bam_config_inflight = 1U;
+    state->bam_last_config_poll_ns = g_clock;
+    fd_grpc_h2_stream_t * config = fd_grpc_client_stream_acquire( client, FD_BAM_CLIENT_REQ_BAM_GetBuilderConfig );
+    FD_TEST( config );
+    uint config_id = config->s.stream_id;
+    /* A unary request has sent its request body before these responses. */
+    fd_h2_stream_close_tx( &config->s, client->conn );
+    client->request_stream = NULL;
+    *client->request_tx_op = (fd_h2_tx_op_t){0};
+    long deadline = g_clock+1000L;
+    fd_grpc_client_deadline_set( config, kind==1UL ? FD_GRPC_DEADLINE_HEADER : FD_GRPC_DEADLINE_RX_END, deadline );
+
+    uchar protobuf[256];
+    ulong protobuf_sz = test_bam_encode_config_candidate( protobuf, sizeof(protobuf) );
+    uchar framed[256+sizeof(fd_grpc_hdr_t)];
+    ulong framed_sz = test_bam_frame_grpc_message( framed, sizeof(framed), protobuf, protobuf_sz );
+    uchar const * field_block;
+    ulong field_block_sz;
+    /* These splits also exercise response phase and request lifetime across
+       a field block. Mid-field splits are covered by the transport tests. */
+    ulong fragment_sz = kind==1UL ? 1UL : 15UL;
+    if( kind==1UL ) {
+      field_block = test_bam_h2_initial_headers;
+      field_block_sz = sizeof(test_bam_h2_initial_headers);
+      test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_HEADERS, 0U, config_id, field_block, fragment_sz );
+      FD_TEST( !state->bam_config_pending_received );
+    } else {
+      test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_HEADERS, FD_H2_FLAG_END_HEADERS,
+                            config_id, test_bam_h2_initial_headers, sizeof(test_bam_h2_initial_headers) );
+      test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_DATA, 0U, config_id, framed, framed_sz );
+      FD_TEST( state->bam_config_pending_received && !state->bam_config_pending_invalid );
+      field_block = test_bam_h2_ok_trailers;
+      field_block_sz = sizeof(test_bam_h2_ok_trailers);
+      test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_HEADERS, FD_H2_FLAG_END_STREAM,
+                            config_id, field_block, fragment_sz );
+    }
+    FD_TEST( client->conn->flags & FD_H2_CONN_FLAGS_CONTINUATION );
+    FD_TEST( client->stream_cnt==2UL && state->bam_config_inflight );
+    FD_TEST( state->builder_commission==commission_before && state->bam_tpu.l==tpu_before.l );
+    FD_TEST( state->fee_cfg_version==fee_version_before );
+    fd_bam_bundle_result_t result = test_make_bundle_result( 900U+(uint)kind, 42UL, 1U );
+    test_enqueue_bundle_result( state, &result );
+
+    if( kind ) {
+      fd_grpc_client_service_streams( client, deadline-1L );
+      FD_TEST( client->stream_cnt==2UL && state->bam_config_inflight );
+      g_clock = deadline;
+      fd_grpc_client_service_streams( client, g_clock );
+      FD_TEST( client->stream_cnt==1UL && client->conn->stream_active_cnt[1]==1U );
+      FD_TEST( !state->bam_config_inflight && !state->bam_config_pending_received && !state->bam_config_pending_invalid );
+      FD_TEST( state->bam_last_config_poll_ns==g_clock );
+      FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_REQUEST_TIMEOUT_IDX ]==1UL );
+      if( kind==1UL ) {
+        fd_h2_rst_stream_t reset;
+        FD_TEST( fd_h2_rbuf_used_sz( client->frame_tx )==sizeof(reset) );
+        fd_h2_rbuf_pop_copy( client->frame_tx, &reset, sizeof(reset) );
+        FD_TEST( reset.hdr.typlen==fd_h2_frame_typlen( FD_H2_FRAME_TYPE_RST_STREAM, 4UL ) );
+        FD_TEST( fd_uint_bswap( reset.hdr.r_stream_id )==config_id );
+        FD_TEST( fd_uint_bswap( reset.error_code )==FD_H2_ERR_CANCEL );
+      } else {
+        /* END_STREAM already closed both halves; timeout must not send
+           a reset for that closed stream. */
+        FD_TEST( fd_h2_rbuf_is_empty( client->frame_tx ) );
+      }
+    }
+
+    test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_CONTINUATION, FD_H2_FLAG_END_HEADERS,
+                          config_id, field_block+fragment_sz, field_block_sz-fragment_sz );
+    if( kind==1UL ) {
+      /* The timed-out initial field block is followed by a late body. */
+      test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_DATA, FD_H2_FLAG_END_STREAM, config_id, framed, framed_sz );
+    }
+    FD_TEST( !(client->conn->flags & FD_H2_CONN_FLAGS_CONTINUATION) );
+    FD_TEST( client->stream_cnt==1UL && client->conn->stream_active_cnt[1]==1U );
+    FD_TEST( !client->request_stream && !state->bam_config_inflight );
+    FD_TEST( !state->bam_config_pending_received && !state->bam_config_pending_invalid );
+    FD_TEST( state->bam_stream==scheduler && state->bam_stream_live && state->bam_builder_heartbeat_received );
+    FD_TEST( !state->defer_reset && state->backoff_until==backoff_before );
+    FD_TEST( state->feedback_queue_depth==1U );
+    if( kind ) {
+      FD_TEST( state->builder_commission==commission_before && state->bam_tpu.l==tpu_before.l );
+      FD_TEST( state->fee_cfg_version==fee_version_before );
+    } else {
+      FD_TEST( state->builder_commission==19U && state->bam_tpu.l!=tpu_before.l );
+      FD_TEST( state->fee_cfg_version==fee_version_before+1U );
+    }
+
+    /* The surviving accepted scheduler still carries same-session feedback. */
+    FD_TEST( fd_bam_client_step_reconnect( state, g_clock )==1 );
+    FD_TEST( !state->feedback_queue_depth );
+    test_bam_decoded_message_t decoded;
+    test_bam_decode_last_message( state, &decoded );
+    FD_TEST( decoded.multi.result_cnt==1UL && decoded.multi.results[0].seq_id==result.seq_id );
+    FD_TEST( decoded.multi.results[0].which_result==bam_types_AtomicTxnBatchResult_committed_tag );
+    FD_TEST( decoded.multi.committed[0].txn_cnt==1UL );
+    FD_TEST( decoded.multi.committed[0].txns[0].cus_consumed==result.consumed_cus[0] );
+    FD_TEST( decoded.multi.committed[0].txns[0].feepayer_balance_lamports==result.feepayer_balance_lamports[0] );
+    test_bam_env_destroy( env );
+  }
 }
 
 /* Config DATA is provisional until the unary RPC completes successfully.
@@ -8782,6 +8980,7 @@ main( int     argc,
   test_bam_grpc_timeout( wksp );
   test_bam_config_timeout_keeps_scheduler_live( wksp );
   test_bam_config_rpc_applies_only_after_ok( wksp );
+  test_bam_config_h2_continuation_and_timeout( wksp );
   test_bam_config_status_failure_keeps_scheduler_live( wksp );
   test_bam_config_rpc_discards_incomplete_or_invalid_response( wksp );
   test_bam_config_rpc_accepts_empty_and_unknown_fields( wksp );

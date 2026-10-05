@@ -37,6 +37,7 @@ SYSCALL_ARGS = {
     #                      arg0    arg1     arg2    arg3    arg4     arg5
     "accept4":         (  "int", "long",  "long",  "int",   None,    None  ),
     "bind":            (  "int", "long",   "int",   None,   None,    None  ),
+    "clock_gettime":   (  "int", "long",    None,   None,   None,    None  ),
     "clock_nanosleep": (  "int",  "int",  "long", "long",   None,    None  ),
     "close":           (  "int",   None,    None,   None,   None,    None  ),
     "connect":         (  "int", "long",   "int",   None,   None,    None  ),

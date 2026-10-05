@@ -341,6 +341,9 @@ disconnect( fd_event_client_t * client,
             int                 reason,
             int                 err,
             int                 _backoff ) {
+  /* Direct transport errors can retire the connection before poll1 consumes
+     its deferred reason.  Do not carry that reason into the next transport. */
+  client->defer_disconnect = INT_MAX;
   if( FD_LIKELY( -1!=client->sockfd ) ) {
     if( FD_UNLIKELY( -1==close( client->sockfd ) ) ) FD_LOG_ERR(( "close() failed (%d-%s)", errno, fd_io_strerror( errno ) ));
     client->sockfd = -1;
@@ -411,6 +414,20 @@ fd_event_client_set_identity( fd_event_client_t * client,
                               uchar const *       identity_pubkey ) {
   fd_memcpy( client->identity_pubkey, identity_pubkey, 32UL );
   disconnect( client, client->now, DISCONNECT_REASON_IDENTITY_CHANGED, 0, 0 );
+}
+
+int
+fd_event_client_service_deadlines( fd_event_client_t * client,
+                                   long                now ) {
+  /* A retired transport retains its old gRPC state until reconnect resets it.
+     CONNECTING, however, already owns the newly reset gRPC connection. */
+  if( client->state==FD_EVENT_CLIENT_STATE_DISCONNECTED || client->sockfd<0 ) return 0;
+  if( client->defer_disconnect!=INT_MAX ) return 1;
+  if( !client->grpc_client->has_block_deadline && !client->grpc_client->conn->rx_hdrs_observed ) return 0;
+
+  client->now = now;
+  fd_grpc_client_service_deadlines( client->grpc_client, now );
+  return client->defer_disconnect!=INT_MAX;
 }
 
 static void

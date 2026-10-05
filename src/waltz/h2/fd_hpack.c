@@ -75,7 +75,7 @@ fd_hpack_rd_init( fd_hpack_rd_t * rd,
                   ulong           srcsz ) {
   *rd = (fd_hpack_rd_t) {
     .src     = src,
-    .src_end = src+srcsz
+    .src_end = srcsz ? src+srcsz : src
   };
   /* Skip Dynamic Table Size Updates to zero.  Others fail in rd_next. */
   while( rd->src<rd->src_end && rd->src[0]==0x20 ) rd->src++;
@@ -112,25 +112,28 @@ fd_hpack_rd_next_raw( fd_hpack_rd_t * rd,
   if( (b0&0xc0)==0x80 ) {
     /* name indexed, value indexed, index in [0,63], varint sz 0 */
     uint err = fd_hpack_rd_indexed( hdr, b0&0x7f );
+    if( FD_UNLIKELY( err ) ) return err;
     hdr->hint |= FD_H2_HDR_HINT_VALUE_INDEXED;
-    return err;
+    return FD_H2_SUCCESS;
   }
 
   if( b0==0x40 || b0==0x00 || b0==0x10 ) {
     /* name literal, value literal */
-    if( FD_UNLIKELY( rd->src+2 > end ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( (ulong)(end-rd->src)<2UL ) ) return FD_H2_ERR_COMPRESSION;
 
     uint  name_word = *(rd->src++);
     ulong name_len  = fd_hpack_rd_varint( rd, name_word, 0x7f );
     if( FD_UNLIKELY( name_len==ULONG_MAX     ) ) return FD_H2_ERR_COMPRESSION;
-    if( FD_UNLIKELY( rd->src+name_len >= end ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( name_len >= (ulong)(end-rd->src) ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( name_len>USHRT_MAX ) ) return FD_H2_ERR_ENHANCE_YOUR_CALM;
     uchar const * name_p = rd->src;
     rd->src += name_len;
 
     uint  value_word = *(rd->src++);
     ulong value_len  = fd_hpack_rd_varint( rd, value_word, 0x7f );
     if( FD_UNLIKELY( value_len==ULONG_MAX    ) ) return FD_H2_ERR_COMPRESSION;
-    if( FD_UNLIKELY( rd->src+value_len > end ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( value_len > (ulong)(end-rd->src) ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( value_len>UINT_MAX ) ) return FD_H2_ERR_ENHANCE_YOUR_CALM;
     uchar const * value_p = rd->src;
     rd->src += value_len;
 
@@ -152,7 +155,8 @@ fd_hpack_rd_next_raw( fd_hpack_rd_t * rd,
     uint  value_word = *(rd->src++);
     ulong value_len  = fd_hpack_rd_varint( rd, value_word, 0x7f );
     if( FD_UNLIKELY( value_len==ULONG_MAX    ) ) return FD_H2_ERR_COMPRESSION;
-    if( FD_UNLIKELY( rd->src+value_len > end ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( value_len > (ulong)(end-rd->src) ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( value_len>UINT_MAX ) ) return FD_H2_ERR_ENHANCE_YOUR_CALM;
     uchar const * value_p = rd->src;
     rd->src += value_len;
 
@@ -211,18 +215,21 @@ fd_hpack_rd_next( fd_hpack_rd_t * hpack_rd,
   uchar * scratch_ = *scratch;
 
   if( hdr->hint & FD_H2_HDR_HINT_NAME_HUFFMAN ) {
-    if( FD_UNLIKELY( scratch_+fd_hpack_decoded_sz_max( hdr->name_len )>scratch_end ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( !scratch_ || !scratch_end ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( fd_hpack_decoded_sz_max( hdr->name_len )>(ulong)(scratch_end-scratch_) ) ) return FD_H2_ERR_COMPRESSION;
     nghttp2_hd_huff_decode_context ctx[1];
     nghttp2_hd_huff_decode_context_init( ctx );
     nghttp2_buf buf = { .last = scratch_ };
     if( FD_UNLIKELY( nghttp2_hd_huff_decode( ctx, &buf, (uchar const *)hdr->name, hdr->name_len, 1 )<0 ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( (ulong)(buf.last-scratch_)>USHRT_MAX ) ) return FD_H2_ERR_ENHANCE_YOUR_CALM;
     hdr->name     = (char const *)scratch_;
     hdr->name_len = (ushort)( buf.last-scratch_ );
     scratch_      = buf.last;
   }
 
   if( hdr->hint & FD_H2_HDR_HINT_VALUE_HUFFMAN ) {
-    if( FD_UNLIKELY( scratch_+fd_hpack_decoded_sz_max( hdr->value_len )>scratch_end ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( !scratch_ || !scratch_end ) ) return FD_H2_ERR_COMPRESSION;
+    if( FD_UNLIKELY( fd_hpack_decoded_sz_max( hdr->value_len )>(ulong)(scratch_end-scratch_) ) ) return FD_H2_ERR_COMPRESSION;
     nghttp2_hd_huff_decode_context ctx[1];
     nghttp2_hd_huff_decode_context_init( ctx );
     nghttp2_buf buf = { .last = scratch_ };

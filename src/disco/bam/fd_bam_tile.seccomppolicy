@@ -143,3 +143,6 @@ epoll_ctl: (or (eq (arg 0) epoll_inner_fd)
 futex: (and (eq (arg 1) FUTEX_WAIT_BITSET)
             (eq (arg 2) 0))
 restart_syscall
+
+# gRPC: elapsed deadline clock, including libc syscall fallback
+clock_gettime: (eq (arg 0) CLOCK_MONOTONIC)

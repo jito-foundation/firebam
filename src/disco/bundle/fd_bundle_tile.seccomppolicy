@@ -158,3 +158,6 @@ futex: (and (eq (arg 1) FUTEX_WAIT_BITSET)
 # kernel resumes the wait with the remaining timeout via restart_syscall
 # when the tile next runs.
 restart_syscall
+
+# gRPC: elapsed deadline clock, including libc syscall fallback
+clock_gettime: (eq (arg 0) CLOCK_MONOTONIC)

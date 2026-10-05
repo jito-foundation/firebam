@@ -87,6 +87,15 @@ fd_event_client_poll( fd_event_client_t * client,
                       long                now,
                       int *               charge_busy );
 
+/* Service an attached connection's header-block deadline without socket I/O.
+   Returns nonzero when poll must retire a deferred failure.  Retired and
+   inactive scopes do not read the monotonic clock.  Request deadlines remain
+   in the supplied caller epoch and may fire while a header block is active. */
+
+int
+fd_event_client_service_deadlines( fd_event_client_t * client,
+                                   long                now );
+
 /* fd_event_client_next_deadline returns when fd_event_client_poll
    next needs to run absent any fd event: the earliest pending
    timeout (reconnect, connect, auth, response, heartbeat, gRPC

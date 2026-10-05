@@ -111,10 +111,12 @@ fd_hpack_rd_done( fd_hpack_rd_t const * rd ) {
 
    *scratch is assumed to point to the next free byte in a scratch
    buffer.  scratch_end points one past the last byte of the scratch
-   buffer.
+   buffer.  NULL scratch is permitted when no Huffman decoding is needed;
+   a Huffman field then returns an out-of-scratch error.
 
    Returns FD_H2_SUCCESS, populates header, and updates *scratch on
-   success.  On failure, returns FD_H2_ERR_COMPRESSION and leaves
+   success.  On failure, returns FD_H2_ERR_COMPRESSION (or
+   FD_H2_ERR_ENHANCE_YOUR_CALM for representation bounds) and leaves
    *scratch intact.  Reasons for failure include HPACK parse error,
    out-of-bounds table index, use of the dynamic table, Huffman coding
    error, or out of scratch space.  The caller should assume that *hdr

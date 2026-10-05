@@ -175,12 +175,29 @@ fd_grpc_client_new( void *                             mem,
 void *
 fd_grpc_client_delete( fd_grpc_client_t * client );
 
-/* fd_grpc_client_next_deadline returns the earliest stream deadline
-   (header or rx-end) across all inflight requests, or LONG_MAX if no
-   stream has a deadline armed. */
+/* fd_grpc_client_next_deadline returns the earliest deadline in the last
+   supplied caller epoch, or LONG_MAX if none (or the projection saturates).
+   Request deadlines retain that epoch.  The connection field-block's
+   remaining monotonic lifetime is projected using captured clock anchors;
+   this query reads no clock. */
 
 FD_FN_PURE long
 fd_grpc_client_next_deadline( fd_grpc_client_t const * client );
+
+/* Timer-only service, including under application output backpressure.
+   Performs no socket receive/send, parsing, window updates or request writes.
+   Typed timeout/connection callbacks may ask the caller to defer a reset.
+   Expiry never waits for TX space; a wedged connection closes locally.
+   now is in the caller's request epoch.  Connection field blocks have an
+   independent monotonic five-second lifetime from RX service entry, which
+   can precede wire arrival/recognition if the thread is preempted. */
+void
+fd_grpc_client_service_deadlines( fd_grpc_client_t * client, long now );
+
+/* A receive budget yielded with buffered work.  Re-step immediately, without
+   waiting for a new socket edge.  This is not a socket-readability predicate. */
+FD_FN_PURE int
+fd_grpc_client_rx_pending( fd_grpc_client_t const * client );
 
 /* fd_grpc_client_tx_pending returns 1 if the client has HTTP/2 frame
    bytes buffered that could not yet be written to the transport. */

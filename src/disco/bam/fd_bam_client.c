@@ -1114,6 +1114,8 @@ fd_bam_client_next_deadline( fd_bam_tile_t const * ctx,
                    fd_grpc_client_tls_rx_pending( ctx->grpc_client ) &&
                    !fd_grpc_client_tls_tx_pending( ctx->grpc_client ) ) ) return now;
 
+  if( FD_UNLIKELY( fd_grpc_client_rx_pending( ctx->grpc_client ) ) ) return now;
+
   long deadline = fd_grpc_client_next_deadline( ctx->grpc_client );
   if( FD_UNLIKELY( !fd_grpc_client_is_connected( ctx->grpc_client ) ) ) return fd_bam_client_no_progress_deadline( deadline, now );
   if( FD_LIKELY( ctx->keepalive->interval ) )

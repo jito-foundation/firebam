@@ -3,9 +3,35 @@
 #include "../../third_party/nanopb/pb_encode.h" /* pb_msgdesc_t */
 #include <sys/socket.h>
 #include <poll.h>
+#include <time.h>
 #include "../h2/fd_h2_rbuf_sock.h"
 #include "../tlsrec/fd_tlsrec.h"
 #include "fd_grpc_codec.h"
+
+__attribute__((weak)) long
+fd_grpc_client_mono_now( void ) {
+  struct timespec ts;
+  if( FD_UNLIKELY( clock_gettime( CLOCK_MONOTONIC, &ts ) ) ) FD_LOG_ERR(( "clock_gettime failed" ));
+  ulong seconds = (ulong)ts.tv_sec;
+  if( FD_UNLIKELY( seconds>(ulong)LONG_MAX/1000000000UL ) ) return LONG_MAX;
+  ulong nanos = seconds*1000000000UL + (ulong)ts.tv_nsec;
+  return (long)fd_ulong_min( nanos, (ulong)LONG_MAX );
+}
+
+/* Add real elapsed time to the caller's request epoch.  The connection
+   field-block lifetime is checked separately in the monotonic domain. */
+static long
+fd_grpc_client_epoch_at( fd_grpc_client_t const * client, long mono ) {
+  if( mono<=client->now_mono ) return client->now_nanos;
+  ulong elapsed = (ulong)mono-(ulong)client->now_mono;
+  ulong room = (ulong)LONG_MAX-(ulong)client->now_nanos;
+  return elapsed>room ? LONG_MAX : (long)((ulong)client->now_nanos+elapsed);
+}
+
+static long
+fd_grpc_client_now( fd_grpc_client_t const * client ) {
+  return fd_grpc_client_epoch_at( client, fd_grpc_client_mono_now() );
+}
 
 static int
 fd_grpc_client_request_continue( fd_grpc_client_t * client );
@@ -20,8 +46,9 @@ fd_grpc_client_footprint( ulong buf_max ) {
   ulong l = FD_LAYOUT_INIT;
   l = FD_LAYOUT_APPEND( l, alignof(fd_grpc_client_t), sizeof(fd_grpc_client_t) );
   l = FD_LAYOUT_APPEND( l, 1UL, buf_max ); /* nanopb_tx */
-  l = FD_LAYOUT_APPEND( l, 1UL, buf_max ); /* frame_scratch */
-  l = FD_LAYOUT_APPEND( l, 1UL, buf_max ); /* frame_rx_buf */
+  l = FD_LAYOUT_APPEND( l, 1UL, fd_ulong_max( buf_max, 131072UL ) ); /* frame_scratch */
+  l = FD_LAYOUT_APPEND( l, 1UL, FD_GRPC_HEADER_LIST_MAX ); /* header_block */
+  l = FD_LAYOUT_APPEND( l, 1UL, fd_ulong_max( buf_max, 16393UL ) ); /* frame_rx_buf */
   l = FD_LAYOUT_APPEND( l, 1UL, buf_max ); /* frame_tx_buf */
   l = FD_LAYOUT_APPEND( l, fd_grpc_h2_stream_pool_align(), fd_grpc_h2_stream_pool_footprint( FD_GRPC_CLIENT_MAX_STREAMS ) );
   l = FD_LAYOUT_APPEND( l, 1UL, buf_max*FD_GRPC_CLIENT_MAX_STREAMS );
@@ -65,8 +92,9 @@ fd_grpc_client_new( void *                             mem,
   FD_SCRATCH_ALLOC_INIT( l, mem );
   void * client_mem      = FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_grpc_client_t), sizeof(fd_grpc_client_t) );
   void * nanopb_tx       = FD_SCRATCH_ALLOC_APPEND( l, 1UL, buf_max ); /* nanopb_tx */
-  void * frame_scratch   = FD_SCRATCH_ALLOC_APPEND( l, 1UL, buf_max ); /* frame_scratch */
-  void * frame_rx_buf    = FD_SCRATCH_ALLOC_APPEND( l, 1UL, buf_max ); /* frame_rx_buf */
+  void * frame_scratch   = FD_SCRATCH_ALLOC_APPEND( l, 1UL, fd_ulong_max( buf_max, 131072UL ) ); /* frame_scratch */
+  void * header_block    = FD_SCRATCH_ALLOC_APPEND( l, 1UL, FD_GRPC_HEADER_LIST_MAX );
+  void * frame_rx_buf    = FD_SCRATCH_ALLOC_APPEND( l, 1UL, fd_ulong_max( buf_max, 16393UL ) ); /* frame_rx_buf */
   void * frame_tx_buf    = FD_SCRATCH_ALLOC_APPEND( l, 1UL, buf_max ); /* frame_tx_buf */
   void * stream_pool_mem = FD_SCRATCH_ALLOC_APPEND( l, fd_grpc_h2_stream_pool_align(), fd_grpc_h2_stream_pool_footprint( FD_GRPC_CLIENT_MAX_STREAMS ) );
   void * stream_buf_mem  = FD_SCRATCH_ALLOC_APPEND( l, 1UL, buf_max*FD_GRPC_CLIENT_MAX_STREAMS );
@@ -87,9 +115,10 @@ fd_grpc_client_new( void *                             mem,
     .nanopb_tx         = nanopb_tx,
     .nanopb_tx_max     = buf_max,
     .frame_scratch     = frame_scratch,
-    .frame_scratch_max = buf_max,
+    .frame_scratch_max = fd_ulong_max( buf_max, 131072UL ),
+    .header_block      = header_block,
     .frame_rx_buf      = frame_rx_buf,
-    .frame_rx_buf_max  = buf_max,
+    .frame_rx_buf_max  = fd_ulong_max( buf_max, 16393UL ),
     .frame_tx_buf      = frame_tx_buf,
     .frame_tx_buf_max  = buf_max,
     .metrics           = metrics
@@ -189,6 +218,11 @@ fd_grpc_client_stream_release( fd_grpc_client_t *    client,
                                fd_grpc_h2_stream_t * stream ) {
   if( FD_UNLIKELY( !client->stream_cnt ) ) FD_LOG_CRIT(( "stream map corrupt" )); /* unreachable */
 
+  if( client->header_block_active && client->header_block_stream_id==stream->s.stream_id ) {
+    client->header_block_active = 0U;
+    client->header_block_used = 0UL;
+  }
+
   /* Deallocate tx_op */
   if( FD_UNLIKELY( stream == client->request_stream ) ) {
     client->request_stream = NULL;
@@ -214,10 +248,17 @@ fd_grpc_client_stream_release( fd_grpc_client_t *    client,
 
 void
 fd_grpc_client_reset( fd_grpc_client_t * client ) {
+  client->generation++;
+  client->now_mono = fd_grpc_client_mono_now();
+  client->header_block_active = 0U;
+  client->header_block_used = 0UL;
+  client->observed_header_serial = 0UL;
+  client->has_block_deadline = 0U;
   fd_h2_rbuf_init( client->frame_rx, client->frame_rx_buf, client->frame_rx_buf_max );
   fd_h2_rbuf_init( client->frame_tx, client->frame_tx_buf, client->frame_tx_buf_max );
   fd_h2_conn_init_client( client->conn );
   client->conn->ctx      = client;
+  client->conn->generation = client->generation;
   client->h2_hs_done     = 0;
   client->window_update_pending = 0;
   client->request_stream = NULL;
@@ -228,12 +269,74 @@ fd_grpc_client_reset( fd_grpc_client_t * client ) {
   client->conn->self_settings.initial_window_size = (1U<<31)-1U;
   client->conn->rx_wnd_max   = (1U<<31)-1U;
   client->conn->rx_wnd_wmark = client->conn->rx_wnd_max - (1U<<20);
+  client->conn->self_settings.max_header_list_size = (uint)FD_GRPC_HEADER_LIST_MAX;
 
   /* Free all stream objects */
   while( client->stream_cnt ) {
     fd_grpc_h2_stream_t * stream = client->streams[ client->stream_cnt-1 ];
     fd_grpc_client_stream_release( client, stream );
   }
+}
+
+/* No retained stream pointer crosses an application callback.  A callback may
+   reset/reuse the pool; generation and the map's ID distinguish that reuse. */
+static int
+fd_grpc_stream_current( fd_grpc_client_t const * client,
+                        fd_grpc_h2_stream_t const * stream,
+                        ulong generation, uint id ) {
+  if( client->generation!=generation ) return 0;
+  for( ulong i=0UL; i<client->stream_cnt; i++ )
+    if( client->stream_ids[i]==id && client->streams[i]==stream ) return 1;
+  return 0;
+}
+
+static void
+fd_grpc_client_close( fd_grpc_client_t * client, uint error ) {
+  if( client->conn->flags & FD_H2_CONN_FLAGS_DEAD ) return;
+  client->conn->conn_error = (uchar)error;
+  client->conn->flags = FD_H2_CONN_FLAGS_DEAD;
+  client->has_block_deadline = 0U;
+  if( client->callbacks->conn_dead ) client->callbacks->conn_dead( client->ctx, error, 0 );
+}
+
+#define FD_GRPC_BLOCK_TIMEOUT_NS (5000000000L)
+
+static void
+fd_grpc_observe_block( fd_grpc_client_t * client ) {
+  fd_h2_conn_t const * conn = client->conn;
+  if( !conn->rx_hdrs_observed ) {
+    client->has_block_deadline = 0U;
+    return;
+  }
+  if( client->observed_header_serial!=conn->rx_hdrs_serial ) {
+    client->observed_header_serial = conn->rx_hdrs_serial;
+    /* Use the monotonic RX service-entry sample, conservatively preceding
+       recognition.  A preemption before recv/recognition can consume this
+       budget; observing later must not grant a fresh lifetime. */
+    long now = client->now_mono;
+    client->block_deadline_mono = now>LONG_MAX-FD_GRPC_BLOCK_TIMEOUT_NS
+                                 ? LONG_MAX : now+FD_GRPC_BLOCK_TIMEOUT_NS;
+    client->has_block_deadline = 1U;
+  }
+}
+
+/* A canceled/refused owner has no headers callback.  Resolve its validated
+   END_HEADERS event before H2 clears the serial, so a preemption cannot
+   erase an expired timer or make a timely completion expire afterward. */
+static void
+fd_grpc_h2_headers_discarded( fd_h2_conn_t * conn ) {
+  fd_grpc_client_t * client = conn->ctx;
+  fd_grpc_observe_block( client );
+  if( client->has_block_deadline && fd_grpc_client_mono_now()>=client->block_deadline_mono ) {
+    fd_grpc_client_close( client, FD_H2_ERR_CANCEL );
+    return;
+  }
+  client->has_block_deadline = 0U;
+}
+
+int
+fd_grpc_client_rx_pending( fd_grpc_client_t const * client ) {
+  return !!client->conn->rx_yield;
 }
 
 /* fd_grpc_client_send_stream_quota writes a WINDOW_UPDATE frame, which
@@ -263,14 +366,52 @@ fd_grpc_client_send_timeout( fd_h2_rbuf_t *        rbuf_tx,
                              fd_grpc_client_t *    client,
                              fd_grpc_h2_stream_t * stream,
                              int                   deadline_kind ) {
-  fd_h2_stream_error( &stream->s, client->conn, rbuf_tx, FD_H2_ERR_CANCEL );
+  ulong generation = client->generation;
+  uint id = stream->s.stream_id;
+  int close_conn = fd_h2_rbuf_free_sz( rbuf_tx )<sizeof(fd_h2_rst_stream_t) &&
+                   stream->s.state!=FD_H2_STREAM_STATE_CLOSED;
+  if( close_conn ) fd_h2_stream_reset( &stream->s, client->conn );
+  else fd_h2_stream_error( &stream->s, client->conn, rbuf_tx, FD_H2_ERR_CANCEL );
   client->callbacks->rx_timeout( client->ctx, stream->request_ctx, deadline_kind );
-  fd_grpc_client_stream_release( client, stream );
+  if( fd_grpc_stream_current( client, stream, generation, id ) )
+    fd_grpc_client_stream_release( client, stream );
+  if( close_conn && client->generation==generation ) fd_grpc_client_close( client, FD_H2_ERR_CANCEL );
+}
+
+void
+fd_grpc_client_service_deadlines( fd_grpc_client_t * client, long now ) {
+  client->now_nanos = now;
+  client->now_mono = fd_grpc_client_mono_now();
+  if( client->conn->flags & FD_H2_CONN_FLAGS_DEAD ) return;
+  if( client->conn->flags & FD_H2_CONN_FLAGS_SEND_GOAWAY ) {
+    fd_grpc_client_close( client, client->conn->conn_error );
+    return;
+  }
+  fd_grpc_observe_block( client );
+  if( client->has_block_deadline && client->now_mono>=client->block_deadline_mono ) {
+    fd_grpc_client_close( client, FD_H2_ERR_CANCEL );
+    return;
+  }
+  ulong generation = client->generation;
+  for( ulong i=0UL; i<client->stream_cnt; ) {
+    fd_grpc_h2_stream_t * stream = client->streams[i];
+    int kind = stream->has_header_deadline && now>=stream->header_deadline_nanos ? FD_GRPC_DEADLINE_HEADER
+             : stream->has_rx_end_deadline && now>=stream->rx_end_deadline_nanos ? FD_GRPC_DEADLINE_RX_END : -1;
+    if( kind<0 ) { i++; continue; }
+    fd_grpc_client_send_timeout( client->frame_tx, client, stream, kind );
+    if( client->generation!=generation || (client->conn->flags & FD_H2_CONN_FLAGS_DEAD) ) return;
+  }
 }
 
 long
 fd_grpc_client_next_deadline( fd_grpc_client_t const * client ) {
   long deadline = LONG_MAX;
+  if( client->has_block_deadline ) {
+    ulong remaining = client->block_deadline_mono>client->now_mono
+                    ? (ulong)client->block_deadline_mono-(ulong)client->now_mono : 0UL;
+    ulong room = (ulong)LONG_MAX-(ulong)client->now_nanos;
+    deadline = remaining>room ? LONG_MAX : (long)((ulong)client->now_nanos+remaining);
+  }
   for( ulong i=0UL; i<(client->stream_cnt); i++ ) {
     fd_grpc_h2_stream_t const * stream = client->streams[ i ];
     if( stream->has_header_deadline ) deadline = fd_long_min( deadline, stream->header_deadline_nanos );
@@ -303,36 +444,17 @@ fd_grpc_client_tx_starved( fd_grpc_client_t const * client ) {
 
 void
 fd_grpc_client_service_streams( fd_grpc_client_t * client,
-                                long               ts_nanos ) {
-  ulong const meta_frame_max =
-    fd_ulong_max( sizeof(fd_h2_window_update_t), sizeof(fd_h2_rst_stream_t) );
-  fd_h2_conn_t * conn    = client->conn;
-  fd_h2_rbuf_t * rbuf_tx = client->frame_tx;
-  if( FD_UNLIKELY( conn->flags & (FD_H2_CONN_FLAGS_DEAD|FD_H2_CONN_FLAGS_SEND_GOAWAY) ) ) return;
-  uint  const wnd_max    = conn->self_settings.initial_window_size;
-  uint  const wnd_thres  = wnd_max / 2;
-  for( ulong i=0UL; i<(client->stream_cnt); i++ ) {
-    if( FD_UNLIKELY( fd_h2_rbuf_free_sz( rbuf_tx )<meta_frame_max ) ) break;
-    fd_grpc_h2_stream_t * stream = client->streams[ i ];
-
-    if( FD_UNLIKELY( ( stream->has_header_deadline ) &
-                     ( stream->header_deadline_nanos - ts_nanos <= 0L ) ) ) {
-      fd_grpc_client_send_timeout( rbuf_tx, client, stream, FD_GRPC_DEADLINE_HEADER );
-      i--; /* stream removed */
-      continue;
-    }
-
-    if( FD_UNLIKELY( ( stream->has_rx_end_deadline ) &
-                     ( stream->rx_end_deadline_nanos - ts_nanos <= 0L ) ) ) {
-      fd_grpc_client_send_timeout( rbuf_tx, client, stream, FD_GRPC_DEADLINE_RX_END );
-      i--; /* stream removed */
-      continue;
-    }
-
-    if( FD_UNLIKELY( stream->s.rx_wnd < wnd_thres && stream->s.state!=FD_H2_STREAM_STATE_CLOSED ) ) {
-      uint const bump = wnd_max - stream->s.rx_wnd;
-      fd_grpc_client_send_stream_quota( rbuf_tx, stream, bump );
-    }
+                                long ts_nanos ) {
+  if( client->conn->flags & (FD_H2_CONN_FLAGS_DEAD|FD_H2_CONN_FLAGS_SEND_GOAWAY) ) return;
+  ulong generation = client->generation;
+  fd_grpc_client_service_deadlines( client, ts_nanos );
+  if( client->generation!=generation || (client->conn->flags & FD_H2_CONN_FLAGS_DEAD) ) return;
+  uint wnd_max = client->conn->self_settings.initial_window_size;
+  for( ulong i=0UL; i<client->stream_cnt; i++ ) {
+    if( fd_h2_rbuf_free_sz( client->frame_tx )<sizeof(fd_h2_window_update_t) ) break;
+    fd_grpc_h2_stream_t * stream = client->streams[i];
+    if( stream->s.rx_wnd<wnd_max/2U && stream->s.state!=FD_H2_STREAM_STATE_CLOSED )
+      fd_grpc_client_send_stream_quota( client->frame_tx, stream, wnd_max-stream->s.rx_wnd );
   }
 }
 
@@ -350,6 +472,9 @@ fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
                             int                sock_fd,
                             long               now,
                             int *              charge_busy ) {
+  ulong generation = client->generation;
+  fd_grpc_client_service_deadlines( client, now );
+  if( client->generation!=generation || (client->conn->flags & FD_H2_CONN_FLAGS_DEAD) ) return -1;
   fd_h2_conn_t * conn = client->conn;
   ulong const frame_rx_lo_0 = client->frame_rx->lo_off;
   ulong const frame_rx_hi_0 = client->frame_rx->hi_off;
@@ -364,12 +489,20 @@ fd_grpc_client_rxtx_socket( fd_grpc_client_t * client,
   }
 
   if( FD_UNLIKELY( conn->flags ) ) fd_h2_tx_control( conn, client->frame_tx, &fd_grpc_client_h2_callbacks );
+  if( client->generation!=generation ) return -1;
   fd_h2_rx( conn, client->frame_rx, client->frame_tx, client->frame_scratch, client->frame_scratch_max, &fd_grpc_client_h2_callbacks );
+  if( client->generation!=generation ) return -1;
   if( FD_UNLIKELY( client->window_update_pending || client->request_stream ) ) {
     client->window_update_pending = 0;
     fd_grpc_client_request_continue( client ); /* credit or TX ring space may have freed */
   }
-  fd_grpc_client_service_streams( client, now );
+  if( client->generation!=generation ) return -1;
+  fd_grpc_observe_block( client ); /* include incomplete first HEADERS */
+  fd_grpc_client_service_deadlines( client, fd_grpc_client_now(client) );
+  if( client->generation!=generation || (client->conn->flags & FD_H2_CONN_FLAGS_DEAD) ) return -1;
+  fd_grpc_client_service_streams( client, fd_grpc_client_now(client) );
+  if( client->generation!=generation ) return -1;
+  if( fd_grpc_client_rx_pending( client ) ) *charge_busy = 1;
 
   int tx_err = fd_h2_rbuf_sendmsg( client->frame_tx, sock_fd, MSG_NOSIGNAL|MSG_DONTWAIT );
   if( FD_UNLIKELY( tx_err && tx_err!=EAGAIN ) ) {
@@ -414,6 +547,9 @@ fd_grpc_client_rxtx_tls( fd_grpc_client_t * client,
                          int                sock_fd,
                          long               now,
                          int *              charge_busy ) {
+  ulong generation = client->generation;
+  fd_grpc_client_service_deadlines( client, now );
+  if( client->generation!=generation || (client->conn->flags & FD_H2_CONN_FLAGS_DEAD) ) return -1;
   fd_h2_conn_t *     conn = client->conn;
   fd_tlsrec_sock_t * sock = client->tls_sock;
 
@@ -458,12 +594,20 @@ fd_grpc_client_rxtx_tls( fd_grpc_client_t * client,
   }
 
   if( FD_UNLIKELY( conn->flags ) ) fd_h2_tx_control( conn, client->frame_tx, &fd_grpc_client_h2_callbacks );
+  if( client->generation!=generation ) return -1;
   fd_h2_rx( conn, client->frame_rx, client->frame_tx, client->frame_scratch, client->frame_scratch_max, &fd_grpc_client_h2_callbacks );
+  if( client->generation!=generation ) return -1;
   if( FD_UNLIKELY( client->window_update_pending || client->request_stream ) ) {
     client->window_update_pending = 0;
     fd_grpc_client_request_continue( client ); /* credit or TX ring space may have freed */
   }
-  fd_grpc_client_service_streams( client, now );
+  if( client->generation!=generation ) return -1;
+  fd_grpc_observe_block( client ); /* include incomplete first HEADERS */
+  fd_grpc_client_service_deadlines( client, fd_grpc_client_now(client) );
+  if( client->generation!=generation || (client->conn->flags & FD_H2_CONN_FLAGS_DEAD) ) return -1;
+  fd_grpc_client_service_streams( client, fd_grpc_client_now(client) );
+  if( client->generation!=generation ) return -1;
+  if( fd_grpc_client_rx_pending( client ) ) *charge_busy = 1;
 
   /* HTTP/2 bytes wait behind parked ciphertext until EPOLLOUT */
   ulong tx_used = fd_h2_rbuf_used_sz( client->frame_tx );
@@ -872,47 +1016,106 @@ fd_grpc_h2_conn_final( fd_h2_conn_t * conn,
 
 /* React to response data */
 
+static void
+fd_grpc_response_fail( fd_grpc_client_t * client, fd_grpc_h2_stream_t * stream,
+                       char const * reason, uint error ) {
+  ulong generation = client->generation;
+  uint id = stream->s.stream_id;
+  if( stream->s.state!=FD_H2_STREAM_STATE_CLOSED &&
+      fd_h2_rbuf_free_sz( client->frame_tx )<sizeof(fd_h2_rst_stream_t) ) {
+    fd_grpc_client_close( client, error );
+    return;
+  }
+  fd_h2_stream_error( &stream->s, client->conn, client->frame_tx, error );
+  fd_grpc_resp_hdrs_t failure = { .h2_status = stream->hdrs.h2_status,
+                                 .grpc_status = FD_GRPC_STATUS_INTERNAL };
+  failure.grpc_msg_len = (uint)fd_ulong_min( strlen(reason), sizeof(failure.grpc_msg) );
+  fd_memcpy( failure.grpc_msg, reason, failure.grpc_msg_len );
+  client->callbacks->rx_end( client->ctx, stream->request_ctx, &failure );
+  if( fd_grpc_stream_current( client, stream, generation, id ) )
+    fd_grpc_client_stream_release( client, stream );
+}
+
 void
-fd_grpc_h2_cb_headers(
-    fd_h2_conn_t *   conn,
-    fd_h2_stream_t * h2_stream,
-    void const *     data,
-    ulong            data_sz,
-    ulong            flags
-) {
+fd_grpc_h2_cb_headers( fd_h2_conn_t * conn, fd_h2_stream_t * h2_stream,
+                       void const * data, ulong data_sz, ulong flags ) {
   fd_grpc_h2_stream_t * stream = fd_grpc_h2_stream_upcast( h2_stream );
   fd_grpc_client_t * client = conn->ctx;
-
-  int h2_status = fd_grpc_h2_read_response_hdrs( &stream->hdrs, client->matcher, data, data_sz );
-  if( FD_UNLIKELY( h2_status!=FD_H2_SUCCESS ) ) {
-    /* Failed to parse HTTP/2 headers */
-    fd_h2_stream_error( h2_stream, conn, client->frame_tx, FD_H2_ERR_PROTOCOL );
-    client->callbacks->rx_end( client->ctx, stream->request_ctx, &stream->hdrs ); /* invalidates stream->hdrs */
-    fd_grpc_client_stream_release( client, stream );
+  ulong generation = client->generation;
+  uint id = h2_stream->stream_id;
+  fd_grpc_observe_block( client );
+  if( !client->header_block_active ) {
+    client->header_block_active = 1U;
+    client->header_block_stream_id = id;
+    client->header_block_flags = (uint)flags;
+    client->header_block_used = 0UL;
+  }
+  if( client->header_block_stream_id!=id ||
+      data_sz>FD_GRPC_HEADER_LIST_MAX-client->header_block_used ) {
+    fd_h2_conn_error( conn, FD_H2_ERR_ENHANCE_YOUR_CALM );
     return;
   }
+  if( data_sz ) fd_memcpy( client->header_block+client->header_block_used, data, data_sz );
+  client->header_block_used += data_sz;
+  if( !(flags & FD_H2_FLAG_END_HEADERS) ) return;
 
-  if( !( flags & FD_H2_FLAG_END_HEADERS ) ) return;
-  /* END_STREAM may have arrived earlier in the block.  Reset before
-     callbacks consume the TX space reserved by fd_h2_rx. */
-  int const rx_end = ( flags & FD_H2_FLAG_END_STREAM ) ||
-                    h2_stream->state==FD_H2_STREAM_STATE_CLOSING_RX || h2_stream->state==FD_H2_STREAM_STATE_CLOSED;
-  if( rx_end ) fd_h2_stream_error( h2_stream, conn, client->frame_tx, FD_H2_SUCCESS );
-
-  if( !stream->hdrs_received ) {
-    /* Got initial response header */
-    stream->hdrs_received = 1;
-    stream->has_header_deadline = 0;
-    if( FD_LIKELY( ( stream->hdrs.h2_status==200  ) &
-                   ( !!stream->hdrs.is_grpc_proto ) ) ) {
+  int trailers = !!stream->hdrs_received;
+  uint original_flags = client->header_block_flags;
+  fd_grpc_resp_hdrs_t candidate = { .grpc_status=FD_GRPC_STATUS_UNKNOWN };
+  if( trailers ) {
+    candidate.h2_status = stream->hdrs.h2_status;
+    candidate.is_grpc_proto = stream->hdrs.is_grpc_proto;
+  }
+  uint status_cnt;
+  int err = fd_grpc_h2_read_response_hdrs_ex( &candidate, client->matcher,
+        client->header_block, client->header_block_used,
+        client->frame_scratch, client->frame_scratch_max, trailers, &status_cnt );
+  client->header_block_active = 0U;
+  client->header_block_used = 0UL;
+  if( err==FD_H2_ERR_COMPRESSION || err==FD_H2_ERR_ENHANCE_YOUR_CALM ) {
+    fd_h2_conn_error( conn, (uint)err );
+    return;
+  }
+  /* Compression validation precedes phase/semantic failure and final commit. */
+  long mono = fd_grpc_client_mono_now();
+  long now = fd_grpc_client_epoch_at( client, mono );
+  if( client->has_block_deadline && mono>=client->block_deadline_mono ) {
+    fd_grpc_client_close( client, FD_H2_ERR_CANCEL );
+    return;
+  }
+  client->has_block_deadline = 0U;
+  int deadline_kind = stream->has_header_deadline && now>=stream->header_deadline_nanos ? FD_GRPC_DEADLINE_HEADER
+                    : stream->has_rx_end_deadline && now>=stream->rx_end_deadline_nanos ? FD_GRPC_DEADLINE_RX_END : -1;
+  if( deadline_kind>=0 ) {
+    fd_grpc_client_send_timeout( client->frame_tx, client, stream, deadline_kind );
+    return;
+  }
+  int terminal = !!(original_flags & FD_H2_FLAG_END_STREAM);
+  int informational = !trailers && candidate.h2_status>=100U && candidate.h2_status<200U;
+  if( err || (trailers ? !terminal : status_cnt!=1U) ||
+      (informational && (terminal || candidate.h2_status==101U)) ) {
+    fd_grpc_response_fail( client, stream, "invalid response headers", FD_H2_ERR_PROTOCOL );
+    return;
+  }
+  if( informational ) return;
+  if( terminal && stream->msg_buf_used ) {
+    fd_grpc_response_fail( client, stream, "incomplete gRPC message before trailers", FD_H2_ERR_PROTOCOL );
+    return;
+  }
+  /* Metadata and response phase change atomically after full validation. */
+  stream->hdrs = candidate;
+  if( terminal ) fd_h2_stream_error( h2_stream, conn, client->frame_tx, FD_H2_SUCCESS );
+  if( !trailers ) {
+    stream->hdrs_received = 1U;
+    stream->has_header_deadline = 0U;
+    if( candidate.h2_status==200U && candidate.is_grpc_proto )
       client->callbacks->rx_start( client->ctx, stream->request_ctx );
-    }
+    if( !fd_grpc_stream_current( client, stream, generation, id ) ) return;
   }
-
-  if( rx_end ) {
+  if( terminal ) {
     client->callbacks->rx_end( client->ctx, stream->request_ctx, &stream->hdrs );
-    fd_grpc_client_stream_release( client, stream );
-    return;
+    if( fd_grpc_stream_current( client, stream, generation, id ) )
+      fd_grpc_client_stream_release( client, stream );
   }
 }
 
@@ -926,6 +1129,12 @@ fd_grpc_h2_cb_data(
 ) {
   fd_grpc_client_t *    client = conn->ctx;
   fd_grpc_h2_stream_t * stream = fd_grpc_h2_stream_upcast( h2_stream );
+  ulong generation = client->generation;
+  uint id = h2_stream->stream_id;
+  if( FD_UNLIKELY( !stream->hdrs_received ) ) {
+    fd_grpc_response_fail( client, stream, "DATA before final response headers", FD_H2_ERR_PROTOCOL );
+    return;
+  }
   if( FD_UNLIKELY( ( stream->hdrs.h2_status!=200 ) |
                    ( !stream->hdrs.is_grpc_proto ) ) ) {
     goto check_end_stream;
@@ -942,13 +1151,16 @@ fd_grpc_h2_cb_data(
       data_sz -= hdr_frag_sz;
       if( FD_UNLIKELY( stream->msg_buf_used < sizeof(fd_grpc_hdr_t) ) ) goto check_end_stream;
 
+      /* No compression was negotiated; never decode compressed bytes as protobuf. */
+      if( FD_UNLIKELY( stream->msg_buf[0] ) ) {
+        fd_grpc_response_fail( client, stream, "unsupported compressed gRPC message", FD_H2_ERR_PROTOCOL );
+        return;
+      }
       /* Header complete */
       stream->msg_sz = fd_uint_bswap( FD_LOAD( uint, (void *)( (ulong)stream->msg_buf+1 ) ) );
       if( FD_UNLIKELY( sizeof(fd_grpc_hdr_t)  + stream->msg_sz > stream->msg_buf_max ) ) {
         FD_LOG_WARNING(( "Received oversized gRPC message (%lu bytes), killing request", stream->msg_sz ));
-        fd_h2_stream_error( h2_stream, conn, client->frame_tx, FD_H2_ERR_INTERNAL );
-        client->callbacks->rx_end( client->ctx, stream->request_ctx, &stream->hdrs );
-        fd_grpc_client_stream_release( client, stream );
+        fd_grpc_response_fail( client, stream, "oversized gRPC message", FD_H2_ERR_INTERNAL );
         return;
       }
     }
@@ -971,6 +1183,7 @@ fd_grpc_h2_cb_data(
          state already reflects the end of the carrying DATA frame. */
       if( FD_UNLIKELY( h2_stream->state==FD_H2_STREAM_STATE_CLOSING_RX ) ) fd_h2_stream_error( h2_stream, conn, client->frame_tx, FD_H2_SUCCESS );
       client->callbacks->rx_msg( client->ctx, msg_ptr, stream->msg_sz, stream->request_ctx );
+      if( !fd_grpc_stream_current( client, stream, generation, id ) ) return;
       stream->msg_buf_used = 0UL;
       stream->msg_sz       = 0UL;
     }
@@ -986,9 +1199,7 @@ fd_grpc_h2_cb_data(
     if( FD_UNLIKELY( stream->msg_buf_used ) ) {
       FD_LOG_WARNING(( "Received incomplete gRPC message" ));
     }
-    fd_h2_stream_error( h2_stream, conn, client->frame_tx, FD_H2_SUCCESS );
-    client->callbacks->rx_end( client->ctx, stream->request_ctx, &stream->hdrs );
-    fd_grpc_client_stream_release( client, stream );
+    fd_grpc_response_fail( client, stream, "DATA ended response without trailers", FD_H2_ERR_PROTOCOL );
   }
 }
 
@@ -1010,8 +1221,7 @@ fd_grpc_h2_rst_stream( fd_h2_conn_t *   conn,
                      fd_log_style_dim(), error_code, fd_h2_strerror( error_code ), fd_log_style_normal() ));
   }
   fd_grpc_h2_stream_t * stream = fd_grpc_h2_stream_upcast( h2_stream );
-  client->callbacks->rx_end( client->ctx, stream->request_ctx, &stream->hdrs ); /* invalidates stream->hdrs */
-  fd_grpc_client_stream_release( client, stream );
+  fd_grpc_response_fail( client, stream, "response stream reset", FD_H2_ERR_PROTOCOL );
 }
 
 /* A HTTP/2 flow control change might unblock a queued request send op */
@@ -1102,4 +1312,5 @@ fd_h2_callbacks_t const fd_grpc_client_h2_callbacks = {
   .stream_window_update  = fd_grpc_h2_stream_window_update,
   .initial_window_update = fd_grpc_h2_initial_window_update,
   .ping_ack              = fd_grpc_h2_ping_ack,
+  .headers_discarded     = fd_grpc_h2_headers_discarded,
 };

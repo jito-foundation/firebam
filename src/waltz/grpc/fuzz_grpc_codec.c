@@ -29,8 +29,9 @@ LLVMFuzzerTestOneInput( uchar const *data,
   fd_h2_hdr_matcher_insert_literal( matcher, FD_GRPC_HDR_MESSAGE, "grpc-message" );
   int rc = fd_grpc_h2_read_response_hdrs( &resp_hdrs, matcher, data, size );
 
-  /* Accept only the two documented outcomes */
-  FD_TEST( (rc==FD_H2_SUCCESS) | (rc==FD_H2_ERR_PROTOCOL) );
+  /* Compression and local resource errors retain their connection scope. */
+  FD_TEST( (rc==FD_H2_SUCCESS) | (rc==FD_H2_ERR_PROTOCOL) |
+           (rc==FD_H2_ERR_COMPRESSION) | (rc==FD_H2_ERR_ENHANCE_YOUR_CALM) );
 
   if( rc==FD_H2_SUCCESS ) {
     /* Header fields must be in valid ranges on success */

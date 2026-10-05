@@ -96,6 +96,7 @@ fd_h2_rx_data( fd_h2_conn_t *            conn,
                fd_h2_rbuf_t *            rbuf_rx,
                fd_h2_rbuf_t *            rbuf_tx,
                fd_h2_callbacks_t const * cb ) {
+  ulong generation = conn->generation;
   ulong frame_rem  = conn->rx_data_cnt_rem;
   ulong rbuf_avail = fd_h2_rbuf_used_sz( rbuf_rx );
   uint  stream_id  = conn->rx_stream_id;
@@ -152,6 +153,7 @@ fd_h2_rx_data( fd_h2_conn_t *            conn,
     cb->data( conn, stream, peek,          sz0, 0        );
     /* The first callback may have released the stream.  Re-query the stream
        map before dispatching the wrapped tail chunk. */
+    if( conn->generation!=generation ) return;
     stream = cb->stream_query( conn, stream_id );
     if( FD_LIKELY( stream && !(conn->flags & (FD_H2_CONN_FLAGS_SEND_GOAWAY|FD_H2_CONN_FLAGS_DEAD)) ) ) {
       cb->data( conn, stream, rbuf_rx->buf0, sz1, fin_flag );
@@ -159,11 +161,25 @@ fd_h2_rx_data( fd_h2_conn_t *            conn,
   }
 
 skip_frame:
+  if( conn->generation!=generation ) return;
   conn->rx_data_cnt_rem -= chunk_sz;
   fd_h2_rbuf_skip( rbuf_rx, chunk_sz );
   if( FD_UNLIKELY( conn->rx_wnd < conn->rx_wnd_wmark ) ) {
     conn->flags |= FD_H2_CONN_FLAGS_WINDOW_UPDATE;
   }
+}
+
+/* Resolve a discarded block at the actual validation event, rather than
+   losing its lifetime observation before a client samples elapsed time. */
+static int
+fd_h2_discarded_headers_done( fd_h2_conn_t * conn,
+                              fd_h2_callbacks_t const * cb ) {
+  ulong generation = conn->generation;
+  if( cb->headers_discarded ) cb->headers_discarded( conn );
+  if( FD_UNLIKELY( conn->generation!=generation ||
+      (conn->flags & (FD_H2_CONN_FLAGS_SEND_GOAWAY|FD_H2_CONN_FLAGS_DEAD)) ) ) return 0;
+  conn->rx_hdrs_observed = 0U;
+  return 1;
 }
 
 static int
@@ -220,7 +236,10 @@ fd_h2_rx_headers( fd_h2_conn_t *            conn,
       fd_h2_conn_error( conn, FD_H2_ERR_COMPRESSION );
       return 0;
     }
-    if( !stream ) return 1;
+    if( !stream ) {
+      if( frame_flags & FD_H2_FLAG_END_HEADERS ) return fd_h2_discarded_headers_done( conn, cb );
+      return 1;
+    }
   }
 
   fd_h2_stream_rx_headers( stream, conn, frame_flags );
@@ -229,7 +248,9 @@ fd_h2_rx_headers( fd_h2_conn_t *            conn,
     return 0;
   }
 
+  ulong generation = conn->generation;
   cb->headers( conn, stream, payload, payload_sz, frame_flags );
+  if( conn->generation==generation && (frame_flags & FD_H2_FLAG_END_HEADERS) ) conn->rx_hdrs_observed = 0U;
 
   return 1;
 }
@@ -272,10 +293,16 @@ fd_h2_rx_continuation( fd_h2_conn_t *            conn,
     fd_h2_conn_error( conn, FD_H2_ERR_COMPRESSION );
     return 0;
   }
-  if( FD_UNLIKELY( conn->rx_hdrs_discard ) ) return 1;
+  if( FD_UNLIKELY( conn->rx_hdrs_discard ) ) {
+    if( frame_flags & FD_H2_FLAG_END_HEADERS ) return fd_h2_discarded_headers_done( conn, cb );
+    return 1;
+  }
 
   fd_h2_stream_t * stream = cb->stream_query( conn, stream_id );
-  if( FD_UNLIKELY( !stream ) ) return 1;
+  if( FD_UNLIKELY( !stream ) ) {
+    if( frame_flags & FD_H2_FLAG_END_HEADERS ) return fd_h2_discarded_headers_done( conn, cb );
+    return 1;
+  }
 
   fd_h2_stream_rx_headers( stream, conn, frame_flags );
   if( FD_UNLIKELY( stream->state==FD_H2_STREAM_STATE_ILLEGAL ) ) {
@@ -283,7 +310,9 @@ fd_h2_rx_continuation( fd_h2_conn_t *            conn,
     return 0;
   }
 
+  ulong generation = conn->generation;
   cb->headers( conn, stream, payload, payload_sz, frame_flags );
+  if( conn->generation==generation && (frame_flags & FD_H2_FLAG_END_HEADERS) ) conn->rx_hdrs_observed = 0U;
 
   return 1;
 }
@@ -681,6 +710,20 @@ fd_h2_rx1( fd_h2_conn_t *            conn,
     return;
   }
 
+  if( frame_type==FD_H2_FRAME_TYPE_HEADERS ) {
+    if( FD_UNLIKELY( !fd_h2_frame_stream_id( hdr.r_stream_id ) ) ) {
+      fd_h2_conn_error( conn, FD_H2_ERR_PROTOCOL );
+      return;
+    }
+    if( !conn->rx_hdrs_observed || conn->rx_hdrs_offset!=rbuf_rx->lo_off ) {
+      conn->rx_hdrs_serial++;
+      conn->rx_hdrs_offset    = rbuf_rx->lo_off;
+      conn->rx_hdrs_stream_id = fd_h2_frame_stream_id( hdr.r_stream_id );
+      conn->rx_hdrs_flags     = hdr.flags;
+      conn->rx_hdrs_observed  = 1U;
+    }
+  }
+
   /* Peek padding */
   uint pad_sz = 0U;
   /* Bytes remaining in this frame payload excluding padding length and padding. */
@@ -753,12 +796,15 @@ fd_h2_rx1( fd_h2_conn_t *            conn,
      processing until the TX buffer drains. */
   if( FD_UNLIKELY( fd_h2_rbuf_free_sz( rbuf_tx )<sizeof(fd_h2_ping_t) ) ) return;
 
+  ulong generation = conn->generation;
   *rbuf_rx = rx_peek;
   uchar * frame = fd_h2_rbuf_pop( rbuf_rx, scratch, payload_sz );
   fd_h2_rx_frame( conn, rbuf_tx, frame, payload_sz, cb,
                   frame_type,
                   hdr.flags,
                   fd_h2_frame_stream_id( hdr.r_stream_id ) );
+  if( conn->generation!=generation ||
+      (conn->flags & (FD_H2_CONN_FLAGS_SEND_GOAWAY|FD_H2_CONN_FLAGS_DEAD)) ) return;
   fd_h2_rbuf_skip( rbuf_rx, pad_sz );
 }
 
@@ -769,6 +815,7 @@ fd_h2_rx( fd_h2_conn_t *            conn,
           uchar *                   scratch,
           ulong                     scratch_sz,
           fd_h2_callbacks_t const * cb ) {
+  conn->rx_yield = 0U;
   /* Pre-receive TX work */
 
   /* Stop handling frames on conn error. */
@@ -782,9 +829,12 @@ fd_h2_rx( fd_h2_conn_t *            conn,
   if( FD_UNLIKELY( rbuf_rx->hi_off < conn->rx_suppress ) ) return;
 
   /* Handle frames */
-  for(;;) {
+  ulong const generation = conn->generation;
+  ulong const budget_start = rbuf_rx->lo_off;
+  for( ulong frames=0UL;; frames++ ) {
     ulong lo0 = rbuf_rx->lo_off;
     fd_h2_rx1( conn, rbuf_rx, rbuf_tx, scratch, scratch_sz, cb );
+    if( conn->generation!=generation ) break;
     ulong lo1 = rbuf_rx->lo_off;
 
     /* Terminate when no more bytes are available to read */
@@ -793,6 +843,11 @@ fd_h2_rx( fd_h2_conn_t *            conn,
     /* Terminate when the frame handler didn't make progress (e.g. due
        to rbuf_tx full, or due to incomplete read from rbuf_tx)*/
     if( FD_UNLIKELY( lo0==lo1 ) ) break;
+
+    if( FD_UNLIKELY( frames>=63UL || rbuf_rx->lo_off-budget_start>=262144UL ) ) {
+      conn->rx_yield = 1U;
+      break;
+    }
 
     /* Terminate if the conn died */
     if( FD_UNLIKELY( conn->flags & (FD_H2_CONN_FLAGS_SEND_GOAWAY|FD_H2_CONN_FLAGS_DEAD) ) ) break;

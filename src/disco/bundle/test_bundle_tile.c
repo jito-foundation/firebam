@@ -2,11 +2,25 @@
 #include "fd_bundle_tile.c"
 #include "test_bundle_common.c"
 #include <stdlib.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include "../bam/generated/fd_bam_tile_seccomp.h"
+#include "../events/generated/fd_event_tile_seccomp.h"
+
+static long g_bundle_wall = 1L;
+static long g_bundle_mono = 1L;
 
 long
 fd_bundle_now( fd_bundle_tile_t const * ctx ) {
   (void)ctx;
-  return 1L;
+  return g_bundle_wall;
+}
+
+/* Independent elapsed clock, so rollback cannot renew a partial block. */
+long
+fd_grpc_client_mono_now( void ) {
+  return g_bundle_mono;
 }
 
 /* ---- minimal helpers ------------------------------------------------ */
@@ -544,6 +558,97 @@ test_bam_override_sync_clears_pending( fd_wksp_t * wksp ) {
   FD_TEST( fd_fseq_delete( fseq_shmem )==fseq_shmem );
 }
 
+/* Exercise the actual tile pause branch: it must expire a partial field block
+   without reading more bundles or waiting for Verify/output credits. */
+static void
+test_deadline_with_pending_output( fd_wksp_t * wksp ) {
+  FD_LOG_NOTICE(( "TEST bundle pending output: monotonic partial-header expiry under wall rollback" ));
+  long saved_wall = g_bundle_wall;
+  long saved_mono = g_bundle_mono;
+  g_bundle_wall = 1L;
+  g_bundle_mono = 1000000000L;
+  test_bundle_env_t env[1];
+  test_bundle_env_create( env, wksp );
+  test_bundle_env_mock_conn_empty( env );
+  fd_bundle_tile_t * ctx=env->state;
+  fd_grpc_client_t * client=ctx->grpc_client;
+  FD_TEST( fd_grpc_client_stream_acquire(client,FD_BUNDLE_CLIENT_REQ_Bundle_GetBlockBuilderFeeInfo) );
+  fd_h2_frame_hdr_t hdr={.typlen=fd_h2_frame_typlen(FD_H2_FRAME_TYPE_HEADERS,100UL),
+                        .r_stream_id=fd_uint_bswap(1U)};
+  FD_TEST( write(env->server_sock,&hdr,sizeof(hdr))==(long)sizeof(hdr) );
+  int rx_busy=0;
+  FD_TEST( fd_grpc_client_rxtx_socket(client,ctx->tcp_sock,g_bundle_wall,&rx_busy)==0 );
+  FD_TEST(client->conn->rx_hdrs_observed);
+  FD_TEST(fd_grpc_client_next_deadline(client)==g_bundle_wall+5000000000L);
+  pending_txn_push_tail(ctx->pending_txns,(fd_bundle_pending_txn_t){.bundle_seq=1UL});
+  ctx->next_step_deadline=LONG_MAX;
+  FD_TEST(next_deadline(ctx)!=LONG_MAX);
+  ulong queued=pending_txn_cnt(ctx->pending_txns);
+  g_bundle_wall -= 1000000000L;
+  g_bundle_mono += 4999999999L;
+  int busy=0;
+  before_credit(ctx,env->stem,&busy);
+  FD_TEST(ctx->tcp_sock>=0 && ctx->tcp_sock_connected);
+  FD_TEST(pending_txn_cnt(ctx->pending_txns)==queued && env->stem_seqs[0]==0UL);
+  g_bundle_mono++;
+  busy=0;
+  before_credit(ctx,env->stem,&busy);
+  FD_TEST(busy && ctx->tcp_sock==-1 && !ctx->tcp_sock_connected);
+  FD_TEST(pending_txn_cnt(ctx->pending_txns)==queued && env->stem_seqs[0]==0UL);
+  test_bundle_env_destroy(env);
+  g_bundle_wall = saved_wall;
+  g_bundle_mono = saved_mono;
+}
+
+/* Exercise the real generated policies with direct syscalls, avoiding the
+   VDSO that normally hides the monotonic clock dependency.  The child reports
+   success through the permitted logfile pipe; its final exit syscall is
+   intentionally denied.  Other clocks and unrelated fd/architecture gates
+   must die before sending that report. */
+static void
+test_monotonic_clock_seccomp( void ) {
+  for( uint policy=0U; policy<3U; policy++ ) for( uint fault=0U; fault<5U; fault++ ) {
+    int pipefd[2]; FD_TEST(!pipe(pipefd));
+    struct sock_filter filter[256]; ulong count;
+    if( policy==0U ) {
+      count=sock_filter_policy_fd_bam_tile_instr_cnt;
+      populate_sock_filter_policy_fd_bam_tile(256UL,filter,(uint)pipefd[1],UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX);
+    } else if( policy==1U ) {
+      count=sock_filter_policy_fd_bundle_tile_instr_cnt;
+      populate_sock_filter_policy_fd_bundle_tile(256UL,filter,(uint)pipefd[1],UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX);
+    } else {
+      count=sock_filter_policy_fd_event_tile_instr_cnt;
+      populate_sock_filter_policy_fd_event_tile(256UL,filter,(uint)pipefd[1],UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX);
+    }
+    /* The generated architecture check is at instruction1. */
+    if( fault==4U ) filter[1].k^=1U;
+    pid_t pid=fork(); FD_TEST(pid>=0);
+    if( !pid ) {
+      struct rlimit core_limit={0};
+      FD_TEST(!setrlimit(RLIMIT_CORE,&core_limit));
+      FD_TEST(signal(SIGSYS,SIG_DFL)!=SIG_ERR);
+      FD_TEST(!close(pipefd[0]));
+      struct sock_fprog prog={.len=(ushort)count,.filter=filter};
+      FD_TEST(!prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0));
+      FD_TEST(!prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&prog));
+      clockid_t clock=fault==1U ? CLOCK_REALTIME : fault==2U ? CLOCK_BOOTTIME : CLOCK_MONOTONIC;
+      struct timespec ts;
+      long rc=syscall(SYS_clock_gettime,clock,&ts);
+      if( fault==3U ) (void)syscall(SYS_write,STDOUT_FILENO,"x",1UL);
+      (void)syscall(SYS_write,pipefd[1],&rc,sizeof(rc));
+      (void)syscall(SYS_exit_group,0); /* not in these production policies */
+      __builtin_trap();
+    }
+    FD_TEST(!close(pipefd[1]));
+    long rc=-1L;
+    long received=read(pipefd[0],&rc,sizeof(rc));
+    FD_TEST(!close(pipefd[0]));
+    int status; FD_TEST(waitpid(pid,&status,0)==pid);
+    FD_TEST(WIFSIGNALED(status) && WTERMSIG(status)==SIGSYS);
+    FD_TEST(fault ? received==0L : (received==(long)sizeof(rc) && !rc));
+  }
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -555,6 +660,7 @@ main( int     argc,
   (void)populate_sock_filter_policy_fd_bundle_tile;
 
   fd_boot( &argc, &argv );
+  test_monotonic_clock_seccomp();
 
   ulong cpu_idx = fd_tile_cpu_id( fd_tile_idx() );
   if( cpu_idx>fd_shmem_cpu_cnt() ) cpu_idx = 0UL;
@@ -575,6 +681,7 @@ main( int     argc,
   test_saturating_sub();
   test_tls_keylog();
   test_bam_override_sync_clears_pending( wksp );
+  test_deadline_with_pending_output( wksp );
 
   fd_wksp_usage_t wksp_usage;
   FD_TEST( fd_wksp_usage( wksp, NULL, 0UL, &wksp_usage ) );

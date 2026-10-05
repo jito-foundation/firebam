@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <time.h> /* CLOCK_MONOTONIC (seccomp) */
 #include "fd_bam_tile_private.h"
 #include "../metrics/fd_metrics.h"
 #include "../topo/fd_topo.h"
@@ -992,8 +993,11 @@ fd_bam_tile_override_active( fd_bam_tile_t const * ctx ) {
 
 static long
 next_deadline( fd_bam_tile_t * ctx ) {
-  if( FD_UNLIKELY( ctx->halt_signing || ctx->waker_paused || ctx->next_step_deadline==LONG_MAX ) ) return LONG_MAX;
-  return fd_clock_tile_wallclock_to_tickcount( ctx->clock, ctx->next_step_deadline );
+  if( FD_UNLIKELY( ctx->halt_signing ) ) return LONG_MAX;
+  long deadline = ctx->waker_paused ? LONG_MAX : ctx->next_step_deadline;
+  if( ctx->grpc_client ) deadline = fd_long_min( deadline, fd_grpc_client_next_deadline( ctx->grpc_client ) );
+  if( deadline==LONG_MAX ) return LONG_MAX;
+  return fd_clock_tile_wallclock_to_tickcount( ctx->clock, deadline );
 }
 
 static void
@@ -1009,6 +1013,7 @@ before_credit( fd_bam_tile_t *    ctx,
     }
     return;
   }
+  if( ctx->grpc_client ) fd_grpc_client_service_deadlines( ctx->grpc_client, fd_bam_now() );
   /* Preserve receive backpressure during a healthy activation handoff, but
      keep stepping an inactive client that needs transport recovery. */
   int can_step = bam_pending_txn_empty( ctx->pending_txns ) ||

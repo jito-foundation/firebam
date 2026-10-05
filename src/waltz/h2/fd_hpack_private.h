@@ -45,7 +45,7 @@ fd_hpack_rd_varint( fd_hpack_rd_t * rd,
 
   /* Read encoded word */
   ulong enc = 0UL;
-  if( FD_LIKELY( rd->src+8 <= rd->src_end ) ) {
+  if( FD_LIKELY( (ulong)(rd->src_end-rd->src)>=8UL ) ) {
     /* happy path: speculatively read oob */
     enc = fd_ulong_load_8( rd->src );
   } else {
@@ -84,9 +84,8 @@ fd_hpack_rd_varint( fd_hpack_rd_t * rd,
     ( ( enc&0x7f00000000000000UL )>>7 );
 #endif
 
-  uchar const * src_end = rd->src+sz;
-  if( FD_UNLIKELY( src_end>rd->src_end ) ) return ULONG_MAX; /* eof */
-  rd->src = src_end;
+  if( FD_UNLIKELY( sz>(ulong)(rd->src_end-rd->src) ) ) return ULONG_MAX; /* eof */
+  rd->src += sz;
   return result+addend;
 }
 

@@ -152,6 +152,7 @@ test_bundle_env_mock_builder_info_req( fd_bundle_tile_t * ctx ) {
   FD_TEST( stream );
   stream->hdrs.h2_status     = 200;
   stream->hdrs.is_grpc_proto = 1;
+  stream->hdrs_received = 1U; /* mocked final initial response */
 }
 
 FD_FN_UNUSED static void
@@ -162,6 +163,7 @@ test_bundle_env_mock_bundle_stream( fd_bundle_tile_t * ctx ) {
   FD_TEST( stream );
   stream->hdrs.h2_status     = 200;
   stream->hdrs.is_grpc_proto = 1;
+  stream->hdrs_received = 1U; /* mocked final initial response */
 }
 
 FD_FN_UNUSED static void
@@ -172,6 +174,7 @@ test_bundle_env_mock_packet_stream( fd_bundle_tile_t * ctx ) {
   FD_TEST( stream );
   stream->hdrs.h2_status     = 200;
   stream->hdrs.is_grpc_proto = 1;
+  stream->hdrs_received = 1U; /* mocked final initial response */
 }
 
 FD_FN_UNUSED static void

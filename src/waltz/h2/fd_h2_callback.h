@@ -6,8 +6,8 @@
 
 #include "fd_h2_base.h"
 
-/* fd_h2_callbacks_t is a virtual function table.  May not contain NULL
-   pointers. */
+/* fd_h2_callbacks_t is a virtual function table.  Required callbacks may
+   not be NULL; the explicitly optional callbacks below may be NULL. */
 
 struct fd_h2_callbacks {
 
@@ -99,6 +99,16 @@ struct fd_h2_callbacks {
 
   void
   (* ping_ack)( fd_h2_conn_t * conn );
+
+  /* Optional notification that a field block with no live owner completed
+     compression validation.  Called at END_HEADERS, before its connection
+     observation is cleared.  This lets a client enforce an absolute block
+     lifetime even after stream cancellation.  It delivers no metadata and
+     is not called on compression failure.  The callback may close/reset the
+     connection; the receive path must check its generation afterward. */
+
+  void
+  (* headers_discarded)( fd_h2_conn_t * conn );
 
 };
 

@@ -87,16 +87,32 @@ fd_grpc_h2_gen_request_hdrs( fd_grpc_req_hdrs_t const * req,
                              char const *               version,
                              ulong                      version_len );
 
-/* fd_grpc_h2_rec_response_hdrs consumes a HEADERS frame and recovers
-   selected gRPC request headers.  Ignores unknown headers.  Returns
-   FD_H2_SUCCESS on success, or FD_H2_ERR_PROTOCOL on parse failure.
-   Logs reason for failure. */
+/* fd_grpc_h2_read_response_hdrs decodes one complete header block.
+   Ignores unknown fields while charging their decoded size.  Returns
+   FD_H2_SUCCESS or the applicable HTTP/2 error.  Uses 128 KiB of temporary
+   stack storage; production callers should use the explicit-scratch API. */
 
 int
 fd_grpc_h2_read_response_hdrs( fd_grpc_resp_hdrs_t *       resp,
                                fd_h2_hdr_matcher_t const * matcher,
                                uchar const *               payload,
                                ulong                       payload_sz );
+
+/* Complete-block decoder.  scratch is transient Huffman output, independent
+   of payload.  Latches semantic errors while validating the entire block;
+   compression/resource failures take precedence.  trailers forbids all pseudo
+   headers.  status_cnt counts :status fields, including invalid ones. */
+#define FD_GRPC_HEADER_LIST_MAX (65536UL)
+
+int
+fd_grpc_h2_read_response_hdrs_ex( fd_grpc_resp_hdrs_t *       resp,
+                                 fd_h2_hdr_matcher_t const * matcher,
+                                 uchar const *              payload,
+                                 ulong                      payload_sz,
+                                 uchar *                    scratch_buf,
+                                 ulong                      scratch_sz,
+                                 int                        trailers,
+                                 uint *                     status_cnt );
 
 char const *
 fd_grpc_status_cstr( uint status );

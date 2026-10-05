@@ -23,6 +23,7 @@
 #include "../../waltz/resolv/fd_netdb.h"
 #include "../../discof/replay/fd_replay_tile.h"
 
+#include <time.h> /* CLOCK_MONOTONIC (seccomp) */
 #include <linux/futex.h>
 #include "generated/fd_bundle_tile_seccomp.h"
 
@@ -277,8 +278,11 @@ after_frag( fd_bundle_tile_t *  ctx,
 
 static long
 next_deadline( fd_bundle_tile_t * ctx ) {
-  if( FD_UNLIKELY( ctx->halt_signing || ctx->sleep_mode || ctx->bam_override_active || ctx->next_step_deadline==LONG_MAX ) ) return LONG_MAX;
-  return fd_clock_tile_wallclock_to_tickcount( ctx->clock, ctx->next_step_deadline );
+  if( FD_UNLIKELY( ctx->halt_signing || ctx->sleep_mode || ctx->bam_override_active ) ) return LONG_MAX;
+  long deadline = ctx->next_step_deadline;
+  if( !pending_txn_empty( ctx->pending_txns ) )
+    deadline = ctx->tcp_sock_connected ? fd_grpc_client_next_deadline( ctx->grpc_client ) : LONG_MAX;
+  return deadline==LONG_MAX ? LONG_MAX : fd_clock_tile_wallclock_to_tickcount( ctx->clock, deadline );
 }
 
 static void
@@ -306,6 +310,17 @@ before_credit( fd_bundle_tile_t *  ctx,
       fd_waker_client_rearm( ctx->waker_client_idx );
     }
     return;
+  }
+
+  /* Output pressure cannot suspend partial-header/request deadlines.  This
+     service performs no I/O and therefore cannot consume more bundle work. */
+  if( ctx->tcp_sock_connected ) {
+    fd_grpc_client_service_deadlines( ctx->grpc_client, fd_bundle_now( ctx ) );
+    if( FD_UNLIKELY( ctx->defer_reset ) ) {
+      fd_bundle_client_reset( ctx );
+      ctx->metrics.transport_fail_cnt++;
+      *charge_busy = 1;
+    }
   }
 
   if( pending_txn_empty( ctx->pending_txns ) ) {

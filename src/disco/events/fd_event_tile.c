@@ -28,6 +28,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 
+#include <time.h> /* CLOCK_MONOTONIC (seccomp) */
 #include <linux/futex.h>
 #include "generated/fd_event_tile_seccomp.h"
 
@@ -188,6 +189,7 @@ metrics_write( fd_event_tile_t * ctx ) {
 
 static long
 next_deadline( fd_event_tile_t * ctx ) {
+  if( FD_UNLIKELY( ctx->next_poll_deadline==LONG_MIN ) ) return fd_tickcount();
   if( FD_UNLIKELY( ctx->next_poll_deadline==LONG_MAX ) ) return LONG_MAX;
   return fd_clock_tile_wallclock_to_tickcount( ctx->clock, ctx->next_poll_deadline );
 }
@@ -210,7 +212,7 @@ before_credit( fd_event_tile_t *   ctx,
     fd_event_client_poll( ctx->client, now, &busy );
     if( FD_LIKELY( fired ) ) fd_waker_client_rearm( ctx->waker_client_idx );
     *charge_busy = busy;
-    ctx->next_poll_deadline = busy ? 0L : fd_event_client_next_deadline( ctx->client, now );
+    ctx->next_poll_deadline = busy ? LONG_MIN : fd_event_client_next_deadline( ctx->client, now );
   }
 }
 
@@ -393,7 +395,7 @@ after_frag( fd_event_tile_t *   ctx,
       FD_LOG_ERR(( "unexpected in_kind %d", ctx->in_kind[ in_idx ] ));
   }
 
-  ctx->next_poll_deadline = 0L;
+  ctx->next_poll_deadline = LONG_MIN;
 }
 
 static void
@@ -536,7 +538,7 @@ unprivileged_init( fd_topo_t const *      topo,
                                                            ctx->use_tls,
                                                            ctx->ca_store ) );
   FD_TEST( ctx->client );
-  ctx->next_poll_deadline = 0L;
+  ctx->next_poll_deadline = LONG_MIN;
 
   ctx->topo = topo;
   fd_memset( ctx->tile_shutdown_rendered, 0, sizeof(ctx->tile_shutdown_rendered) );
@@ -642,17 +644,21 @@ populate_allowed_fds( fd_topo_t const *      topo,
 
 static void
 during_housekeeping( fd_event_tile_t * ctx ) {
-  if( FD_UNLIKELY( fd_clock_tile_recal_due( ctx->clock ) ) ) {
+  long now = fd_clock_tile_now( ctx->clock );
+  if( FD_UNLIKELY( now>=fd_clock_tile_recal_next( ctx->clock ) ) ) {
     fd_clock_tile_recal( ctx->clock );
+    now = fd_clock_tile_now( ctx->clock );
   }
 
   if( FD_UNLIKELY( fd_keyswitch_state_query( ctx->keyswitch )==FD_KEYSWITCH_STATE_SWITCH_PENDING ) ) {
     FD_LOG_DEBUG(( "keyswitch: switching identity" ));
     memcpy( ctx->identity_pubkey, ctx->keyswitch->bytes, 32UL );
     fd_event_client_set_identity( ctx->client, ctx->identity_pubkey );
-    ctx->next_poll_deadline = 0L;
+    ctx->next_poll_deadline = LONG_MIN;
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
   }
+  if( FD_UNLIKELY( fd_event_client_service_deadlines( ctx->client, now ) ) )
+    ctx->next_poll_deadline = LONG_MIN;
 }
 
 #define STEM_BURST (1UL)

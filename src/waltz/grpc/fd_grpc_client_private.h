@@ -20,7 +20,7 @@ struct fd_grpc_h2_stream {
   /* Buffer an incoming gRPC message */
   uchar * msg_buf;
   ulong   msg_buf_max;
-  uint    hdrs_received : 1;
+  uint    hdrs_received : 1; /* final initial headers (not informational) */
   ulong   msg_buf_used; /* including header */
   ulong   msg_sz;       /* size of next message */
 
@@ -128,6 +128,20 @@ struct fd_grpc_client_private {
   fd_grpc_h2_stream_t * streams   [ FD_GRPC_CLIENT_MAX_STREAMS ];
   ulong                 stream_cnt;
 
+  /* One connection-wide field block.  A released stream cannot leave a
+     pointer in this collector; ownership is checked by generation and ID. */
+  uchar * header_block;
+  ulong   header_block_used;
+  uint    header_block_stream_id;
+  uint    header_block_flags;
+  uint    header_block_active;
+  ulong   generation;
+  ulong   observed_header_serial;
+  long    now_nanos;           /* last supplied caller epoch */
+  long    now_mono;            /* monotonic sample paired with now_nanos */
+  long    block_deadline_mono; /* immutable service-entry lifetime per serial */
+  uint    has_block_deadline;
+
   /* Buffers */
   uchar * nanopb_tx;
   ulong   nanopb_tx_max;
@@ -150,6 +164,11 @@ struct fd_grpc_client_private {
 };
 
 FD_PROTOTYPES_BEGIN
+
+/* Internal monotonic elapsed-time source; weak to allow deterministic tests.
+   Its epoch never escapes: caller-supplied wallclock remains authoritative. */
+long
+fd_grpc_client_mono_now( void );
 
 /* fd_grpc_client_stream_acquire grabs a new stream ID and a stream
    object. */

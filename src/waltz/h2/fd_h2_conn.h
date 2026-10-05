@@ -60,6 +60,17 @@ struct fd_h2_conn {
   uchar  ping_tx;         /* no of sent PING frames pending their ACK */
   uchar  allow_server_requests; /* opt in to nonstandard peer-initiated streams as a client */
   fd_hpack_skip_t rx_hpack; /* field-block validation survives stream release */
+
+  /* First HEADERS framing observation, before payload or TX-space gates.
+     Provisional observation is distinct from accepted CONTINUATION state.
+     Callers can time an incomplete/canceled block without another parser. */
+  ulong generation; /* owner-supplied reset identity, checked across callbacks */
+  ulong rx_hdrs_serial;
+  ulong rx_hdrs_offset;
+  uint  rx_hdrs_stream_id;
+  uchar rx_hdrs_flags;
+  uchar rx_hdrs_observed;
+  uchar rx_yield; /* receive budget exhausted with buffered work remaining */
 };
 
 /* FD_H2_CONN_FLAGS_* give flags related to conn lifecycle */

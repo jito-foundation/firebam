@@ -12,7 +12,7 @@
 
 #define FUZZ_MAX_OPS           (128UL)
 #define FUZZ_GRPC_BUF_MAX      (4096UL)
-#define FUZZ_CLIENT_MEM_SZ     (262144UL)
+#define FUZZ_CLIENT_MEM_SZ     (524288UL)
 #define FUZZ_SERVER_BUFSZ      (4096UL)
 #define FUZZ_SERVER_SCRATCH_SZ (4096UL)
 

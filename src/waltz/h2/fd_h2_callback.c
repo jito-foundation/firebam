@@ -89,6 +89,7 @@ fd_h2_callbacks_t const fd_h2_callbacks_noop = {
   .stream_window_update  = fd_h2_noop_stream_window_update,
   .initial_window_update = fd_h2_noop_initial_window_update,
   .ping_ack              = fd_h2_noop_ping_ack,
+  .headers_discarded     = NULL,
 };
 
 fd_h2_callbacks_t *
