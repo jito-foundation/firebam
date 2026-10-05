@@ -310,8 +310,8 @@ noncemap_extract( fd_txn_e_t const   * k,
 
   ulong imm_cnt = fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
   fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, k->txnp->payload );
-  fd_acct_addr_t const * alt_adj = k->alt_accts - imm_cnt;
-  out->nonce_acct = fd_ptr_if( nonce_idx<imm_cnt, accts, alt_adj )+nonce_idx;
+  fd_acct_addr_t const * alt     = k->alt_accts;
+  out->nonce_acct = nonce_idx<imm_cnt ? accts+nonce_idx : alt+(nonce_idx-imm_cnt);
   /* The nonce authority must be a signer, so it must be an immediate
      account. */
   out->nonce_auth = accts+autho_idx;
@@ -1163,15 +1163,15 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn ) { t
                            return FD_PACK_INSERT_REJECT_ ## reason; \
                          } while( 0 )
 
-/* These require txn, accts, and alt_adj to be defined as per usual */
-#define ACCT_IDX_TO_PTR( idx ) (__extension__( {                                               \
-      ulong __idx = (ulong)(idx);                                                              \
-      fd_ptr_if( __idx<fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM ), accts, alt_adj )+__idx; \
+/* These require txn, accts, and the unadjusted ALT base alt.  Select
+   the array before forming a pointer, so immediate indexes never form
+   a pointer before alt and ALT indexes never exceed the immediate array. */
+#define ACCT_IDX_TO_PTR( idx ) (__extension__( {                             \
+      ulong __idx = (ulong)(idx);                                            \
+      ulong __imm_cnt = fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );        \
+      __idx<__imm_cnt ? accts+__idx : alt+(__idx-__imm_cnt);                    \
       }))
-#define ACCT_ITER_TO_PTR( iter ) (__extension__( {                                             \
-      ulong __idx = fd_txn_acct_iter_idx( iter );                                              \
-      fd_ptr_if( __idx<fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM ), accts, alt_adj )+__idx; \
-      }))
+#define ACCT_ITER_TO_PTR( iter ) ACCT_IDX_TO_PTR( fd_txn_acct_iter_idx( iter ) )
 
 
 /* Tries to find the worst transaction in any treap in pack.  If that
@@ -1289,7 +1289,7 @@ delete_worst( fd_pack_t * pack,
       case FD_ORD_TXN_ROOT_PENALTY( 0 ): {
         fd_txn_t * txn = TXN( sample->txn );
         fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, sample->txn->payload );
-        fd_acct_addr_t const * alt_adj = sample->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+        fd_acct_addr_t const * alt     = sample->txn_e->alt_accts;
         fd_acct_addr_t penalty_acct = *ACCT_IDX_TO_PTR( FD_ORD_TXN_ROOT_PENALTY_ACCT_IDX( root_idx ) );
         fd_pack_penalty_treap_t * q = penalty_map_query( pack->penalty_treaps, penalty_acct, NULL );
         FD_TEST( q );
@@ -1343,7 +1343,7 @@ validate_transaction( fd_pack_t               * pack,
                       fd_pack_ord_txn_t const * ord,
                       fd_txn_t          const * txn,
                       fd_acct_addr_t    const * accts,
-                      fd_acct_addr_t    const * alt_adj,
+                      fd_acct_addr_t    const * alt,
                       int                       check_bundle_blacklist ) {
   int bundle_blacklist = 0;
   int acct_blocklist   = 0;
@@ -1356,7 +1356,6 @@ validate_transaction( fd_pack_t               * pack,
                         !!acct_blocklist_query( pack->acct_blocklist, *ACCT_ITER_TO_PTR( iter ), NULL );
   }
 
-  fd_acct_addr_t const * alt     = ord->txn_e->alt_accts;
   fd_chkdup_t * chkdup = pack->chkdup;
   ulong imm_cnt = fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
   ulong alt_cnt = fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_ALT );
@@ -1395,10 +1394,7 @@ populate_bitsets( fd_pack_t         * pack,
   uchar * payload  = ord->txn->payload;
 
   fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, payload );
-  /* alt_adj is the pointer to the ALT expansion, adjusted so that if
-     account address n is the first that comes from the ALT, it can be
-     accessed with adj_lut[n]. */
-  fd_acct_addr_t const * alt_adj = ord->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+  fd_acct_addr_t const * alt     = ord->txn_e->alt_accts;
 
   ulong  cumulative_penalty = 0UL;
   ulong  penalty_i          = 0UL;
@@ -1487,10 +1483,7 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
   uchar * payload  = txne->txnp->payload;
 
   fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, payload );
-  /* alt_adj is the pointer to the ALT expansion, adjusted so that if
-     account address n is the first that comes from the ALT, it can be
-     accessed with adj_lut[n]. */
-  fd_acct_addr_t const * alt_adj = ord->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+  fd_acct_addr_t const * alt     = ord->txn_e->alt_accts;
 
   int est_result = fd_pack_estimate_rewards_and_compute( txne, ord, pack->lim );
   if( FD_UNLIKELY( !est_result ) ) REJECT( ESTIMATION_FAIL );
@@ -1503,7 +1496,7 @@ fd_pack_insert_txn_fini( fd_pack_t  * pack,
   ord->txn->flags &= ~FD_TXN_P_FLAGS_DURABLE_NONCE;
   ord->txn->flags |= fd_uint_if( is_durable_nonce, FD_TXN_P_FLAGS_DURABLE_NONCE, 0U );
 
-  int validation_result = validate_transaction( pack, ord, txn, accts, alt_adj, !!pack->bundle_meta_sz );
+  int validation_result = validate_transaction( pack, ord, txn, accts, alt, !!pack->bundle_meta_sz );
   if( FD_UNLIKELY( validation_result ) ) {
     trp_pool_ele_release( pack->pool, ord );
     return validation_result;
@@ -1701,7 +1694,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     uchar    const * payload = bundle[ i ]->txnp->payload;
 
     fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, payload );
-    fd_acct_addr_t const * alt_adj = ord->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+    fd_acct_addr_t const * alt     = ord->txn_e->alt_accts;
 
     int est_result = fd_pack_estimate_rewards_and_compute( bundle[ i ], ord, pack->lim );
     if( FD_UNLIKELY( est_result==0 ) ) {
@@ -1741,7 +1734,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
       }
     }
 
-    int validation_result = validate_transaction( pack, ord, txn, accts, alt_adj, !initializer_bundle );
+    int validation_result = validate_transaction( pack, ord, txn, accts, alt, !initializer_bundle );
     if( FD_UNLIKELY( validation_result ) ) {
       err = validation_result;
       *reject_txn_idx = i;
@@ -2315,7 +2308,7 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
 
     fd_txn_t const * txn = TXN(cur->txn);
     fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, cur->txn->payload );
-    fd_acct_addr_t const * alt_adj = cur->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+    fd_acct_addr_t const * alt     = cur->txn_e->alt_accts;
     /* Check conflicts between this transaction's writable accounts and
        current readers */
     for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( txn, FD_TXN_ACCT_CAT_WRITABLE );
@@ -2746,7 +2739,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
     fd_txn_t const * txn = TXN(cur->txn);
     fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, cur->txn->payload );
-    fd_acct_addr_t const * alt_adj = cur->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+    fd_acct_addr_t const * alt     = cur->txn_e->alt_accts;
 
     /* Check conflicts between this transaction's writable accounts and
        current readers */
@@ -3315,7 +3308,7 @@ fd_pack_clear_all( fd_pack_t * pack ) {
       fd_pack_ord_txn_t * const del = pack->pool + i;
       fd_txn_t * txn = TXN( del->txn );
       fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, del->txn->payload );
-      fd_acct_addr_t const * alt_adj = del->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+      fd_acct_addr_t const * alt     = del->txn_e->alt_accts;
       fd_acct_addr_t penalty_acct = *ACCT_IDX_TO_PTR( FD_ORD_TXN_ROOT_PENALTY_ACCT_IDX( del->root ) );
       fd_pack_penalty_treap_t * penalty_treap = penalty_map_query( pack->penalty_treaps, penalty_acct, NULL );
       FD_TEST( penalty_treap );
@@ -3363,7 +3356,7 @@ delete_transaction( fd_pack_t         * pack,
 
   fd_txn_t * txn = TXN( containing->txn );
   fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, containing->txn->payload );
-  fd_acct_addr_t const * alt_adj = containing->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+  fd_acct_addr_t const * alt     = containing->txn_e->alt_accts;
 
   treap_t * root = NULL;
   int root_idx = containing->root;
@@ -3651,7 +3644,7 @@ fd_pack_verify( fd_pack_t * pack,
       fd_pack_ord_txn_t const * cur = treap_rev_iter_ele_const( _cur, pool );
       fd_txn_t const * txn = TXN(cur->txn);
       fd_acct_addr_t const * accts   = fd_txn_get_acct_addrs( txn, cur->txn->payload );
-      fd_acct_addr_t const * alt_adj = cur->txn_e->alt_accts - fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+      fd_acct_addr_t const * alt     = cur->txn_e->alt_accts;
 
       fd_pack_ord_txn_t const * in_tbl = sig2txn_ele_query_const( pack->signature_map, &cur->_txn_e, NULL, pool );
       VERIFY_TEST( in_tbl, "signature missing from sig2txn" );

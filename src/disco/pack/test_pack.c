@@ -1487,6 +1487,56 @@ test_reserved_account_permissions( void ) {
 #undef N_ACCTS
 }
 
+/* The global account index crosses two distinct arrays.  A writer to
+   either endpoint of either array must conflict with the exact key held
+   by the running transaction, on both normal and bundle paths. */
+static void
+test_account_index_boundaries( void ) {
+  for( int bundle_mode=0; bundle_mode<2; bundle_mode++ ) {
+    fd_pack_t * pack = init_all( 64UL, 2UL, 1UL, &outcome );
+    fd_pack_set_initializer_bundles_ready( pack );
+    fd_txn_e_t * slots[1];
+    fd_txn_e_t * anchor = bundle_mode ? fd_pack_insert_bundle_init( pack, slots, 1UL )[0]
+                                    : fd_pack_insert_txn_init( pack );
+    make_transaction1( anchor->txnp, 17000UL, 1000U, 500U, 11.0, "", "L", NULL, NULL );
+    fd_txn_t * txn = TXN( anchor->txnp );
+    txn->transaction_version         = FD_TXN_V0;
+    txn->addr_table_lookup_cnt       = 1U;
+    txn->addr_table_adtl_cnt          = 2U;
+    txn->addr_table_adtl_writable_cnt = 2U;
+    fd_memset( anchor->alt_accts[0].b, 'X', sizeof(fd_acct_addr_t) );
+    fd_memset( anchor->alt_accts[1].b, 'Y', sizeof(fd_acct_addr_t) );
+    fd_acct_addr_t const * accts = fd_txn_get_acct_addrs( txn, anchor->txnp->payload );
+    ulong imm_cnt = fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM );
+    fd_acct_addr_t endpoints[4] = { accts[0], accts[imm_cnt-1UL], anchor->alt_accts[0], anchor->alt_accts[1] };
+    ulong deleted;
+    if( bundle_mode ) FD_TEST( fd_pack_insert_bundle_fini( pack, slots, 1UL, 1000UL, 0, NULL, &deleted, NULL )>=0 );
+    else              FD_TEST( fd_pack_insert_txn_fini( pack, anchor, 1000UL, &deleted )>=0 );
+    FD_TEST( !deleted );
+
+    for( ulong i=0UL; i<4UL; i++ ) {
+      fd_txn_e_t * probe = fd_pack_insert_txn_init( pack );
+      make_transaction1( probe->txnp, 17001UL+i, 1000U, 500U, 10.0, "A", "", NULL, NULL );
+      fd_memcpy( probe->txnp->payload+TXN(probe->txnp)->acct_addr_off+sizeof(fd_acct_addr_t), endpoints+i, sizeof(fd_acct_addr_t) );
+      FD_TEST( fd_pack_insert_txn_fini( pack, probe, 1000UL, &deleted )>=0 );
+      FD_TEST( !deleted );
+    }
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, ALL, outcome.results )==1UL );
+    FD_TEST( fd_ulong_load_8( fd_txn_get_signatures( TXN(outcome.results[0].txnp), outcome.results[0].txnp->payload ) )==17000UL );
+    FD_TEST( !memcmp( outcome.results[0].alt_accts, endpoints+2, 2UL*sizeof(fd_acct_addr_t) ) );
+    FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, ALL, outcome.results )==0UL );
+    FD_TEST( fd_pack_microblock_complete( pack, 0UL ) );
+    for( ulong i=0UL; i<4UL; i++ ) {
+      FD_TEST( fd_pack_schedule_next_microblock( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 1UL, ALL, outcome.results )==1UL );
+      FD_TEST( fd_pack_microblock_complete( pack, 1UL ) );
+    }
+    FD_TEST( !fd_pack_avail_txn_cnt( pack ) );
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
+    fd_pack_delete( fd_pack_leave( pack ) );
+  }
+}
+
 /* The scheduled transaction is copied out of the pool with
    non-temporal stores, which only move whole cache lines.  Cover a
    payload past the V0 limit, sizes that are not a multiple of 64, and
@@ -1785,6 +1835,25 @@ test_nonce( void ) {
   make_nonce_transaction( i, 11.0, 4, 0, 'j' );   FD_TEST( insert( i++, pack )==FD_PACK_INSERT_ACCEPT_NONCE_NONVOTE_ADD     );
 
   make_nonce_transaction( i, 11.0, 4, 5, 'h' );   FD_TEST( insert( i++, pack )==FD_PACK_INSERT_ACCEPT_NONVOTE_ADD           );
+
+  /* The nonce-map key must select both endpoints of the resolved ALT
+     array using the same global indexes as the account lock iterator. */
+  for( ulong endpoint=0UL; endpoint<2UL; endpoint++ ) for( int duplicate=0; duplicate<2; duplicate++ ) {
+    fd_txn_e_t * e = fd_pack_insert_txn_init( pack );
+    make_nonce_transaction1( e->txnp, i++, duplicate ? 10.0 : 11.0, 0U, 0U, 'h' );
+    fd_txn_t * txn = TXN( e->txnp );
+    e->txnp->payload[txn->instr[0].acct_off] = (uchar)(fd_txn_account_cnt( txn, FD_TXN_ACCT_CAT_IMM )+endpoint);
+    txn->transaction_version         = FD_TXN_V0;
+    txn->addr_table_lookup_cnt       = 1U;
+    txn->addr_table_adtl_cnt          = 2U;
+    txn->addr_table_adtl_writable_cnt = 2U;
+    fd_memset( e->alt_accts[0].b, 'X', sizeof(fd_acct_addr_t) );
+    fd_memset( e->alt_accts[1].b, 'Y', sizeof(fd_acct_addr_t) );
+    ulong deleted;
+    FD_TEST( fd_pack_insert_txn_fini( pack, e, 1000UL, &deleted )==
+             (duplicate ? FD_PACK_INSERT_REJECT_NONCE_PRIORITY : FD_PACK_INSERT_ACCEPT_NONCE_NONVOTE_ADD) );
+    FD_TEST( !deleted );
+  }
   FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
 }
 
@@ -3634,6 +3703,7 @@ main( int     argc,
   test_limits();
   if( 0 ) test_vote_qos();
   test_copy_out();
+  test_account_index_boundaries();
   test_reserved_account_permissions();
   test_reserved_bundle_permissions();
   test_reserved_fee_payer_and_program_locks();
