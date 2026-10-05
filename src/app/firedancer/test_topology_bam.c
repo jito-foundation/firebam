@@ -4,6 +4,8 @@
 #include "../shared/fd_action.h"
 #include "../../util/pod/fd_pod_format.h"
 #include "../../flamenco/accdb/fd_accdb_cache.h"
+#include "../../disco/bundle/fd_bundle_crank.h"
+#include "../../disco/keyguard/fd_keyguard.h"
 #include "../../discof/admin/fd_admin_tile.c"
 
 char const * FD_APP_NAME    = "test_firedancer_topology_bam";
@@ -307,6 +309,140 @@ test_bam_control_wksp_writers( fd_topo_t const * topo ) {
   }
 }
 
+/* The contact refresh and bandwidth streams are optional GUI outputs.
+   Enabling BAM together with GUI must retain their producers and polling
+   modes while gossip still accepts BAM's ownership handoff. */
+static void
+test_gossip_gui_links( fd_topo_t const * topo,
+                       int               gui_enabled,
+                       int               leader_enabled,
+                       int               rpc_enabled,
+                       int               alpenglow_enabled ) {
+  ulong gossip_id = fd_topo_find_tile( topo, "gossip", 0UL );
+  FD_TEST( gossip_id!=ULONG_MAX );
+  fd_topo_tile_t const * gossip = &topo->tiles[ gossip_id ];
+  FD_TEST( fd_topo_find_link( topo, "gossip_out", 0UL )==ULONG_MAX );
+  static char const * const required_outs[] = { "gossip_ciaddr", "gossip_misc" };
+  for( ulong i=0UL; i<sizeof(required_outs)/sizeof(required_outs[0]); i++ )
+    FD_TEST( fd_topo_find_tile_out_link( topo, gossip, required_outs[ i ], 0UL )!=ULONG_MAX );
+
+  /* RPC needs unverified legacy gossip votes even without a leader
+     pipeline.  Alpenglow RPC obtains certificates through votor_out. */
+  int votes_enabled = leader_enabled || (rpc_enabled && !alpenglow_enabled);
+  ulong vote_link = fd_topo_find_link( topo, "gossip_vote", 0UL );
+  FD_TEST( (vote_link!=ULONG_MAX)==votes_enabled );
+  FD_TEST( (fd_topo_find_tile_out_link( topo, gossip, "gossip_vote", 0UL )!=ULONG_MAX)==votes_enabled );
+  if( votes_enabled )
+    FD_TEST( fd_topo_link_consumer_cnt( topo, &topo->links[ vote_link ] )==
+             fd_topo_tile_name_cnt( topo, "verify" )+(ulong)(rpc_enabled && !alpenglow_enabled) );
+  for( ulong i=0UL; i<fd_topo_tile_name_cnt( topo, "verify" ); i++ ) {
+    fd_topo_tile_t const * verify = &topo->tiles[ fd_topo_find_tile( topo, "verify", i ) ];
+    ulong in_idx = fd_topo_find_tile_in_link( topo, verify, "gossip_vote", 0UL );
+    FD_TEST( in_idx!=ULONG_MAX && verify->in_link_poll[ in_idx ] && verify->in_link_reliable[ in_idx ] );
+  }
+  ulong rpc_id = fd_topo_find_tile( topo, "rpc", 0UL );
+  FD_TEST( (rpc_id!=ULONG_MAX)==rpc_enabled );
+  if( rpc_enabled ) {
+    fd_topo_tile_t const * rpc = &topo->tiles[ rpc_id ];
+    ulong in_idx = fd_topo_find_tile_in_link( topo, rpc, "gossip_ciaddr", 0UL );
+    FD_TEST( in_idx!=ULONG_MAX && rpc->in_link_poll[ in_idx ] && rpc->in_link_reliable[ in_idx ] );
+    FD_TEST( (fd_topo_find_tile_in_link( topo, rpc, "gossip_vote", 0UL )!=ULONG_MAX)==!alpenglow_enabled );
+  }
+
+  ulong gui_id = fd_topo_find_tile( topo, "gui", 0UL );
+  FD_TEST( (gui_id!=ULONG_MAX)==gui_enabled );
+  FD_TEST( (fd_topo_find_link( topo, "gossip_ciseen", 0UL )!=ULONG_MAX)==gui_enabled );
+  FD_TEST( (fd_topo_find_link( topo, "gossip_gui", 0UL )!=ULONG_MAX)==gui_enabled );
+  if( !gui_enabled ) return;
+  fd_topo_tile_t const * gui = &topo->tiles[ gui_id ];
+  for( ulong i=0UL; i<gui->in_cnt; i++ ) FD_TEST( gui->in_link_poll[ i ] );
+
+  static char const * const gui_outs[] = { "gossip_ciseen", "gossip_gui" };
+  for( ulong i=0UL; i<sizeof(gui_outs)/sizeof(gui_outs[0]); i++ ) {
+    ulong link_id = fd_topo_find_link( topo, gui_outs[ i ], 0UL );
+    ulong out_idx = fd_topo_find_tile_out_link( topo, gossip, gui_outs[ i ], 0UL );
+    ulong in_idx  = fd_topo_find_tile_in_link( topo, gui, gui_outs[ i ], 0UL );
+    FD_TEST( link_id!=ULONG_MAX && out_idx!=ULONG_MAX && in_idx!=ULONG_MAX );
+    FD_TEST( gossip->out_link_id[ out_idx ]==link_id && gui->in_link_id[ in_idx ]==link_id );
+    FD_TEST( !!gui->in_link_reliable[ in_idx ]==(i==0UL) );
+  }
+  for( ulong i=0UL; i<fd_topo_tile_name_cnt( topo, "gossvf" ); i++ ) {
+    ulong tile_id = fd_topo_find_tile( topo, "gossvf", i );
+    fd_topo_tile_t const * gossvf = &topo->tiles[ tile_id ];
+    ulong link_id = fd_topo_find_link( topo, "gossvf_gui", i );
+    ulong out_idx = fd_topo_find_tile_out_link( topo, gossvf, "gossvf_gui", i );
+    ulong in_idx  = fd_topo_find_tile_in_link( topo, gui, "gossvf_gui", i );
+    FD_TEST( link_id!=ULONG_MAX && out_idx!=ULONG_MAX && in_idx!=ULONG_MAX );
+    FD_TEST( gossvf->out_link_id[ out_idx ]==link_id && gui->in_link_id[ in_idx ]==link_id );
+    FD_TEST( !gui->in_link_reliable[ in_idx ] );
+  }
+}
+
+/* Use the generator and the actual sign authorization boundary together.
+   Program authorities come from the configured sign tile, while generation
+   uses the pack tile's configuration.  Identity/vote/builder keys are
+   non-secret fixtures; the topology stores key paths rather than key bytes. */
+static void
+test_generated_crank_authorization( fd_topo_tile_t const * pack,
+                                    fd_topo_tile_t const * sign ) {
+  fd_acct_addr_t tip_distribution, tip_payment, merkle_authority;
+  fd_memcpy( tip_distribution.b, pack->pack.bundle.tip_distribution_program_addr, 32UL );
+  fd_memcpy( tip_payment.b,      pack->pack.bundle.tip_payment_program_addr,      32UL );
+  fd_memcpy( merkle_authority.b, pack->pack.bundle.tip_distribution_authority,   32UL );
+  fd_acct_addr_t vote = { .b={7} };
+  fd_acct_addr_t builder = { .b={8} };
+  fd_acct_addr_t identity;
+  uchar private_key[32] = {1,2,3};
+  fd_sha512_t sha[1];
+  FD_TEST( fd_sha512_join( fd_sha512_new( sha ) ) );
+  fd_ed25519_public_from_private( identity.b, private_key, sha );
+
+  fd_keyguard_authority_t authority = {0};
+  fd_memcpy( authority.identity_pubkey, identity.b, 32UL );
+  fd_memcpy( authority.tip_distribution_program, sign->sign.bundle.tip_distribution_program_addr, 32UL );
+  fd_memcpy( authority.tip_payment_program,      sign->sign.bundle.tip_payment_program_addr,      32UL );
+  for( int create=0; create<2; create++ ) {
+    fd_bundle_crank_gen_t gen[1];
+    FD_TEST( fd_bundle_crank_gen_init( gen, &tip_distribution, &tip_payment, &vote,
+                                      &merkle_authority, "NONE", pack->pack.bundle.commission_bps ) );
+    fd_bundle_crank_tip_payment_config_t old = { .discriminator=0x82ccfa1ee0aa0c9bUL };
+    old.tip_receiver->b[0] = 9;
+    old.block_builder->b[0] = 10;
+    fd_acct_addr_t owner = create ? (fd_acct_addr_t){ .b={0} } : tip_distribution;
+    uchar payload[FD_TXN_MTU];
+    uchar txn_buf[FD_TXN_MAX_SZ] __attribute__((aligned(8)));
+    fd_txn_t * txn = (fd_txn_t *)txn_buf;
+    ulong payload_sz = fd_bundle_crank_generate( gen, &old, &builder, &identity, &owner,
+                                                740UL, 19UL, payload, txn );
+    FD_TEST( payload_sz==(create ? FD_BUNDLE_CRANK_3_SZ : FD_BUNDLE_CRANK_2_SZ) );
+    FD_TEST( txn->signature_cnt==1U && txn->message_off==65U );
+    uchar const * message = payload+txn->message_off;
+    ulong message_sz = fd_txn_msg_sz( txn, payload_sz );
+    FD_TEST( fd_keyguard_payload_authorize( &authority, message, message_sz,
+                                            FD_KEYGUARD_ROLE_BUNDLE_CRANK, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
+    FD_TEST( !fd_keyguard_payload_authorize( &authority, message, message_sz,
+                                             FD_KEYGUARD_ROLE_BAM, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
+    fd_keyguard_authority_t bad = authority;
+    bad.identity_pubkey[0] ^= 1U;
+    FD_TEST( !fd_keyguard_payload_authorize( &bad, message, message_sz,
+                                             FD_KEYGUARD_ROLE_BUNDLE_CRANK, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
+    bad = authority;
+    bad.tip_payment_program[0] ^= 1U;
+    FD_TEST( !fd_keyguard_payload_authorize( &bad, message, message_sz,
+                                             FD_KEYGUARD_ROLE_BUNDLE_CRANK, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
+    if( create ) {
+      /* Only the create-account crank invokes the distribution program. */
+      bad = authority;
+      bad.tip_distribution_program[0] ^= 1U;
+      FD_TEST( !fd_keyguard_payload_authorize( &bad, message, message_sz,
+                                               FD_KEYGUARD_ROLE_BUNDLE_CRANK, FD_KEYGUARD_SIGN_TYPE_ED25519 ) );
+    }
+    uchar * signature = (uchar *)fd_txn_get_signatures( txn, payload );
+    fd_ed25519_sign( signature, message, message_sz, identity.b, private_key, sha );
+    FD_TEST( fd_ed25519_verify( message, message_sz, signature, identity.b, sha )==FD_ED25519_SUCCESS );
+  }
+}
+
 /* Exercise every BAM/bundle mode: missing shared crank/sign wiring breaks
    BAM-only config and identity updates, while an unwanted source tile leaves
    a disabled ingress path active. */
@@ -314,6 +450,9 @@ static void
 test_topology( int          bundle_enabled,
                int          bam_enabled,
                int          alpenglow_enabled,
+               int          gui_enabled,
+               int          leader_enabled,
+               int          rpc_enabled,
                char const * layout_mode ) {
   static config_t config[1];
   fd_memset( config, 0, sizeof(config_t) );
@@ -327,9 +466,11 @@ test_topology( int          bundle_enabled,
 
   fd_cstr_ncpy( config->net.provider, "socket", sizeof(config->net.provider) );
   config->telemetry = 0;
-  config->tiles.gui.enabled = 0;
+  config->tiles.gui.enabled = gui_enabled;
   config->tiles.bundle.enabled = bundle_enabled;
   config->tiles.bam.enabled = bam_enabled;
+  config->tiles.rpc.enabled = rpc_enabled;
+  config->firedancer.layout.enable_block_production = leader_enabled;
   config->firedancer.development.alpenglow = alpenglow_enabled;
 
   fd_cstr_ncpy( config->net.interface, "lo", sizeof(config->net.interface) );
@@ -347,12 +488,43 @@ test_topology( int          bundle_enabled,
 
   fd_topo_initialize( config );
 
-  int crank_enabled = bundle_enabled || bam_enabled;
+  int crank_enabled = leader_enabled && (bundle_enabled || bam_enabled);
   fd_topo_t const * topo = &config->topo;
+  test_gossip_gui_links( topo, gui_enabled, leader_enabled, rpc_enabled, alpenglow_enabled );
+  /* Deduplication must retain one access declaration per object even
+     when several links share a dcache or a tile also owns its input. */
+  for( ulong i=0UL; i<topo->tile_cnt; i++ )
+    for( ulong j=0UL; j<topo->tiles[ i ].uses_obj_cnt; j++ )
+      for( ulong k=0UL; k<j; k++ )
+        FD_TEST( topo->tiles[ i ].uses_obj_id[ j ]!=topo->tiles[ i ].uses_obj_id[ k ] );
   FD_TEST( (fd_topo_find_tile( topo, "txsend", 0UL )!=ULONG_MAX)==!alpenglow_enabled );
   FD_TEST( (fd_topo_find_link( topo, "txsend_out", 0UL )!=ULONG_MAX)==!alpenglow_enabled );
   FD_TEST( (fd_topo_find_link( topo, "txsend_sign", 0UL )!=ULONG_MAX)==!alpenglow_enabled );
   FD_TEST( (fd_topo_find_link( topo, "sign_txsend", 0UL )!=ULONG_MAX)==!alpenglow_enabled );
+
+  if( !leader_enabled ) {
+    static char const * const leader_tiles[] = { "quic", "verify", "dedup", "resolv", "pack", "execle", "poh", "motor", "bundle", "bam" };
+    static char const * const leader_links[] = { "pack_sign", "sign_pack", "bam_verif", "bam_sign", "bam_gossip", "bam_shred", "executed_txn", "pack_bam_ldr", "pack_bam_res", "bank_bam", "poh_bam" };
+    for( ulong i=0UL; i<sizeof(leader_tiles)/sizeof(leader_tiles[0]); i++ )
+      FD_TEST( fd_topo_find_tile( topo, leader_tiles[ i ], 0UL )==ULONG_MAX );
+    for( ulong i=0UL; i<sizeof(leader_links)/sizeof(leader_links[0]); i++ )
+      FD_TEST( fd_topo_find_link( topo, leader_links[ i ], 0UL )==ULONG_MAX );
+    fd_topo_tile_t const * replay = &topo->tiles[ fd_topo_find_tile( topo, "replay", 0UL ) ];
+    FD_TEST( !replay->replay.bundle.enabled );
+    FD_TEST( !fd_topo_find_tile_obj( topo, replay, "bam_ctrl" ) );
+    FD_TEST( fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX )==ULONG_MAX );
+    FD_TEST( fd_pod_query_ulong( topo->props, "bam_gen", ULONG_MAX )==ULONG_MAX );
+    fd_topo_tile_t const * sign = &topo->tiles[ fd_topo_find_tile( topo, "sign", 0UL ) ];
+    uchar disabled_program[32];
+    fd_memset( disabled_program, 0xFF, sizeof(disabled_program) );
+    FD_TEST( fd_memeq( sign->sign.bundle.tip_distribution_program_addr, disabled_program, 32UL ) );
+    FD_TEST( fd_memeq( sign->sign.bundle.tip_payment_program_addr, disabled_program, 32UL ) );
+    fd_topo_obj_t const * accdb = fd_topo_find_obj( topo, "accdb", NULL, ULONG_MAX );
+    FD_TEST( accdb );
+    FD_TEST( fd_pod_queryf_ulong( topo->props, 0UL, "obj.%lu.cache_min_reserved", accdb->id )==fd_accdb_cache_min_reserved( 0 ) );
+    test_set_identity( &config->topo );
+    return;
+  }
 
   ulong pack_id = fd_topo_find_tile( topo, "pack", 0UL );
   FD_TEST( pack_id!=ULONG_MAX );
@@ -381,6 +553,7 @@ test_topology( int          bundle_enabled,
                      crank_enabled ? pack->pack.bundle.tip_distribution_program_addr : disabled_program, 32UL ) );
   FD_TEST( fd_memeq( sign->sign.bundle.tip_payment_program_addr,
                      crank_enabled ? pack->pack.bundle.tip_payment_program_addr : disabled_program, 32UL ) );
+  if( crank_enabled ) test_generated_crank_authorization( pack, sign );
 
   ulong replay_id = fd_topo_find_tile( topo, "replay", 0UL );
   FD_TEST( replay_id!=ULONG_MAX );
@@ -391,6 +564,28 @@ test_topology( int          bundle_enabled,
   FD_TEST( (fd_topo_find_tile( topo, "bam",    0UL )!=ULONG_MAX)==bam_enabled );
   if( bam_enabled ) {
     fd_topo_tile_t const * bam = &topo->tiles[ fd_topo_find_tile( topo, "bam", 0UL ) ];
+    /* BAM consumes terminal worker results as one contiguous polled
+       block, followed immediately by the PoH result input. */
+    ulong worker_cnt = fd_topo_tile_name_cnt( topo, "execle" );
+    ulong bank_in = fd_topo_find_tile_in_link( topo, bam, "bank_bam", 0UL );
+    FD_TEST( worker_cnt && bank_in!=ULONG_MAX );
+    for( ulong i=0UL; i<worker_cnt; i++ ) {
+      ulong in = fd_topo_find_tile_in_link( topo, bam, "bank_bam", i );
+      FD_TEST( in==bank_in+i && bam->in_link_poll[ in ] && bam->in_link_reliable[ in ] );
+      fd_topo_tile_t const * worker = &topo->tiles[ fd_topo_find_tile( topo, "execle", i ) ];
+      ulong out = fd_topo_find_tile_out_link( topo, worker, "bank_bam", i );
+      FD_TEST( out!=ULONG_MAX && worker->out_link_id[ out ]==bam->in_link_id[ in ] );
+    }
+    ulong poh_in = fd_topo_find_tile_in_link( topo, bam, "poh_bam", 0UL );
+    FD_TEST( poh_in==bank_in+worker_cnt && bam->in_link_poll[ poh_in ] && bam->in_link_reliable[ poh_in ] );
+    ulong result_cnt = 0UL;
+    for( ulong i=0UL; i<bam->in_cnt; i++ ) {
+      char const * name = topo->links[ bam->in_link_id[ i ] ].name;
+      result_cnt += !strcmp( name, "bank_bam" ) || !strcmp( name, "poh_bam" );
+    }
+    FD_TEST( result_cnt==worker_cnt+1UL );
+    ulong sign_in = fd_topo_find_tile_in_link( topo, bam, "sign_bam", 0UL );
+    FD_TEST( sign_in>poh_in && sign_in!=ULONG_MAX && !bam->in_link_poll[ sign_in ] );
     ulong replay_in = fd_topo_find_tile_in_link( topo, bam, "replay_slot", 0UL );
     FD_TEST( replay_in!=ULONG_MAX );
     FD_TEST( bam->in_link_poll[ replay_in ] && !bam->in_link_reliable[ replay_in ] );
@@ -447,13 +642,15 @@ main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
 
-  for( int alpenglow=0; alpenglow<=1; alpenglow++ ) {
-    test_topology( 0, 0, alpenglow, "performance" );
-    test_topology( 1, 0, alpenglow, "performance" );
-    test_topology( 0, 1, alpenglow, "performance" );
-    test_topology( 1, 1, alpenglow, "performance" );
-    test_topology( 0, 1, alpenglow, "efficient"   );
-  }
+  char const * const layouts[] = { "performance", "efficient" };
+  for( int alpenglow=0; alpenglow<=1; alpenglow++ )
+    for( ulong layout=0UL; layout<sizeof(layouts)/sizeof(layouts[0]); layout++ )
+      for( int gui=0; gui<=1; gui++ )
+        for( int leader=0; leader<=1; leader++ )
+          for( int rpc=0; rpc<=1; rpc++ )
+            for( int bundle=0; bundle<=1; bundle++ )
+              for( int bam=0; bam<=1; bam++ )
+                test_topology( bundle, bam, alpenglow, gui, leader, rpc, layouts[ layout ] );
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

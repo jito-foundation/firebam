@@ -252,6 +252,28 @@ test_topology( int bundle_enabled,
   if( bam_enabled ) {
     /* Frankendancer has no efficient layout, so BAM polls its socket. */
     fd_topo_tile_t const * bam = &topo->tiles[ fd_topo_find_tile( topo, "bam", 0UL ) ];
+    /* BAM consumes terminal worker results as one contiguous polled
+       block, followed immediately by the PoH result input. */
+    ulong worker_cnt = fd_topo_tile_name_cnt( topo, "bank" );
+    ulong bank_in = fd_topo_find_tile_in_link( topo, bam, "bank_bam", 0UL );
+    FD_TEST( worker_cnt && bank_in!=ULONG_MAX );
+    for( ulong i=0UL; i<worker_cnt; i++ ) {
+      ulong in = fd_topo_find_tile_in_link( topo, bam, "bank_bam", i );
+      FD_TEST( in==bank_in+i && bam->in_link_poll[ in ] && bam->in_link_reliable[ in ] );
+      fd_topo_tile_t const * worker = &topo->tiles[ fd_topo_find_tile( topo, "bank", i ) ];
+      ulong out = fd_topo_find_tile_out_link( topo, worker, "bank_bam", i );
+      FD_TEST( out!=ULONG_MAX && worker->out_link_id[ out ]==bam->in_link_id[ in ] );
+    }
+    ulong poh_in = fd_topo_find_tile_in_link( topo, bam, "poh_bam", 0UL );
+    FD_TEST( poh_in==bank_in+worker_cnt && bam->in_link_poll[ poh_in ] && bam->in_link_reliable[ poh_in ] );
+    ulong result_cnt = 0UL;
+    for( ulong i=0UL; i<bam->in_cnt; i++ ) {
+      char const * name = topo->links[ bam->in_link_id[ i ] ].name;
+      result_cnt += !strcmp( name, "bank_bam" ) || !strcmp( name, "poh_bam" );
+    }
+    FD_TEST( result_cnt==worker_cnt+1UL );
+    ulong sign_in = fd_topo_find_tile_in_link( topo, bam, "sign_bam", 0UL );
+    FD_TEST( sign_in>poh_in && sign_in!=ULONG_MAX && !bam->in_link_poll[ sign_in ] );
     ulong replay_in = fd_topo_find_tile_in_link( topo, bam, "replay_out", 0UL );
     FD_TEST( replay_in!=ULONG_MAX );
     FD_TEST( bam->in_link_poll[ replay_in ] && !bam->in_link_reliable[ replay_in ] );
@@ -290,11 +312,10 @@ main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
 
-  test_topology( 0, 0, 0 );
-  test_topology( 1, 0, 0 );
-  test_topology( 0, 1, 0 );
-  test_topology( 1, 1, 0 );
-  test_topology( 0, 1, 1 );
+  for( int gui=0; gui<=1; gui++ )
+    for( int bundle=0; bundle<=1; bundle++ )
+      for( int bam=0; bam<=1; bam++ )
+        test_topology( bundle, bam, gui );
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

@@ -317,7 +317,6 @@ bam_fuzz_env_init( int *    pargc,
   fd_waker_install( 1UL );
   bam_fuzz_ctx.tile->waker_client_idx = 0UL;
   bam_fuzz_ctx.tile->waker_fseq = fd_fseq_join( fd_fseq_new( bam_fuzz_ctx.waker_fseq_mem, 0UL ) );
-  fd_clock_tile_init( bam_fuzz_ctx.tile->clock );
   bam_fuzz_ctx.tile->decoded_multi = bam_fuzz_ctx.decoded_multi_storage;
   bam_fuzz_ctx.tile->bam_leader_state.slot = ULONG_MAX;
 
@@ -593,6 +592,8 @@ static void
 bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
   fd_memset( ctx, 0, sizeof( fd_bam_tile_t ) );
+  fd_clock_tile_init( ctx->clock );
+  fd_clock_tile_set( ctx->clock, bam_fuzz_now );
   bam_fuzz_reset_reusable_storage();
   ctx->decoded_multi = bam_fuzz_ctx.decoded_multi_storage;
 
@@ -855,6 +856,10 @@ LLVMFuzzerInitialize( int *argc,
   putenv( "FD_LOG_BACKTRACE=0" );
   putenv( "FD_LOG_COLORIZE=0" );
   putenv( "FD_LOG_DEDUP=0" );
+  /* The frozen fuzz wallclock cannot calibrate a physical tick rate.
+     Use a fixed positive rate and anchor each input's tile clock to its
+     virtual timeline after resetting the tile storage. */
+  fd_tempo_set_tick_per_ns( 1.0, 0.0 );
   fd_log_wallclock_set( bam_fuzz_wallclock, NULL );
   fd_boot( argc, argv );
   fd_log_level_core_set( 4 ); /* fail fast on errors */
