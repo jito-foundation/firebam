@@ -317,7 +317,8 @@ struct fd_pack_ctx {
        - pack_bam_ldr carries fd_bam_leader_state_t snapshots. The BAM
          tile coalesces these latest-value-wins before sending upstream.
        - pack_bam_res carries fd_bam_bundle_result_t feedback. The BAM
-         tile queues these durably FIFO across reconnect/reset.
+         tile queues these FIFO within the active scheduler session.
+         Local enqueue does not acknowledge receipt by the BAM node.
      Keeping them separate removes the internal size-based mux. */
   fd_pack_out_ctx_t bam_leader_out;
   fd_pack_out_ctx_t bam_result_out;
@@ -431,6 +432,9 @@ struct fd_pack_ctx {
   ulong             bam_work_cnt;
   ulong             bam_scheduled_work_cnt;
   ulong             bam_pending_result_cnt;
+  uint              bam_terminal_seq;
+  ushort            bam_terminal_gen;
+  uchar             bam_terminal_valid;
   /* Last observed fd_pack_bundle_evicted_cnt.  A change means pack dropped
      a bundle we may still be tracking as pending work. */
   ulong             bam_pack_bundle_evicted_cnt;
@@ -614,6 +618,15 @@ pack_tile_enqueue_bam_result( fd_pack_ctx_t *               ctx,
   ctx->bam_result_queue[ queue_idx ] = *res;
   ctx->bam_pending_result_cnt++;
   return 1;
+}
+
+/* Preprocessing caches are shared with queued Block Engine traffic.  Retain
+   the terminal BAM cohort through result draining and interleaved sources. */
+static inline void
+pack_tile_latch_bam_terminal( fd_pack_ctx_t * ctx, uint seq, ushort gen ) {
+  ctx->bam_terminal_seq   = seq;
+  ctx->bam_terminal_gen   = gen;
+  ctx->bam_terminal_valid = 1U;
 }
 
 static inline fd_bam_bundle_result_t
@@ -2151,6 +2164,15 @@ during_frag( fd_pack_ctx_t * ctx,
 
     if( FD_UNLIKELY( source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
       pack_tile_sync_bam_ownership_generation( ctx );
+      /* Only a current-ownership idx0 starts a new legacy cohort.  A late
+         old-ownership idx0 cannot clear the preceding terminal identity. */
+      int processable = !ctx->bam_gen_fseq || txnm->bam.ownership_gen==ctx->bam_ownership_gen;
+      if( FD_UNLIKELY( !txnm->bam.batch_idx && processable ) ) ctx->bam_terminal_valid = 0U;
+      if( FD_UNLIKELY( ctx->bam_terminal_valid &&
+          ctx->bam_terminal_seq==txnm->bam.seq_id && ctx->bam_terminal_gen==txnm->bam.scheduler_gen ) ) {
+        ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
+        return;
+      }
       if( FD_UNLIKELY( ctx->bam_gen_fseq &&
                        txnm->bam.ownership_gen!=ctx->bam_ownership_gen ) ) {
         ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
@@ -2187,7 +2209,8 @@ during_frag( fd_pack_ctx_t * ctx,
       res.bundle_err   = FD_BAM_BUNDLE_ERR_DESER;
       res.deser_index  = txnm->bam.batch_idx;
       res.deser_reason = bam_types_DeserializationErrorReason_SANITIZE_ERROR;
-      pack_tile_enqueue_bam_result( ctx, &res );
+      if( FD_LIKELY( pack_tile_enqueue_bam_result( ctx, &res ) ) )
+        pack_tile_latch_bam_terminal( ctx, txnm->bam.seq_id, txnm->bam.scheduler_gen );
       ctx->bundle_kind = PACK_TILE_BUNDLE_KIND_NONE;
       return;
     }
@@ -2996,6 +3019,7 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->bam_result_queue_head         = 0UL;
   ctx->bam_scheduled_work_cnt        = 0UL;
   ctx->bam_pending_result_cnt        = 0UL;
+  ctx->bam_terminal_valid            = 0U;
   ctx->bam_pack_bundle_evicted_cnt   = fd_pack_bundle_evicted_cnt( ctx->pack );
   ctx->strategy                      = tile->pack.schedule_strategy;
   ctx->max_pending_transactions      = tile->pack.max_pending_transactions;

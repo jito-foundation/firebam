@@ -22,6 +22,9 @@
 struct fd_bam_tile;
 typedef struct fd_bam_tile fd_bam_tile_t;
 
+/* Retire an allocated scheduler stream once; transport-only resets are inert. */
+void fd_bam_retire_scheduler_session( fd_bam_tile_t * ctx );
+
 #define FD_BAM_ACTIVITY_TIMEOUT_NS ((long)6e9) /* 6 seconds */
 #define FD_BAM_GRPC_RX_POLL_INTERVAL_NS ((long)1e3) /* 1 microsecond socket poll interval after an idle step without a waker */
 #define FD_BAM_LEADER_STATE_EXPIRY_GRACE_NS ((long)10e6) /* 10 ms */
@@ -36,6 +39,7 @@ struct fd_bam_pending_txn {
   long   first_seen_nanos;
   ulong  max_schedule_slot;
   uint   seq_id;
+  ushort scheduler_gen;
   ushort payload_sz;
   ushort txn_t_sz;
   uchar  batch_idx;
@@ -303,7 +307,7 @@ struct fd_bam_tile {
   ushort                feedback_queue_depth;             /* Queue depth of bam_results (0 <= cnt < FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_head;                /* Index of next result to flush (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
   ushort                bam_results_tail;                /* Index of next slot to fill (wraps modulo FD_BAM_MAX_PENDING_RESULTS) */
-  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Durable FIFO result ring fed by pack_bam_res, bank_bam, and poh_bam; preserved across reconnect/reset until flushed */
+  fd_bam_bundle_result_t bam_results[ FD_BAM_MAX_PENDING_RESULTS ]; /* Session-local FIFO; local gRPC enqueue retires results, session retirement abandons unsent results. */
   fd_bam_leader_state_t  bam_leader_state;               /* Latest pack_bam_ldr snapshot awaiting publication; newer unsent snapshots supersede older ones */
   fd_bam_leader_slot_end_tracker_t leader_slot_end[ FD_BAM_LEADER_SLOT_END_TRACKER_CNT ]; /* Per-slot metric tracker used to record whether healthy BAM-owned slots saw fresh work before slot end. */
   ulong                 next_leader_slot;                /* Upcoming local leader slot from replay reset messages, or ULONG_MAX if none is known */
@@ -312,7 +316,9 @@ struct fd_bam_tile {
   ulong                 leader_schedule_recheck_slot;    /* Slot when BAM may retry while next_leader_slot is unknown; DUE means retry now, NONE means wait for replay progress */
   long                  leader_schedule_gate_start_ns;   /* fd_bam_now() when the unknown-leader startup gate first began waiting, or 0 if inactive */
   ulong                 bam_stream_reject_hash;          /* Nonzero hash of the last scheduler stream PERMISSION_DENIED message while next_leader_slot was unknown; 0 after any other gRPC rejection of the scheduler stream, a healthy session, an identity switch, a set-bam reset, or a new epoch */
-  ushort                scheduler_gen;                   /* Incremented when the configured scheduler identity changes or BAM is disabled. */
+  uchar                 scheduler_session_active; /* allocated scheduler stream whose origin has not been retired */
+  uchar                 generation_exhausted;
+  ushort                scheduler_gen;                   /* Never reused; advances on scheduler stream retirement and explicit origin changes. */
   ushort                ownership_gen;                   /* Incremented whenever BAM ownership is relinquished, including transient disconnects. */
   uchar                 bam_identity_pubkey[ 32 ];       /* validator pubkey from the identity keypair */
   char                  bam_identity_pubkey_b58[ FD_BASE58_ENCODED_32_SZ ]; /* Base58-encoded validator pubkey string (NUL-terminated) */
@@ -371,13 +377,12 @@ fd_bam_has_effective_contact( fd_bam_tile_t const * ctx ) {
              ctx->bam_tpu_fwd.addr && ctx->bam_tpu_fwd.port );
 }
 
-/* Result feedback is durable: append to the local FIFO ring and keep it
-   across reconnect/reset until the scheduler stream accepts it, or the
-   node repeats a rejection while no leader slot is known. */
+/* Queue within one scheduler session. The v0 wire has no epoch or receipt;
+   results cannot safely be replayed to a replacement scheduler stream. */
 FD_FN_UNUSED static inline void
 fd_bam_enqueue_result( fd_bam_tile_t *               ctx,
                        fd_bam_bundle_result_t const * res ) {
-  if( FD_UNLIKELY( res->scheduler_gen != ctx->scheduler_gen ) ) {
+  if( FD_UNLIKELY( ctx->generation_exhausted || res->scheduler_gen != ctx->scheduler_gen ) ) {
     FD_LOG_WARNING(( "Dropping stale BAM bundle result: seq_id=%u result_gen=%u current_gen=%u",
                      res->seq_id, (uint)res->scheduler_gen, (uint)ctx->scheduler_gen ));
     ctx->metrics.feedback_results_dropped_cnt++;

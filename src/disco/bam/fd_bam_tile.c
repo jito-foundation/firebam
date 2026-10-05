@@ -611,8 +611,12 @@ fd_bam_shred_update( fd_bam_tile_t *    ctx,
 static inline void
 fd_bam_tile_begin_ownership_generation( fd_bam_tile_t * ctx,
                                         _Bool           forget_feedback ) {
-  ctx->ownership_gen++;
-  if( FD_UNLIKELY( !ctx->ownership_gen ) ) ctx->ownership_gen++;
+  /* Reserve the final value for withdrawal; never reuse a live generation. */
+  if( FD_UNLIKELY( ctx->ownership_gen>=USHORT_MAX-1U ) ) {
+    ctx->generation_exhausted = 1U;
+    ctx->enabled = 0U;
+    ctx->ownership_gen = USHORT_MAX;
+  } else ctx->ownership_gen++;
   ctx->ownership_gen_retired = 1U;
 
   bam_pending_txn_remove_all( ctx->pending_txns );
@@ -711,9 +715,23 @@ static void fd_bam_tile_handle_ctrl( fd_bam_tile_t * ctx );
 
 static inline void
 fd_bam_tile_begin_scheduler_generation( fd_bam_tile_t * ctx ) {
-  ctx->scheduler_gen++;
-  if( FD_UNLIKELY( !ctx->scheduler_gen ) ) ctx->scheduler_gen++;
+  ctx->scheduler_session_active = 0U;
+  if( FD_UNLIKELY( ctx->scheduler_gen==USHORT_MAX ) ) {
+    ctx->generation_exhausted = 1U;
+    ctx->enabled = 0U;
+  } else ctx->scheduler_gen++;
   fd_bam_tile_begin_ownership_generation( ctx, 1 );
+}
+
+void
+fd_bam_retire_scheduler_session( fd_bam_tile_t * ctx ) {
+  if( FD_LIKELY( !ctx->scheduler_session_active ) ) return;
+  if( FD_UNLIKELY( ctx->feedback_queue_depth || !bam_pending_txn_empty( ctx->pending_txns ) ) )
+    FD_LOG_WARNING(( "Abandoning retired BAM scheduler session gen=%u: queued_results=%u pending_txns=%lu",
+                      (uint)ctx->scheduler_gen, (uint)ctx->feedback_queue_depth, bam_pending_txn_cnt( ctx->pending_txns ) ));
+  /* Clear pending ingress before a replacement session can reuse wire seq_id.
+     Already published work retains its old scheduler_gen through execution. */
+  fd_bam_tile_begin_scheduler_generation( ctx );
 }
 
 /* Two-phase fragment staging kind.
@@ -1016,7 +1034,7 @@ before_credit( fd_bam_tile_t *    ctx,
   if( ctx->grpc_client ) fd_grpc_client_service_deadlines( ctx->grpc_client, fd_bam_now() );
   /* Preserve receive backpressure during a healthy activation handoff, but
      keep stepping an inactive client that needs transport recovery. */
-  int can_step = bam_pending_txn_empty( ctx->pending_txns ) ||
+  int can_step = ctx->defer_reset || bam_pending_txn_empty( ctx->pending_txns ) ||
                  ( !fd_bam_tile_override_active( ctx ) &&
                    ( ctx->defer_reset ||
                      fd_bam_client_status( ctx )!=FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY ) );
@@ -1040,7 +1058,7 @@ before_credit( fd_bam_tile_t *    ctx,
     ctx->waker_paused = 0U;
   }
   long now = fd_bam_now();
-  if( FD_UNLIKELY( fired || now>=ctx->next_step_deadline ) ) {
+  if( FD_UNLIKELY( ctx->defer_reset || fired || now>=ctx->next_step_deadline ) ) {
     if( FD_LIKELY( fired ) ) fd_fseq_update( ctx->waker_fseq, 0UL );
     int busy = 0;
     fd_bam_client_step( ctx, &busy );
@@ -1094,7 +1112,7 @@ after_credit( fd_bam_tile_t *  ctx,
         .bam = {
           .max_schedule_slot = pending->max_schedule_slot,
           .seq_id            = pending->seq_id,
-          .scheduler_gen     = ctx->scheduler_gen,
+          .scheduler_gen     = pending->scheduler_gen,
           .ownership_gen     = ctx->ownership_gen,
           .txn_cnt           = pending->batch_cnt,
           .batch_idx         = pending->batch_idx,
@@ -1287,6 +1305,11 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
   uchar command = ctx->ctrl->command;
   if( FD_UNLIKELY( !command ) ) {
     fd_cstr_printf( err, err_sz, NULL, "No BAM update requested" );
+    return -1;
+  }
+  if( FD_UNLIKELY( ctx->generation_exhausted &&
+                   (command & FD_BAM_CTRL_CMD_ENABLE) && ctx->ctrl->enable ) ) {
+    fd_cstr_printf( err, err_sz, NULL, "BAM generations exhausted; restart validator before enabling BAM" );
     return -1;
   }
 

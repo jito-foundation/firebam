@@ -511,6 +511,7 @@ fd_bam_publish_batch( fd_bam_tile_t *            ctx,
     pending->payload_sz                  = packet->payload_sz;
     pending->txn_t_sz                    = parsed->txn_t_sz[ i ];
     pending->seq_id                      = batch->seq_id;
+    pending->scheduler_gen               = ctx->scheduler_gen;
     pending->first_seen_nanos            = state->ingress_rx_ts_ns;
     pending->max_schedule_slot           = max_schedule_slot;
     pending->batch_idx                   = i;

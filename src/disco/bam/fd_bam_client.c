@@ -125,6 +125,7 @@ fd_bam_drop_pending_leader_state( fd_bam_tile_t * ctx,
 static inline void
 fd_bam_clear_stream_state( fd_bam_tile_t * ctx,
                            uint            reason_idx ) {
+  fd_bam_retire_scheduler_session( ctx );
   ctx->bam_stream            = NULL;
   fd_bam_set_stream_live( ctx, 0U );
   fd_bam_drop_pending_leader_state( ctx, reason_idx );
@@ -132,6 +133,7 @@ fd_bam_clear_stream_state( fd_bam_tile_t * ctx,
 
 void
 fd_bam_client_reset( fd_bam_tile_t * ctx ) {
+  fd_bam_retire_scheduler_session( ctx );
   long now = fd_bam_now();
 
   /* Request BAM deactivation immediately rather than waiting for
@@ -148,9 +150,9 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
     ctx->sock_in_epoll = 0;
     ctx->epoll_out_armed = 0;
   }
-  /* Leave the last good BAM contact info intact here; the tile decides
-     when to fall back to the default ports after seeing the status
-     transition so gossip never advertises a half-cleared override. */
+  /* Session retirement clears scheduler contact info and requests the
+     coordinated default-port handoff.  Config-only failures keep their
+     last good contact info by avoiding this transport reset. */
   ctx->defer_reset = 0;
   ctx->leader_schedule_gate_start_ns = 0L;
   ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
@@ -175,10 +177,8 @@ fd_bam_client_reset( fd_bam_tile_t * ctx ) {
   ctx->bam_last_builder_activity_ns = 0L;
   ctx->bam_last_validator_heartbeat_ns = 0L;
   ctx->bam_last_config_poll_ns    = 0L;
-  /* Preserve any buffered BAM results so they flush once the next
-     scheduler stream comes up.  The server expects every dispatched
-     atomic batch to eventually produce a result; dropping them here
-     would lose that guarantee. */
+  /* A replacement v0 scheduler can reuse seq_id. Session retirement
+     abandons unsent outcomes; local enqueue is not a node receipt. */
   fd_bam_drop_pending_leader_state( ctx, FD_METRICS_ENUM_BAM_LEADER_PENDING_DROP_REASON_V_CLIENT_RESET_IDX );
 }
 
@@ -566,7 +566,7 @@ fd_bam_apply_config( fd_bam_tile_t *               ctx,
 
 static void
 fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
-  if( FD_UNLIKELY( !ctx->bam_auth_ready ) ) return;
+  if( FD_UNLIKELY( !ctx->bam_auth_ready || ctx->generation_exhausted ) ) return;
   if( FD_UNLIKELY( ctx->bam_stream ) ) return;
   if( FD_UNLIKELY( fd_grpc_client_request_is_blocked( ctx->grpc_client ) ) ) return;
 
@@ -601,6 +601,7 @@ fd_bam_try_start_stream( fd_bam_tile_t * ctx ) {
     return;
   }
   ctx->bam_stream            = stream;
+  ctx->scheduler_session_active = 1U;
   ctx->bam_auth_ready        = 0;
   ctx->challenge_to_sign[ 0 ] = '\0';
 }
@@ -869,6 +870,20 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
                      int *           charge_busy,
                      long            now ) {
 
+  /* Retired transports still need cleanup when retirement disabled BAM.
+     Reset returns immediately and cannot dial a replacement connection. */
+  if( FD_UNLIKELY( ctx->defer_reset ) ) {
+    if( FD_LIKELY( !ctx->bam_stream_reject_repeat ) ) {
+      FD_LOG_WARNING(( "BAM client reset requested; retrying %s/" FD_IP4_ADDR_FMT ":%hu",
+        ctx->server_fqdn,
+        FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+        ctx->server_tcp_port ));
+    }
+    fd_bam_client_reset( ctx );
+    *charge_busy = 1;
+    return;
+  }
+
   if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) ) {
     /* Admin can pause BAM, skip reconnect until re-enabled. */
     ctx->leader_schedule_gate_start_ns = 0L;
@@ -882,18 +897,6 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     /* set-bam --enable may arrive before any URL is configured.  With no
        endpoint and no existing socket to service, stay idle; a later non-empty
        URL update will populate server_fqdn/server_tcp_port and allow dialing. */
-    return;
-  }
-
-  if( FD_UNLIKELY( ctx->defer_reset ) ) {
-    if( FD_LIKELY( !ctx->bam_stream_reject_repeat ) ) {
-      FD_LOG_WARNING(( "BAM client reset requested; retrying %s/" FD_IP4_ADDR_FMT ":%hu",
-        ctx->server_fqdn,
-        FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
-        ctx->server_tcp_port ));
-    }
-    fd_bam_client_reset( ctx );
-    *charge_busy = 1;
     return;
   }
 
@@ -1103,8 +1106,8 @@ fd_bam_client_step( fd_bam_tile_t * ctx,
 long
 fd_bam_client_next_deadline( fd_bam_tile_t const * ctx,
                              long                  now ) {
-  if( FD_UNLIKELY( !ctx->enabled || !ctx->server_fqdn_len || !ctx->server_tcp_port ) ) return LONG_MAX;
   if( FD_UNLIKELY( ctx->defer_reset ) ) return now;
+  if( FD_UNLIKELY( !ctx->enabled || !ctx->server_fqdn_len || !ctx->server_tcp_port ) ) return LONG_MAX;
   if( FD_UNLIKELY( ctx->leader_schedule_gate_start_ns ) )
     return fd_bam_client_no_progress_deadline( ctx->leader_schedule_gate_start_ns + FD_BAM_LEADER_SCHEDULE_RECHECK_WALLCLOCK_NS, now );
   if( FD_UNLIKELY( ctx->tcp_sock<0 ) ) return fd_bam_client_no_progress_deadline( ctx->backoff_until, now );
@@ -1186,6 +1189,7 @@ fd_bam_client_grpc_rx_start(
   fd_bam_tile_t * ctx = app_ctx;
   switch( request_ctx ) {
   case FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream: {
+    ctx->scheduler_session_active = 1U;
     long now = fd_bam_now();
     fd_bam_set_stream_live( ctx, 1U );
     ctx->bam_last_validator_heartbeat_ns = now;
@@ -1350,18 +1354,7 @@ fd_bam_client_grpc_rx_end(
       ctx->defer_reset = 1;
       FD_LOG_INFO(( "BAM scheduler stream failed (gRPC status %u-%s). Reconnecting ...",
                     resp->grpc_status, fd_grpc_status_cstr( resp->grpc_status ) ));
-      /* A rejection repeated while no leader slot is known, e.g. not on
-         the node's leader schedule, will not clear soon (transient ones
-         name the slot or elapsed time, so they never repeat).  The node
-         takes no results meanwhile, and queued ones would keep the leader
-         schedule gate from holding off redials. */
-      if( FD_UNLIKELY( repeat && ctx->feedback_queue_depth ) ) {
-        FD_LOG_WARNING(( "Dropping %u queued BAM bundle results: the BAM node keeps rejecting the scheduler stream",
-                         (uint)ctx->feedback_queue_depth ));
-        ctx->metrics.feedback_results_dropped_cnt += (ulong)ctx->feedback_queue_depth;
-        ctx->bam_results_head     = ctx->bam_results_tail;
-        ctx->feedback_queue_depth = 0U;
-      }
+
     }
     return;
   }

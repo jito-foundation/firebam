@@ -3154,7 +3154,7 @@ test_bam_stream_end_with_pending_txn_reconnects1( fd_wksp_t * wksp,
   state->defer_reset = 1U;
   fd_bam_test_before_credit( state, env->stem, &charge_busy );
   FD_TEST( state->tcp_sock == -1 );
-  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+  FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
 
   test_bam_env_mock_conn( env );
   fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
@@ -3174,13 +3174,12 @@ test_bam_stream_end_with_pending_txn_reconnects1( fd_wksp_t * wksp,
   FD_TEST( state->tcp_sock == -1 );
   FD_TEST( state->tcp_sock_connected == 0U );
   FD_TEST( fd_fseq_query( fseq ) == 0UL );
-  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+  FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
 
   FD_TEST( 0 == close( env->server_sock ) );
   env->server_sock = -1;
 
-  /* The exact post-reset state must still start a new connection even though
-     scheduler work remains queued. */
+  /* The retired origin is empty and can start a fresh connection. */
   struct sockaddr_in addr;
   int listen_sock = test_bam_loopback_listener( &addr );
   fd_cstr_ncpy( state->server_fqdn, "127.0.0.1", sizeof(state->server_fqdn) );
@@ -3192,22 +3191,31 @@ test_bam_stream_end_with_pending_txn_reconnects1( fd_wksp_t * wksp,
   fd_bam_test_before_credit( state, env->stem, &charge_busy );
   FD_TEST( charge_busy == 1 );
   FD_TEST( state->tcp_sock >= 0 );
-  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+  FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
 
   env->server_sock = accept4( listen_sock, NULL, NULL, SOCK_CLOEXEC );
   FD_TEST( env->server_sock >= 0 );
   FD_TEST( 0 == close( listen_sock ) );
 
-  /* Once the override is active, preserve backpressure: drain the queued work
-     before servicing a deferred connection reset. */
-  int reconnect_sock = state->tcp_sock;
+  /* Transport teardown, including deadline expiry, must run even while the
+     reliable verify output is paused. Retired-session work is abandoned. */
   fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   state->defer_reset = 1U;
   charge_busy = 0;
   fd_bam_test_before_credit( state, env->stem, &charge_busy );
-  FD_TEST( charge_busy == 0 );
-  FD_TEST( state->defer_reset == 1U );
-  FD_TEST( state->tcp_sock == reconnect_sock );
+  FD_TEST( charge_busy == 1 );
+  FD_TEST( state->defer_reset == 0U );
+  FD_TEST( state->tcp_sock == -1 );
+  FD_TEST( fd_fseq_query( fseq ) == 0UL );
+  FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
+
+  /* Only fresh work received by the replacement session may be published. */
+  FD_TEST( 0 == close( env->server_sock ) );
+  env->server_sock = -1;
+  test_bam_env_mock_conn( env );
+  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  fd_bam_client_grpc_rx_msg( state, protobuf, protobuf_sz, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns )==1UL );
 
   int opt_poll_in = 1;
   fd_bam_test_after_credit( state, env->stem, &opt_poll_in, &charge_busy );
@@ -3220,6 +3228,7 @@ test_bam_stream_end_with_pending_txn_reconnects1( fd_wksp_t * wksp,
   FD_TEST( forwarded->payload_sz == 1U );
   FD_TEST( fd_txn_m_payload_const( forwarded )[0] == (uchar)'A' );
 
+  state->defer_reset = 1U;
   charge_busy = 0;
   fd_bam_test_before_credit( state, env->stem, &charge_busy );
   FD_TEST( charge_busy == 1 );
@@ -3637,9 +3646,8 @@ test_bam_scheduler_stream_headers( test_bam_env_t * env ) {
 /* The BAM node answers the scheduler stream with HTTP 200 before it
    checks the auth proof, and a stream it rejects discards what it
    carried.  Queued results wait for the node's first BuilderHeartBeat,
-   which also counts the stream as accepted.  A rejection repeated while
-   no leader slot is known drops them, so the leader schedule gate can
-   hold off redials. */
+   which also counts the stream as accepted. Any retirement abandons that
+   session, so the leader schedule gate can hold off redials. */
 static void
 test_bam_scheduler_results_wait_for_acceptance( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -3663,17 +3671,19 @@ test_bam_scheduler_results_wait_for_acceptance( fd_wksp_t * wksp ) {
   state->replay_in_idx = 2UL;
   state->next_leader_slot  = 500UL;
 
-  /* Rejected after the headers: the result stays queued. */
+  /* Rejected after headers: this session's unsent result is abandoned. */
   test_bam_scheduler_stream_headers( env );
   fd_bam_client_step_reconnect( state, fd_bam_now() );
   FD_TEST( state->feedback_queue_depth==1U && !outcome[ sent ] );
   fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &denied );
   fd_bam_client_step( state, &charge_busy );
-  FD_TEST( state->feedback_queue_depth==1U && !state->metrics.feedback_results_dropped_cnt );
+  FD_TEST( !state->feedback_queue_depth && state->metrics.feedback_results_dropped_cnt==1UL );
   FD_TEST( !transition[ d2l ] && !transition[ l2d ] );
 
-  /* Accepted: the node's first BuilderHeartBeat releases it. */
+  /* Accepted: only new-session feedback is released by its first heartbeat. */
   test_bam_scheduler_stream_headers( env );
+  res.scheduler_gen = state->scheduler_gen;
+  fd_bam_enqueue_result( state, &res );
   fd_bam_client_step_reconnect( state, fd_bam_now() );
   FD_TEST( state->feedback_queue_depth==1U && !outcome[ sent ] );
   test_bam_send_scheduler_heartbeat( state, 0UL );
@@ -3685,17 +3695,19 @@ test_bam_scheduler_results_wait_for_acceptance( fd_wksp_t * wksp ) {
   FD_TEST( transition[ l2d ]==1UL );
   fd_bam_client_step( state, &charge_busy );
 
-  /* The same rejection repeated while no leader slot is known drops the
-     result, and the leader schedule gate then holds off redials. */
-  fd_bam_enqueue_result( state, &res );
+  /* No leader slot is known: rejection abandons feedback immediately and
+     permits the schedule gate to hold off redials. A repeated callback
+     cannot consume another generation or count the same result twice. */
   state->next_leader_slot = ULONG_MAX;
   test_bam_scheduler_stream_headers( env );
+  res.scheduler_gen = state->scheduler_gen;
+  fd_bam_enqueue_result( state, &res );
   fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &denied );
   fd_bam_client_step( state, &charge_busy );
-  FD_TEST( state->feedback_queue_depth==1U && !fd_bam_tile_leader_schedule_gate_active( state ) );
-  test_bam_scheduler_stream_headers( env );
+  FD_TEST( !state->feedback_queue_depth && fd_bam_tile_leader_schedule_gate_active( state ) );
+  ushort retired_gen = state->scheduler_gen;
   fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &denied );
-  FD_TEST( !state->feedback_queue_depth && state->metrics.feedback_results_dropped_cnt==1UL );
+  FD_TEST( state->scheduler_gen==retired_gen && state->metrics.feedback_results_dropped_cnt==2UL );
   FD_TEST( state->bam_results_head==state->bam_results_tail );
   FD_TEST( transition[ d2l ]==1UL && transition[ l2d ]==1UL );
   fd_bam_client_step( state, &charge_busy );
@@ -4017,6 +4029,90 @@ test_bam_config_h2_continuation_and_timeout( fd_wksp_t * wksp ) {
   }
 }
 
+/* A wrapped final DATA frame can contain more than one gRPC message.
+   Receive both before retiring the stream, defer the transport reset out
+   of the callback. Both decoded messages belong to the retired session. */
+static void
+test_bam_scheduler_h2_wrapped_end_and_reconnect( fd_wksp_t * wksp ) {
+  g_clock = (long)10e9;
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  fd_bam_tile_t * state = env->state;
+  test_bam_prepare_scheduler_stream( state );
+  fd_grpc_client_t * client = state->grpc_client;
+  uint scheduler_id = state->bam_stream->s.stream_id;
+  test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_HEADERS, FD_H2_FLAG_END_HEADERS,
+                        scheduler_id, test_bam_h2_initial_headers, sizeof(test_bam_h2_initial_headers) );
+  FD_TEST( !state->bam_builder_heartbeat_received );
+  fd_bam_bundle_result_t result = test_make_bundle_result( 910U, 42UL, 1U );
+  fd_bam_bundle_result_t result2 = test_make_bundle_result( 911U, 43UL, 1U );
+  result2.consumed_cus[0] = 17U;
+  test_enqueue_bundle_result( state, &result );
+  test_enqueue_bundle_result( state, &result2 );
+  ulong scheduler_gen = state->scheduler_gen;
+
+  uchar protobuf[256];
+  ulong protobuf_sz = test_bam_encode_builder_heartbeat( protobuf, sizeof(protobuf) );
+  uchar framed[512];
+  ulong first_sz = test_bam_frame_grpc_message( framed, sizeof(framed), protobuf, protobuf_sz );
+  protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 909U, 1U, 0 );
+  ulong framed_sz = first_sz+test_bam_frame_grpc_message( framed+first_sz, sizeof(framed)-first_sz, protobuf, protobuf_sz );
+
+  /* Put the ring boundary after the complete heartbeat and inside the
+     following scheduler message, so H2 dispatches both physical pieces. */
+  ulong target = client->frame_rx_buf_max-sizeof(fd_h2_frame_hdr_t)-first_sz-sizeof(fd_grpc_hdr_t)-1UL;
+  ulong padding_sz = (target+client->frame_rx_buf_max-client->frame_rx->hi_off)%client->frame_rx_buf_max;
+  uchar * padding = calloc( 1UL, client->frame_rx_buf_max );
+  FD_TEST( padding && fd_h2_rbuf_is_empty( client->frame_rx ) );
+  fd_h2_rbuf_push( client->frame_rx, padding, padding_sz );
+  free( padding );
+  fd_h2_rbuf_skip( client->frame_rx, padding_sz );
+  FD_TEST( client->frame_rx->hi_off==target );
+  int old_socket = state->tcp_sock;
+  test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_DATA, FD_H2_FLAG_END_STREAM, scheduler_id, framed, framed_sz );
+  FD_TEST( state->metrics.ingress_batch_commit_attempt_cnt==1UL );
+  FD_TEST( bam_pending_txn_empty( state->pending_txns ) );
+  FD_TEST( !client->stream_cnt && !client->conn->stream_active_cnt[1] && !client->request_stream );
+  FD_TEST( state->defer_reset && !state->bam_stream && !state->bam_stream_live );
+  FD_TEST( state->tcp_sock==old_socket && state->tcp_sock_connected );
+  FD_TEST( !state->feedback_queue_depth && state->scheduler_gen==scheduler_gen+1UL );
+
+  int charge_busy = 0;
+  fd_bam_client_step( state, &charge_busy );
+  FD_TEST( charge_busy && !state->defer_reset && state->tcp_sock==-1 && !state->tcp_sock_connected );
+  FD_TEST( !state->feedback_queue_depth && bam_pending_txn_empty( state->pending_txns ) );
+  FD_TEST( state->scheduler_gen==scheduler_gen+1UL );
+
+  test_bam_env_mock_conn( env );
+  test_bam_prepare_scheduler_stream( state );
+  test_bam_rx_h2_frame( state, FD_H2_FRAME_TYPE_HEADERS, FD_H2_FLAG_END_HEADERS,
+                        state->bam_stream->s.stream_id, test_bam_h2_initial_headers, sizeof(test_bam_h2_initial_headers) );
+  test_bam_keepalive_sync( state, g_clock );
+  state->keepalive->interval = 0L;
+  FD_TEST( !state->bam_builder_heartbeat_received );
+  FD_TEST( !fd_bam_client_step_reconnect( state, g_clock ) && !state->feedback_queue_depth );
+  fd_bam_enqueue_result( state, &result ); /* old producer completion */
+  FD_TEST( !state->feedback_queue_depth );
+  result.scheduler_gen = result2.scheduler_gen = state->scheduler_gen;
+  fd_bam_enqueue_result( state, &result );
+  fd_bam_enqueue_result( state, &result2 );
+  test_bam_rx_builder_heartbeat( state );
+  FD_TEST( fd_bam_client_step_reconnect( state, g_clock )==1 && !state->feedback_queue_depth );
+  test_bam_decoded_message_t decoded;
+  test_bam_decode_last_message( state, &decoded );
+  FD_TEST( decoded.multi.result_cnt==2UL && decoded.multi.results[0].seq_id==result.seq_id );
+  FD_TEST( decoded.multi.results[1].seq_id==result2.seq_id );
+  FD_TEST( decoded.multi.results[0].which_result==bam_types_AtomicTxnBatchResult_committed_tag );
+  FD_TEST( decoded.multi.results[1].which_result==bam_types_AtomicTxnBatchResult_committed_tag );
+  FD_TEST( decoded.multi.committed[0].txn_cnt==1UL );
+  FD_TEST( decoded.multi.committed[1].txn_cnt==1UL );
+  FD_TEST( decoded.multi.committed[0].txns[0].cus_consumed==result.consumed_cus[0] );
+  FD_TEST( decoded.multi.committed[1].txns[0].cus_consumed==result2.consumed_cus[0] );
+  FD_TEST( !test_bam_env_drain_all_pending_txns( env ) && !env->stem_seqs[0] );
+  test_bam_env_destroy( env );
+}
+
 /* Config DATA is provisional until the unary RPC completes successfully.
    While it is pending, a due refresh must not start a second request. */
 static void
@@ -4195,7 +4291,8 @@ test_bam_config_rpc_discards_incomplete_or_invalid_response( fd_wksp_t * wksp ) 
     }
 
     FD_TEST( !state->bam_config_inflight && !state->bam_config_pending_received && !state->bam_config_pending_invalid );
-    FD_TEST( state->builder_commission==commission_before && state->bam_tpu.l==tpu_before.l );
+    FD_TEST( state->builder_commission==commission_before );
+    FD_TEST( state->bam_tpu.l==(kind==4UL ? 0UL : tpu_before.l) );
     FD_TEST( state->fee_cfg_version==fee_version_before );
     FD_TEST( state->bam_config_received==(kind==4UL ? 0U : 1U) );
     if( kind!=4UL ) FD_TEST( state->bam_stream==stream && state->bam_stream_live && !state->defer_reset );
@@ -4280,7 +4377,7 @@ test_bam_first_config_timeout_reconnects( fd_wksp_t * wksp ) {
     fd_bam_client_step( state, &busy );
     if( i==0UL ) {
       FD_TEST( busy && state->tcp_sock<0 && !state->defer_reset );
-      FD_TEST( state->feedback_queue_depth==1U ); /* kept for the next stream */
+      FD_TEST( !state->feedback_queue_depth ); /* retired session cannot replay */
     } else {
       FD_TEST( busy && state->tcp_sock>=0 && state->bam_stream_live );
       FD_TEST( !state->feedback_queue_depth && !state->bam_config_inflight );
@@ -4309,7 +4406,7 @@ test_bam_scheduler_http_error_requests_transport_reset( fd_wksp_t * wksp ) {
   fd_bam_client_grpc_rx_end( state, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &fail );
   FD_TEST( state->defer_reset && !state->bam_stream_live && !state->bam_stream );
   FD_TEST( !state->bam_auth_ready && !state->bam_leader_pending );
-  FD_TEST( state->feedback_queue_depth==1U );
+  FD_TEST( !state->feedback_queue_depth );
   test_bam_env_destroy( env );
 }
 
@@ -6529,6 +6626,8 @@ test_bam_ctrl_updates_url_and_sni( fd_wksp_t * wksp ) {
 
   ctx->keyswitch = NULL;
   test_bam_env_destroy( env );
+
+
 }
 
 FD_FN_UNUSED static void
@@ -8580,12 +8679,11 @@ test_bam_ownership_generation_retirement_waits_for_pack( fd_wksp_t * wksp ) {
   test_enqueue_bundle_result( state, &result );
   FD_TEST( state->feedback_queue_depth==1UL );
 
-  /* A transport reset requests a new ownership generation without
-     changing scheduler identity or dropping durable feedback.  Ownership
-     remains active until pack acknowledges that old pending work is gone. */
+  /* Ownership-only withdrawal leaves the same scheduler origin valid.
+     Pack must acknowledge retirement before normal ingress activates. */
   ushort old_scheduler_gen = state->scheduler_gen;
   ushort old_ownership_gen = state->ownership_gen;
-  fd_bam_client_reset( state );
+  fd_bam_publish_active_state( state, state->stem, 0 );
   FD_TEST( state->scheduler_gen==old_scheduler_gen );
   FD_TEST( state->ownership_gen!=old_ownership_gen );
   FD_TEST( generation==(((ulong)state->ownership_gen<<1) | 1UL) );
@@ -8816,15 +8914,14 @@ test_bam_builder_fee_info( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
-/* --- Bundle result durability ------------------------------------------------------- */
+/* --- Same-session result queue ------------------------------------------------------ */
 
-/* Verifies that bundle results buffered in the queue survive fd_bam_client_reset
- * and flush in FIFO order without exceeding BAM's 24-result wire limit. */
+/* FIFO order and the 24-result bound apply within one live scheduler session.
+   A replacement session cannot inherit outcomes identified only by seq_id. */
 
 static void
-test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
-  /* Client reset should preserve queued bundle results, and the next scheduler
-     stream should flush them in FIFO order. */
+test_bam_bundle_result_queue_flushes_same_session( fd_wksp_t * wksp ) {
+  FD_LOG_NOTICE(( "TEST BAM v0: FIFO order/batch cap within one session; reset abandons backlog" ));
   test_bam_env_t env[1];
   test_bam_env_create( env, wksp );
   test_bam_env_mock_conn( env );
@@ -8841,16 +8938,9 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
   }
 
   ulong expected_tail = state->bam_results_tail;
-  fd_bam_client_reset( state );
-  FD_TEST( fd_bam_flush_results( state ) == 0 );
-  for( ulong i=0UL; i<FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_CNT; i++ ) FD_TEST( !state->metrics.outbound_enqueue_outcome_cnt[ i ] );
-  FD_TEST( state->feedback_queue_depth == result_cnt );
-  FD_TEST( state->bam_results_head == FD_BAM_MAX_PENDING_RESULTS-1U );
-  FD_TEST( state->bam_results_tail == expected_tail );
-  FD_TEST( state->bam_results[ FD_BAM_MAX_PENDING_RESULTS-1U ].seq_id == 200U );
-  FD_TEST( state->bam_results[ 0 ].seq_id == 201U );
-
-  test_bam_env_mock_conn( env );
+  FD_TEST( state->feedback_queue_depth==result_cnt );
+  FD_TEST( state->bam_results[FD_BAM_MAX_PENDING_RESULTS-1U].seq_id==200U );
+  FD_TEST( state->bam_results[0].seq_id==201U );
   test_bam_prepare_scheduler_stream( state );
 
   test_bam_decoded_message_t decoded;
@@ -8877,6 +8967,14 @@ test_bam_bundle_result_queue_flushes_after_reconnect( fd_wksp_t * wksp ) {
   FD_TEST( state->bam_results_head == state->bam_results_tail );
   FD_TEST( state->metrics.outbound_enqueue_outcome_cnt[ FD_METRICS_ENUM_BAM_ENQUEUE_OUTCOME_V_RESULT_ENQUEUED_IDX ] == 3UL );
 
+  for( uint i=0U; i<result_cnt; i++ ) {
+    fd_bam_bundle_result_t res = test_make_bundle_result( 200U+i, 1200UL, 2U );
+    test_enqueue_bundle_result( state, &res );
+  }
+  fd_bam_client_reset( state );
+  FD_TEST( !state->feedback_queue_depth && state->bam_results_head==state->bam_results_tail );
+  FD_TEST( state->metrics.feedback_results_dropped_cnt==result_cnt );
+  FD_TEST( !fd_bam_flush_results( state ) );
   test_bam_env_destroy( env );
 }
 
@@ -8910,6 +9008,188 @@ test_bam_full_result_queue_deduplicates_before_reject( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+
+/* A live v0 stream has no remote epoch/receipt. Retired origins must never
+   produce feedback on a replacement stream even when wire seq_id repeats. */
+static void
+test_bam_v0_session_retirement( fd_wksp_t * wksp ) {
+  FD_LOG_NOTICE(( "TEST BAM v0: same-session backpressure, retirement and reused wire seq" ));
+  long saved_clock = g_clock;
+  g_clock = (long)10e9;
+  for( uint kind=0U; kind<4U; kind++ ) {
+    test_bam_env_t env[1];
+    test_bam_env_create( env, wksp );
+    test_bam_env_mock_conn( env );
+    fd_bam_tile_t * ctx = env->state;
+    test_bam_prepare_scheduler_stream( ctx );
+    ushort old_gen = ctx->scheduler_gen;
+    fd_bam_bundle_result_t old = test_make_bundle_result( 77U, 42UL, 1U );
+    old.scheduler_gen = old_gen;
+    fd_bam_enqueue_result( ctx, &old );
+    uchar batch[256];
+    ulong sz = test_bam_build_scheduler_batch_msg( batch, sizeof(batch), 77U, 1U, 0 );
+    fd_bam_handle_scheduler_response( ctx, batch, sz, g_clock );
+    FD_TEST( ctx->feedback_queue_depth==1U && bam_pending_txn_cnt( ctx->pending_txns )==1UL );
+    ctx->grpc_client->request_stream = ctx->bam_stream;
+    ctx->grpc_client->request_tx_op->chunk_sz = 1UL;
+    FD_TEST( !fd_bam_flush_results( ctx ) && ctx->feedback_queue_depth==1U );
+    FD_TEST( ctx->scheduler_gen==old_gen && ctx->scheduler_session_active );
+    if( kind==0U ) fd_bam_client_reset( ctx );
+    else if( kind==1U ) {
+      fd_grpc_resp_hdrs_t end = { .h2_status=200U, .grpc_status=FD_GRPC_STATUS_OK };
+      fd_bam_client_grpc_rx_end( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &end );
+    } else if( kind==2U ) {
+      fd_grpc_resp_hdrs_t end = { .h2_status=200U, .grpc_status=FD_GRPC_STATUS_UNAVAILABLE };
+      fd_bam_client_grpc_rx_end( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &end );
+    } else fd_bam_client_grpc_rx_timeout( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, FD_GRPC_DEADLINE_HEADER );
+    FD_TEST( ctx->scheduler_gen==old_gen+1U && !ctx->scheduler_session_active );
+    FD_TEST( !ctx->feedback_queue_depth && bam_pending_txn_empty( ctx->pending_txns ) );
+    FD_TEST( ctx->metrics.feedback_results_dropped_cnt==1UL && !env->stem_seqs[0] );
+    /* Callback retirement then deferred/full reset is idempotent. */
+    fd_bam_client_reset( ctx );
+    FD_TEST( ctx->scheduler_gen==old_gen+1U && ctx->metrics.feedback_results_dropped_cnt==1UL );
+    test_bam_env_mock_conn( env );
+    test_bam_prepare_scheduler_stream( ctx );
+    fd_bam_enqueue_result( ctx, &old );
+    FD_TEST( !ctx->feedback_queue_depth && ctx->metrics.feedback_results_dropped_cnt==2UL );
+    fd_bam_bundle_result_t fresh = old;
+    fresh.scheduler_gen = ctx->scheduler_gen;
+    fresh.consumed_cus[0] = 91U;
+    fd_bam_enqueue_result( ctx, &fresh );
+    FD_TEST( fd_bam_flush_results( ctx ) && !ctx->feedback_queue_depth );
+    test_bam_decoded_message_t decoded;
+    test_bam_decode_last_message( ctx, &decoded );
+    FD_TEST( decoded.msg.which_versioned_msg==bam_api_SchedulerMessage_v0_tag );
+    FD_TEST( decoded.multi.result_cnt==1UL && decoded.multi.results[0].seq_id==77U );
+    FD_TEST( decoded.multi.committed[0].txns[0].cus_consumed==91U );
+    test_bam_env_destroy( env );
+  }
+  g_clock = saved_clock;
+}
+
+static void
+test_bam_v0_idle_resets_and_exhaustion( fd_wksp_t * wksp ) {
+  FD_LOG_NOTICE(( "TEST BAM v0: idle resets consume no session generations; exhaustion fails closed" ));
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * ctx = env->state;
+  for( uint i=0U; i<16U; i++ ) fd_bam_client_reset( ctx );
+  FD_TEST( !ctx->scheduler_gen && !ctx->ownership_gen && !ctx->generation_exhausted );
+  test_bam_env_mock_conn( env );
+  test_bam_prepare_scheduler_stream( ctx );
+  ctx->scheduler_gen = USHORT_MAX;
+  fd_bam_client_reset( ctx );
+  FD_TEST( ctx->generation_exhausted && !ctx->enabled && ctx->scheduler_gen==USHORT_MAX );
+  test_bam_env_mock_conn_empty( env );
+  test_bam_env_mock_h2_hs( ctx );
+  test_bam_env_inject_config_response( ctx );
+  ctx->bam_auth_ready = 1U;
+  fd_bam_client_step_reconnect( ctx, g_clock );
+  FD_TEST( !ctx->bam_stream && !ctx->scheduler_session_active );
+  fd_bam_bundle_result_t late = test_make_bundle_result( 1U, 42UL, 1U );
+  late.scheduler_gen = USHORT_MAX;
+  fd_bam_enqueue_result( ctx, &late );
+  FD_TEST( !ctx->feedback_queue_depth && ctx->metrics.feedback_results_dropped_cnt==1UL );
+
+  /* Exercise the real admin request path after exhaustion: rejection must
+     leave the disabled session and endpoint unchanged, not report success. */
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_defaults( ctx, &ctrl );
+  ctx->enabled = 0U;
+  ctrl.applied_enable = 0U;
+  fd_keyswitch_t keyswitch = { .magic=FD_KEYSWITCH_MAGIC, .state=FD_KEYSWITCH_STATE_COMPLETED };
+  ctx->keyswitch = &keyswitch;
+  ushort old_ownership_gen = ctx->ownership_gen;
+  int old_tcp_sock = ctx->tcp_sock;
+  ctrl.command = FD_BAM_CTRL_CMD_ENABLE | FD_BAM_CTRL_CMD_URL;
+  fd_cstr_ncpy( ctrl.url, "http://other.example.com:1234", sizeof(ctrl.url) );
+  ctrl.enable = 1U;
+  ctrl.state = FD_BAM_CTRL_STATE_REQUEST;
+  fd_bam_tile_housekeeping( ctx );
+  FD_TEST( ctrl.state==FD_BAM_CTRL_STATE_ERROR && strstr( ctrl.error, "exhausted" ) );
+  FD_TEST( !ctx->enabled && !ctrl.enable && !ctrl.applied_enable );
+  FD_TEST( ctx->scheduler_gen==USHORT_MAX && ctx->ownership_gen==old_ownership_gen );
+  FD_TEST( ctx->tcp_sock==old_tcp_sock && !ctx->bam_stream && !ctx->scheduler_session_active );
+  FD_TEST( !strcmp( ctx->server_fqdn, "testnet.bam.jito.wtf" ) && ctx->server_tcp_port==50055U );
+  FD_TEST( fd_bam_client_status( ctx )==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISABLED );
+  ctx->keyswitch = NULL;
+  test_bam_env_destroy( env );
+  /* A terminal callback can exhaust generations before the deferred reset.
+     The disabled guard must permit cleanup, but never reconnect afterward. */
+  for( uint timeout=0U; timeout<2U; timeout++ ) {
+    test_bam_env_create( env, wksp );
+    test_bam_env_mock_conn( env );
+    ctx = env->state;
+    test_bam_prepare_scheduler_stream( ctx );
+    ctx->scheduler_gen = USHORT_MAX;
+    if( timeout )
+      fd_bam_client_grpc_rx_timeout( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, FD_GRPC_DEADLINE_HEADER );
+    else {
+      fd_grpc_resp_hdrs_t end = { .h2_status=200U, .grpc_status=FD_GRPC_STATUS_OK };
+      fd_bam_client_grpc_rx_end( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream, &end );
+    }
+    FD_TEST( ctx->generation_exhausted && !ctx->enabled && ctx->defer_reset && ctx->tcp_sock>=0 );
+    FD_TEST( fd_bam_client_next_deadline( ctx, g_clock )==g_clock );
+    old_ownership_gen = ctx->ownership_gen;
+    int busy = 0;
+    fd_bam_client_step( ctx, &busy );
+    FD_TEST( busy && !ctx->defer_reset && ctx->tcp_sock==-1 && !ctx->scheduler_session_active );
+    FD_TEST( ctx->scheduler_gen==USHORT_MAX && ctx->ownership_gen==old_ownership_gen && !ctx->enabled );
+    FD_TEST( fd_bam_client_next_deadline( ctx, g_clock )==LONG_MAX );
+    busy = 0;
+    fd_bam_client_step( ctx, &busy );
+    FD_TEST( !busy && ctx->tcp_sock==-1 && !ctx->bam_stream );
+    test_bam_env_destroy( env );
+  }
+}
+
+static void
+test_bam_paused_partial_header_deadline( fd_wksp_t * wksp ) {
+  FD_LOG_NOTICE(( "TEST BAM pending Verify: monotonic partial-header expiry under wall rollback" ));
+  long saved_clock = g_clock;
+  long saved_mono = g_mono_clock;
+  g_clock = 10000000000L;
+  g_mono_clock = 1000000000L;
+  test_bam_env_t env[1]; test_bam_env_create( env, wksp ); test_bam_env_mock_conn( env );
+  fd_bam_tile_t * ctx = env->state;
+  test_bam_prepare_scheduler_stream( ctx );
+  uchar batch[256];
+  ulong batch_sz = test_bam_build_scheduler_batch_msg( batch, sizeof(batch), 10U, 1U, 0 );
+  fd_bam_handle_scheduler_response( ctx, batch, batch_sz, g_clock );
+  FD_TEST( bam_pending_txn_cnt( ctx->pending_txns )==1UL );
+  uchar status_mem[FD_FSEQ_FOOTPRINT] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  ulong * status = fd_fseq_join( fd_fseq_new( status_mem, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) );
+  ctx->bam_status_fseq = status;
+  fd_grpc_client_service_deadlines( ctx->grpc_client, g_clock );
+  fd_h2_frame_hdr_t hdr = { .typlen=fd_h2_frame_typlen( FD_H2_FRAME_TYPE_HEADERS, 100UL ),
+      .r_stream_id=fd_uint_bswap( ctx->bam_stream->s.stream_id ) };
+  FD_TEST( write( env->server_sock, &hdr, sizeof(hdr) )==(long)sizeof(hdr) );
+  int rx_busy = 0;
+  FD_TEST( fd_grpc_client_rxtx_socket( ctx->grpc_client, ctx->tcp_sock, g_clock, &rx_busy )==0 );
+  FD_TEST( ctx->grpc_client->conn->rx_hdrs_observed );
+  FD_TEST( fd_grpc_client_next_deadline( ctx->grpc_client )==g_clock+5000000000L );
+  ctx->waker_paused = 1U;
+  ctx->next_step_deadline = LONG_MAX;
+  FD_TEST( fd_bam_test_next_deadline( ctx )!=LONG_MAX );
+  /* Frozen/backward wall time, no socket edge and no Verify credits. */
+  g_clock -= 1000000000L;
+  g_mono_clock += 4999999999L;
+  int busy = 0;
+  fd_bam_test_before_credit( ctx, env->stem, &busy );
+  FD_TEST( ctx->tcp_sock>=0 && bam_pending_txn_cnt( ctx->pending_txns )==1UL );
+  FD_TEST( !env->stem_seqs[0] && fd_fseq_query( status )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  g_mono_clock++;
+  busy = 0;
+  fd_bam_test_before_credit( ctx, env->stem, &busy );
+  FD_TEST( ctx->tcp_sock==-1 && bam_pending_txn_empty( ctx->pending_txns ) );
+  FD_TEST( !env->stem_seqs[0] && !fd_fseq_query( status ) );
+  ctx->bam_status_fseq = NULL;
+  test_bam_env_destroy( env );
+  g_clock = saved_clock;
+  g_mono_clock = saved_mono;
+}
+
+
 int
 main( int     argc,
       char ** argv ) {
@@ -8928,6 +9208,10 @@ main( int     argc,
 
   fd_wksp_t * wksp = fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ), page_cnt, fd_shmem_cpu_idx( numa_idx ), "bam-test", 16UL );
   FD_TEST( wksp );
+
+  test_bam_v0_session_retirement( wksp );
+  test_bam_v0_idle_resets_and_exhaustion( wksp );
+  test_bam_paused_partial_header_deadline( wksp );
 
   /* Scheduler ingestion/validation */
   test_bam_packets_forwarded( wksp );
@@ -8981,6 +9265,7 @@ main( int     argc,
   test_bam_config_timeout_keeps_scheduler_live( wksp );
   test_bam_config_rpc_applies_only_after_ok( wksp );
   test_bam_config_h2_continuation_and_timeout( wksp );
+  test_bam_scheduler_h2_wrapped_end_and_reconnect( wksp );
   test_bam_config_status_failure_keeps_scheduler_live( wksp );
   test_bam_config_rpc_discards_incomplete_or_invalid_response( wksp );
   test_bam_config_rpc_accepts_empty_and_unknown_fields( wksp );
@@ -9070,8 +9355,8 @@ main( int     argc,
   test_bam_builder_fee_cfg_uses_block_engine_config( wksp );
   test_bam_builder_fee_info( wksp );
 
-  /* Bundle result durability */
-  test_bam_bundle_result_queue_flushes_after_reconnect( wksp );
+  /* Session-local bundle result FIFO */
+  test_bam_bundle_result_queue_flushes_same_session( wksp );
   test_bam_full_result_queue_deduplicates_before_reject( wksp );
 
   fd_wksp_usage_t wksp_usage;

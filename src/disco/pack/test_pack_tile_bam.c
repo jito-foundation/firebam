@@ -3616,6 +3616,79 @@ test_pack_tile_bam_unscheduled_metric( void ) {
   test_pack_callbacks_delete( e );
 }
 
+/* Inject repeated preprocessing markers directly at Pack's input.  Pack must
+   not emit another terminal after the first result has drained.  This checks
+   the downstream contract; it does not replay upstream Block Engine traffic. */
+static void
+test_pack_tile_bam_marker_drain_does_not_reopen_cohort( void ) {
+  for( ulong pressure=0UL; pressure<2UL; pressure++ ) {
+    test_pack_tile_harness_t h[1];
+    test_pack_tile_harness_new( h );
+    ulong cap = 2UL*h->ctx->bam_work_max;
+    if( pressure ) {
+      fd_bam_bundle_result_t dummy = fd_bam_result_base( 999U, 7U, 600UL, 1U );
+      for( ulong i=0UL; i<cap; i++ ) FD_TEST( pack_tile_enqueue_bam_result( h->ctx, &dummy ) );
+    }
+    uchar buf[ FD_TPU_RESOLVED_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
+    for( uchar member=0U; member<2U; member++ ) {
+      ulong sz = test_pack_tile_prepare_resolv_frag( h, buf, test_pack_tile_non_vote,
+          test_pack_tile_non_vote_sz, FD_TXN_M_TPU_SOURCE_BAM, 500UL );
+      fd_txn_m_t * m = (fd_txn_m_t *)buf;
+      m->bam.max_schedule_slot = 600UL;
+      m->bam.seq_id            = 400U;
+      m->bam.scheduler_gen     = 7U;
+      m->bam.txn_cnt           = 3U;
+      m->bam.batch_idx         = member;
+      m->bam.revert_on_error   = 1U;
+      m->bam.preprocess_failed = 1U;
+      m->block_engine.bundle_id = 401UL;
+      m->block_engine.bundle_txn_cnt = member ? 0UL : 3UL;
+      during_frag( h->ctx, 0UL, 0UL, 500UL, 0UL, sz, 0UL );
+      after_frag( h->ctx, 0UL, 0UL, 500UL, sz, 0UL, 0UL, &h->out->stem );
+      if( !member ) {
+        FD_TEST( h->ctx->bam_pending_result_cnt==(pressure ? cap : 1UL) );
+        FD_TEST( !!h->ctx->bam_terminal_valid==!pressure );
+        FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+      }
+      FD_TEST( h->ctx->bam_pending_result_cnt==(pressure ? cap-1UL+member : 0UL) );
+    }
+    if( pressure ) {
+      /* A terminal latch owns retained storage, not a failed enqueue. */
+      FD_TEST( h->ctx->bam_terminal_valid );
+      ulong idx = (h->ctx->bam_result_queue_head+cap-1UL)%cap;
+      FD_TEST( h->ctx->bam_result_queue[idx].seq_id==400U &&
+               h->ctx->bam_result_queue[idx].deser_index==1U );
+      test_pack_tile_harness_delete( h );
+      continue;
+    }
+    fd_txn_m_t * m = (fd_txn_m_t *)buf;
+    ulong sz = fd_txn_m_realized_footprint( m, 1, 0 );
+    ulong generation = 7UL<<1;
+    h->ctx->bam_gen_fseq = &generation;
+    h->ctx->bam_ownership_gen = 7U;
+    /* A late old-ownership idx0 cannot reopen the terminal cohort. */
+    m->bam.batch_idx = 0U;
+    m->bam.ownership_gen = 6U;
+    during_frag( h->ctx, 0UL, 0UL, 500UL, 0UL, sz, 0UL );
+    after_frag( h->ctx, 0UL, 0UL, 500UL, sz, 0UL, 0UL, &h->out->stem );
+    m->bam.batch_idx = 1U;
+    m->bam.ownership_gen = 7U;
+    during_frag( h->ctx, 0UL, 0UL, 500UL, 0UL, sz, 0UL );
+    after_frag( h->ctx, 0UL, 0UL, 500UL, sz, 0UL, 0UL, &h->out->stem );
+    FD_TEST( !h->ctx->bam_pending_result_cnt );
+    /* A legitimate resend starts at current-ownership idx0. */
+    m->bam.batch_idx = 0U;
+    m->block_engine.bundle_txn_cnt = 3UL;
+    during_frag( h->ctx, 0UL, 0UL, 500UL, 0UL, sz, 0UL );
+    after_frag( h->ctx, 0UL, 0UL, 500UL, sz, 0UL, 0UL, &h->out->stem );
+    FD_TEST( h->ctx->bam_pending_result_cnt==1UL );
+    FD_TEST( pack_tile_drain_one_pending_bam_result( h->ctx, &h->out->stem ) );
+    FD_TEST( !h->ctx->bam_pending_result_cnt );
+    test_pack_tile_harness_delete( h );
+  }
+  FD_LOG_NOTICE(( "BAM preprocessing terminal survives drain/stale idx0; current idx0 restarts and failed enqueue stays unlatched" ));
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -3665,6 +3738,7 @@ main( int     argc,
   test_pack_tile_bam_result_mapping_tracking_reject();
   test_pack_tile_bam_atomic_abandon_result_mapping();
   test_pack_tile_bam_preprocess_marker_has_one_terminal_owner();
+  test_pack_tile_bam_marker_drain_does_not_reopen_cohort();
   test_pack_tile_bam_ownership_generation_retirement_barrier();
   test_pack_tile_preserves_first_seen_and_stamps_pack_arrival();
   test_pack_tile_bam_disable_retires_pending_before_override_clear();

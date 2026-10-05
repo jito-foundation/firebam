@@ -127,6 +127,7 @@ test_bam_prepare_scheduler_stream( fd_bam_tile_t * state ) {
   fd_grpc_h2_stream_t * stream = fd_grpc_client_stream_acquire( state->grpc_client, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   FD_TEST( stream );
   state->bam_stream            = stream;
+  state->scheduler_session_active = 1U;
   state->bam_stream_live       = 1U;
   state->grpc_client->request_stream = NULL;
   *state->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
@@ -654,6 +655,7 @@ test_bam_env_mock_conn( test_bam_env_t * env ) {
   state->bam_builder_heartbeat_received  = 1U;
   state->bam_last_validator_heartbeat_ns = now;
   state->bam_stream_live = 1;
+  state->scheduler_session_active = 1U;
   FD_TEST( fd_bam_client_status( state ) == FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY );
 }
 

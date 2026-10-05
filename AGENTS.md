@@ -8,7 +8,7 @@ Purpose: Outline Firedancer and BAM coordination in this branch.
 
 **Firedancer Core Validator (`./src`)**
 - Implements the BAM validator client while maintaining Solana consensus, TPU processing, PoH, and block production.
-- Interfaces: TPU pipelines, an authenticated scheduler gRPC stream to the BAM node, runtime mode control, contact-info handoff, shred routing, and durable result feedback.
+- Interfaces: TPU pipelines, an authenticated scheduler gRPC stream to the BAM node, runtime mode control, contact-info handoff, shred routing, and result feedback.
 - Key references: `bam_spec.md`, `src/disco/bam/`, `src/app/firedancer/topology.c`, and `src/app/fdctl/topology.c`.
 
 **BAM Node (sibling checkout `../bam`)**
@@ -27,7 +27,7 @@ Purpose: Outline Firedancer and BAM coordination in this branch.
 - Ingest: BAM node collects QUIC transactions and Block Engine bundles while tracking validator leader state.
 - Schedule: The leader-aware auction ranks work and forwards ordered atomic batches over gRPC to the Firedancer BAM tile.
 - Execute: The BAM tile feeds non-revert single transactions and `revert_on_error` atomic bundles into execution workers; Firedancer processes them in slot order.
-- Feedback/control: Pack publishes latest-value-wins leader snapshots and pack, execution, and PoH publish durable results into the BAM tile. The BAM tile forwards both over the existing scheduler gRPC stream; runtime mode switches coordinate packet ownership, gossip contact information, and shred routing.
+- Feedback/control: Pack publishes latest-value-wins leader snapshots and pack, execution, and PoH publish terminal results over reliable links into the BAM tile. The BAM tile queues and forwards results within one scheduler session; runtime mode switches coordinate packet ownership, gossip contact information, and shred routing.
 
 ```
 Current Full Firedancer Tile Flow (src/app/firedancer/topology.c)
@@ -77,7 +77,8 @@ Current Full Firedancer Tile Flow (src/app/firedancer/topology.c)
       BAM treats this as latest-value-wins and sends the newest live snapshot upstream.
     pack_bam_res: Pack publishes `fd_bam_bundle_result_t` scheduling/assembly feedback
       for BAM batches, including single-transaction batches and pack-side rejection
-      results. BAM queues these as durable FIFO results across scheduler stream reconnects.
+      results. BAM queues these in a session-local FIFO and abandons unsent feedback at
+      scheduler-session retirement so reused node sequence IDs cannot name old results.
     bank_bam: Bank tiles (fdctl/Frankendancer) and execle tiles (full Firedancer) publish
       immediate terminal execution failures. Successful execution remains provisional and
       travels with the microblock to PoH. Verify marks BAM parse/signature failures as
@@ -85,7 +86,9 @@ Current Full Firedancer Tile Flow (src/app/firedancer/topology.c)
       terminal result on pack_bam_res.
     poh_bam: PoH/pohh resolves provisional execution success after accepting the microblock,
       or reports a retryable `POH_TIMEOUT` when the carrying microblock is stale or abandoned.
-      BAM merges pack_bam_res, bank_bam, and poh_bam into one durable FIFO result stream.
+      BAM merges pack_bam_res, bank_bam, and poh_bam into one session-local FIFO result stream.
+      Reliable producer links are separate from v0 transport delivery: local gRPC enqueue
+      retires a result without proving node receipt, and v0 has no result acknowledgement.
     replay_slot / replay_out: Replay (full Firedancer) publishes reset and completed-slot
       hints on replay_slot; pohh (fdctl) publishes them on replay_out. BAM uses these hints
       to refresh its leader-schedule gate; this is an unreliable latest-progress input,

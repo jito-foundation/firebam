@@ -67,7 +67,7 @@ struct fd_txn_m {
     /* An 'atomic transaction batch' is a bundle of transactions that must be processed together */
     ulong  max_schedule_slot; /* Solana slot for which this bundle is valid for (inclusive). eg if we're building slot 100, and max_schedule_slot == 100, process the txn */
     uint   seq_id;            /* Unique for a single leader rotation, propagated so downstream stages can correlate execution results */
-    ushort scheduler_gen;     /* BAM scheduler identity generation, propagated to discard stale in-flight results after endpoint/key changes */
+    ushort scheduler_gen;     /* Local BAM scheduler-session/origin generation, propagated to discard stale results after stream retirement or endpoint/key changes */
     ushort ownership_gen;     /* BAM ownership generation, propagated so pack can reject work crossing a disable/disconnect boundary */
     uchar  txn_cnt;           /* How many transactions are expected in the atomic transaction batch */
     uchar  batch_idx;         /* Index of this transaction inside the atomic transaction batch */
@@ -123,7 +123,7 @@ fd_txn_m_failure_group_id( fd_txn_m_t const * txnm ) {
      namespace, including one-transaction atomic batches. */
   if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
                    (group_id || txnm->bam.txn_cnt>1U) ) )
-    group_id = (1UL<<63) | ((ulong)txnm->bam.seq_id+1UL);
+    group_id = (1UL<<63) | ((ulong)txnm->bam.scheduler_gen<<33) | ((ulong)txnm->bam.seq_id+1UL);
 
   return group_id;
 }
