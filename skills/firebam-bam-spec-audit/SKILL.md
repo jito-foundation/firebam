@@ -26,14 +26,13 @@ Call out disagreements between code, tests, comments, and `bam_spec.md` explicit
 
 For BAM execution, scheduling, or feedback issues, start near these files and use `rg` to find the active path:
 
-- `src/disco/fd_txn_m.h`
+- `src/disco/bam/fd_bam_txn_m.h`
 - `src/disco/bam/fd_bam_client.c`
 - `src/disco/bam/fd_bam_client_decode.c`
 - `src/disco/bam/fd_bam_tile.c`
-- `src/disco/pack/fd_pack.c`
-- `src/disco/pack/fd_pack_tile.c`
-- `src/discoh/bank/fd_bank_tile.c`
-- `src/disco/verify/fd_verify_tile.c`
+- `src/disco/pack/fd_pack_bam.c` and `src/disco/pack/fd_pack_tile_bam.c` (the upstream `fd_pack.c` and `fd_pack_tile.c` hold the hooks)
+- `src/discof/execle/fd_execle_tile_bam.c` (full Firedancer) and `src/discoh/bank/fd_bank_tile.c` (Frankendancer)
+- `src/disco/verify/fd_verify_tile.c` and `src/disco/dedup/fd_dedup_tile_bam.c`
 
 Spec areas that have produced subtle bugs in this branch:
 
@@ -75,21 +74,21 @@ pack outcomes, read [timing-log interpretation](references/timing-logs.md).
 - For pack-side stale-slot debugging, the most important computed field is `required_min_slot`.
 - With a known leader slot, `required_min_slot` is `max(leader_slot, bam_min_admission_slot)`; in a no-leader gap, a nonzero admission floor can still establish that minimum.
 - `blockhash_height` (the resolver's reference block height: the blockhash's block height, or the resolver's current block height when the blockhash is unknown; minimum across members for a bundle; `blockhash_height_known=0` if no member arrived; a block height, not a slot) and `highest_observed_block_height` are logged separately and do not define the BAM slot-admission minimum.
-- `rejected_pre_pending_outside_slot` means `max_schedule_slot` is the invalid `ULONG_MAX` sentinel or falls below the admission floor or known leader slot. Trace these checks in `src/disco/pack/fd_pack_tile.c`.
+- `rejected_pre_pending_outside_slot` means `max_schedule_slot` is the invalid `ULONG_MAX` sentinel or falls below the admission floor or known leader slot. Trace these checks in `src/disco/pack/fd_pack_tile_bam.c`.
 
 ## Test Signal
 
 Classify tests by the layer they exercise:
 
-- `src/disco/bam/test_pack_bam.c`: `fd_pack.c` scheduling semantics. BAM `seq_id` ordering tests are spec-relevant when they exercise BAM conflict order or bypass behavior. Generic bundle or initializer-pack tests are pack regressions, not BAM spec proof.
-- `src/disco/bam/test_pack_tile_bam.c`: direct `fd_pack_tile.c` BAM helper and result-mapping coverage. Use this for stale `max_schedule_slot`, insert rejection mapping, tracking rejection mapping, and pack-to-BAM result publication paths.
+- `src/disco/bam/test_pack_bam.c`: fd_pack scheduling semantics. BAM `seq_id` ordering tests are spec-relevant when they exercise BAM conflict order or bypass behavior. Generic bundle or initializer-pack tests are pack regressions, not BAM spec proof.
+- `src/disco/bam/test_pack_tile_bam.c`: pack tile BAM helper and result-mapping coverage. Use this for stale `max_schedule_slot`, insert rejection mapping, tracking rejection mapping, and pack-to-BAM result publication paths.
 - `src/disco/bam/test_bam_tile.c`: BAM tile integration, decode, ingress, and feedback-link contracts.
-- `src/disco/verify/test_verify_tile.c`: verify behavior for BAM parse/signature failures and prepack signature-dedup policy.
-- `src/disco/bam/test_dedup_tile.c`: dedup behavior across BAM, bundle, and ordinary TPU sources.
+- `src/disco/bam/test_bam_verify_tile.c`: verify behavior for BAM parse/signature failures and prepack signature-dedup policy.
+- `src/disco/bam/test_dedup_tile_bam.c`: dedup behavior across BAM, bundle, and ordinary TPU sources.
 - `src/disco/bam/fuzz_bam_pipeline_stateful.c`: stateful real-path pipeline coverage through synthetic links. It uses a shadow result FIFO, not a separate scheduler model oracle.
 
 For resends or prepack dedup, use the BAM cases in
-`src/disco/verify/test_verify_tile.c`, `src/disco/bam/test_dedup_tile.c`, and
+`src/disco/bam/test_bam_verify_tile.c`, `src/disco/bam/test_dedup_tile_bam.c`, and
 `src/disco/bam/test_pack_tile_bam.c`. BAM duplicates should survive the early
 verify/dedup policy, while pack classifies same-signature work using its BAM
 tracking state.

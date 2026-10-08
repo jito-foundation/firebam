@@ -1,43 +1,37 @@
 ---
 name: firedancer-release-rebase
-description: Prepare or audit FireBAM upgrades to a specified upstream Firedancer release. Use for versioned release rebases and authorized publication; upstream main uses firebam-upstream-rebase-audit.
+description: Rebase FireBAM onto a versioned upstream Firedancer release (a monthly YY.MM lane), audit such a candidate, or publish it. Upstream main uses firebam-upstream-rebase-audit.
 ---
 
-# Firedancer Release Rebase
+# Firedancer release rebase
 
-Preserve intentional FireBAM behavior while using the exact requested official
-release and promotion lane. A clean rebase and successful build are evidence,
-not a correctness verdict. Follow the user's scope and existing authorization.
+A release lane is FireBAM rebased onto an official `firedancer-io/firedancer`
+release tag. Lane rules:
 
-## Select the workflow
+- A lane carries only code that `main` already ships, copied verbatim. A fix
+  that is not on `main` lands there first; never write lane-only code.
+- Testnet and mainnet are separate lanes within a month; tell them apart from
+  release metadata and history, not the patch suffix. A mainnet promotion adds
+  no application change over the qualified testnet tag. Compare both the
+  official and the FireBAM candidates with the testnet tags; only version
+  metadata and binary finalization may differ.
+- Use the exact requested release, never upstream `main` or the latest
+  release. Find the lane's previous release (`old_base`) from release history
+  and ancestry, not `merge-base` alone.
+- Activate a feature only when both clients support it; the Agave release
+  calendar is not a signal.
 
-- **Plan:** Identify the requested release, destination branch/lane, existing
-  revisions, changed boundaries, and validation needs. Consult procedure
-  details only as needed to explain the plan; planning does not make a release.
-- **Audit an existing candidate:** Use [audit guidance](references/audit.md).
-  Inspect pinned revisions and available validation evidence. Report findings
-  and gaps; fresh checks follow the audit's scope. Auditing does not invoke
-  rebase or publication.
-- **Prepare or rebase a release:** Use [preparation](references/preparation.md)
-  and [audit guidance](references/audit.md). Complete the exact-candidate build
-  and validation gates, resolve migration regressions, and review the result.
-- **Publish:** Use [publication](references/publication.md) after the candidate
-  passes those gates and the session authorizes publication. A request to
-  make/publish a release includes its branch push, new tip tag, and GitHub
-  release; an audit or planning request does not.
+References:
 
-Read only the references needed for the requested workflow. Preserve unrelated
-files, worktrees, and release lanes. Never silently move a published tag or
-change published release metadata. A mainnet promotion carries qualified
-testnet application code; changes require testnet qualification first.
+- [Preparation](references/preparation.md): fetching the official tag, the
+  rebase, finalization, and the build gate.
+- [Audit](references/audit.md): `scripts/audit_trees.py` and what it proves.
+  The boundary list and mode matrix in
+  `skills/firebam-upstream-rebase-audit/references/audit.md` apply here too.
+- [Publication](references/publication.md): branch, tag, and GitHub release.
 
-For release preparation/publication, use independent review when available.
-Give the reviewer the exact candidate, pinned revisions, and validation evidence;
-keep it read-only on canonical refs and GitHub. Resolve findings and re-review
-affected changes until there are no actionable findings.
-Convergence requires the same final `new_tip`, every deviation accounted for,
-and required checks passing. Disclose when independent review is unavailable;
-the user may override delegation.
-An audit completes with findings and evidence. Preparation completes with a
-reviewed, validated local candidate. Publication completes with verification of
-the authorized branch, tag, release metadata, and dependency reachability.
+Before publishing, get an independent read-only review of the exact candidate
+and iterate until it has no actionable findings. Publishing a release means the
+branch push, the new tag, and the GitHub release. It is done when the branch and
+the peeled tag equal `new_tip`, the release matches the lane's template, and
+changed gitlinks are fetchable.

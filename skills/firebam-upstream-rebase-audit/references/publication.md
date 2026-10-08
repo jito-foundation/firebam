@@ -1,18 +1,16 @@
-# Publish an upstream-main candidate
+# Publish main
 
-Use this only when the session authorizes publication, the exact candidate has
-passed its audit and affected checks, and changed dependency commits are
-fetchable through the final `.gitmodules` URL. Canonical branch replacement
-must use the pinned remote tip as its lease.
+`main` requires pull requests and blocks force-pushes, and every branch
+requires signed commits. Replacing `main` with a rebase therefore needs an
+admin ruleset bypass. Never re-sign upstream commits to avoid the bypass: the
+upstream history must stay intact.
 
-Before publication, fetch `origin/main` again and require it to equal
-`old_tip`. Publish only with the exact lease:
+Fetch again and require `origin/main` to equal `old_tip`, then push with that
+exact lease:
 
 ```bash
-git fetch origin main
-test "$(git rev-parse origin/main)" = "$old_tip"
-git push --force-with-lease="refs/heads/main:$old_tip" \
-  origin "$new_tip:main"
+git push --force-with-lease="refs/heads/main:$old_tip" origin "$new_tip:refs/heads/main"
 ```
 
-If the equality check or lease fails, stop and reconcile the new remote work.
+If the check or the lease fails, stop and reconcile the new remote work. Do not
+just update the lease.

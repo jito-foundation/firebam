@@ -5,25 +5,12 @@ local test setup. [AGENTS.md](../AGENTS.md) defines source precedence and links
 the upstream Firedancer guidance. Recheck changing behavior against live code;
 paths below are relative to the repository root.
 
-## Firedancer Core Validator (`./src`)
+## Repositories
 
-- Implements the BAM validator client while maintaining Solana consensus, TPU processing, PoH, and block production.
-- Interfaces: TPU pipelines, an authenticated scheduler gRPC stream to the BAM node, runtime mode control, contact-info handoff, shred routing, and durable result feedback.
-- Key references: [bam_spec.md](../bam_spec.md), [tracked wire schema](../src/disco/bam/proto/bam-protos/), [BAM implementation](../src/disco/bam/), [full Firedancer topology](../src/app/firedancer/topology.c), and [Frankendancer topology](../src/app/fdctl/topology.c).
-
-## BAM Node (sibling checkout `../bam`)
-
-- Ingests individual TPU transactions and Block Engine packets/bundles, validates and prioritizes them, runs leader-aware auctions with speculative scheduling, and forwards ordered atomic batches to validators.
-- Interfaces: QUIC TPU ingestion, authenticated gRPC validator streams, Block Engine streams, and deployment/configuration tooling.
-- Key references: `../bam/AGENTS.md`; logic in `../bam/node`, `../bam/scheduler`, `../bam/state-machine`, `../bam/core`, and `../bam/api`.
-
-## BAM Reference Validator (sibling checkout `../jito-solana`)
-
-- Provides the reference validator behavior used when implementing and comparing FireBAM.
-- Extends Jito-Solana to receive and schedule BAM atomic batches, use Agave's transaction scheduler, and enforce `revert_on_error` semantics.
-- Interfaces: scheduler gRPC stream, TPU execution pipeline, and admin RPC `setBamUrl` setting or clearing the scheduler endpoint. The BAM manager coordinates the ingress handoff with Block Engine and normal TPU processing.
-- Key code: `../jito-solana/core/src/bam_connection.rs`, `../jito-solana/core/src/bam_manager.rs`, `../jito-solana/core/src/banking_stage/transaction_scheduler/`, and `../jito-solana/validator/src/commands/bam/`.
-- `./agave` is the Frankendancer runtime dependency. It carries the runtime contact-info client-ID integration but is not the full BAM reference client.
+- This repository: the BAM validator client. Wire contract: [bam_spec.md](../bam_spec.md) and the [tracked wire schema](../src/disco/bam/proto/bam-protos/). Code: [src/disco/bam/](../src/disco/bam/) and the BAM topology overlays for [full Firedancer](../src/app/firedancer/topology_bam.c) and [Frankendancer](../src/app/fdctl/topology_bam.c).
+- BAM node (sibling checkout `../bam`): ingests TPU transactions and Block Engine bundles, runs leader-aware auctions, and streams ordered atomic batches to validators. Start at `../bam/AGENTS.md`; logic lives in `node`, `scheduler`, `state-machine`, `core`, and `api`.
+- Reference validator (sibling checkout `../jito-solana`): Jito-Solana's BAM client. Key code: `core/src/bam_connection.rs`, `core/src/bam_manager.rs`, `core/src/banking_stage/transaction_scheduler/`, and `validator/src/commands/bam/`.
+- `./agave` is the Frankendancer runtime dependency. It carries the contact-info client-ID integration but is not the BAM reference client.
 
 ## Coordination flow
 
@@ -105,8 +92,8 @@ network paths.
 
 ## BAM feedback and control roles
 
-The [tile communication map](tile-communication.md) records link capacities,
-consumer modes, configuration gates, and shared-object access.
+The topology overlays linked above define link depths, consumer modes, and
+configuration gates. `bam_verif` feeds verify tile 0 only.
 
 - `executed_txn`: Full Firedancer's PoH/motor publishes signature completion
   events for BAM transactions only. Landed events retire duplicate pending work
@@ -207,12 +194,19 @@ contact info before releasing it; full Firedancer releases ownership before
 publishing the default gossip contact. Bundle can reconnect once ownership is
 released, including while BAM is configured but not healthy.
 
+Because the direct Block Engine client runs until BAM is healthy, startup and
+reconnects can leave it competing with the BAM node's own Block Engine
+subscription. Both authenticate as this validator, and the Block Engine keeps
+only the newest stream per pubkey, ending the older one with
+`RESOURCE_EXHAUSTED` (`../block-engine/src/validator_interface_service/src/server.rs`;
+BAM node side: `../bam/node/src/blockengine_connection.rs`).
+
 Check [fd_bam_tile.c](../src/disco/bam/fd_bam_tile.c),
 [fd_bam_client.c](../src/disco/bam/fd_bam_client.c),
 [fd_bundle_tile.c](../src/disco/bundle/fd_bundle_tile.c), and
 [gossip BAM handling](../src/discof/gossip/fd_gossip_tile_bam.h) when changing
 these transitions. Shred forwarding is implemented in
-[fd_shred_tile.c](../src/disco/shred/fd_shred_tile.c).
+[fd_shred_tile_bam.c](../src/disco/shred/fd_shred_tile_bam.c).
 
 ## Feedback lifetime
 
@@ -241,7 +235,7 @@ transmit buffer removes those results from the FIFO. There is no per-result
 remote acknowledgement or persistence across process restarts. See
 [fd_bam_tile_private.h](../src/disco/bam/fd_bam_tile_private.h),
 [fd_bam_client.c](../src/disco/bam/fd_bam_client.c), and
-[fd_pack_tile.c](../src/disco/pack/fd_pack_tile.c) for queue/drop boundaries.
+[fd_pack_tile_bam.c](../src/disco/pack/fd_pack_tile_bam.c) for queue/drop boundaries.
 
 ## BAM Compatibility Invariants
 
@@ -251,61 +245,20 @@ remote acknowledgement or persistence across process restarts. See
 
 ## Testing
 
-Choose the workflow and targets relevant to the change; these examples are not
-an instruction to run every suite. Follow [CLAUDE.md](../CLAUDE.md#validation)
-for build parameters and validation scope. Paths and shell commands below are
-relative to the repository root.
-
-- Build unit tests before running them. `make run-unit-test` does not build test executables or the automatic test manifest.
-- Many unit tests require a higher locked-memory limit than the default shell limit. Raise `MEMLOCK` in the same shell before running the suite.
-- Suite workflows assume hugetlbfs mounts and sufficient free pages on the selected NUMA nodes. The current [unit-test runner](../contrib/test/run_unit_tests.sh) requires at least eight free gigantic pages per selected node for its largest test, with more allowing concurrent tests. Use its per-test page map as the current requirement.
-- Build configuration tools with `make bin`, then consult `"$(make --silent objdir)/bin/fd_shmem_cfg" help` for mount initialization and allocation. Use the installed script beside `fd_shmem_ctl`; the source-tree script expects that binary in its own directory.
-
-Unit test workflow:
+Follow [CLAUDE.md](../CLAUDE.md#validation) and [testing.md](testing.md) for
+build parameters, huge pages, and the memlock limit. BAM tests are named
+`test_*_bam`, `test_bam_*`, and `fuzz_bam_*`; the core targets are:
 
 ```bash
-sudo prlimit --pid $$ --memlock=-1:-1
-./contrib/make-j unit-test
-make run-unit-test
-```
-
-Single-test workflow (`test_bam_tile` defaults to normal pages):
-
-```bash
-make -j4 test_bam_tile
-sudo prlimit --pid $$ --memlock=-1:-1
-"$(make --silent objdir)/unit-test/test_bam_tile"
-```
-
-BAM-focused build targets:
-
-```bash
-make -j4 test_bam_tile test_bam_admin_rpc test_pack_tile_bam \
-  test_resolv_tile_bam test_resolh_tile_bam \
+make -j4 test_bam_tile test_bam_admin_rpc test_pack_bam test_pack_tile_bam \
+  test_execle_tile_bam test_resolv_tile_bam test_resolh_tile_bam \
   test_fdctl_topology_bam test_firedancer_topology_bam
+"$(make --silent objdir)/unit-test/test_bam_tile"   # normal pages by default
 ```
 
-Broader local test pass, when the affected behavior warrants it:
-
-```bash
-sudo prlimit --pid $$ --memlock=-1:-1
-./contrib/make-j all integration-test
-make run-unit-test
-make run-integration-test
-```
-
-Include `fdctl` in the build targets when validating Frankendancer; `all` does
-not build its Rust-linked validator binary.
-
-Choose additional workflows when relevant:
-
-- `make run-script-test` builds its `bin` and `unit-test` prerequisites.
-- Fuzzing requires a fuzzing profile. For libFuzzer, build with `make -j4 CC=clang EXTRAS=fuzz fuzz-test`, then run `make CC=clang EXTRAS=fuzz run-fuzz-test` over existing corpora. See [fuzz testing](testing.md#fuzz-tests).
-- `make run-test-vectors` needs external fixtures and sufficient CPU/memory for `NUM_PROCESSES`; see [run_test_vectors.sh](../contrib/test/run_test_vectors.sh) for fixture/cache prerequisites.
-- `DUMP=../dump make run-solcap-tests` needs the ledger data and external tooling described by [run_solcap_tests.sh](../contrib/test/run_solcap_tests.sh).
-
-Notes:
-
-- `make run-unit-test` expects `$(make --silent objdir)/unit-test/automatic.txt` to exist, so run `./contrib/make-j unit-test` first. Use the same build parameters when locating artifacts.
-- Integration tests may change system configuration.
-- For `fd_numa_mlock(... ENOMEM)`, check both the current shell's MEMLOCK limit and available huge pages on the requested NUMA node. For missing workspace errors, inspect the preceding workspace-creation diagnostics.
+BAM changes often touch Frankendancer too: add `fdctl` to the build targets,
+since `all` does not build its Rust-linked validator binary. BAM node
+counterparts run from `../bam` with
+`cargo test -p bam-node validator_service::tests::<name>`. The stateful
+pipeline fuzzer is described in
+[bam-pipeline-stateful-fuzz-harness.md](bam-pipeline-stateful-fuzz-harness.md).

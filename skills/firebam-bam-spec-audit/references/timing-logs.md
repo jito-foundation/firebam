@@ -9,7 +9,7 @@ comparing observations with scheduling outcomes.
 
 - `BAM rx bundle: ...` and `firedancer_slot_timing: ...` are BAM-ingress observations emitted by `src/disco/bam/fd_bam_client_decode.c`.
 - `BAM ingress vs Firedancer slot summary: ...` is a BAM rollup emitted by `src/disco/bam/fd_bam_tile.c`.
-- `bam_drop ...` is a pack-side outcome emitted by `src/disco/pack/fd_pack_tile.c`.
+- `bam_drop ...` is a pack-side outcome emitted by `src/disco/pack/fd_pack_tile_bam.c`.
 - Do not infer `bam_drop` 1:1 from `txns_after_slot_end>0`. "Late at BAM ingress" and "rejected by pack" are related but distinct facts.
 
 ## `current_leader_slot` provenance

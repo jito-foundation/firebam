@@ -56,7 +56,7 @@ Consult the matching workflow only when the task calls for it.
 
 | Task | Reference |
 | --- | --- |
-| Ingress ownership, BAM health, reconnects, or Block Engine fallback | [Coordination skill](skills/firebam-coordination/SKILL.md) |
+| Ingress ownership, BAM health, reconnects, or Block Engine fallback | [Ownership and health](doc/firebam-coordination.md#ownership-and-health) |
 | BAM protocol conformance audits or discrepancies with spec/reference behavior | [BAM spec audit skill](skills/firebam-bam-spec-audit/SKILL.md) |
 | Migration to or audit against upstream main | [Upstream rebase audit skill](skills/firebam-upstream-rebase-audit/SKILL.md) |
 | Versioned upstream release upgrade or audit | [Release rebase skill](skills/firedancer-release-rebase/SKILL.md) |

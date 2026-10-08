@@ -1,87 +1,28 @@
-# Perform an upstream-main migration
+# Rebase main onto upstream
 
-Use this procedure when the user requests a migration. Commands are examples
-run from the repository root or the indicated candidate worktree. Publication
-is a separate, authorized phase.
+Pin full hashes: `old_tip` (`origin/main`), `new_base` (`upstream/main`) and
+`old_base` (their merge base). Keep a backup ref of `old_tip` and work in a
+separate worktree.
 
-## Execute a `main` rebase
+Agave first. Read gitlinks from the pinned parent trees
+(`git ls-tree "$rev" agave`), not from the checked-out submodule. If the old
+tip's Agave equals the old base's, take the new base's Agave unchanged.
+Otherwise rebase the FireBAM Agave commits onto the new base's Agave; before
+the parent is published, that exact commit must be fetchable from the
+`.gitmodules` URL.
 
-Fetch and pin the parent inputs before changing history:
-
-```bash
-git fetch --prune upstream main
-git fetch --prune origin main
-
-old_tip="$(git rev-parse origin/main)"
-new_base="$(git rev-parse upstream/main)"
-old_base="$(git merge-base "$old_tip" "$new_base")"
-rebase_stamp="YYYYMMDD-HHMMSS"
-repo_root="$(git rev-parse --show-toplevel)"
-worktree_root="$(dirname "$repo_root")"
-parent_worktree="$worktree_root/firebam-main-rebase-$rebase_stamp"
-agave_worktree="$worktree_root/agave-main-rebase-$rebase_stamp"
-
-git show -s --format='%H %ci %s' "$old_base"
-git show -s --format='%H %ci %s' "$old_tip"
-git show -s --format='%H %ci %s' "$new_base"
-git log --reverse --oneline "$old_base..$old_tip"
-git cherry -v "$new_base" "$old_tip"
-
-git branch "backup/main-before-upstream-$rebase_stamp" "$old_tip"
-git worktree add -b "rebase/main-upstream-$rebase_stamp" \
-  "$parent_worktree" "$old_tip"
-```
-
-Derive Agave inputs from the pinned parent commits, then rebase Agave first:
+Then the parent:
 
 ```bash
-old_agave_base="$(git ls-tree "$old_base" agave | awk '{print $3}')"
-old_agave_tip="$(git ls-tree "$old_tip" agave | awk '{print $3}')"
-new_agave_base="$(git ls-tree "$new_base" agave | awk '{print $3}')"
-
-git -C agave fetch --prune origin
-git -C agave fetch --prune upstream
-git -C agave cat-file -e "$old_agave_base^{commit}"
-git -C agave cat-file -e "$old_agave_tip^{commit}"
-git -C agave cat-file -e "$new_agave_base^{commit}"
-
-git -C agave branch \
-  "backup/main-bam-before-upstream-$rebase_stamp" "$old_agave_tip"
-git -C agave worktree add \
-  -b "rebase/main-bam-upstream-$rebase_stamp" \
-  "$agave_worktree" "$old_agave_tip"
-git -C "$agave_worktree" \
-  rebase --no-update-refs --empty=stop --onto "$new_agave_base" "$old_agave_base"
-
-new_agave_tip="$(git -C "$agave_worktree" rev-parse HEAD)"
+git rebase --no-update-refs --empty=stop --onto "$new_base" "$old_base"
 ```
 
-If `old_agave_base==old_agave_tip`, skip the Agave worktree/rebase and set
-`new_agave_tip="$new_agave_base"`. If Agave BAM commits remain, prepare their
-candidate first. Publish the dependency only within the task's publication
-authorization, then verify its
-exact commit is fetchable through the final submodule URL before publishing
-the parent. Local migration and audit can proceed before publication.
+Keep `--no-update-refs` explicit: an inherited `rebase.updateRefs=true` moves
+backup and other branch refs. On conflicts, combine both intents rather than
+taking a side. Record each manual resolution, and each hunk dropped because
+upstream now has it together with the upstream commit that proves it.
 
-Rebase the parent candidate and update its Agave gitlink and `.gitmodules` to
-the verified Agave candidate:
-
-```bash
-git -C "$parent_worktree" \
-  rebase --no-update-refs --empty=stop --onto "$new_base" "$old_base"
-new_tip="$(git -C "$parent_worktree" rev-parse HEAD)"
-```
-
-For each conflict, inspect `git rebase --show-current-patch`, unresolved paths,
-all three index stages, upstream history, callers, and tests. Do not select an
-entire side when both sides changed behavior. Record every skipped/empty
-commit and every significant manual resolution.
-
-Validate in the candidate worktree. A completed migration must build both
-validator binaries. Select regression checks for changed behavior across BAM,
-topology, pack, crank/keyguard, execution, PoH/replay, config, URL, GUI,
-resolver, and Agave boundaries. Run the stateful BAM corpus when the pipeline
-is affected. Use the [audit guidance](audit.md#verify-supported-modes-and-real-boundaries)
-and [local test setup](../../../doc/firebam-coordination.md#testing) as needed.
-Keep `--no-update-refs` explicit so inherited Git configuration cannot rewrite
-other branch or backup refs.
+Done when both validators build (`firedancer` and `fdctl`; `all` omits the
+Rust-linked `fdctl`), the affected BAM and upstream tests pass, the stateful
+BAM corpus replays clean if the pipeline changed, any growth in the upstream
+delta is explained, and the [audit](audit.md) has no open finding.
