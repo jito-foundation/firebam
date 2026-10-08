@@ -1,10 +1,11 @@
 from generate.types import *
 from generate.write_codegen import write_codegen
 from generate.write_docs import write_docs
+from generate.bam import merge_bam
 from pathlib import Path
 
 def main():
-    metrics = parse_metrics(Path('metrics.xml').read_text())
+    metrics = parse_metrics(merge_bam(Path('metrics.xml').read_text()))
     metrics.layout()
 
     write_codegen(metrics)

@@ -144,6 +144,8 @@ struct genesis_solana {
 };
 typedef struct genesis_solana genesis_solana_t;
 
+#include "fd_genesis_create_bam.c"
+
 /* genesis_encode serializes a genesis_solana_t into a bincode blob
    byte-for-byte compatible with Anza's genesis.bin format.  Returns the
    number of bytes written, or 0 on failure (buffer too small). */
@@ -420,6 +422,8 @@ genesis_create( void *                       buf,
 
   ulong default_funded_idx = genesis->accounts_len;
   REQUIRE( !__builtin_add_overflow( genesis->accounts_len, default_funded_cnt, &genesis->accounts_len ) );
+  genesis_bam_preseed_t bam_preseed[1];
+  if( FD_UNLIKELY( !genesis_bam_preseed_reserve( bam_preseed, genesis, &genesis->accounts_len ) ) ) return 0UL;
   ulong feature_gate_idx = genesis->accounts_len;
   REQUIRE( !__builtin_add_overflow( genesis->accounts_len, feature_cnt, &genesis->accounts_len ) );
 
@@ -462,6 +466,8 @@ genesis_create( void *                       buf,
       .owner      = fd_solana_vote_program_id
     }
   };
+
+  genesis_bam_preseed_fill( bam_preseed, genesis );
 
   /* Set up primordial accounts */
 

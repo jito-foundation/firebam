@@ -7,6 +7,7 @@
 #include "../../disco/tiles.h"
 #include "../../disco/fd_txn_p.h"
 #include "../../disco/bundle/fd_bundle_tile.h"
+#include "../../discoh/plugin/fd_plugin.h"
 #include "../../discof/restore/fd_snapct_tile.h"
 #include "../../discof/restore/utils/fd_ssmsg.h"
 #include "../../discof/tower/fd_tower_tile.h"
@@ -483,6 +484,7 @@ struct fd_guih_txn_waterfall {
     ulong quic;
     ulong udp;
     ulong gossip;
+    ulong bam;
     ulong block_engine;
     ulong pack_cranked;
   } in;
@@ -797,6 +799,8 @@ struct fd_guih {
     char ip_cstr[ 40 ]; /* IPv4 or IPv6 cstr */
     int status;
   } block_engine;
+  uchar has_bam;
+  fd_plugin_msg_bam_update_t bam;
 
   struct {
     int has_epoch[ 2 ];

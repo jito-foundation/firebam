@@ -1,6 +1,9 @@
 #ifndef HEADER_fd_src_disco_pack_fd_pack_unwritable_h
 #define HEADER_fd_src_disco_pack_fd_pack_unwritable_h
 
+#include "../../ballet/txn/fd_txn.h"
+#include "../../flamenco/runtime/fd_system_ids_pp.h"
+
 /* Table of special addresses that are not allowed to be written to.  We
    immediately reject and refuse to pack any transaction that tries to
    write to one of these accounts.  Because we reject any writes to any
@@ -8,6 +11,9 @@
    either.  This is nice, because fd_map_dynamic requires a null address
    that we promise never to insert.  The zero address is a sysvar, so
    now we meet that part of the fd_map_dynamic contract. */
+/* BAM bundle transactions are admitted instead, with these writes demoted
+   as at runtime; pack skips only BAM writes, relying on WRITES_SYSVAR
+   rejecting everything else. */
 #define MAP_PERFECT_NAME      fd_pack_unwritable
 #define MAP_PERFECT_LG_TBL_SZ 5
 #define MAP_PERFECT_T         fd_acct_addr_t

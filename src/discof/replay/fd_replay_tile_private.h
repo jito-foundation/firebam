@@ -4,6 +4,7 @@
 #include "fd_vote_tracker.h"
 #include "../../disco/fd_clock_tile.h"
 #include "../../disco/store/fd_store.h"
+#include "../../disco/bam/fd_bam_ctrl.h"
 #include "../../disco/bundle/fd_bundle_crank.h"
 #include "../../disco/keyguard/fd_keyswitch.h"
 #include "../../disco/node_info/fd_node_info.h"
@@ -162,6 +163,7 @@ struct fd_replay_tile {
   fd_store_map_t  map_join[1];
   int             store_disk_fd;
   fd_banks_t *    banks;
+  fd_bam_ctrl_t const * bam_ctrl;
 
   /* This flag is 1 If we have seen a vote signature that our node has
      sent out get rooted at least one time.  The value is 0 otherwise.
@@ -459,6 +461,8 @@ struct fd_replay_tile {
      slot-ended message alone; no block id will ever arrive for it. */
   uint        is_leader : 1;
   uint        supports_leader : 1;
+  /* Timing mode latched from BAM runtime state at reset boundaries. */
+  int         use_nominal_slot_duration;
   int         recv_poh;
 
   ulong       leader_execution_fees; /* ALPENGLOW-ONLY */
@@ -614,6 +618,7 @@ struct fd_replay_tile {
     ulong storage_root_behind;
 
     ulong voted_slot; /* monotone, ULONG_MAX if none */
+    ulong slot_duration_ns; /* PoH slot duration replay last used, 0 if none */
   } metrics;
 
   uchar __attribute__((aligned(FD_MULTI_EPOCH_LEADERS_ALIGN))) mleaders_mem[ FD_MULTI_EPOCH_LEADERS_FOOTPRINT ];
