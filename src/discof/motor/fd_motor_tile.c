@@ -1,6 +1,8 @@
 #include "../poh/fd_poh.h"
 #include "../../flamenco/alpenglow/fd_block_marker_serde.h"
 #include "../replay/fd_replay_tile.h"
+#include "../../disco/bam/fd_bam_microblock.h"
+#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/tiles.h"
 #include "../../discof/fd_startup.h"
 #include "../../util/pod/fd_pod.h"
@@ -66,6 +68,7 @@ struct fd_motor_tile {
   /* Alpenglow-specific */
 
   ulong     slot;
+  int       slot_closed; /* Pack ended or replay abandoned this leader slot. */
   ulong     parent_slot;
   fd_hash_t parent_cmr; /* required by shred to produce chained merkle shreds */
   fd_hash_t parent_dmr;
@@ -88,6 +91,8 @@ struct fd_motor_tile {
 
   fd_poh_out_t shred_out[ 1 ];
   fd_poh_out_t replay_out[ 1 ];
+  fd_poh_out_t executed_txn_out[ 1 ];
+  fd_poh_out_t bam_out[ 1 ];
 };
 typedef struct fd_motor_tile fd_motor_tile_t;
 
@@ -198,6 +203,7 @@ init_block( fd_motor_tile_t *          ctx,
             fd_stem_context_t *        stem,
             fd_became_leader_t const * became_leader ) {
   ctx->slot     = became_leader->slot;
+  ctx->slot_closed = 0;
   ctx->poh_hash = ctx->parent_alpentick;
 
   if( FD_LIKELY( ctx->timing_tables ) ) {
@@ -216,6 +222,7 @@ fini_block( fd_motor_tile_t *                 ctx,
             fd_replay_leader_footer_t const * footer ) {
   publish_shred( ctx, stem, prepare_footer( ctx, footer ), -1 );
   publish_shred( ctx, stem, prepare_alpentick( ctx ), 1 );
+  ctx->slot_closed = 1;
 }
 
 static void
@@ -246,6 +253,7 @@ done_packing( fd_motor_tile_t *         ctx,
   ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
   fd_stem_publish( stem, ctx->replay_out->idx, 0UL, ctx->replay_out->chunk, sizeof(fd_poh_leader_slot_ended_t), 0UL, 0UL, tspub );
   ctx->replay_out->chunk = fd_dcache_compact_next( ctx->replay_out->chunk, sizeof(fd_poh_leader_slot_ended_t), ctx->replay_out->chunk0, ctx->replay_out->wmark );
+  ctx->slot_closed = 1;
 }
 
 static inline fd_poh_out_t
@@ -343,6 +351,18 @@ returnable_frag( fd_motor_tile_t *   ctx,
     if( FD_UNLIKELY( ((int)(pack_idx-ctx->expect_pack_idx))<0L ) ) FD_LOG_ERR(( "received out of order pack_idx %u (expecting %u)", pack_idx, ctx->expect_pack_idx ));
     if( FD_UNLIKELY( pack_idx!=ctx->expect_pack_idx ) ) return 1;
     ctx->expect_pack_idx++;
+    if( FD_UNLIKELY( ctx->bam_out->idx!=ULONG_MAX && ctx->in_kind[ in_idx ]==IN_KIND_EXECLE &&
+                     (fd_disco_execle_sig_slot( sig )<ctx->slot || ctx->slot_closed) ) ) {
+      fd_bam_microblock_view_t view[1];
+      FD_TEST( fd_bam_microblock_parse( fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk ), sz, view ) );
+      if( FD_UNLIKELY( view->result ) ) {
+        fd_bam_bundle_result_t result = *view->result;
+        fd_bam_result_poh_timeout( &result );
+        fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
+                               ctx->bam_out->chunk0, ctx->bam_out->wmark, &result );
+      }
+      return 0;
+    }
     if( FD_UNLIKELY( fd_disco_execle_sig_slot( sig )<ctx->slot ) ) return 0;
   }
 
@@ -356,6 +376,7 @@ returnable_frag( fd_motor_tile_t *   ctx,
         fini_block( ctx, stem, footer );
       } else if( FD_LIKELY( sig==REPLAY_SIG_RESET ) ) {
         fd_poh_reset_t const * reset = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
+        if( FD_UNLIKELY( ctx->slot>reset->completed_slot ) ) ctx->slot_closed = 1;
         ctx->parent_slot = reset->completed_slot;
         memcpy( ctx->parent_cmr.uc,       reset->completed_cmr,       sizeof(fd_hash_t) );
         memcpy( ctx->parent_dmr.uc,       reset->completed_dmr,       sizeof(fd_hash_t) );
@@ -369,12 +390,17 @@ returnable_frag( fd_motor_tile_t *   ctx,
       break;
     }
     case IN_KIND_EXECLE: {
-      FD_TEST( sz>=sizeof(fd_microblock_trailer_t) && (sz-sizeof(fd_microblock_trailer_t))%sizeof(fd_txn_p_t)==0UL );
-      ulong txn_cnt = (sz-sizeof(fd_microblock_trailer_t))/sizeof(fd_txn_p_t);
       fd_txn_p_t const * txns = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
-      fd_microblock_trailer_t const * trailer = fd_type_pun_const( (uchar const *)txns+sz-sizeof(fd_microblock_trailer_t) );
-      ulong payload_sz = prepare_entry( ctx, trailer, txn_cnt, txns );
+      fd_bam_microblock_view_t view[1];
+      FD_TEST( fd_bam_microblock_parse( txns, sz, view ) );
+      ulong payload_sz = prepare_entry( ctx, view->trailer, view->txn_cnt, txns );
       if( FD_LIKELY( payload_sz ) ) publish_shred( ctx, stem, payload_sz, 0 );
+
+      if( FD_UNLIKELY( view->result ) )
+        fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
+                               ctx->bam_out->chunk0, ctx->bam_out->wmark, view->result );
+
+      fd_bam_publish_txn_completions( stem, ctx->executed_txn_out->idx, ctx->executed_txn_out->mem, &ctx->executed_txn_out->chunk, ctx->executed_txn_out->chunk0, ctx->executed_txn_out->wmark, txns, view->txn_cnt );
       break;
     }
     default: {
@@ -416,6 +442,12 @@ unprivileged_init( fd_topo_t const *      topo,
 
   *ctx->replay_out = out1( topo, tile, "poh_replay" );
   *ctx->shred_out  = out1( topo, tile, "poh_shred"  );
+  *ctx->executed_txn_out = (fd_poh_out_t){ .idx = ULONG_MAX };
+  if( FD_LIKELY( fd_topo_find_tile_out_link( topo, tile, "executed_txn", tile->kind_id )!=ULONG_MAX ) )
+    *ctx->executed_txn_out = out1( topo, tile, "executed_txn" );
+  *ctx->bam_out = (fd_poh_out_t){ .idx = ULONG_MAX };
+  if( FD_UNLIKELY( fd_topo_find_tile_out_link( topo, tile, "poh_bam", tile->kind_id )!=ULONG_MAX ) )
+    *ctx->bam_out = out1( topo, tile, "poh_bam" );
 
   ulong ldr_tt_obj_id   = fd_pod_query_ulong( topo->props, "ldr_tt", ULONG_MAX );
   ctx->timing_tables    = ldr_tt_obj_id==ULONG_MAX ? NULL : fd_topo_obj_laddr( topo, ldr_tt_obj_id );

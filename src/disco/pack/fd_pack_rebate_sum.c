@@ -1,5 +1,7 @@
 #include "fd_pack_rebate_sum.h"
 #include "fd_pack.h"
+#include "fd_pack_unwritable.h"
+#include "../fd_txn_m.h"
 #include "../../util/fd_hash32.h"
 #if FD_HAS_AVX
 #include "../../util/simd/fd_avx.h"
@@ -85,11 +87,13 @@ fd_pack_rebate_sum_add_txn( fd_pack_rebate_sum_t         * s,
 
     if( FD_UNLIKELY( rebated_cus==0UL ) ) continue;
 
+    int txn_is_bam = txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
     fd_acct_addr_t const * accts = fd_txn_get_acct_addrs( TXN(txn), txn->payload );
     for( fd_txn_acct_iter_t iter=fd_txn_acct_iter_init( TXN(txn), FD_TXN_ACCT_CAT_WRITABLE & FD_TXN_ACCT_CAT_IMM );
         iter!=fd_txn_acct_iter_end(); iter=fd_txn_acct_iter_next( iter ) ) {
 
       ulong j=fd_txn_acct_iter_idx( iter );
+      if( FD_UNLIKELY( txn_is_bam && fd_pack_unwritable_contains( accts+j ) ) ) continue;
 
       fd_pack_rebate_entry_t * in_table = rmap_query( s->map, accts[j], NULL );
       if( FD_UNLIKELY( !in_table ) ) {
@@ -106,6 +110,7 @@ fd_pack_rebate_sum_add_txn( fd_pack_rebate_sum_t         * s,
     accts = adtl_writable[i];
     if( FD_LIKELY( accts ) ) {
       for( ulong j=0UL; j<(ulong)TXN(txn)->addr_table_adtl_writable_cnt; j++ ) {
+        if( FD_UNLIKELY( txn_is_bam && fd_pack_unwritable_contains( accts+j ) ) ) continue;
         fd_pack_rebate_entry_t * in_table = rmap_query( s->map, accts[j], NULL );
         if( FD_UNLIKELY( !in_table ) ) {
           in_table = rmap_insert( s->map, accts[j] );

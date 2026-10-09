@@ -2,6 +2,8 @@
 #include "fd_poh_tile.h"
 #include "../replay/fd_replay_tile.h"
 #include "../../util/pod/fd_pod.h"
+#include "../../disco/bam/fd_bam_microblock.h"
+#include "../../disco/bam/fd_bam_publish.h"
 #include "../../disco/tiles.h"
 #include "../../disco/fd_clock_tile.h"
 #include "../../discof/fd_startup.h"
@@ -51,6 +53,8 @@ struct fd_poh_tile {
 
   fd_poh_out_t shred_out[ 1 ];
   fd_poh_out_t replay_out[ 1 ];
+  fd_poh_out_t executed_txn_out[ 1 ];
+  fd_poh_out_t bam_out[ 1 ];
 };
 
 typedef struct fd_poh_tile fd_poh_tile_t;
@@ -243,16 +247,19 @@ returnable_frag( fd_poh_tile_t *     ctx,
     }
     case IN_KIND_EXECLE: {
       ulong target_slot = fd_disco_execle_sig_slot( sig );
-      FD_TEST( sz>=sizeof(fd_microblock_trailer_t) && (sz-sizeof(fd_microblock_trailer_t))%sizeof(fd_txn_p_t)==0UL );
-      ulong txn_cnt = (sz-sizeof(fd_microblock_trailer_t))/sizeof(fd_txn_p_t);
       fd_txn_p_t const * txns = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
-      fd_microblock_trailer_t const * trailer = fd_type_pun_const( (uchar const*)txns+sz-sizeof(fd_microblock_trailer_t) );
-
+      fd_bam_microblock_view_t view[1];
+      FD_TEST( fd_bam_microblock_parse( txns, sz, view ) );
       fd_leader_txn_timing_rec_t timing = {
-        .dispatched_ticks = trailer->exec_start_ticks,
-        .replayed_ticks   = trailer->exec_end_ticks,
+        .dispatched_ticks = view->trailer->exec_start_ticks,
+        .replayed_ticks   = view->trailer->exec_end_ticks,
       };
-      fd_poh1_mixin( ctx->poh, stem, target_slot, trailer->hash, txn_cnt, txns, &timing );
+      fd_poh1_mixin( ctx->poh, stem, target_slot, view->trailer->hash, view->txn_cnt, txns, &timing );
+      if( FD_UNLIKELY( view->result ) )
+        fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk,
+                               ctx->bam_out->chunk0, ctx->bam_out->wmark, view->result );
+
+      fd_bam_publish_txn_completions( stem, ctx->executed_txn_out->idx, ctx->executed_txn_out->mem, &ctx->executed_txn_out->chunk, ctx->executed_txn_out->chunk0, ctx->executed_txn_out->wmark, txns, view->txn_cnt );
       break;
     }
     default: {
@@ -320,6 +327,12 @@ unprivileged_init( fd_topo_t const *      topo,
 
   *ctx->shred_out = out1( topo, tile, "poh_shred" );
   *ctx->replay_out = out1( topo, tile, "poh_replay" );
+  *ctx->executed_txn_out = (fd_poh_out_t){ .idx = ULONG_MAX };
+  if( FD_LIKELY( fd_topo_find_tile_out_link( topo, tile, "executed_txn", tile->kind_id )!=ULONG_MAX ) )
+    *ctx->executed_txn_out = out1( topo, tile, "executed_txn" );
+  *ctx->bam_out = (fd_poh_out_t){ .idx = ULONG_MAX };
+  if( FD_UNLIKELY( fd_topo_find_tile_out_link( topo, tile, "poh_bam", tile->kind_id )!=ULONG_MAX ) )
+    *ctx->bam_out = out1( topo, tile, "poh_bam" );
 
   void * timing_tables = NULL;
   ulong ldr_tt_obj_id = fd_pod_query_ulong( topo->props, "ldr_tt", ULONG_MAX );

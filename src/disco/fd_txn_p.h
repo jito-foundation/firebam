@@ -80,9 +80,20 @@ fd_txn_p_copy( fd_txn_p_t *       dst,
   fd_memcpy( dst->_, src->_, desc_sz );
 }
 
+/* BAM execution metadata carried by pack on an fd_txn_e_t.  Valid only
+   when txnp->source_tpu is FD_TXN_M_TPU_SOURCE_BAM. */
+struct fd_txn_bam {
+  uint   seq_id;
+  ushort scheduler_gen;
+  uchar  batch_idx;
+  _Bool  revert_on_error;
+};
+typedef struct fd_txn_bam fd_txn_bam_t;
+
 /* fd_txn_e_t: An fd_txn_p_t with expanded address lookup tables */
 struct __attribute__((aligned(64))) fd_txn_e {
    fd_txn_p_t     txnp[1];
+   union { fd_txn_bam_t bam; uchar _bam_pad[ 64 ]; }; /* Keeps alt_accts last and 64-byte aligned, as upstream */
    fd_acct_addr_t alt_accts[FD_TXN_ACCT_ADDR_MAX]; /* The used account is in the fd_txn_t*/
 };
 

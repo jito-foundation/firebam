@@ -9,6 +9,8 @@
 #include "../../util/pod/fd_pod_format.h"
 #include "../../util/net/fd_ip4.h"
 
+#include "topology_bam.c"
+
 extern fd_topo_obj_callbacks_t * CALLBACKS[];
 
 void
@@ -23,6 +25,7 @@ fd_topo_initialize( config_t * config ) {
   ulong resolh_tile_cnt = config->frankendancer.layout.resolh_tile_count;
   ulong bank_tile_cnt   = config->frankendancer.layout.bank_tile_count;
   ulong shred_tile_cnt  = config->layout.shred_tile_count;
+  _Bool tip_crank_enabled = config->tiles.bundle.enabled || config->tiles.bam.enabled;
   fd_topo_t * topo = { fd_topob_new( &config->topo, config->name ) };
   topo->max_page_size = fd_cstr_to_shmem_page_sz( config->hugetlbfs.max_page_size );
   topo->gigantic_page_threshold = config->hugetlbfs.gigantic_page_threshold_mib << 20;
@@ -129,7 +132,7 @@ fd_topo_initialize( config_t * config ) {
   FOR(verify_tile_cnt) fd_topob_tile( topo, "verify",  "verify",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0,                 0,                 0 );
   /**/                 fd_topob_tile( topo, "dedup",   "dedup",   "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        0,                 0,                 0 );
   FOR(resolh_tile_cnt) fd_topob_tile( topo, "resolh",  "resolh",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 1,        0,                 0,                 0 );
-  /**/                 fd_topob_tile( topo, "pack",    "pack",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        config->tiles.bundle.enabled, 0, 0 );
+  /**/                 fd_topob_tile( topo, "pack",    "pack",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        tip_crank_enabled, 0, 0 );
   FOR(bank_tile_cnt)   fd_topob_tile( topo, "bank",    "bank",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 1,        0,                 0,                 0 );
   /**/                 fd_topob_tile( topo, "pohh",    "pohh",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 1,        1,                 0,                 0 );
   FOR(shred_tile_cnt)  fd_topob_tile( topo, "shred",   "shred",   "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,        1,                 0,                 0 );
@@ -305,6 +308,10 @@ fd_topo_initialize( config_t * config ) {
     }
   }
 
+  if( FD_UNLIKELY( config->tiles.bam.enabled && !config->tiles.bundle.enabled ) ) topo_bam_tip_crank_links( topo );
+
+  if( FD_LIKELY( config->tiles.bam.enabled ) ) topo_bam_tiles( topo, tile_to_cpu, bank_tile_cnt, shred_tile_cnt, plugins_enabled );
+
   if( FD_LIKELY( !is_auto_affinity ) ) {
     if( FD_UNLIKELY( affinity_tile_cnt<topo->tile_cnt ) )
       FD_LOG_ERR(( "The topology you are using has %lu tiles, but the CPU affinity specified in the config tile as [layout.affinity] only provides for %lu cores. "
@@ -361,6 +368,8 @@ fd_topo_initialize( config_t * config ) {
     }
   }
 
+  if( FD_LIKELY( config->tiles.bam.enabled ) ) topo_bam_objs( topo, config );
+
   /* There is a special fseq that sits between the pack, bank, and poh
      tiles to indicate when the bank/poh tiles are done processing a
      microblock.  Pack uses this to determine when to "unlock" accounts
@@ -412,6 +421,7 @@ void
 fd_topo_configure_tile( fd_topo_tile_t * tile,
                         fd_config_t *    config ) {
   int plugins_enabled = config->tiles.gui.enabled;
+  _Bool tip_crank_enabled = config->tiles.bundle.enabled || config->tiles.bam.enabled;
 
   if( FD_UNLIKELY( !strcmp( tile->name, "net"  ) ||
                    !strcmp( tile->name, "sock" ) ||
@@ -448,6 +458,10 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->bundle.out_depth = config->tiles.verify.receive_buffer_size;
     tile->bundle.keepalive_interval_nanos = config->tiles.bundle.keepalive_interval_millis * (ulong)1e6;
     tile->bundle.tls_cert_verify = !!config->tiles.bundle.tls_cert_verify;
+
+  } else if( FD_UNLIKELY( !strcmp( tile->name, "bam" ) ) ) {
+    topo_bam_configure_tile( tile, config );
+
   } else if( FD_UNLIKELY( !strcmp( tile->name, "verify" ) ) ) {
     tile->verify.tcache_depth = config->tiles.verify.signature_cache_size;
 
@@ -464,6 +478,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->pack.bench_max_shreds_per_block    = config->development.bench.max_shreds_per_block;
     tile->pack.use_consumed_cus              = config->tiles.pack.use_consumed_cus;
     tile->pack.schedule_strategy             = config->tiles.pack.schedule_strategy_enum;
+    tile->pack.bam_enabled                   = !!config->tiles.bam.enabled;
     tile->pack.acct_blocklist_cnt            = config->tiles.pack.account_blocklist_cnt;
 
     for( ulong i=0UL; i<tile->pack.acct_blocklist_cnt; i++ ) {
@@ -471,8 +486,9 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
         FD_LOG_ERR(( "could not parse account %s at index %lu in [tiles.pack.account_blocklist]", config->tiles.pack.account_blocklist[i], i ));
       }
     }
+    tile->pack.dump_bam_mode                 = BAM_DUMP_MODE( config );
 
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_UNLIKELY( tip_crank_enabled ) ) {
 #define PARSE_BUNDLE_PUBKEY( _tile, f ) \
       if( FD_UNLIKELY( !fd_base58_decode_32( config->tiles.bundle.f, tile->_tile.bundle.f ) ) )  \
         FD_LOG_ERR(( "[tiles.bundle.enabled] set to true, but failed to parse [tiles.bundle."#f"] %s", config->tiles.bundle.f ));
@@ -495,7 +511,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->pohh.execle_cnt = config->frankendancer.layout.bank_tile_count;
     tile->pohh.lagged_consecutive_leader_start = config->tiles.pohh.lagged_consecutive_leader_start;
 
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_UNLIKELY( tip_crank_enabled ) ) {
       tile->pohh.bundle.enabled = 1;
       PARSE_BUNDLE_PUBKEY( pohh, tip_distribution_program_addr );
       PARSE_BUNDLE_PUBKEY( pohh, tip_payment_program_addr      );
@@ -529,7 +545,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
 
     /* Frankendancer does not use authorized voters in the sign tile. */
     tile->sign.authorized_voter_paths_cnt = 0UL;
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_UNLIKELY( tip_crank_enabled ) ) {
       PARSE_BUNDLE_PUBKEY( sign, tip_distribution_program_addr );
       PARSE_BUNDLE_PUBKEY( sign, tip_payment_program_addr      );
     } else {

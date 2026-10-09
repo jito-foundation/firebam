@@ -317,6 +317,10 @@ after_frag( fd_event_tile_t *   ctx,
     }
     case IN_KIND_DEDUP:
       FD_TEST( sz<=FD_TPU_PARSED_MTU );
+      /* BAM txns have no Txn protocol variant and skip signature dedup
+         (failed ones are forwarded unverified for pack), so skip them. */
+      fd_txn_m_t const * txnm0 = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, ctx->chunk );
+      if( FD_UNLIKELY( txnm0->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) return;
       uchar * buffer = fd_circq_push_back( ctx->circq, 1UL, EVENT_TXN_BUF_MAX );
       FD_TEST( buffer );
 
