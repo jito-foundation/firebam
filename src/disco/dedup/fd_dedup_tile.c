@@ -160,6 +160,8 @@ during_frag( fd_dedup_ctx_t * ctx,
    If the transaction came in from the gossip link, then it hasn't been
    parsed by us.  So parse it here if necessary. */
 
+#include "fd_dedup_tile_bam.c"
+
 static inline void
 after_frag( fd_dedup_ctx_t *    ctx,
             ulong               in_idx,
@@ -182,6 +184,7 @@ after_frag( fd_dedup_ctx_t *    ctx,
     FD_LOG_ERR(( "dedup: txn payload size %hu exceeds max %lu", txnm->payload_sz, FD_TPU_MTU ));
   }
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
+  if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) { fd_dedup_tile_bam_after_frag( ctx, txnm, txn, tsorig, stem ); return; }
 
   if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
@@ -356,6 +359,7 @@ populate_allowed_fds( fd_topo_t const *      topo,
 
 #include "../stem/fd_stem.c"
 
+#ifndef FD_TILE_TEST
 fd_topo_run_tile_t fd_tile_dedup = {
   .name                     = "dedup",
   .populate_allowed_seccomp = populate_allowed_seccomp,
@@ -366,3 +370,4 @@ fd_topo_run_tile_t fd_tile_dedup = {
   .unprivileged_init        = unprivileged_init,
   .run                      = stem_run,
 };
+#endif

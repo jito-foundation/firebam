@@ -379,6 +379,7 @@ void fd_pack_get_pending_smallest( fd_pack_t * pack, fd_pack_smallest_t * opt_pe
       Write-locking a sysvar can cause heavy contention.  Agave
       solves this by downgrading these to read locks, but we instead
       solve it by refusing to pack such transactions.
+      BAM bundle transactions are exempt and downgraded, as in Agave.
     * INVALID_NONCE: the transaction looks like a durable nonce
       transaction, but the nonce authority did not sign the transaction.
     * BUNDLE_BLACKLIST: bundles are enabled and the transaction uses an
@@ -510,6 +511,11 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
    transactions means that they should be excluded in the calculation of
    the oldest.
 
+   BAM bundles, i.e. those with initializer_bundle FD_PACK_IB_TYPE_BAM
+   or whose bundle[0] has source_tpu FD_TXN_M_TPU_SOURCE_BAM, ignore
+   expires_at and are never durable nonce transactions to pack: as in
+   jito-solana, the execution bank checks their nonces.
+
    Bundles containing durable nonce transactions are always treated as
    having a newer nonce than any non-bundle transaction with the same
    (nonce account, authority) pair.  Within bundles, the older bundle is
@@ -526,6 +532,9 @@ void         fd_pack_insert_txn_cancel( fd_pack_t * pack, fd_txn_e_t * txn      
    not be checked against the bundle blacklist; otherwise, the check
    will be performed as normal.  See the section below on initializer
    bundles for more details.
+   initializer_bundle is one of FD_PACK_IB_TYPE_{NONE,NORMAL,BAM}; an
+   initializer is next only for its own (normal or BAM-only) scheduling
+   mode.
 
    Other than the blacklist check, transactions in a bundle are subject
    to the same checks as other transactions.  If any transaction in the
@@ -595,6 +604,8 @@ void                 fd_pack_insert_bundle_cancel( fd_pack_t * pack, fd_txn_e_t 
    * [Failed]: Do not schedule a bundle
    * [Ready]: Attempt to schedule the next bundle.  If scheduling an IB,
      transition to [Pending].
+   BAM-only scheduling applies the same rules, where the top bundle is
+   the first BAM bundle or BAM IB; normal scheduling skips a BAM IB.
 
    As described in the state machine, ending the block (via
    fd_pack_end_block) transitions to [Not Initialized], and calls to
@@ -817,5 +828,7 @@ void * fd_pack_delete( void      * mem  );
 int fd_pack_verify( fd_pack_t * pack, void * scratch );
 
 FD_PROTOTYPES_END
+
+#include "fd_pack_bam.h"
 
 #endif /* HEADER_fd_src_disco_pack_fd_pack_h */

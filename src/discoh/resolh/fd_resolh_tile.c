@@ -392,17 +392,26 @@ after_frag( fd_resolh_tile_t *  ctx,
     buffer.  If we later see the blockhash come to exist, we forward any
     buffered transactions to back. */
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
+  int is_bam = txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM;
+  ulong failure_group_id = fd_txn_m_failure_group_id( txnm );
+
+  if( FD_UNLIKELY( failure_group_id &&
+                   ( (failure_group_id!=ctx->bundle_id) ||
+                     (is_bam && !txnm->bam.batch_idx) ) ) ) {
     ctx->bundle_failed = 0;
-    ctx->bundle_id     = txnm->block_engine.bundle_id;
+    ctx->bundle_id     = failure_group_id;
   }
 
-  if( FD_UNLIKELY( txnm->block_engine.bundle_id && ctx->bundle_failed ) ) {
+  if( FD_UNLIKELY( failure_group_id && ctx->bundle_failed ) ) {
     ctx->metrics.bundle_peer_failure_cnt++;
     return;
   }
 
   txnm->reference_block_height = ctx->completed_block_height;
+  if( FD_UNLIKELY( is_bam && txnm->bam.preprocess_failed ) ) {
+    if( FD_LIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+    goto publish;
+  }
 
   int is_durable_nonce = fd_disco_tpu_is_durable_nonce( txnt, fd_txn_m_payload( txnm ) );
   map_t const *           map  = fd_ptr_if( is_durable_nonce, ctx->nonce_blockhash_map, ctx->blockhash_map );
@@ -413,7 +422,7 @@ after_frag( fd_resolh_tile_t *  ctx,
   blockhash_map_t const * blockhash = map_ele_query_const( map, recent_blockhash, NULL, pool );
   if( FD_LIKELY( blockhash ) ) {
     txnm->reference_block_height = blockhash->block_height;
-    if( FD_UNLIKELY( (!is_durable_nonce) & (txnm->reference_block_height+151UL<ctx->completed_block_height) ) ) {
+    if( FD_UNLIKELY( (!is_bam) & (!is_durable_nonce) & (txnm->reference_block_height+151UL<ctx->completed_block_height) ) ) {
       if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
       ctx->metrics.blockhash_expired++;
       return;
@@ -422,7 +431,7 @@ after_frag( fd_resolh_tile_t *  ctx,
 
   int is_bundle_member = !!txnm->block_engine.bundle_id;
 
-  if( FD_UNLIKELY( !is_bundle_member && !is_durable_nonce && !blockhash ) ) {
+  if( FD_UNLIKELY( !is_bundle_member && !is_bam && !is_durable_nonce && !blockhash ) ) {
     ulong pool_idx;
     if( FD_UNLIKELY( !pool_free( ctx->pool ) ) ) {
       pool_idx = lru_list_idx_pop_tail( ctx->lru_list, ctx->pool );
@@ -453,22 +462,25 @@ after_frag( fd_resolh_tile_t *  ctx,
   }
 
   if( FD_UNLIKELY( txnt->addr_table_adtl_cnt ) ) {
+    int failed = 0;
     if( FD_UNLIKELY( !ctx->root_bank ) ) {
       FD_MCNT_INC( RESOLH, TXN_NO_BANK, 1 );
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-      return;
+      failed = 1;
+    } else {
+      int result = fd_bank_abi_resolve_address_lookup_tables( ctx->root_bank, 0, ctx->root_slot, txnt, fd_txn_m_payload( txnm ), fd_txn_m_alut( txnm ) );
+      /* result is in [-5, 0]. We want to map -5 to 0, -4 to 1, etc. */
+      ctx->metrics.lut[ (ulong)((long)FD_METRICS_COUNTER_RESOLH_LUT_RESOLVED_CNT+result-1L) ]++;
+      failed = result!=FD_BANK_ABI_TXN_INIT_SUCCESS;
     }
 
-    int result = fd_bank_abi_resolve_address_lookup_tables( ctx->root_bank, 0, ctx->root_slot, txnt, fd_txn_m_payload( txnm ), fd_txn_m_alut( txnm ) );
-    /* result is in [-5, 0]. We want to map -5 to 0, -4 to 1, etc. */
-    ctx->metrics.lut[ (ulong)((long)FD_METRICS_COUNTER_RESOLH_LUT_RESOLVED_CNT+result-1L) ]++;
-
-    if( FD_UNLIKELY( result!=FD_BANK_ABI_TXN_INIT_SUCCESS ) ) {
-      if( FD_UNLIKELY( txnm->block_engine.bundle_id ) ) ctx->bundle_failed = 1;
-      return;
+    if( FD_UNLIKELY( failed ) ) {
+      if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
+      if( FD_LIKELY( !is_bam ) ) return;
+      txnm->bam.preprocess_failed = 1U;
     }
   }
 
+publish:;
   ulong realized_sz = fd_txn_m_realized_footprint( txnm, 1, 1 );
   ulong tspub = fd_frag_meta_ts_comp( fd_tickcount() );
   fd_stem_publish( stem, 0UL, txnm->reference_block_height, ctx->out_chunk, realized_sz, 0UL, tsorig, tspub );

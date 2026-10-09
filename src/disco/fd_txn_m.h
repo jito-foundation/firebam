@@ -11,6 +11,7 @@
 #define FD_TXN_M_TPU_SOURCE_GOSSIP (3UL)
 #define FD_TXN_M_TPU_SOURCE_BUNDLE (4UL)
 #define FD_TXN_M_TPU_SOURCE_TXSEND (5UL)
+#define FD_TXN_M_TPU_SOURCE_BAM    (6UL)
 
 struct fd_txn_m {
   /* The block height of the computed slot that this transaction is
@@ -36,6 +37,7 @@ struct fd_txn_m {
      validator. */
   long     first_seen_nanos;
 
+  union {
   struct {
     /* If the transaction is part of a bundle, the bundle_id will be
        non-zero, and if this transaction is the first one in the
@@ -64,6 +66,25 @@ struct fd_txn_m {
     /* alignof is 8, so 7 bytes of padding here */
 
   } block_engine;
+
+  /* BAM never provides a commission, so its metadata overlays those
+     fields.  bundle_id and bundle_txn_cnt are a common initial sequence
+     with block_engine, which remains the spelling for reading them. */
+  struct {
+    ulong  bundle_id;
+    ulong  bundle_txn_cnt;
+    /* An 'atomic transaction batch' is a bundle of transactions that must be processed together */
+    ulong  max_schedule_slot; /* Solana slot for which this bundle is valid for (inclusive). eg if we're building slot 100, and max_schedule_slot == 100, process the txn */
+    uint   seq_id;            /* Unique for a single leader rotation, propagated so downstream stages can correlate execution results */
+    ushort scheduler_gen;     /* BAM scheduler identity generation, propagated to discard stale in-flight results after endpoint/key changes */
+    ushort ownership_gen;     /* BAM ownership generation, propagated so pack can reject work crossing a disable/disconnect boundary */
+    uchar  txn_cnt;           /* How many transactions are expected in the atomic transaction batch */
+    uchar  batch_idx;         /* Index of this transaction inside the atomic transaction batch */
+    uchar  revert_on_error   : 1; /* If true and any transaction in the batch fails, revert everything. otherwise commit errors */
+    uchar                   : 1; /* Retain the former expiry flag bit for layout compatibility. */
+    uchar  preprocess_failed : 1; /* Set when preprocessing failed so pack can terminate the complete batch */
+  } bam;
+  };
 
   /* There are three additional fields at the end here, which are
      variable length and not included in the size of this struct. txn_t
@@ -161,5 +182,7 @@ fd_txn_m_realized_footprint( fd_txn_m_t const * txnm,
                                  alignof(fd_acct_addr_t) )                  \
                               +FD_TXN_ACCT_ADDR_MAX*sizeof(fd_acct_addr_t), \
                               alignof(fd_txn_m_t) )
+
+#include "bam/fd_bam_txn_m.h"
 
 #endif /* HEADER_fd_src_disco_fd_txn_m_h */

@@ -349,6 +349,23 @@ struct fd_topo_tile {
     } event;
 
     struct {
+      char  url[ FD_URL_MAX ];
+      ulong url_len;
+      char  sni[ FD_SNI_BUF_MAX ];
+      ulong sni_len;
+      char  admin_rpc_path[ PATH_MAX ];
+      fd_ip4_port_t configured_default_tpu;
+      char  identity_key_path[ PATH_MAX ];
+      char  key_log_path[ PATH_MAX ];
+      ulong buf_sz;
+      ulong out_depth;
+      ulong keepalive_interval_nanos;
+      uchar tls_cert_verify : 1;
+      uchar enabled         : 1;
+      uchar dump_bam_mode   : 2;
+    } bam;
+
+    struct {
       ulong max_pending_transactions;
       ulong execle_tile_count;
       ulong max_cost_per_block;
@@ -356,6 +373,8 @@ struct fd_topo_tile {
       ulong bench_max_shreds_per_block; /* [development.bench], floors the leader's per-slot shred limit */
       int   use_consumed_cus;
       int   schedule_strategy;
+      uchar dump_bam_mode : 2;
+      uchar bam_enabled   : 1;
       struct {
         int   enabled;
         uchar tip_distribution_program_addr[ 32 ];
