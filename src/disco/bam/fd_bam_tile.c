@@ -771,6 +771,7 @@ fd_bam_note_replay_schedule_slot( fd_bam_tile_t * ctx,
       ulong epoch_recheck_slot = fd_ulong_sat_add( slot, slots_per_epoch - slot_in_epoch - 1UL );
       recheck_slot = fd_ulong_min( recheck_slot, epoch_recheck_slot );
     }
+    if( ctx->next_leader_slot>slot ) recheck_slot = fd_ulong_min( recheck_slot, fd_ulong_sat_sub( ctx->next_leader_slot, FD_BAM_LEADER_SCHEDULE_NEAR_SLOT_CNT ) );
 
     if( FD_UNLIKELY( recheck_slot<=slot ) ) {
       new_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;

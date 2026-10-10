@@ -28,6 +28,11 @@ typedef struct fd_bam_tile fd_bam_tile_t;
 #define FD_BAM_LEADER_STATE_EXPIRY_GRACE_NS ((long)10e6) /* 10 ms */
 #define FD_BAM_LEADER_SCHEDULE_RECHECK_SLOT_DELTA 64UL
 #define FD_BAM_LEADER_SCHEDULE_RECHECK_WALLCLOCK_NS ((long)15e9)
+/* Every replayed slot is a leader schedule recheck from this many slots
+   before a leader slot in the next epoch.  The BAM node refuses auth
+   within 40 slots (its default buffer_slot_lookahead) of our leader
+   slot; the other 88 slots (35 s) absorb failed dials and replay lag. */
+#define FD_BAM_LEADER_SCHEDULE_NEAR_SLOT_CNT 128UL
 #define FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT 0UL
 #define FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT ULONG_MAX
 #define FD_BAM_CONTACT_INFO_CLIENT_FRANKEN_BAM (14) /* FrankenBAM ContactInfo client ID */

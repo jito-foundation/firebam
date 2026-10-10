@@ -5674,6 +5674,21 @@ test_bam_replay_leader_slot_outside_epoch( fd_wksp_t * wksp ) {
   FD_TEST( state->leader_schedule_recheck_slot==564UL );
   FD_TEST( fd_bam_tile_waiting_for_leader_slot( state ) );
 
+  /* From slot 722, 128 slots before ours, each replayed slot ends the
+     wait after a failed dial: the node refuses auth within 40 slots of
+     our slot, so a held redial could lose the window. */
+  fd_bam_client_reset( state );
+  ingress.msg.reset = (fd_poh_reset_t){ .completed_slot = 721UL, .next_leader_slot = 850UL };
+  fd_bam_test_receive_ingress_frag( state, state->replay_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_poh_reset_t) );
+  FD_TEST( fd_bam_tile_waiting_for_leader_slot( state ) );
+  ingress.msg.reset.completed_slot = 722UL;
+  fd_bam_test_receive_ingress_frag( state, state->replay_in_idx, REPLAY_SIG_RESET, 0UL, sizeof(fd_poh_reset_t) );
+  FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
+  fd_bam_client_reset( state );
+  ingress.msg.slot_completed = (fd_replay_slot_completed_t){ .slot = 722UL, .slot_in_epoch = 322UL, .slots_per_epoch = 400UL };
+  fd_bam_test_receive_ingress_frag( state, state->replay_in_idx, REPLAY_SIG_SLOT_COMPLETED, 0UL, sizeof(fd_replay_slot_completed_t) );
+  FD_TEST( !fd_bam_tile_waiting_for_leader_slot( state ) );
+
   /* Our first slot opens the next epoch.  It counts once replay
      completes a slot there, without another reset. */
   ingress.msg.reset = (fd_poh_reset_t){ .completed_slot = 799UL, .next_leader_slot = 800UL };
