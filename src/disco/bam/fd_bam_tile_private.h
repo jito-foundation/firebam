@@ -363,6 +363,8 @@ struct fd_bam_tile {
   fd_bam_decoded_multi_batch_t * decoded_multi; /* Tile-owned staging buffer for MultipleAtomicTxnBatch decode */
   ulong *             bam_status_fseq; /* Shared latch written with BAM status bits (bit 0 = override active) */
   ulong *             bam_gen_fseq;    /* Ownership generation handshake: odd=requested, even=pack acknowledged. */
+  ulong               pack_tile_id;    /* Parked readers of the two words above, rung in the efficient layout */
+  ulong               bundle_tile_id;  /* ULONG_MAX without a bundle tile */
   ulong *             bam_gossip_fseq; /* Gossip tile's bam_gossip consumer fseq, read-only for activation handoff. */
   ulong *             bam_gossip_signed_fseq; /* Separate Gossip ack after the contact is signed and published. */
   ulong               bam_gossip_handoff_target; /* Consumer fseq value required before first activating bam_status. */

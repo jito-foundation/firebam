@@ -3320,6 +3320,7 @@ test_bam_receive_backpressure_parks_without_waker_fire( fd_wksp_t * wksp ) {
   FD_TEST( fseq );
   state->bam_status_fseq = fseq;
   test_bam_env_mock_conn( env );
+  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ); /* the config response released it */
 
   uchar protobuf[ 256 ];
   size_t protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 78U, 1U, 0 );
@@ -7710,6 +7711,128 @@ test_bam_activation_waits_for_bundle_publication( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* Efficient layout: an idle pack and bundle are parked and read bam_gen
+   and bam_status only when woken.  BAM rings pack until it acknowledges
+   a generation, and both on each override change. */
+
+static void
+test_bam_expect_rings( fd_sleep_t * sleep,
+                       ulong        w0,
+                       ulong        w1 ) {
+  FD_TEST( __atomic_exchange_n( &sleep->doorbell[ 0 ], 0UL, __ATOMIC_ACQUIRE )==w0 );
+  FD_TEST( __atomic_exchange_n( &sleep->doorbell[ 1 ], 0UL, __ATOMIC_ACQUIRE )==w1 );
+}
+
+static void
+test_bam_handoff_rings_parked_readers( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  void * sleep_mem = fd_wksp_alloc_laddr( wksp, fd_sleep_align(), fd_sleep_footprint(), 1UL );
+  fd_sleep_t * sleep = fd_sleep_join( fd_sleep_new( sleep_mem, fd_tempo_tick_per_ns( NULL ) ) );
+  FD_TEST( sleep );
+  env->stem->sleep      = sleep;
+  state->pack_tile_id   = 3UL;
+  state->bundle_tile_id = 70UL; /* another doorbell word */
+  ulong const pack = 1UL<<3, bundle = 1UL<<6;
+
+  uchar status_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  uchar gen_mem   [ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  ulong * status = fd_fseq_join( fd_fseq_new( status_mem, 0UL ) );
+  ulong * gen    = fd_fseq_join( fd_fseq_new( gen_mem, (ulong)state->ownership_gen<<1 ) );
+  FD_TEST( status && gen );
+  state->bam_status_fseq = status;
+  state->bam_gen_fseq    = gen;
+
+  fd_bam_publish_active_state( state, NULL, 0 ); /* the first housekeeping runs before the stem is cached */
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( fd_fseq_query( status )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  test_bam_expect_rings( sleep, pack, bundle );
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  test_bam_expect_rings( sleep, 0UL, 0UL );
+
+  /* The override is held until pack acknowledges, which every refresh
+     asks for again */
+  for( ulong i=0UL; i<2UL; i++ ) {
+    fd_bam_publish_active_state( state, state->stem, 0 );
+    FD_TEST( fd_fseq_query( status )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE && ( fd_fseq_query( gen ) & 1UL ) );
+    test_bam_expect_rings( sleep, pack, 0UL );
+  }
+  fd_bam_publish_active_state( state, NULL, 0 ); /* likewise with a generation pending: set-bam or set-identity at boot */
+  fd_fseq_update( gen, fd_fseq_query( gen ) & ~1UL );
+  fd_bam_publish_active_state( state, state->stem, 0 );
+  FD_TEST( fd_fseq_query( status )==0UL );
+  test_bam_expect_rings( sleep, pack, bundle );
+  fd_bam_publish_active_state( state, state->stem, 0 );
+  test_bam_expect_rings( sleep, 0UL, 0UL );
+
+  /* An activation that loses the word to a bundle publication */
+  fd_fseq_update( status, FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  FD_TEST( fd_fseq_query( status )==FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
+  test_bam_expect_rings( sleep, 0UL, 0UL );
+
+  /* Without a bundle tile only pack is rung */
+  state->bundle_tile_id = ULONG_MAX;
+  fd_fseq_update( status, 0UL );
+  fd_bam_publish_active_state( state, state->stem, 1 );
+  test_bam_expect_rings( sleep, pack, 0UL );
+
+  env->stem->sleep       = NULL;
+  state->bam_status_fseq = NULL;
+  state->bam_gen_fseq    = NULL;
+  FD_TEST( fd_fseq_delete( fd_fseq_leave( status ) )==status_mem );
+  FD_TEST( fd_fseq_delete( fd_fseq_leave( gen    ) )==gen_mem    );
+  fd_wksp_free_laddr( sleep_mem );
+  test_bam_env_destroy( env );
+}
+
+/* Housekeeping drives the handoff: while the override lags the client's
+   health, the tile parks no longer than one housekeeping interval. */
+
+static void
+test_bam_handoff_keeps_housekeeping_cadence( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  fd_bam_tile_t * state = env->state;
+
+  uchar status_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
+  ulong * status = fd_fseq_join( fd_fseq_new( status_mem, 0UL ) );
+  FD_TEST( status );
+  state->bam_status_fseq    = status;
+  state->next_step_deadline = LONG_MAX;
+  long const hk = fd_clock_tile_wallclock_to_tickcount( state->clock, g_clock+(long)10e6 );
+  FD_TEST( fd_bam_test_next_deadline( state )==LONG_MAX );
+
+  /* Disconnected: the release is pending, also while a keyswitch halts
+     signing */
+  fd_fseq_update( status, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  FD_TEST( fd_bam_test_next_deadline( state )==hk );
+  state->halt_signing = 1U;
+  FD_TEST( fd_bam_test_next_deadline( state )==hk );
+  state->halt_signing = 0U;
+
+  /* Healthy: the activation is pending until the override is set, also
+     while queued transactions pause the waker */
+  test_bam_env_mock_conn( env );
+  fd_fseq_update( status, 0UL );
+  state->next_step_deadline = LONG_MAX;
+  FD_TEST( fd_bam_test_next_deadline( state )==hk );
+  state->waker_paused = 2U;
+  FD_TEST( fd_bam_test_next_deadline( state )==hk );
+  state->waker_paused = 0U;
+  state->next_step_deadline = g_clock+1L;
+  FD_TEST( fd_bam_test_next_deadline( state )==fd_clock_tile_wallclock_to_tickcount( state->clock, g_clock+1L ) );
+  fd_fseq_update( status, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  state->next_step_deadline = LONG_MAX;
+  FD_TEST( fd_bam_test_next_deadline( state )==LONG_MAX );
+
+  state->bam_status_fseq = NULL;
+  FD_TEST( fd_fseq_delete( fd_fseq_leave( status ) )==status_mem );
+  test_bam_env_destroy( env );
+}
+
 static void
 test_bam_activation_ignores_stale_gossip_fseq_after_reenable( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
@@ -9338,6 +9461,8 @@ main( int     argc,
   test_bam_gossip_publishes_bam_config_contact( wksp );
   test_bam_activation_waits_for_gossip_fseq( wksp );
   test_bam_activation_waits_for_bundle_publication( wksp );
+  test_bam_handoff_rings_parked_readers( wksp );
+  test_bam_handoff_keeps_housekeeping_cadence( wksp );
   test_bam_activation_ignores_stale_gossip_fseq_after_reenable( wksp );
   test_bam_disable_clears_status_with_pending_gossip_handoff( wksp );
   test_bam_disable_restores_default_contact_before_activation( wksp );

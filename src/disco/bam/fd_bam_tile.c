@@ -655,7 +655,13 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
 
   _Bool generation_ready = !ctx->bam_gen_fseq ||
                            fd_fseq_query( ctx->bam_gen_fseq )==((ulong)ctx->ownership_gen<<1);
-  if( FD_UNLIKELY( ctx->ownership_gen_retired && !generation_ready ) ) return;
+  if( FD_UNLIKELY( ctx->ownership_gen_retired && !generation_ready ) ) {
+    /* In the efficient layout an idle pack is parked and reads bam_gen
+       only when woken.  Ring it on every refresh until it acknowledges,
+       as a ring that races its park is lost. */
+    if( stem && stem->sleep ) fd_sleep_ring( stem->sleep, ctx->pack_tile_id );
+    return;
+  }
   if( FD_UNLIKELY( ctx->ownership_gen_retired || prev_bam_active!=bam_active ) ) FD_HW_MFENCE_LD();
 
   if( FD_UNLIKELY( !bam_active ) ) {
@@ -711,6 +717,12 @@ fd_bam_publish_active_state( fd_bam_tile_t *    ctx,
       (void)FD_ATOMIC_CAS( ctx->bam_status_fseq, 0UL, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
     if( FD_LIKELY( fd_fseq_query( ctx->bam_status_fseq )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) )
       ctx->ownership_gen_retired = 0U;
+  }
+
+  /* Only this tile sets or clears the override: wake its parked readers. */
+  if( FD_UNLIKELY( stem && stem->sleep && prev_bam_active!=( fd_fseq_query( ctx->bam_status_fseq )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE ) ) ) {
+    fd_sleep_ring( stem->sleep, ctx->pack_tile_id );
+    if( ctx->bundle_tile_id!=ULONG_MAX ) fd_sleep_ring( stem->sleep, ctx->bundle_tile_id );
   }
 }
 
@@ -1038,10 +1050,19 @@ fd_bam_tile_override_active( fd_bam_tile_t const * ctx ) {
   return fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
 }
 
+#define STEM_LAZY ((long)10e6)
+
+/* Housekeeping drives an ownership handoff, which is pending while the
+   override lags the client's health (pack's acknowledgement then the
+   release, or an activation awaiting gossip or bundle).  A parked tile
+   runs housekeeping only when woken, so meanwhile wake at its cadence. */
+
 static long
 next_deadline( fd_bam_tile_t * ctx ) {
-  if( FD_UNLIKELY( ctx->halt_signing || ctx->waker_paused || ctx->next_step_deadline==LONG_MAX ) ) return LONG_MAX;
-  return fd_clock_tile_wallclock_to_tickcount( ctx->clock, ctx->next_step_deadline );
+  long deadline = ( ctx->halt_signing || ctx->waker_paused ) ? LONG_MAX : ctx->next_step_deadline;
+  if( FD_UNLIKELY( ( fd_bam_client_status( ctx )==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY )!=fd_bam_tile_override_active( ctx ) ) )
+    deadline = fd_long_min( deadline, fd_bam_now()+STEM_LAZY );
+  return deadline==LONG_MAX ? LONG_MAX : fd_clock_tile_wallclock_to_tickcount( ctx->clock, deadline );
 }
 
 static void
@@ -1893,6 +1914,8 @@ unprivileged_init( fd_topo_t const *      topo,
      and wakes up peers waiting for the override. */
   fd_fseq_update( ctx->bam_status_fseq, 0UL );
   fd_fseq_update( ctx->bam_gen_fseq, (ulong)ctx->ownership_gen<<1 );
+  ctx->pack_tile_id   = fd_topo_find_tile( topo, "pack",   0UL );
+  ctx->bundle_tile_id = fd_topo_find_tile( topo, "bundle", 0UL );
 
   fd_bam_tile_parse_endpoint( ctx, tile );
 
@@ -1970,8 +1993,6 @@ populate_allowed_fds( fd_topo_t const *      topo,
   }
   return out_cnt;
 }
-
-#define STEM_LAZY ((long)10e6)
 
 #define STEM_CALLBACK_CONTEXT_TYPE  fd_bam_tile_t
 #define STEM_CALLBACK_CONTEXT_ALIGN alignof(fd_bam_tile_t)
