@@ -1271,7 +1271,7 @@ fd_bam_client_request_failed( fd_bam_tile_t * ctx,
    unknown.  Outside the leader schedule, every leader schedule recheck
    dials BAM and gets the same PERMISSION_DENIED.  The first rejection of
    such a streak warns as usual; repeats skip the WARNING lines and leave
-   only the INFO trail.  A scheduled validator, any other rejection, or
+   only the INFO trail.  A known leader slot, any other rejection, or
    the first rejection in a new epoch always warns. */
 static int
 fd_bam_note_scheduler_reject( fd_bam_tile_t *             ctx,
@@ -1346,8 +1346,8 @@ fd_bam_client_grpc_rx_end(
       FD_LOG_INFO(( "BAM scheduler stream failed (gRPC status %u-%s). Reconnecting ...",
                     resp->grpc_status, fd_grpc_status_cstr( resp->grpc_status ) ));
       /* A rejection repeated while no leader slot is known, e.g. not on
-         the node's leader schedule, will not clear soon (transient ones
-         name the slot or elapsed time, so they never repeat).  The node
+         the node's leader schedule, usually will not clear soon (but
+         transient ones can repeat, e.g. "Connection blocked").  The node
          takes no results meanwhile, and queued ones would keep the leader
          schedule gate from holding off redials. */
       if( FD_UNLIKELY( repeat && ctx->feedback_queue_depth ) ) {
