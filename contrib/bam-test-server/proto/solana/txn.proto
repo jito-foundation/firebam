@@ -1,0 +1,84 @@
+syntax = "proto3";
+package org.solana.sealevel.v1;
+
+import "context.proto";
+import "metadata.proto";
+
+message MessageHeader {
+  uint32 num_required_signatures = 1;
+  uint32 num_readonly_signed_accounts = 2;
+  uint32 num_readonly_unsigned_accounts = 3;
+}
+
+message CompiledInstruction {
+  uint32 program_id_index = 1;
+  repeated uint32 accounts = 2;
+  bytes data = 3;
+}
+
+message MessageAddressTableLookup {
+  bytes account_key = 1;
+  repeated uint32 writable_indexes = 2;
+  repeated uint32 readonly_indexes = 3;
+}
+
+message TransactionMessage {
+  bool is_legacy = 1;
+  MessageHeader header = 2;
+  repeated bytes account_keys = 3;
+  bytes recent_blockhash = 5;
+  repeated CompiledInstruction instructions = 6;
+  repeated MessageAddressTableLookup address_table_lookups = 7;
+}
+
+message SanitizedTransaction {
+  TransactionMessage message = 1;
+  bytes message_hash = 2;
+  repeated bytes signatures = 4;
+}
+
+message TxnContext {
+  SanitizedTransaction tx = 1;
+  repeated AcctState account_shared_data = 2;
+  repeated bytes blockhash_queue = 3;
+  EpochContext epoch_ctx = 4;
+  SlotContext slot_ctx = 5;
+}
+
+message ResultingState {
+  repeated AcctState acct_states = 1;
+  repeated RentDebits rent_debits = 2;
+  uint64 transaction_rent = 3;
+}
+
+message RentDebits {
+  bytes pubkey = 1;
+  int64 rent_collected = 2;
+}
+
+message FeeDetails {
+  uint64 transaction_fee = 1;
+  uint64 prioritization_fee = 2;
+}
+
+message TxnResult {
+  bool executed = 1;
+  bool sanitization_error = 2;
+  ResultingState resulting_state = 3;
+  uint64 rent = 4;
+  bool is_ok = 5;
+  uint32 status = 6;
+  uint32 instruction_error = 7;
+  uint32 instruction_error_index = 8;
+  uint32 custom_error = 9;
+  bytes return_data = 10;
+  uint64 executed_units = 11;
+  FeeDetails fee_details = 12;
+  uint64 loaded_accounts_data_size = 13;
+}
+
+message TxnFixture {
+  FixtureMetadata metadata = 1;
+  TxnContext input = 2;
+  TxnResult output = 3;
+}
