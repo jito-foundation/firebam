@@ -401,6 +401,8 @@ after_credit( fd_resolv_ctx_t *   ctx,
   ctx->flush_pool_idx = next;
 }
 
+#include "fd_resolv_tile_bam.c"
+
 static inline void
 after_frag( fd_resolv_ctx_t *   ctx,
             ulong               in_idx,
@@ -488,6 +490,7 @@ after_frag( fd_resolv_ctx_t *   ctx,
   FD_TEST( txnm->payload_sz<=FD_TPU_MTU );
   FD_TEST( txnm->txn_t_sz<=FD_TXN_MAX_SZ );
   fd_txn_t const * txnt = fd_txn_m_txn_t( txnm );
+  if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) { fd_resolv_tile_bam_after_frag( ctx, txnm, txnt, tsorig, stem ); return; }
 
   /* If the transaction doesn't look like a nonce transaction and we
      find the recent blockhash, life is simple.  We drop transactions

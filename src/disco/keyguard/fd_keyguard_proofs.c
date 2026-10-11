@@ -52,6 +52,24 @@ match( void ) {
   int sign_type;
   ulong payload_mask = fd_keyguard_payload_match( data, sz, sign_type );
 
+  /* A BAM auth payload (label and 1 to 128 challenge bytes) can also
+     match a 32 byte Merkle shred root or, with zero bytes in the
+     challenge, the vote history collection counts.  The BAM role must
+     reject these, and the other types are checked as if BAM auth did
+     not match. */
+  if( payload_mask & FD_KEYGUARD_PAYLOAD_BAM_AUTH ) {
+    if( payload_mask!=FD_KEYGUARD_PAYLOAD_BAM_AUTH ) {
+      fd_keyguard_authority_t authority;
+      __CPROVER_assert( !fd_keyguard_payload_authorize( &authority, data, sz, FD_KEYGUARD_ROLE_BAM, sign_type ),
+                        "BAM rejects ambiguous payload" );
+    }
+    __CPROVER_assert( 0==( payload_mask &
+                          (~( FD_KEYGUARD_PAYLOAD_BAM_AUTH     |
+                              FD_KEYGUARD_PAYLOAD_SHRED        |
+                              FD_KEYGUARD_PAYLOAD_VOTE_HISTORY ) ) ), "BAM auth conflict" );
+    payload_mask &= ~FD_KEYGUARD_PAYLOAD_BAM_AUTH;
+  }
+
   /* A vote history starts with our identity, so it can also match the
      types that look only at the first bytes. */
   if( payload_mask & FD_KEYGUARD_PAYLOAD_VOTE_HISTORY ) {

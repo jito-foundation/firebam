@@ -1,0 +1,30 @@
+description = "Exercise attributable and unattributable malformed batch identities beyond the 128-batch wrapper limit."
+heartbeat_interval_ms = 1000
+expected_terminal_results = 258
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_raw_overflow_faults"
+start_seq_id = 5600
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 257
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5900
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 258
+timeout_ms = 30000

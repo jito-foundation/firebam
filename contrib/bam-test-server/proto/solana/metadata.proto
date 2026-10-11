@@ -1,0 +1,6 @@
+syntax = "proto3";
+package org.solana.sealevel.v1;
+
+message FixtureMetadata {
+  string fn_entrypoint = 1;
+}
