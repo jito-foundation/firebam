@@ -2,6 +2,7 @@
 #include "fd_bundle_tile_private.h"
 #include "fd_bundle_tile.h"
 #include "../fd_txn_m.h"
+#include "fd_bundle_tile_bam.h"
 #include "../metrics/fd_metrics.h"
 #include "../topo/fd_topo.h"
 #include "../keyguard/fd_keyload.h"
@@ -132,7 +133,7 @@ fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx ) {
   long log_next_ns     = ctx->last_bundle_status_log_nanos + log_interval_ns;
   long now_ns          = fd_log_wallclock();
 
-  if( FD_UNLIKELY( !ctx->sleep_mode && status!=FD_BUNDLE_STATE_CONNECTED && now_ns>log_next_ns ) ) {
+  if( FD_UNLIKELY( !ctx->bam_override_active && !ctx->sleep_mode && status!=FD_BUNDLE_STATE_CONNECTED && now_ns>log_next_ns ) ) {
     FD_LOG_WARNING(( "No bundle server connection in the last %ld seconds", log_interval_ns/(long)1e9 ) );
     ctx->last_bundle_status_log_nanos = now_ns;
   }
@@ -231,7 +232,7 @@ after_frag( fd_bundle_tile_t *  ctx,
 
 static long
 next_deadline( fd_bundle_tile_t * ctx ) {
-  if( FD_UNLIKELY( ctx->halt_signing || ctx->sleep_mode || ctx->next_step_deadline==LONG_MAX ) ) return LONG_MAX;
+  if( FD_UNLIKELY( ctx->halt_signing || ctx->sleep_mode || ctx->bam_override_active || ctx->next_step_deadline==LONG_MAX ) ) return LONG_MAX;
   return fd_clock_tile_wallclock_to_tickcount( ctx->clock, ctx->next_step_deadline );
 }
 
@@ -239,11 +240,13 @@ static void
 before_credit( fd_bundle_tile_t *  ctx,
                fd_stem_context_t * stem,
                int *               charge_busy ) {
+  fd_bundle_tile_sync_bam_override( ctx );
+
   if( FD_UNLIKELY( !ctx->stem ) ) {
     ctx->stem = stem;
   }
 
-  if( FD_UNLIKELY( ctx->halt_signing || ctx->sleep_mode ) ) {
+  if( FD_UNLIKELY( ctx->halt_signing || ctx->sleep_mode || ctx->bam_override_active ) ) {
     if( ctx->sleep_mode && ctx->tcp_sock>=0 ) {
       fd_bundle_client_reset( ctx );
       /* Override backoff so we don't treat this as an error */
@@ -283,7 +286,7 @@ after_credit( fd_bundle_tile_t *  ctx,
               int *               charge_busy ) {
   if( FD_UNLIKELY( fd_clock_tile_recal_due( ctx->clock ) ) ) fd_clock_tile_recal( ctx->clock );
 
-  if( !pending_txn_empty( ctx->pending_txns ) ) {
+  if( !pending_txn_empty( ctx->pending_txns ) && fd_bundle_tile_claim_publish( ctx ) ) {
     fd_bundle_pending_txn_t * head = pending_txn_peek_head( ctx->pending_txns );
     ulong drain_seq = head->bundle_seq;
     ulong drain_sig = head->sig;
@@ -317,6 +320,7 @@ after_credit( fd_bundle_tile_t *  ctx,
       pending_txn_remove_head( ctx->pending_txns );
       drain_cnt++;
     } while( fd_bundle_drain_continue( ctx->pending_txns, drain_sig, drain_seq, drain_cnt, STEM_BURST ) );
+    fd_bundle_tile_release_publish( ctx );
 
     *charge_busy = 1;
     *opt_poll_in = 0;
@@ -594,6 +598,8 @@ unprivileged_init( fd_topo_t const *      topo,
   } else {
     ctx->plugin_out = (fd_bundle_out_ctx_t){ .idx=ULONG_MAX };
   }
+
+  fd_bundle_tile_bam_init( ctx, topo );
 
   /* Set socket receive buffer size */
   ulong so_rcvbuf = tile->bundle.buf_sz;

@@ -1271,6 +1271,13 @@ fd_gui_txn_waterfall_snap( fd_gui_t *               gui,
     cur->out.bank_nonce_wrong_blockhash  += execle_metrics[ MIDX( COUNTER, EXECLE, TXN_RESULT_NONCE_WRONG_BLOCKHASH ) ];
   }
 
+  ulong bam_tile_idx = fd_topo_find_tile( topo, "bam", 0UL );
+  if( FD_LIKELY( bam_tile_idx!=ULONG_MAX ) ) {
+    fd_topo_tile_t const * bam = &topo->tiles[ bam_tile_idx ];
+    volatile ulong const * bam_metrics = fd_metrics_tile( bam->metrics );
+    cur->in.bam = bam_metrics[ MIDX( COUNTER, BAM, TRANSACTION_PUBLISHED ) ];
+  }
+
   ulong pack_tile_idx = fd_topo_find_tile( topo, "pack", 0UL );
   if( pack_tile_idx!=ULONG_MAX ) {
     fd_topo_tile_t const * pack = &topo->tiles[ pack_tile_idx ];
@@ -1513,7 +1520,8 @@ fd_gui_tile_stats_snap( fd_gui_t *                     gui,
                            waterfall->out.verify_failed;
   stats->verify_total_cnt = waterfall->in.gossip +
                             waterfall->in.quic +
-                            waterfall->in.udp -
+                            waterfall->in.udp +
+                            waterfall->in.bam -
                             waterfall->out.net_overrun -
                             waterfall->out.tpu_quic_invalid -
                             waterfall->out.tpu_udp_invalid -

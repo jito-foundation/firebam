@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - 'src/disco/metrics/metrics.xml'
+      - 'src/disco/metrics/metrics_bam.xml'
       - 'src/disco/metrics/Makefile'
       - 'src/disco/metrics/gen_metrics.py'
       - 'src/disco/metrics/generate/**'

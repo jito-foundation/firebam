@@ -17,6 +17,7 @@
 #include "../fd_clock_tile.h"
 
 #include <string.h>
+#include "fd_pack_tile_bam.h"
 
 /* fd_pack is responsible for taking verified transactions, and
    arranging them into "microblocks" (groups) of transactions to
@@ -99,6 +100,7 @@ static char const * const schedule_strategy_strings[2] = { "PRF", "BAL" };
 typedef struct {
   fd_acct_addr_t commission_pubkey[1];
   ulong          commission;
+  _Bool          is_bam;
 } block_builder_info_t;
 
 typedef struct {
@@ -310,9 +312,10 @@ typedef struct {
   /* Used between during_frag and after_frag */
   ulong pending_rebate_sz;
   union{ fd_pack_rebate_t rebate[1]; uchar footprint[USHORT_MAX]; } rebate[1];
+  PACK_TILE_BAM_CTX
 } fd_pack_ctx_t;
 
-#define BUNDLE_META_SZ 40UL
+#define BUNDLE_META_SZ 48UL
 FD_STATIC_ASSERT( sizeof(block_builder_info_t)==BUNDLE_META_SZ, blk_engine_cfg );
 
 #define FD_PACK_METRIC_STATE_TRANSACTIONS 0
@@ -335,6 +338,8 @@ update_metric_state( fd_pack_ctx_t * ctx,
   }
 }
 
+#include "fd_pack_tile_bam.c"
+
 static inline void
 remove_ib( fd_pack_ctx_t * ctx ) {
   /* It's likely the initializer bundle is long scheduled, but we want to
@@ -342,8 +347,10 @@ remove_ib( fd_pack_ctx_t * ctx ) {
   if( FD_UNLIKELY( ctx->crank->enabled & ctx->crank->ib_inserted ) ) {
     ulong deleted = fd_pack_delete_transaction( ctx->pack, (fd_ed25519_sig_t const *)ctx->crank->last_sig );
     FD_MCNT_INC( PACK, TXN_DELETED, deleted );
+    if( FD_UNLIKELY( deleted ) ) pack_tile_bam_ib_deleted( ctx );
   }
   ctx->crank->ib_inserted = 0;
+  pack_tile_bam_ib_removed( ctx );
 }
 
 
@@ -374,6 +381,7 @@ scratch_footprint( fd_topo_tile_t const * tile ) {
 #if FD_PACK_USE_EXTRA_STORAGE
   l = FD_LAYOUT_APPEND( l, extra_txn_deq_align(),    extra_txn_deq_footprint()                                 );
 #endif
+  l = pack_tile_bam_scratch_footprint( l, tile );
   return FD_LAYOUT_FINI( l, scratch_align() );
 }
 
@@ -434,6 +442,7 @@ get_done_packing( fd_pack_ctx_t * ctx, fd_done_packing_t * done_packing, int rea
 static inline void
 metrics_write( fd_pack_ctx_t * ctx ) {
   FD_MCNT_ENUM_COPY( PACK, TXN_INSERTED,          ctx->insert_result  );
+  pack_tile_bam_metrics_write( ctx );
   FD_MCNT_ENUM_COPY( PACK, STATE_DURATION_NANOS,        ((ulong*)ctx->metric_timing) );
   FD_MCNT_ENUM_COPY( PACK, BUNDLE_CRANK_RESULT,           ctx->crank->metrics );
   FD_MHIST_COPY( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS, ctx->schedule_duration );
@@ -551,6 +560,7 @@ before_credit( fd_pack_ctx_t *     ctx,
 #endif
     ctx->cur_spot = NULL;
   }
+  if( FD_UNLIKELY( ctx->bam_work_max ) ) pack_tile_sync_bam_ownership_generation( ctx ); /* even while backpressured */
 }
 
 #if FD_PACK_USE_EXTRA_STORAGE
@@ -604,11 +614,21 @@ next_deadline( fd_pack_ctx_t * ctx ) {
   return fd_long_min( slot_end, fd_pack_pacing_next_enable( ctx->pacer, enabled ) );
 }
 
+static inline void after_credit_impl( fd_pack_ctx_t * ctx, fd_stem_context_t * stem, int * charge_busy, int const bam );
+
 static inline void
 after_credit( fd_pack_ctx_t *     ctx,
               fd_stem_context_t * stem,
               int *               opt_poll_in FD_PARAM_UNUSED,
               int *               charge_busy ) {
+  /* Separate copies with and without BAM, as fd_stem_run1.c */
+  if( FD_UNLIKELY( ctx->bam_status_fseq ) ) after_credit_impl( ctx, stem, charge_busy, 1 );
+  else                                      after_credit_impl( ctx, stem, charge_busy, 0 );
+}
+
+static inline __attribute__((always_inline)) void
+after_credit_impl( fd_pack_ctx_t * ctx, fd_stem_context_t * stem, int * charge_busy, int const bam ) {
+  _Bool bam_override = bam && pack_tile_bam_after_credit_begin( ctx, stem, charge_busy );
   if( FD_UNLIKELY( (ctx->skip_cnt--)>0L ) ) return; /* It would take ages for this to hit LONG_MIN */
 
   long now = fd_tickcount();
@@ -668,6 +688,7 @@ after_credit( fd_pack_ctx_t *     ctx,
   if( FD_UNLIKELY( ctx->leader_slot!=ULONG_MAX &&
                    fd_clock_tile_tickcount_to_wallclock( ctx->clock, now )>=ctx->slot_end_ns ) ) {
     *charge_busy = 1;
+    pack_tile_bam_end_slot( ctx, now, "time", PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_POH_TIMEOUT );
 
     fd_done_packing_t * done_packing = fd_chunk_to_laddr( ctx->poh_out.mem, ctx->poh_out.chunk );
     get_done_packing( ctx, done_packing, FD_PACK_END_SLOT_REASON_TIME ); /* needs to be called before fd_pack_end_block */
@@ -727,6 +748,7 @@ after_credit( fd_pack_ctx_t *     ctx,
     return;
   }
 
+  if( FD_UNLIKELY( bam ) ) pack_tile_publish_bam_leader_state( ctx, stem, now );
   if( FD_UNLIKELY( ctx->pending_reduce_mb_bound ) ) {
     ctx->pending_reduce_mb_bound = 0;
     ulong * dst = fd_chunk_to_laddr( ctx->poh_out.mem, ctx->poh_out.chunk );
@@ -742,11 +764,15 @@ after_credit( fd_pack_ctx_t *     ctx,
 
   int any_ready     = 0;
   int any_scheduled = 0;
+  ulong bundle_hint = ULONG_MAX;
+  fd_txn_e_t const * candidate = NULL;
+  int bam_ready = bam ? pack_tile_bam_peek( ctx, bam_override, &candidate, &bundle_hint ) : 0;
 
   *charge_busy = 1;
 
   if( FD_LIKELY( ctx->crank->enabled ) ) {
     block_builder_info_t const * top_meta = fd_pack_peek_bundle_meta( ctx->pack );
+    if( FD_UNLIKELY( bam ) ) top_meta = pack_tile_bam_crank_meta( ctx, top_meta, bam_override, &bam_ready, now );
     if( FD_UNLIKELY( top_meta ) ) {
       /* Have bundles, in a reasonable state to crank. */
 
@@ -760,6 +786,7 @@ after_credit( fd_pack_ctx_t *     ctx,
       if( FD_LIKELY( txn_sz==0UL ) ) { /* Everything in good shape! */
         fd_pack_insert_bundle_cancel( ctx->pack, bundle, 1UL );
         fd_pack_set_initializer_bundles_ready( ctx->pack );
+        if( bam_override ) ctx->bam_tip_cfg_version = ctx->bam_crank_cfg_version;
         ctx->crank->metrics[ 0 ]++; /* BUNDLE_CRANK_RESULT_NOT_NEEDED */
       }
       else if( FD_LIKELY( txn_sz<ULONG_MAX ) ) {
@@ -777,13 +804,15 @@ after_credit( fd_pack_ctx_t *     ctx,
 
         ctx->crank->ib_inserted = 1;
         ulong deleted;
-        int retval = fd_pack_insert_bundle_fini( ctx->pack, bundle, 1UL, ctx->block_height-1UL, 1, NULL, &deleted );
+        int retval = fd_pack_insert_bundle_fini( ctx->pack, bundle, 1UL, ctx->block_height-1UL, fd_int_if( bam_override, FD_PACK_IB_TYPE_BAM, FD_PACK_IB_TYPE_NORMAL ), NULL, &deleted );
+        if( FD_UNLIKELY( bam && deleted ) ) pack_tile_maybe_reconcile_pending_bam_work( ctx );
         FD_MCNT_INC( PACK, TXN_DELETED, deleted );
         ctx->insert_result[ retval + FD_PACK_INSERT_RETVAL_OFF ]++;
         if( FD_UNLIKELY( retval<0 ) ) {
           ctx->crank->metrics[ 3 ]++; /* BUNDLE_CRANK_RESULT_INSERTION_FAILED */
           FD_LOG_WARNING(( "inserting initializer bundle returned %i", retval ));
         } else {
+          ctx->bam_ib_associated = bam_override;
           /* Update the cached copy of the on-chain state.  This seems a
              little dangerous, since we're updating it as if the bundle
              succeeded without knowing if that's true, but here's why
@@ -801,6 +830,7 @@ after_credit( fd_pack_ctx_t *     ctx,
 
              Otherwise, the initializer bundle succeeded, which means
              that these are the right values to use. */
+          *ctx->bam_prev_config_before_ib = *ctx->crank->prev_config;
           fd_bundle_crank_apply( ctx->crank->gen, ctx->crank->prev_config, top_meta->commission_pubkey,
                                  ctx->crank->tip_receiver_owner, ctx->crank->epoch, top_meta->commission );
           ctx->crank->metrics[ 1 ]++; /* BUNDLE_CRANK_RESULT_INSERTED */
@@ -837,11 +867,13 @@ after_credit( fd_pack_ctx_t *     ctx,
                                       | fd_int_if( i<pacing_execle_cnt, FD_PACK_SCHEDULE_TXN,    0 );
         break;
     }
+    if( FD_UNLIKELY( bam ) ) flags = pack_tile_bam_schedule_flags( ctx, flags, bam_override, bam_ready, candidate, &bundle_hint );
 
     fd_pack_out_ctx_t * execle_out = &ctx->execle_out[ i ];
     fd_txn_e_t * microblock_dst = fd_chunk_to_laddr( execle_out->mem, execle_out->chunk );
     long schedule_duration = -fd_tickcount();
-    ulong schedule_cnt = fd_pack_schedule_next_microblock( ctx->pack, CUS_PER_MICROBLOCK, VOTE_FRACTION, (ulong)i, flags, microblock_dst );
+    ulong schedule_cnt = FD_UNLIKELY( bam ) ? pack_tile_bam_schedule( ctx, i, flags, bundle_hint, microblock_dst ) :
+                         fd_pack_schedule_next_microblock( ctx->pack, CUS_PER_MICROBLOCK, VOTE_FRACTION, (ulong)i, flags, microblock_dst );
     schedule_duration      += fd_tickcount();
     fd_histf_sample( (schedule_cnt>0UL) ? ctx->schedule_duration : ctx->no_sched_duration, (ulong)schedule_duration );
 
@@ -886,6 +918,7 @@ after_credit( fd_pack_ctx_t *     ctx,
          attempts for (execle_cnt + 1) link polls after a successful
          schedule attempt. */
       fd_long_store_if( ctx->use_consumed_cus, &(ctx->skip_cnt), (long)(ctx->execle_cnt + 1) );
+      if( FD_UNLIKELY( bam_override ) ) pack_tile_bam_scheduled( ctx, microblock_dst, schedule_cnt, now2 );
     }
   }
 
@@ -917,6 +950,7 @@ after_credit( fd_pack_ctx_t *     ctx,
        metric, but we end the slot early so won't see it unless we also
        increment it here. */
     FD_MCNT_INC( PACK, MICROBLOCK_PER_BLOCK_LIMIT_REACHED, 1UL );
+    pack_tile_bam_end_slot( ctx, now, "microblock", PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_LEADER_SLOT_END );
 
     fd_done_packing_t * done_packing = fd_chunk_to_laddr( ctx->poh_out.mem, ctx->poh_out.chunk );
     get_done_packing( ctx, done_packing, FD_PACK_END_SLOT_REASON_MICROBLOCK );
@@ -941,6 +975,8 @@ after_credit( fd_pack_ctx_t *     ctx,
 /* At this point, we have started receiving frag seq with details in
     mline at time now.  Speculatively process it here. */
 
+static inline void during_frag_impl( fd_pack_ctx_t * ctx, ulong in_idx, ulong sig, ulong chunk, ulong sz, int const bam );
+
 static inline void
 during_frag( fd_pack_ctx_t * ctx,
              ulong           in_idx,
@@ -949,6 +985,13 @@ during_frag( fd_pack_ctx_t * ctx,
              ulong           chunk,
              ulong           sz,
              ulong           ctl FD_PARAM_UNUSED ) {
+  /* As after_credit (pack_tile_bam_init checks BAM is all or nothing) */
+  if( FD_UNLIKELY( ctx->bam_work_max ) ) during_frag_impl( ctx, in_idx, sig, chunk, sz, 1 );
+  else                                   during_frag_impl( ctx, in_idx, sig, chunk, sz, 0 );
+}
+
+static inline __attribute__((always_inline)) void
+during_frag_impl( fd_pack_ctx_t * ctx, ulong in_idx, ulong sig, ulong chunk, ulong sz, int const bam ) {
 
   uchar const * dcache_entry = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
 
@@ -1005,6 +1048,7 @@ during_frag( fd_pack_ctx_t * ctx,
     uchar source_tpu  = txnm->source_tpu;
     FD_TEST( payload_sz<=FD_TPU_MTU    );
     FD_TEST( txn_t_sz  <=FD_TXN_MAX_SZ );
+    if( FD_UNLIKELY( bam && !pack_tile_bam_during_frag( ctx, txnm ) ) ) return;
     fd_txn_t * txn  = fd_txn_m_txn_t( txnm );
 
     ulong addr_table_sz = 32UL*txn->addr_table_adtl_cnt;
@@ -1030,12 +1074,16 @@ during_frag( fd_pack_ctx_t * ctx,
 
 
     ulong bundle_id = txnm->block_engine.bundle_id;
-    if( FD_UNLIKELY( bundle_id ) ) {
+    if( FD_UNLIKELY( bam && source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) {
+      if( FD_UNLIKELY( !pack_tile_bam_bundle_spot( ctx, txnm, sig ) ) ) return;
+    } else if( FD_UNLIKELY( bundle_id ) ) {
+      if( FD_UNLIKELY( bam && !pack_tile_bam_be_bundle( ctx ) ) ) return;
       ctx->is_bundle = 1;
-      if( FD_LIKELY( bundle_id!=ctx->current_bundle->id ) ) {
+      if( FD_LIKELY( bundle_id!=ctx->current_bundle->id || !ctx->current_bundle->bundle ) ) {
         if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
           FD_MCNT_INC( PACK, TXN_PARTIAL_BUNDLE, ctx->current_bundle->txn_received );
           fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
+          ctx->current_bundle->bundle = NULL;
         }
         ctx->current_bundle->id                   = bundle_id;
         ctx->current_bundle->txn_cnt              = txnm->block_engine.bundle_txn_cnt;
@@ -1062,6 +1110,7 @@ during_frag( fd_pack_ctx_t * ctx,
       ctx->current_bundle->min_blockhash_height = fd_ulong_min( ctx->current_bundle->min_blockhash_height, block_height_to_use );
     } else {
       ctx->is_bundle = 0;
+      if( FD_UNLIKELY( bam && pack_tile_bam_drop_tpu_txn( ctx, txn, txnm ) ) ) return;
 #if FD_PACK_USE_EXTRA_STORAGE
       if( FD_LIKELY( ctx->leader_slot!=ULONG_MAX || fd_pack_avail_txn_cnt( ctx->pack )<ctx->max_pending_transactions ) ) {
         ctx->cur_spot = fd_pack_insert_txn_init( ctx->pack );
@@ -1111,6 +1160,8 @@ during_frag( fd_pack_ctx_t * ctx,
 /* After the transaction has been fully received, and we know we were
    not overrun while reading it, insert it into pack. */
 
+static inline void after_frag_impl( fd_pack_ctx_t * ctx, ulong in_idx, ulong sig, fd_stem_context_t * stem, int const bam );
+
 static inline void
 after_frag( fd_pack_ctx_t *     ctx,
             ulong               in_idx,
@@ -1124,6 +1175,13 @@ after_frag( fd_pack_ctx_t *     ctx,
   (void)sz;
   (void)tsorig;
   (void)tspub;
+  /* As during_frag */
+  if( FD_UNLIKELY( ctx->bam_work_max ) ) after_frag_impl( ctx, in_idx, sig, stem, 1 );
+  else                                   after_frag_impl( ctx, in_idx, sig, stem, 0 );
+}
+
+static inline __attribute__((always_inline)) void
+after_frag_impl( fd_pack_ctx_t * ctx, ulong in_idx, ulong sig, fd_stem_context_t * stem, int const bam ) {
   (void)stem;
 
   long now = fd_tickcount();
@@ -1134,8 +1192,10 @@ after_frag( fd_pack_ctx_t *     ctx,
       if( FD_LIKELY( sig==REPLAY_SIG_TXN_EXECUTED && ctx->txn_committed ) ) {
         ulong deleted = fd_pack_delete_transaction( ctx->pack, fd_type_pun( ctx->executed_txn_sig ) );
         FD_MCNT_INC( PACK, TXN_ALREADY_EXECUTED, deleted );
+        if( FD_UNLIKELY( bam && deleted ) ) pack_tile_retire_all_pending_bam_work_by_sig( ctx, ctx->executed_txn_sig );
       }
       if( FD_UNLIKELY( sig==REPLAY_SIG_RESET && ctx->leader_slot!=ULONG_MAX ) ) {
+        pack_tile_bam_end_slot( ctx, now, "reset", PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_LEADER_SLOT_END );
         fd_done_packing_t * done_packing = fd_chunk_to_laddr( ctx->poh_out.mem, ctx->poh_out.chunk );
         get_done_packing( ctx, done_packing, FD_PACK_END_SLOT_REASON_ABANDONED );
         log_end_block_metrics( ctx, now, "reset", done_packing->limits_usage->block_cost );
@@ -1178,6 +1238,7 @@ after_frag( fd_pack_ctx_t *     ctx,
     long now_ns    = fd_log_wallclock();
 
     if( FD_UNLIKELY( ctx->leader_slot!=ULONG_MAX ) ) {
+      pack_tile_bam_end_slot( ctx, now_ticks, "switch", PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_LEADER_SLOT_END );
       fd_done_packing_t * done_packing = fd_chunk_to_laddr( ctx->poh_out.mem, ctx->poh_out.chunk );
       get_done_packing( ctx, done_packing, FD_PACK_END_SLOT_REASON_ABANDONED );
       log_end_block_metrics( ctx, now_ticks, "switch", done_packing->limits_usage->block_cost );
@@ -1260,6 +1321,7 @@ after_frag( fd_pack_ctx_t *     ctx,
     limits->max_allocated_data_per_block = ctx->limits.slot_max_allocated_data_per_block;
     fd_pack_set_block_limits( ctx->pack, limits );
     fd_pack_pacing_update_consumed_cus( ctx->pacer, fd_pack_current_block_cost( ctx->pack ), now );
+    if( FD_UNLIKELY( bam ) ) pack_tile_bam_became_leader( ctx, stem, now_ns );
 
     break;
   }
@@ -1274,6 +1336,7 @@ after_frag( fd_pack_ctx_t *     ctx,
   }
   case IN_KIND_RESOLV: {
     /* Normal transaction case */
+    if( FD_UNLIKELY( bam && pack_tile_bam_resolv_after_frag( ctx, stem ) ) ) break;
 #if FD_PACK_USE_EXTRA_STORAGE
     if( FD_LIKELY( !ctx->insert_to_extra ) ) {
 #else
@@ -1286,6 +1349,7 @@ after_frag( fd_pack_ctx_t *     ctx,
         long insert_duration = -fd_tickcount();
         int result = fd_pack_insert_bundle_fini( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt, ctx->current_bundle->min_blockhash_height, 0, ctx->blk_engine_cfg, &deleted );
         insert_duration      += fd_tickcount();
+        if( FD_UNLIKELY( bam && deleted ) ) pack_tile_maybe_reconcile_pending_bam_work( ctx );
         FD_MCNT_INC( PACK, TXN_DELETED, deleted );
         ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
         fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
@@ -1297,6 +1361,7 @@ after_frag( fd_pack_ctx_t *     ctx,
       long insert_duration = -fd_tickcount();
       int result = fd_pack_insert_txn_fini( ctx->pack, ctx->cur_spot, blockhash_height, &deleted );
       insert_duration      += fd_tickcount();
+      if( FD_UNLIKELY( bam && deleted ) ) pack_tile_maybe_reconcile_pending_bam_work( ctx );
       FD_MCNT_INC( PACK, TXN_DELETED, deleted );
       ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ]++;
       fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
@@ -1308,8 +1373,10 @@ after_frag( fd_pack_ctx_t *     ctx,
     break;
   }
   case IN_KIND_EXECUTED_TXN: {
+    if( FD_UNLIKELY( bam && !pack_tile_bam_executed_txn( ctx, sig ) ) ) break;
     ulong deleted = fd_pack_delete_transaction( ctx->pack, fd_type_pun( ctx->executed_txn_sig ) );
     FD_MCNT_INC( PACK, TXN_ALREADY_EXECUTED, deleted );
+    if( FD_UNLIKELY( bam && deleted ) ) pack_tile_retire_all_pending_bam_work_by_sig( ctx, ctx->executed_txn_sig );
     break;
   }
   }
@@ -1473,6 +1540,8 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->extra_txn_deq = extra_txn_deq_join( extra_txn_deq_new( FD_SCRATCH_ALLOC_APPEND( l, extra_txn_deq_align(),
                                                                                           extra_txn_deq_footprint() ) ) );
 #endif
+  ulong bam_scratch = FD_SCRATCH_ALLOC_FINI( l, 1UL );
+  FD_SCRATCH_ALLOC_APPEND( l, 1UL, pack_tile_bam_scratch_new( ctx, tile, bam_scratch, rng ) );
 
   ctx->cur_spot                      = NULL;
   ctx->is_bundle                     = 0;
@@ -1551,6 +1620,8 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->poh_out.chunk0 = fd_dcache_compact_chunk0( ctx->poh_out.mem, poh_out_link->dcache );
   ctx->poh_out.wmark  = fd_dcache_compact_wmark ( ctx->poh_out.mem, poh_out_link->dcache, poh_out_link->mtu );
   ctx->poh_out.chunk  = ctx->poh_out.chunk0;
+
+  pack_tile_bam_init( ctx, topo, tile );
 
   /* Initialize metrics storage */
   memset( ctx->insert_result, '\0', FD_PACK_INSERT_RETVAL_CNT * sizeof(ulong) );

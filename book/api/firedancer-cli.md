@@ -86,6 +86,36 @@ prints diagnostic messages to `stderr`.
 | `--name <name>`   | Name of the validator instance to attach to, if more than one is running on this host |
 | `--config <path>` | Optional path to a configuration TOML file naming the validator to attach to. Only the `name` and `[hugetlbfs.mount_path]` values are used, and they must match the running validator |
 
+## `set-bam`
+Changes the BAM endpoint and enable state of a running validator. BAM
+must have been enabled at startup with `[tiles.bam].enabled = true`;
+this command cannot add the BAM tile to a running topology.
+
+| Arguments                | Description                                                  |
+|--------------------------|--------------------------------------------------------------|
+| `--config <path>`        | Configuration TOML the validator was started with            |
+| `--enable` / `--disable` | Turn BAM scheduling on or off (mutually exclusive)           |
+| `--url <url>`            | Set the BAM gRPC endpoint; an empty string clears it         |
+| `--sni <domain>`         | Set the TLS SNI override; an empty string clears it          |
+
+At least one of `--enable`, `--disable`, `--url`, or `--sni` is required.
+
+```bash
+$ firedancer set-bam --config ./src/app/firedancer/config/testnet-bam.toml \
+    --enable --url http://testnet.bam.jito.wtf:50055
+```
+
+## `get-bam`
+Prints the running validator's BAM enable state, URL, and SNI override.
+It has the same startup and `--config` requirements as `set-bam`.
+
+```bash
+$ firedancer get-bam --config ./src/app/firedancer/config/testnet-bam.toml
+enabled=true
+url=http://testnet.bam.jito.wtf:50055
+sni=(default)
+```
+
 ## `add-authorized-voter`
 Adds an authorized voter to the running validator. The `<keypair>`
 argument is required and must be the path to an Agave style
