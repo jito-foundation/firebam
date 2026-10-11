@@ -926,14 +926,15 @@ FD_UNIT_TEST( execle_rebate_batch_counts_bundle_microblocks ) {
     test_build_empty_txn( bundle+i, bank, missing_fee_payer, writable_acct, 30UL+i, 0 );
   }
   test_execle_run( env, bundle, 5UL, 0U, 0UL, 1 );
+  FD_TEST( env->execle->rebate_microblock_cnt==5UL );
 
   fd_stem_context_t stem[1];
   int opt_poll_in = 1;
   int charge_busy = 0;
   after_credit( env->execle, test_stem( env->execle, stem ), &opt_poll_in, &charge_busy );
-  FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==0UL );
-  FD_TEST( !opt_poll_in );
-  FD_TEST( charge_busy );
+  FD_TEST( fd_frag_meta_seq_query( test_out_pack_meta( 0UL ) )==ULONG_MAX );
+  FD_TEST( opt_poll_in );
+  FD_TEST( !charge_busy );
 
   test_env_destroy( env );
 }

@@ -521,6 +521,8 @@ fd_gossip_set_shred_version( fd_gossip_t * gossip,
   refresh_contact_info( gossip );
 }
 
+#include "fd_gossip_bam.c"
+
 void
 fd_gossip_stakes_update( fd_gossip_t *             gossip,
                          fd_stake_weight_t const * stake_weights,

@@ -2,6 +2,7 @@
 #define HEADER_fd_src_disco_fd_txn_p_h
 
 #include "../ballet/txn/fd_txn.h"
+#include "fd_txn_bam.h"
 #include <stddef.h>
 
 struct __attribute__((aligned(64))) fd_txn_p {
@@ -83,6 +84,7 @@ fd_txn_p_copy( fd_txn_p_t *       dst,
 /* fd_txn_e_t: An fd_txn_p_t with expanded address lookup tables */
 struct __attribute__((aligned(64))) fd_txn_e {
    fd_txn_p_t     txnp[1];
+   union { fd_txn_bam_t bam; uchar _bam_pad[ 64 ]; }; /* Keeps alt_accts last and 64-byte aligned, as upstream */
    fd_acct_addr_t alt_accts[FD_TXN_ACCT_ADDR_MAX]; /* The used account is in the fd_txn_t*/
 };
 
