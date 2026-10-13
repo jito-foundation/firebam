@@ -19,6 +19,8 @@ Rules the rebase must keep:
   hooks in upstream files. FireBAM tests live in FireBAM-owned files, never
   inside upstream test bodies.
 - Upstream bugs that BAM doesn't need go upstream as PRs, not into `firebam`.
+- A fresh `make -j"$(nproc)" all` must pass the build gate, including
+  unit-test and fuzz targets. Default validator builds alone do not cover them.
 
 References:
 
