@@ -28,15 +28,17 @@ finalization is authoritative: add no database or commit the tag doesn't have.
 
 Build gate, on the exact committed `new_tip` with a clean tree:
 
-- A fresh `make -j"$(nproc)"`, then `make -j"$(nproc)" firedancer fdctl`
-  (`all` omits the Rust-linked `fdctl`), with logs and exit codes kept. A
-  serial build, an incremental no-op, or a retry after a failed parallel build
-  does not count. Fix races instead of lowering jobs or `-Werror`.
+- A fresh `make -j"$(nproc)" all`, then `make -j"$(nproc)" firedancer fdctl`
+  (`all` omits the Rust-linked `fdctl`), with logs and exit codes kept. Use a
+  new `BUILDDIR` for each compiler configuration. A serial build, an
+  incremental no-op, or a retry after a failed parallel build does not count.
+  Fix races instead of lowering jobs or `-Werror`.
 - `--version` of both binaries names `new_tip`. Firedancer's version comes from
   its version file. `fdctl` reports its own Frankendancer/Agave version (for
   example `0.101.0-beta.40302`) and never matches `v26.*`.
-- A second compiler when available, especially GCC 12 for strict-aliasing
-  diagnostics.
-- The affected tests, built first.
+- Run `all` with GCC and repeat it with a second compiler when available,
+  each in a fresh build directory. Prefer GCC 12 when available for
+  strict-aliasing diagnostics.
+- Build and run the affected tests. Building `all` does not execute them.
 
 Any later source, gitlink, or build-configuration change invalidates the gate.
