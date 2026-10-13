@@ -22,7 +22,20 @@ backup and other branch refs. On conflicts, combine both intents rather than
 taking a side. Record each manual resolution, and each hunk dropped because
 upstream now has it together with the upstream commit that proves it.
 
-Done when both validators build (`firedancer` and `fdctl`; `all` omits the
-Rust-linked `fdctl`), the affected BAM and upstream tests pass, the stateful
-BAM corpus replays clean if the pipeline changed, any growth in the upstream
-delta is explained, and the [audit](audit.md) has no open finding.
+Build gate, on the exact committed `new_tip` with a clean tree:
+
+- A fresh `make -j"$(nproc)" all`, then `make -j"$(nproc)" firedancer fdctl`
+  (`all` omits the Rust-linked `fdctl`), with logs and exit codes kept. Use a
+  new `BUILDDIR` for each compiler configuration. A serial build, an
+  incremental no-op, or a retry after a failed parallel build does not count.
+  Fix races instead of lowering jobs or `-Werror`.
+- `--version` of both validators names `new_tip`.
+- Run `all` with GCC and repeat it with a second compiler when available,
+  each in a fresh build directory. Prefer GCC 12 when available for
+  strict-aliasing diagnostics.
+- Build and run the affected BAM and upstream tests. Replay the stateful BAM
+  corpus if the pipeline changed. Building `all` does not execute the tests.
+
+Any later source, gitlink, or build-configuration change invalidates the gate.
+Done when the gate passes, any growth in the upstream delta is explained, and
+the [audit](audit.md) has no open finding.

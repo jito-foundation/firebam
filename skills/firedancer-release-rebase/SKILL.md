@@ -20,6 +20,8 @@ release tag. Lane rules:
   and ancestry, not `merge-base` alone.
 - Activate a feature only when both clients support it; the Agave release
   calendar is not a signal.
+- A fresh `make -j"$(nproc)" all` must pass the build gate, including
+  unit-test and fuzz targets. Default validator builds alone do not cover them.
 
 References:
 
