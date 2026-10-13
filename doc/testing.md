@@ -22,7 +22,7 @@ Assuming system is configured and dependencies are installed:
 
 ```
 sudo src/util/shmem/fd_shmem_cfg alloc 2 gigantic 0
-make -j all
+make -j"$(nproc)" all
 make run-unit-test
 ```
 

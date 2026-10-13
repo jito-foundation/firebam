@@ -17,10 +17,10 @@ Tiles: `src/disco`, `src/discof`.
 
 ## Building
 
-`make -j` - builds firedancer and firedancer-dev
-`make -j all` - builds everything
-`make -j firedancer-dev` - builds dev validator
-`make -j test_blake3` - builds a test
+`make -j"$(nproc)"` - builds firedancer and firedancer-dev
+`make -j"$(nproc)" all` - builds everything
+`make -j"$(nproc)" firedancer-dev` - builds dev validator
+`make -j"$(nproc)" test_blake3` - builds a test
 
 The default make parameters are:
 - CC=gcc
@@ -31,8 +31,8 @@ Default build directories include the compiler version and `EXTRAS`.
 Use `make --silent objdir` with the same build parameters to locate the
 artifacts. When overriding `BUILDDIR`, use a separate flat name for each
 compiler/instrumentation configuration, e.g.:
-- `make -j BUILDDIR=clang-fuzz-asan CC=clang EXTRAS="fuzz asan" all`
-- `make -j BUILDDIR=clang-cov CC=clang EXTRAS=llvm-cov all`
+- `make -j"$(nproc)" BUILDDIR=clang-fuzz-asan CC=clang EXTRAS="fuzz asan" all`
+- `make -j"$(nproc)" BUILDDIR=clang-cov CC=clang EXTRAS=llvm-cov all`
 
 Use repository Make targets and supported build options so compiler flags,
 generated sources, and dependencies match the real build. Check the command's
@@ -47,13 +47,13 @@ relevant tests. Broaden testing when the change or a failure warrants it.
 Build tests before running them. For example:
 
 ```bash
-make -j test_blake3
+make -j"$(nproc)" test_blake3
 "$(make --silent objdir)/unit-test/test_blake3"
 ```
 
 `make run-unit-test` builds neither the executables nor the automatic test
-manifest; run `make -j unit-test` first. Many tests need huge pages and a
-higher MEMLOCK limit, raised in the same shell that runs them. Use
+manifest; run `make -j"$(nproc)" unit-test` first. Many tests need huge pages
+and a higher MEMLOCK limit, raised in the same shell that runs them. Use
 [testing.md](doc/testing.md) for prerequisites and test conventions.
 Integration tests can change host configuration.
 
