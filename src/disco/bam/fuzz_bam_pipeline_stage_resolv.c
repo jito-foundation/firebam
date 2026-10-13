@@ -56,7 +56,7 @@ bam_fuzz_resolv_new( fd_wksp_t *             wksp,
   ctx->completed_slot  = 0UL;
   ctx->in[ BAM_FUZZ_RESOLV_IN_DEDUP_IDX  ] = (fd_resolv_in_ctx_t){ .kind = IN_KIND_DEDUP, .mem = in->mem, .chunk0 = in->chunk0, .wmark = in->wmark,
                                                                    .mtu = FD_TPU_PARSED_MTU };
-  ctx->in[ BAM_FUZZ_RESOLV_IN_REPLAY_IDX ] = (fd_resolv_in_ctx_t){ .kind = IN_KIND_REPLAY, .mem = (fd_wksp_t *)h->replay_msg,
+  ctx->in[ BAM_FUZZ_RESOLV_IN_REPLAY_IDX ] = (fd_resolv_in_ctx_t){ .kind = IN_KIND_REPLAY, .mem = fd_type_pun( h->replay_msg ),
                                                                    .mtu = sizeof(fd_replay_message_t) };
   ctx->out_pack->mem    = o->mem;
   ctx->out_pack->chunk0 = o->chunk0;
