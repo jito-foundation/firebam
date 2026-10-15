@@ -19,6 +19,7 @@ metrics` after changing either file.
     <int value="8" name="RequestTimeout" label="Auth, config, or scheduler-stream gRPC request timed out" />
     <int value="9" name="KeepaliveTimeout" label="HTTP/2 keepalive PING timed out" />
     <int value="10" name="BuilderActivityTimeout" label="Scheduler-stream BuilderHeartBeat watchdog timed out while the scheduler stream was live" />
+    <int value="11" name="ConnectTimeout" label="TCP, TLS, or HTTP/2 handshake did not complete within 5 seconds of dialing" />
 </enum>
 
 <enum name="BamIngressBatchRejectReason">

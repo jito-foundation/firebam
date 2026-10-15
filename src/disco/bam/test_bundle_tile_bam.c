@@ -28,8 +28,10 @@ test_bam_bundle_env_create( test_bundle_env_t * env,
   return state;
 }
 
-/* A stale ownership snapshot can publish queued Block Engine work after BAM
-   takes exclusive TPU control.  Recheck the override and discard that queue. */
+/* While BAM controls the TPU, the bundle tile sleeps as it does without
+   upcoming leader slots, closing the Block Engine connection, whatever
+   housekeeping decides.  Activation also discards the queued Block
+   Engine work. */
 static void
 test_bam_override_sync_clears_pending( fd_wksp_t * wksp ) {
   FD_LOG_NOTICE(( "TEST BAM override sync clears pending transactions" ));
@@ -40,86 +42,91 @@ test_bam_override_sync_clears_pending( fd_wksp_t * wksp ) {
   ulong * bam_status_fseq = fd_fseq_join( fseq_shmem );
   FD_TEST( bam_status_fseq );
 
-  /* after_credit must observe an activation that occurred since the last
-     housekeeping pass and discard queued Block Engine work. */
+  /* before_credit must observe an activation that occurred since the
+     last housekeeping pass, even with work queued. */
   test_bundle_env_t env[1];
   fd_bundle_tile_t * ctx = test_bam_bundle_env_create( env, wksp, bam_status_fseq, 1UL );
   test_bundle_env_mock_conn( env );
 
-  long before_pause = fd_log_wallclock();
   fd_fseq_update( bam_status_fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
   int opt_poll_in = 1;
   int charge_busy = 0;
-  after_credit( ctx, env->stem, &opt_poll_in, &charge_busy );
+  before_credit( ctx, env->stem, &charge_busy );
 
   FD_TEST( env->stem_seqs[ 0 ]==0UL );
   FD_TEST( pending_txn_empty( ctx->pending_txns ) );
   FD_TEST( ctx->bam_override_active );
   FD_TEST( ctx->tcp_sock==-1 );
   FD_TEST( !ctx->tcp_sock_connected );
-  FD_TEST( ctx->bundle_status_plugin==127 );
-  FD_TEST( ctx->bundle_status_recent==FD_BUNDLE_STATE_DISCONNECTED );
-  FD_TEST( ctx->bundle_status_logged==FD_BUNDLE_STATE_DISCONNECTED );
-  FD_TEST( ctx->last_bundle_status_log_nanos>=before_pause );
+  FD_TEST( ctx->sleep_mode && ctx->sleep_check_ns==LONG_MAX && ctx->backoff_until==0L );
+  FD_TEST( next_deadline( ctx )==LONG_MAX );
 
   /* The same boundary handles deactivation without discarding pending work. */
-  ctx->backoff_until = fd_log_wallclock() + (long)30e9;
-  ctx->defer_reset   = 1;
+  ctx->next_step_deadline = LONG_MAX;
   pending_txn_push_tail( ctx->pending_txns, (fd_bundle_pending_txn_t){ .sig=1UL, .bundle_seq=2UL } );
   long before_resume = fd_log_wallclock();
   fd_fseq_update( bam_status_fseq, 0UL );
   before_credit( ctx, env->stem, &charge_busy );
   FD_TEST( !ctx->bam_override_active );
-  FD_TEST( ctx->backoff_until==0L );
-  FD_TEST( !ctx->defer_reset );
+  FD_TEST( !ctx->sleep_mode && !ctx->sleep_check_ns && !ctx->next_step_deadline );
   FD_TEST( pending_txn_cnt( ctx->pending_txns )==1UL );
   FD_TEST( ctx->last_bundle_status_log_nanos>=before_resume );
 
-  /* An uncontended publication claims and releases the shared status word. */
   opt_poll_in = 1;
   charge_busy = 0;
   after_credit( ctx, env->stem, &opt_poll_in, &charge_busy );
   FD_TEST( env->stem_seqs[ 0 ]==1UL );
   FD_TEST( pending_txn_empty( ctx->pending_txns ) );
-  FD_TEST( fd_fseq_query( bam_status_fseq )==0UL );
   FD_TEST( !opt_poll_in );
   FD_TEST( charge_busy );
   test_bundle_env_destroy( env );
 
-  /* before_credit must perform the same transition even when the pending
-     queue is nonempty and the client step would otherwise be skipped. */
-  ctx = test_bam_bundle_env_create( env, wksp, bam_status_fseq, 2UL );
+  /* With replay, housekeeping wakes the tile for a near leader slot when
+     an identity switch unhalts it, and deactivation hands the tile back
+     to that leader schedule check.  replay_in.mem is only tested for
+     presence. */
+  void * keyswitch_mem = fd_wksp_alloc_laddr( wksp, fd_keyswitch_align(), fd_keyswitch_footprint(), 1UL );
+  FD_TEST( keyswitch_mem );
+  fd_keyswitch_t * keyswitch = fd_keyswitch_join( fd_keyswitch_new( keyswitch_mem, FD_KEYSWITCH_STATE_UNLOCKED ) );
+  FD_TEST( keyswitch );
+  ctx = test_bam_bundle_env_create( env, wksp, bam_status_fseq, 3UL );
+  ctx->keyswitch        = keyswitch;
+  ctx->replay_in.mem    = wksp;
+  ctx->reset_slot       = 100UL;
+  ctx->next_leader_slot = 110UL;
 
   fd_fseq_update( bam_status_fseq, FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
-  charge_busy = 0;
   before_credit( ctx, env->stem, &charge_busy );
+  FD_TEST( ctx->bam_override_active && ctx->sleep_mode && ctx->sleep_check_ns==LONG_MAX );
 
-  FD_TEST( pending_txn_empty( ctx->pending_txns ) );
-  FD_TEST( ctx->bam_override_active );
-  test_bundle_env_destroy( env );
+  /* UNHALT while BAM is active: housekeeping wakes the tile, and the
+     next before_credit puts it back to sleep without dialing. */
+  ctx->halt_signing = 1;
+  fd_keyswitch_state( keyswitch, FD_KEYSWITCH_STATE_UNHALT_PENDING );
+  fd_bundle_tile_housekeeping( ctx );
+  FD_TEST( !ctx->halt_signing && !ctx->sleep_mode );
+  before_credit( ctx, env->stem, &charge_busy );
+  FD_TEST( ctx->sleep_mode && ctx->sleep_check_ns==LONG_MAX );
+  FD_TEST( ctx->tcp_sock==-1 && next_deadline( ctx )==LONG_MAX );
+  fd_bundle_tile_housekeeping( ctx );
+  FD_TEST( ctx->sleep_mode );
 
-  /* A publication claim held by another bundle producer prevents this tile
-     from publishing or modifying the queue. */
-  ctx = test_bam_bundle_env_create( env, wksp, bam_status_fseq, 3UL );
-
-  fd_fseq_update( bam_status_fseq, FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
-  opt_poll_in = 1;
-  charge_busy = 0;
-  after_credit( ctx, env->stem, &opt_poll_in, &charge_busy );
-
-  FD_TEST( env->stem_seqs[ 0 ]==0UL );
-  FD_TEST( pending_txn_cnt( ctx->pending_txns )==1UL );
-  FD_TEST( !ctx->bam_override_active );
-  FD_TEST( fd_fseq_query( bam_status_fseq )==FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
-  FD_TEST( opt_poll_in );
-  FD_TEST( !charge_busy );
-
+  /* Deactivation with replay stays asleep until housekeeping rechecks
+     the leader schedule: a far leader keeps it asleep, a near one
+     wakes it. */
+  ctx->next_leader_slot = 1000UL;
   fd_fseq_update( bam_status_fseq, 0UL );
-  after_credit( ctx, env->stem, &opt_poll_in, &charge_busy );
-  FD_TEST( env->stem_seqs[ 0 ]==1UL );
-  FD_TEST( pending_txn_empty( ctx->pending_txns ) );
-  FD_TEST( fd_fseq_query( bam_status_fseq )==0UL );
+  before_credit( ctx, env->stem, &charge_busy );
+  FD_TEST( !ctx->bam_override_active && ctx->sleep_mode && !ctx->sleep_check_ns && !ctx->next_step_deadline );
+  FD_TEST( ctx->tcp_sock==-1 );
+  fd_bundle_tile_housekeeping( ctx );
+  FD_TEST( ctx->sleep_mode && ctx->sleep_check_ns>0L );
+  ctx->sleep_check_ns   = 0L;
+  ctx->next_leader_slot = 110UL;
+  fd_bundle_tile_housekeeping( ctx );
+  FD_TEST( !ctx->sleep_mode && !ctx->next_step_deadline );
   test_bundle_env_destroy( env );
+  fd_wksp_free_laddr( fd_keyswitch_delete( fd_keyswitch_leave( keyswitch ) ) );
 
   FD_TEST( fd_fseq_leave( bam_status_fseq )==fseq_shmem );
   FD_TEST( fd_fseq_delete( fseq_shmem )==fseq_shmem );

@@ -100,9 +100,9 @@ fd_bam_leader_state_eq( fd_bam_leader_state_t const * a,
 #define FD_BAM_DEBUG_DUMP_MODE_SLOT_FIRST 1U
 #define FD_BAM_DEBUG_DUMP_MODE_ALL        2U
 
-/* Mutually exclusive ownership states for BAM/Block Engine publication. */
-#define FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE   (1UL<<0)
-#define FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING (1UL<<1)
+/* bam_status value while BAM owns the TPU.  Only the bam tile writes
+   it (0 when inactive); it reads ULONG_MAX before BAM init. */
+#define FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE (1UL<<0)
 
 typedef struct {
   fd_ip4_port_t tpu;               /* TPU socket advertised by BAM (net order). */

@@ -795,10 +795,7 @@ pack_tile_sync_bam_ownership_generation_slow( fd_pack_ctx_t * ctx,
     ctx->bam_ownership_gen = requested_gen;
   }
 
-  if( FD_UNLIKELY( gen_state & 1UL ) ) {
-    FD_HW_MFENCE_ST();
-    (void)FD_ATOMIC_CAS( ctx->bam_gen_fseq, gen_state, gen_state & ~1UL );
-  }
+  if( FD_UNLIKELY( gen_state & 1UL ) ) (void)FD_ATOMIC_CAS( ctx->bam_gen_fseq, gen_state, gen_state & ~1UL );
 }
 
 /* Called several times per BAM transaction: inline only the test for an
@@ -848,7 +845,7 @@ pack_tile_bam_end_slot( fd_pack_ctx_t * ctx,
 
 static inline _Bool
 pack_tile_bam_override_active( fd_pack_ctx_t const * ctx ) {
-  return !!ctx->bam_status_fseq && !!( fd_fseq_query( ctx->bam_status_fseq ) & FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
+  return !!ctx->bam_status_fseq && fd_fseq_query( ctx->bam_status_fseq )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
 }
 
 /* Observe the mode once for initializer selection and the subsequent

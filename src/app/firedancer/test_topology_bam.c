@@ -147,9 +147,10 @@ test_set_identity( fd_topo_t * topo ) {
 /* A tile joins a workspace writable if it uses any object in it
    writable.  Only the tiles that own BAM control state may do so for
    the BAM control workspaces: pack acknowledges ownership generations
-   and bundle claims the publishing bit, both in bam_status.  A writable
-   mapping elsewhere (e.g. gossip, which parses untrusted network input)
-   could flip the override bit or scramble the ownership generation. */
+   in bam_status.  A writable mapping elsewhere (e.g. gossip, which
+   parses untrusted network input, or bundle, which only reads the
+   override) could flip the override or scramble the ownership
+   generation. */
 
 static void
 test_bam_control_wksp_writers( fd_topo_t const * topo ) {
@@ -162,7 +163,7 @@ test_bam_control_wksp_writers( fd_topo_t const * topo ) {
       for( ulong k=0UL; k<sizeof(wksps)/sizeof(wksps[0]); k++ ) {
         if( strcmp( wksp, wksps[ k ] ) ) continue;
         int owner = !strcmp( tile->name, "bam" ) ||
-                    ( !strcmp( wksp, "bam_status" ) && ( !strcmp( tile->name, "pack" ) || !strcmp( tile->name, "bundle" ) ) );
+                    ( !strcmp( wksp, "bam_status" ) && !strcmp( tile->name, "pack" ) );
         if( FD_UNLIKELY( !owner ) ) FD_LOG_ERR(( "%s:%lu maps BAM control workspace %s writable", tile->name, tile->kind_id, wksp ));
       }
     }
@@ -368,6 +369,14 @@ test_topology( int          bundle_enabled,
       gossip_writes |= gossip->uses_obj_id[i]==signed_obj_id && gossip->uses_obj_mode[i]==FD_SHMEM_JOIN_MODE_READ_WRITE;
     FD_TEST( bam_reads && gossip_writes );
     test_bam_control_wksp_writers( topo );
+    if( bundle_enabled ) {
+      ulong status_obj_id = fd_pod_query_ulong( topo->props, "bam_status", ULONG_MAX );
+      fd_topo_tile_t const * bundle = &topo->tiles[ fd_topo_find_tile( topo, "bundle", 0UL ) ];
+      int bundle_reads = 0;
+      for( ulong i=0UL; i<bundle->uses_obj_cnt; i++ )
+        bundle_reads |= bundle->uses_obj_id[i]==status_obj_id && bundle->uses_obj_mode[i]==FD_SHMEM_JOIN_MODE_READ_ONLY;
+      FD_TEST( status_obj_id<topo->obj_cnt && bundle_reads );
+    }
     ulong verify_link = fd_topo_find_link( topo, "bam_verif", 0UL );
     ulong sign_link   = fd_topo_find_link( topo, "bam_sign",  0UL );
     FD_TEST( verify_link!=ULONG_MAX && sign_link!=ULONG_MAX );

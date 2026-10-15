@@ -175,8 +175,8 @@ struct fd_bundle_tile {
   fd_bundle_out_ctx_t       plugin_out;
   fd_bundle_pending_txn_t * pending_txns;
 
-  ulong * bam_status_fseq; /* Shared latch from bam tile (bit 0 = BAM override active) */
-  _Bool   bam_override_active; /* true if BAM overrides are currently active */
+  ulong * bam_status_fseq;     /* Read-only BAM status from the bam tile (NULL without BAM) */
+  _Bool   bam_override_active; /* BAM was active at the last sync, holding sleep_mode */
 
   /* App metrics */
   fd_bundle_metrics_t metrics;

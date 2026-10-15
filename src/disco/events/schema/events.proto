@@ -7497,6 +7497,8 @@ message MetricsBamFailure {
   uint64 keepalive_timeout = 10;
   // Scheduler-stream BuilderHeartBeat watchdog timed out while the scheduler stream was live
   uint64 builder_activity_timeout = 11;
+  // TCP, TLS, or HTTP/2 handshake did not complete within 5 seconds of dialing
+  uint64 connect_timeout = 12;
 }
 
 // Times the tile tried to park while idle (efficient mode), by result
