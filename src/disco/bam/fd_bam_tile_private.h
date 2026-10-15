@@ -26,6 +26,7 @@ typedef enum {
 } fd_plugin_bam_update_status_t;
 
 #define FD_BAM_ACTIVITY_TIMEOUT_NS ((long)6e9) /* 6 seconds */
+#define FD_BAM_CONNECT_TIMEOUT_NS ((long)5e9) /* TCP, TLS, and HTTP/2 handshake (jito-solana CONNECTION_TIMEOUT) */
 #define FD_BAM_GRPC_RX_POLL_INTERVAL_NS ((long)1e3) /* 1 microsecond socket poll interval after an idle step without a waker */
 #define FD_BAM_UNKNOWN_FIELD_NOTICE_INTERVAL_NS ((long)600e9) /* 10 minutes */
 #define FD_BAM_LEADER_STATE_EXPIRY_GRACE_NS ((long)10e6) /* 10 ms */
@@ -236,7 +237,7 @@ struct fd_bam_tile {
   ulong *            waker_fseq;          /* NULL outside efficient layout, where before_credit polls tcp_sock */
   ulong              waker_client_idx;
   long               next_step_deadline;
-  uchar              waker_paused;        /* rx paused on backpressure: 1 after a waker fire (rearm on resume), 2 waker still armed */
+  uchar              waker_paused;        /* rx paused on backpressure: 1 after a waker fire (resume as that fire), 2 waker still armed */
 
   /* Currently running config, values loaded via TOML and updated by set_bam admin control */
   fd_bam_ctrl_t * ctrl;                  /* Runtime control shared object (always joined by privileged_init; NULL only in tests) */
@@ -255,6 +256,7 @@ struct fd_bam_tile {
   /* TCP socket */
   int  tcp_sock;                                  /* Non-blocking socket for gRPC transport */
   int  so_rcvbuf;                                 /* Desired receive buffer size */
+  long connect_deadline;                          /* Reset if the HTTP/2 handshake is not done by then */
   uchar tcp_sock_connected : 1;                   /* Set once connect handshake completes */
   uchar sock_in_epoll : 1;
   uchar epoll_out_armed : 1;
@@ -354,10 +356,9 @@ struct fd_bam_tile {
   ulong *             bam_gen_fseq;    /* Ownership generation handshake: odd=requested, even=pack acknowledged. */
   ulong               pack_tile_id;    /* Parked readers of the two words above, rung in the efficient layout */
   ulong               bundle_tile_id;  /* ULONG_MAX without a bundle tile */
-  ulong *             bam_gossip_fseq; /* Gossip tile's bam_gossip consumer fseq, read-only for activation handoff. */
-  ulong *             bam_gossip_signed_fseq; /* Separate Gossip ack after the contact is signed and published. */
-  ulong               bam_gossip_handoff_target; /* Consumer fseq value required before first activating bam_status. */
-  uint                bam_gossip_handoff_pending : 1; /* Waiting for gossip to consume the published BAM contact. */
+  ulong *             bam_gossip_signed_fseq; /* Gossip ack after the contact is signed and published, read-only for activation handoff. */
+  ulong               bam_gossip_handoff_target; /* Signed ack value required before first activating bam_status. */
+  uint                bam_gossip_handoff_pending : 1; /* Waiting for gossip to sign and publish the BAM contact. */
 
   /* App metrics */
   fd_bam_metrics_t metrics;                         /* Tile-local counters flushed to metrics */
