@@ -41,9 +41,9 @@ BAM feedback/control links
   replay tile (leader enabled) --replay_slot--> bam tile
   bam tile --bam_gossip--> gossip tile
   shared bam_gossip_signed fseq: gossip acknowledges signed contact installation;
-    BAM reads this and the bam_gossip consumption fseq
+    BAM reads it
   bam tile --bam_shred--> shred tile
-  shared bam_status fseq: BAM and optional bundle read/write; pack reads
+  shared bam_status fseq: BAM writes; pack and optional bundle read
   shared bam_gen fseq: BAM and pack perform the ownership request/ack handshake
   shared bam_ctrl: CLI and BAM exchange runtime configuration
   shared bam_fee_cfg: BAM writes; pack reads
@@ -97,11 +97,11 @@ configuration gates. `bam_verif` feeds verify tile 0 only.
   is forwarded if a local leader rotation starts one to four slots after that
   shred's slot; shreds older than the current local leader-shredding slot stop
   being forwarded. Deactivation publishes an empty receiver list.
-- `bam_status`: BAM and bundle coordinate mutually exclusive
-  `OVERRIDE_ACTIVE` and `BUNDLE_PUBLISHING` states; pack reads ownership.
-  Activation resets the direct Block Engine connection and clears bundle's
-  pending queue. A publication already holding `BUNDLE_PUBLISHING` finishes
-  before BAM can claim ownership.
+- `bam_status`: BAM alone writes `OVERRIDE_ACTIVE` (or 0); pack reads
+  ownership. While it is set, bundle sleeps as it does without upcoming
+  leader slots, closing the direct Block Engine connection, and activation
+  clears bundle's pending queue. Pack drops Block Engine bundles that bundle
+  published before observing activation.
 - `bam_gen`: BAM requests a new ownership generation with the low bit set.
   Pack retires partial and pending prior-generation BAM work and clears the
   bit. Already-dispatched work remains tracked through completion.
@@ -127,9 +127,9 @@ or all-zero builder pubkey leaves the prior builder and commission in place.
 Healthy status permits activation. BAM waits for pack's generation
 acknowledgement, publication of the desired shred receiver list, and completion
 of any required contact-info handoff before claiming `OVERRIDE_ACTIVE`.
-When switching to usable cached BAM contact endpoints, BAM waits for both the
-`bam_gossip` consumer fseq and `bam_gossip_signed` to reach the handoff
-target. Otherwise ownership activates with default contact information.
+When switching to usable cached BAM contact endpoints, BAM waits for
+`bam_gossip_signed` to reach the handoff target. Otherwise ownership
+activates with default contact information.
 
 Pack then schedules only BAM work and simple vote transactions. Like
 jito-solana's fetch stage while it advertises BAM's TPU, pack drops non-vote
@@ -142,8 +142,9 @@ redirects ingress, while pack enforces the scheduling mode.
 
 Reset requests deactivation immediately. An active ownership bit remains set
 until pack retires pending work, and is released before the default gossip
-contact is published. Bundle can reconnect once ownership is
-released, including while BAM is configured but not healthy.
+contact is published. Once ownership is released, bundle's next
+housekeeping returns it to its leader-schedule sleep policy, including while
+BAM is configured but not healthy.
 
 Because the direct Block Engine client runs until BAM is healthy, startup and
 reconnects can leave it competing with the BAM node's own Block Engine

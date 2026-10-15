@@ -584,6 +584,7 @@ test_bam_env_create_with_grpc_buf_sz( test_bam_env_t * env,
   state->keylog_fd       = -1;
   state->so_rcvbuf       = (int)grpc_buf_sz;
   state->map_seed        = 1UL;
+  state->connect_deadline = LONG_MAX; /* mocked connections skip the dial */
 
   state->grpc_client_mem = fd_wksp_alloc_laddr( wksp, fd_grpc_client_align(), fd_grpc_client_footprint( grpc_buf_sz ), 1UL );
   FD_TEST( state->grpc_client_mem );
@@ -704,6 +705,7 @@ test_bam_env_mock_h2_hs( fd_bam_tile_t * state ) {
   fd_h2_conn_t * conn = fd_grpc_client_h2_conn( state->grpc_client );
   conn->flags = 0; /* Simulate completed HTTP/2 handshake */
   state->grpc_client->h2_hs_done = 1;
+  state->connect_deadline        = LONG_MAX; /* as conn_established */
   FD_TEST( !fd_grpc_client_request_is_blocked( state->grpc_client ) );
 }
 

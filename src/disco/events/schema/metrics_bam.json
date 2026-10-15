@@ -94,7 +94,8 @@
                 "unsupported_version":       { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Unsupported scheduler-response version received from the BAM peer" },
                 "request_timeout":           { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Auth, config, or scheduler-stream gRPC request timed out" },
                 "keepalive_timeout":         { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "HTTP/2 keepalive PING timed out" },
-                "builder_activity_timeout":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Scheduler-stream BuilderHeartBeat watchdog timed out while the scheduler stream was live" }
+                "builder_activity_timeout":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Scheduler-stream BuilderHeartBeat watchdog timed out while the scheduler stream was live" },
+                "connect_timeout":           { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "TCP, TLS, or HTTP/2 handshake did not complete within 5 seconds of dialing" }
             }
         },
         "heap_size":                         { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Total workspace capacity reserved for the BAM tile (bytes). Sampled at most once per second to avoid repeated workspace scans." },
