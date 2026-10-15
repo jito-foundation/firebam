@@ -347,6 +347,7 @@ bam_fuzz_prepare_connected_grpc( fd_bam_tile_t * ctx ) {
     conn->peer_settings.max_concurrent_streams = FD_GRPC_CLIENT_MAX_STREAMS;
   }
   ctx->tcp_sock_connected = 1;
+  ctx->connect_deadline   = LONG_MAX;
 
   long now = fd_bam_now();
   ctx->keepalive->ts_next_tx  = now + ctx->keepalive_interval;
@@ -586,6 +587,7 @@ bam_fuzz_reset_tile( void ) {
 
   ctx->keylog_fd             = -1;
   ctx->tcp_sock              = -1;
+  ctx->connect_deadline      = LONG_MAX;
   ctx->bam_status_logged    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->bam_status_recent    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->enabled               = 1U;

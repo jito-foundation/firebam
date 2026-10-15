@@ -107,16 +107,12 @@ topo_bam_objs( fd_topo_t *       topo,
   fd_topob_tile_uses( topo, pack_tile, bam_gen_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
   if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
     fd_topo_tile_t * bundle_tile = &topo->tiles[ fd_topo_find_tile( topo, "bundle", 0UL ) ];
-    fd_topob_tile_uses( topo, bundle_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+    fd_topob_tile_uses( topo, bundle_tile, bam_status_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
   }
   FD_TEST( fd_pod_insertf_ulong( topo->props, bam_status_obj->id, "bam_status" ) );
   FD_TEST( fd_pod_insertf_ulong( topo->props, bam_gen_obj->id, "bam_gen" ) );
 
-  /* topo_bam_tile_links wired gossip's reliable bam_gossip input */
   fd_topo_tile_t * gossip_tile = &topo->tiles[ fd_topo_find_tile( topo, "gossip", 0UL ) ];
-  ulong bam_gossip_in_idx = fd_topo_find_tile_in_link( topo, gossip_tile, "bam_gossip", 0UL );
-  fd_topo_obj_t * bam_gossip_fseq_obj = &topo->objs[ gossip_tile->in_link_fseq_obj_id[ bam_gossip_in_idx ] ];
-  fd_topob_tile_uses( topo, bam_tile, bam_gossip_fseq_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
   /* Gossip parses untrusted input, so keep its ack beside the link
      fseqs it already writes rather than in bam_status. */
   fd_topo_obj_t * signed_obj = fd_topob_obj( topo, "fseq", "metric_in" );

@@ -268,9 +268,8 @@ test_bam_setup_gossip_out( test_bam_env_t * env ) {
 /* The tile only queries and updates its fseqs, so plain words stand in
    for them in these tests. */
 typedef struct {
-  ulong   mem[ 3 ];
+  ulong   mem[ 2 ];
   ulong * status;
-  ulong * gossip;
   ulong * signed_ack;
 } test_bam_handoff_fseqs_t;
 
@@ -279,8 +278,7 @@ test_bam_setup_handoff_fseqs( test_bam_env_t *           env,
                               test_bam_handoff_fseqs_t * fseqs ) {
   fd_memset( fseqs, 0, sizeof(test_bam_handoff_fseqs_t) );
   fseqs->status     = env->state->bam_status_fseq        = &fseqs->mem[ 0 ];
-  fseqs->gossip     = env->state->bam_gossip_fseq        = &fseqs->mem[ 1 ];
-  fseqs->signed_ack = env->state->bam_gossip_signed_fseq = &fseqs->mem[ 2 ];
+  fseqs->signed_ack = env->state->bam_gossip_signed_fseq = &fseqs->mem[ 1 ];
 }
 
 /* ip:port in network order, as the tile stores it. */
@@ -2354,6 +2352,28 @@ test_bam_receive_backpressure_parks_without_waker_fire( fd_wksp_t * wksp ) {
   FD_TEST( fd_fseq_query( state->waker_fseq ) == 0UL );
   FD_TEST( fd_bam_test_next_deadline( state ) == LONG_MAX );
 
+  /* Once the queue drains, the consumed fire resumes as a fire: the
+     client steps despite a later deadline (a step reads the clock). */
+  test_bam_env_drain_pending_txns( env );
+  state->next_step_deadline = LONG_MAX;
+  g_clock_read_cnt = 0UL;
+  fd_bam_test_before_credit( state, env->stem, &charge_busy );
+  FD_TEST( !state->waker_paused && g_clock_read_cnt>1UL );
+
+  /* A pause that consumed no fire left the waker armed, so resuming
+     waits for the step deadline. */
+  protobuf_sz = test_bam_build_scheduler_batch_msg( protobuf, sizeof(protobuf), 79U, 1U, 0 );
+  test_bam_rx_sched( state, protobuf, protobuf_sz );
+  FD_TEST( bam_pending_txn_cnt( state->pending_txns ) == 1UL );
+  state->next_step_deadline = LONG_MAX;
+  fd_fseq_update( state->waker_fseq, 0UL );
+  fd_bam_test_before_credit( state, env->stem, &charge_busy );
+  FD_TEST( state->waker_paused==2U );
+  test_bam_env_drain_pending_txns( env );
+  g_clock_read_cnt = 0UL;
+  fd_bam_test_before_credit( state, env->stem, &charge_busy );
+  FD_TEST( !state->waker_paused && g_clock_read_cnt==1UL );
+
   test_bam_env_destroy( env );
 }
 
@@ -2520,6 +2540,99 @@ test_bam_connect_without_waker_skips_epoll( fd_wksp_t * wksp ) {
     }
     test_bam_env_destroy( env );
   }
+}
+
+/* A peer that accepts TCP but never answers the HTTP/2 preface is reset
+   FD_BAM_CONNECT_TIMEOUT_NS after the dial (not 1 ns before), which
+   next_deadline schedules.  conn_established disarms the timeout. */
+static void
+test_bam_connect_timeout_resets_stalled_handshake( fd_wksp_t * wksp ) {
+  long const saved_clock = g_clock;
+  for( int hs=0; hs<2; hs++ ) {
+    g_clock = (long)10e9;
+    test_bam_env_t env[1];
+    fd_bam_tile_t * state = test_bam_env_create( env, wksp );
+
+    struct sockaddr_in addr;
+    int listen_sock = test_bam_loopback_listener( &addr );
+    test_bam_set_server( state, fd_ushort_bswap( addr.sin_port ) );
+    state->backoff_until = 0L;
+
+    int busy = 0;
+    fd_bam_client_step( state, &busy );
+    long const deadline = g_clock+FD_BAM_CONNECT_TIMEOUT_NS;
+    FD_TEST( busy && state->tcp_sock>=0 && !state->tcp_sock_connected );
+    FD_TEST( state->connect_deadline==deadline );
+    FD_TEST( fd_bam_client_next_deadline( state, g_clock )==deadline );
+    env->server_sock = accept4( listen_sock, NULL, NULL, SOCK_CLOEXEC );
+    FD_TEST( env->server_sock>=0 );
+    FD_TEST( 0==close( listen_sock ) );
+
+    fd_bam_client_step( state, &busy );
+    FD_TEST( state->tcp_sock_connected );
+    if( hs ) {
+      /* The HTTP/2 handshake completes through the gRPC client callback */
+      fd_h2_conn_t * conn = fd_grpc_client_h2_conn( state->grpc_client );
+      conn->flags = 0;
+      fd_grpc_client_h2_callbacks.conn_established( conn );
+      FD_TEST( fd_grpc_client_is_connected( state->grpc_client ) && state->connect_deadline==LONG_MAX );
+    } else {
+      FD_TEST( fd_bam_client_next_deadline( state, g_clock )==deadline );
+    }
+
+    g_clock = deadline-1L;
+    fd_bam_client_step( state, &busy );
+    FD_TEST( state->tcp_sock>=0 );
+    g_clock = deadline;
+    busy = 0;
+    fd_bam_client_step( state, &busy );
+    FD_TEST( (state->tcp_sock>=0)==hs && ( hs || busy ) );
+    FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_TIMEOUT_IDX ]==(ulong)!hs );
+
+    test_bam_env_destroy( env );
+  }
+  g_clock = saved_clock;
+}
+
+/* The keepalive PING is withheld only from a closing connection, and
+   the step is busy only when a PING is queued.  A peer that stalls in a
+   header block leaves CONTINUATION set: the PING still goes out, so its
+   timeout resets the connection. */
+static void
+test_bam_keepalive_pings_during_continuation( fd_wksp_t * wksp ) {
+  long const saved_clock = g_clock;
+  g_clock = (long)10e9;
+  test_bam_env_t env[1];
+  fd_bam_tile_t * state = test_bam_env_create( env, wksp );
+  test_bam_env_mock_conn( env );
+  test_bam_keepalive_sync( state, g_clock );
+  state->keepalive->ts_next_tx = g_clock;
+  state->bam_auth_inflight     = 1U; /* Keep the protocol state machine idle. */
+  state->bam_config_inflight   = 1U;
+  fd_h2_conn_t * conn = fd_grpc_client_h2_conn( state->grpc_client );
+  uchar const ping_tx = conn->ping_tx;
+
+  conn->flags = FD_H2_CONN_FLAGS_SEND_GOAWAY;
+  FD_TEST( !fd_bam_client_step_reconnect( state, g_clock ) );
+  FD_TEST( conn->ping_tx==ping_tx && !state->keepalive->inflight );
+
+  conn->flags = FD_H2_CONN_FLAGS_CONTINUATION;
+  FD_TEST( fd_bam_client_step_reconnect( state, g_clock ) );
+  FD_TEST( conn->ping_tx==ping_tx+1 && state->keepalive->inflight );
+
+  long const deadline = state->keepalive->ts_deadline;
+  int busy = 0;
+  g_clock = deadline-1L;
+  fd_bam_client_step( state, &busy );
+  FD_TEST( state->tcp_sock>=0 );
+  g_clock = deadline;
+  busy = 0;
+  fd_bam_client_step( state, &busy );
+  FD_TEST( busy && state->tcp_sock==-1 );
+  FD_TEST( state->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_KEEPALIVE_TIMEOUT_IDX ]==1UL );
+
+  test_bam_env_destroy( env );
+  g_clock = saved_clock;
 }
 
 /* Returning early for an incomplete END_STREAM leaves the scheduler stream
@@ -5562,7 +5675,7 @@ test_bam_gossip_publishes_bam_config_contact( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_activation_waits_for_gossip_fseq( fd_wksp_t * wksp ) {
+test_bam_activation_waits_for_gossip_ack( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   fd_bam_tile_t * state = test_bam_env_create( env, wksp );
   test_bam_setup_gossip_out( env );
@@ -5581,50 +5694,11 @@ test_bam_activation_waits_for_gossip_fseq( fd_wksp_t * wksp ) {
   FD_TEST( env->stem_seqs[0] == 1UL );
   FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
 
-  fd_fseq_update( fseqs->gossip, 1UL );
-  fd_bam_publish_active_state( state, state->stem, 1 );
-  FD_TEST( env->stem_seqs[0] == 1UL );
-  FD_TEST( state->bam_gossip_handoff_pending );
-  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
-
   fd_fseq_update( fseqs->signed_ack, 1UL );
   fd_bam_publish_active_state( state, state->stem, 1 );
   FD_TEST( env->stem_seqs[0] == 1UL );
   FD_TEST( !state->bam_gossip_handoff_pending );
   FD_TEST( fd_fseq_query( fseqs->status ) == FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
-
-  test_bam_env_destroy( env );
-}
-
-static void
-test_bam_activation_waits_for_bundle_publication( fd_wksp_t * wksp ) {
-  test_bam_env_t env[1];
-  fd_bam_tile_t * state = test_bam_env_create( env, wksp );
-
-  ulong fseq[1] = { FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING };
-  state->bam_status_fseq      = fseq;
-  state->tpu_update_state     = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
-  state->client_id_update_state = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
-
-  /* Bundle owns publication, so BAM must leave the word untouched and remain
-     unable to drain scheduler work. */
-  fd_bam_publish_active_state( state, state->stem, 1 );
-  FD_TEST( fd_fseq_query( fseq )==FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
-
-  /* Once bundle releases ownership, BAM wins the next activation attempt. */
-  FD_TEST( FD_ATOMIC_CAS( fseq, FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING, 0UL )==FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
-  state->tpu_update_state       = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
-  state->client_id_update_state = FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM;
-  fd_bam_publish_active_state( state, state->stem, 1 );
-  FD_TEST( fd_fseq_query( fseq )==FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE );
-
-  fd_bam_publish_active_state( state, state->stem, 0 );
-  FD_TEST( fd_fseq_query( fseq )==0UL );
-
-  /* Deactivation must not erase a bundle publication claim. */
-  fd_fseq_update( fseq, FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
-  fd_bam_publish_active_state( state, state->stem, 0 );
-  FD_TEST( fd_fseq_query( fseq )==FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
 
   test_bam_env_destroy( env );
 }
@@ -5685,15 +5759,8 @@ test_bam_handoff_rings_parked_readers( fd_wksp_t * wksp ) {
   fd_bam_publish_active_state( state, state->stem, 0 );
   test_bam_expect_rings( sleep, 0UL, 0UL );
 
-  /* An activation that loses the word to a bundle publication */
-  fd_fseq_update( status, FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
-  fd_bam_publish_active_state( state, state->stem, 1 );
-  FD_TEST( fd_fseq_query( status )==FD_BAM_STATUS_FSEQ_BUNDLE_PUBLISHING );
-  test_bam_expect_rings( sleep, 0UL, 0UL );
-
   /* Without a bundle tile only pack is rung */
   state->bundle_tile_id = ULONG_MAX;
-  fd_fseq_update( status, 0UL );
   fd_bam_publish_active_state( state, state->stem, 1 );
   test_bam_expect_rings( sleep, pack, 0UL );
 
@@ -5752,7 +5819,7 @@ test_bam_handoff_keeps_housekeeping_cadence( fd_wksp_t * wksp ) {
 }
 
 static void
-test_bam_activation_ignores_stale_gossip_fseq_after_reenable( fd_wksp_t * wksp ) {
+test_bam_activation_ignores_stale_gossip_ack_after_reenable( fd_wksp_t * wksp ) {
   test_bam_env_t env[1];
   fd_bam_tile_t * state = test_bam_env_create( env, wksp );
   test_bam_setup_gossip_out( env );
@@ -5778,19 +5845,6 @@ test_bam_activation_ignores_stale_gossip_fseq_after_reenable( fd_wksp_t * wksp )
   FD_TEST( state->bam_gossip_handoff_target == 3UL );
   FD_TEST( env->stem_seqs[0] == 3UL );
 
-  fd_fseq_update( fseqs->gossip, 1UL );
-  fd_bam_publish_active_state( state, state->stem, 1 );
-  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
-  FD_TEST( env->stem_seqs[0] == 3UL );
-
-  fd_fseq_update( fseqs->gossip, 2UL );
-  fd_bam_publish_active_state( state, state->stem, 1 );
-  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
-  FD_TEST( env->stem_seqs[0] == 3UL );
-
-  fd_fseq_update( fseqs->gossip, 3UL );
-  fd_bam_publish_active_state( state, state->stem, 1 );
-  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
   fd_fseq_update( fseqs->signed_ack, 1UL );
   fd_bam_publish_active_state( state, state->stem, 1 );
   FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
@@ -5818,10 +5872,6 @@ test_bam_disable_clears_status_with_pending_gossip_handoff( fd_wksp_t * wksp ) {
   fd_bam_publish_active_state( state, state->stem, 0 );
   FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
   FD_TEST( !state->bam_gossip_handoff_pending );
-
-  fd_fseq_update( fseqs->gossip, 1UL );
-  fd_bam_publish_active_state( state, state->stem, 0 );
-  FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
 
   test_bam_env_destroy( env );
 }
@@ -5860,7 +5910,6 @@ test_bam_pending_activation_restores_default_contact( fd_wksp_t * wksp,
   fd_bam_publish_active_state( state, state->stem, 1 );
   FD_TEST( env->stem_seqs[0]==1UL );
   FD_TEST( state->tpu_update_state==FD_BAM_CONTACT_UPDATE_STATE_APPLIED_BAM );
-  fd_fseq_update( fseqs->gossip, 1UL );
   fd_bam_publish_active_state( state, state->stem, 1 );
   FD_TEST( fd_fseq_query( fseqs->status )==0UL );
 
@@ -5917,7 +5966,6 @@ test_bam_invalid_quic_base_port_does_not_activate( fd_wksp_t * wksp ) {
   FD_TEST( state->tpu_update_state == FD_BAM_CONTACT_UPDATE_STATE_PENDING_BAM );
   FD_TEST( state->client_id_update_state == FD_BAM_CONTACT_UPDATE_STATE_PENDING_BAM );
 
-  fd_fseq_update( fseqs->gossip, 1UL );
   fd_bam_publish_active_state( state, state->stem, 1 );
   FD_TEST( env->stem_seqs[0] == 0UL );
   FD_TEST( fd_fseq_query( fseqs->status ) == 0UL );
@@ -6781,6 +6829,8 @@ main( int     argc,
   test_bam_grpc_end_handling( wksp );
   test_bam_polls_socket_without_waker( wksp );
   test_bam_connect_without_waker_skips_epoll( wksp );
+  test_bam_connect_timeout_resets_stalled_handshake( wksp );
+  test_bam_keepalive_pings_during_continuation( wksp );
   test_bam_grpc_timeout( wksp );
   test_bam_config_timeout_keeps_scheduler_live( wksp );
   test_bam_config_rpc_applies_only_after_ok( wksp );
@@ -6839,11 +6889,10 @@ main( int     argc,
   test_bam_gossip_tile_applies_contact_update( wksp );
   for( int tie=0; tie<2; tie++ ) test_bam_gossip_stale_contact_case( wksp, tie );
   test_bam_gossip_publishes_bam_config_contact( wksp );
-  test_bam_activation_waits_for_gossip_fseq( wksp );
-  test_bam_activation_waits_for_bundle_publication( wksp );
+  test_bam_activation_waits_for_gossip_ack( wksp );
   test_bam_handoff_rings_parked_readers( wksp );
   test_bam_handoff_keeps_housekeeping_cadence( wksp );
-  test_bam_activation_ignores_stale_gossip_fseq_after_reenable( wksp );
+  test_bam_activation_ignores_stale_gossip_ack_after_reenable( wksp );
   test_bam_disable_clears_status_with_pending_gossip_handoff( wksp );
   for( int trigger=0; trigger<TEST_BAM_CONTACT_TRIGGER_CNT; trigger++ ) test_bam_pending_activation_restores_default_contact( wksp, trigger );
   test_bam_invalid_quic_base_port_does_not_activate( wksp );
