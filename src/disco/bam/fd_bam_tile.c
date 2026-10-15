@@ -6,6 +6,7 @@
 #include "../../waltz/h2/fd_h2_conn.h"
 #include "../waker/fd_waker.h"
 #include "../../ballet/hex/fd_hex.h"
+#include "../../ballet/base58/fd_base58.h"
 #include "../../tango/fseq/fd_fseq.h"
 #include "../../util/pod/fd_pod_format.h"
 #include "../../util/net/fd_ip4.h"
@@ -775,6 +776,19 @@ after_credit( fd_bam_tile_t *  ctx,
       };
       fd_memcpy( fd_txn_m_payload( txnm ), pending->payload, pending->payload_sz );
       fd_memcpy( fd_txn_m_txn_t( txnm ), pending->txn_t, pending->txn_t_sz );
+
+      /* Log each BAM transaction signature with its batch and slot, so an
+         operator can match BAM traffic to leader slots. FireBAM logs no
+         signatures otherwise. atomic=1 marks an AtomicTxnBatch
+         (revert_on_error). */
+      if( FD_LIKELY( pending->txn_t_sz ) ) {
+        fd_txn_t const * txn_desc = fd_txn_m_txn_t( txnm );
+        char sig_b58[ FD_BASE58_ENCODED_64_SZ ];
+        fd_base58_encode_64( fd_txn_m_payload( txnm ) + txn_desc->signature_off, NULL, sig_b58 );
+        FD_LOG_INFO(( "bam bundle txn seq_id=%u batch_idx=%u batch_cnt=%u max_schedule_slot=%lu atomic=%d signature=%s",
+                      (uint)pending->seq_id, (uint)pending->batch_idx, (uint)pending->batch_cnt,
+                      pending->max_schedule_slot, (int)!!pending->revert_on_error, sig_b58 ));
+      }
 
       ulong sz = fd_txn_m_realized_footprint( txnm, !!pending->txn_t_sz, 0 );
       fd_bam_out_publish( stem, &ctx->verify_out, pending->revert_on_error ? 1UL : 0UL, sz );
