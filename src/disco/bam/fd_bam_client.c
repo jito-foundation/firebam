@@ -259,7 +259,9 @@ fd_bam_client_create_conn( fd_bam_tile_t * ctx ) {
     fd_tlsrec_conn_init( ctx->tls_conn, tls, 0 );
   }
 
-  fd_keepalive_init( ctx->keepalive, ctx->rng, ctx->keepalive_interval, ctx->keepalive_interval, fd_bam_now() );
+  long now = fd_bam_now();
+  ctx->connect_deadline = now + FD_BAM_CONNECT_TIMEOUT_NS;
+  fd_keepalive_init( ctx->keepalive, ctx->rng, ctx->keepalive_interval, ctx->keepalive_interval, now );
 }
 
 static bool
@@ -687,15 +689,17 @@ fd_bam_client_step_reconnect( fd_bam_tile_t * ctx,
   }
 
   /* Send an HTTP/2 PING (transport keepalive, not the scheduler proto
-     Ping) unless the connection is busy. */
+     Ping) unless the connection is closing.  A peer that stalls in a
+     header block (CONTINUATION) then fails the keepalive timeout. */
   if( FD_UNLIKELY( fd_keepalive_should_tx( ctx->keepalive, now ) ) ) {
     fd_h2_conn_t * conn = fd_grpc_client_h2_conn( ctx->grpc_client );
-    if( FD_LIKELY( !conn->flags && fd_h2_tx_ping( conn, fd_grpc_client_rbuf_tx( ctx->grpc_client ) ) ) ) {
+    if( FD_LIKELY( !( conn->flags & (FD_H2_CONN_FLAGS_DEAD|FD_H2_CONN_FLAGS_SEND_GOAWAY) ) &&
+                   fd_h2_tx_ping( conn, fd_grpc_client_rbuf_tx( ctx->grpc_client ) ) ) ) {
       long ping_now = fd_bam_now();
       fd_keepalive_tx( ctx->keepalive, ctx->rng, ping_now );
       FD_LOG_DEBUG(( "Keepalive TX (deadline=+%gs)", (double)( ctx->keepalive->ts_deadline-ping_now )/1e9 ));
+      busy = 1;
     }
-    busy = 1;
   }
 
   /* Flush queued execution results back to the BAM node once it has
@@ -747,6 +751,20 @@ fd_bam_client_step1( fd_bam_tile_t * ctx,
     if( FD_LIKELY( now - ctx->leader_schedule_gate_start_ns < FD_BAM_LEADER_SCHEDULE_RECHECK_WALLCLOCK_NS ) ) return;
     ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_DUE_SLOT;
     ctx->leader_schedule_gate_start_ns = 0L;
+  }
+
+  /* Did the TCP, TLS, or HTTP/2 handshake time out.  The HTTP/2
+     handshake disarms the deadline (conn_established). */
+  if( FD_UNLIKELY( ctx->tcp_sock>=0 && now>=ctx->connect_deadline ) ) {
+    FD_LOG_WARNING(( "BAM gRPC connect timed out (no HTTP/2 session after %.2f seconds); retrying %s/" FD_IP4_ADDR_FMT ":%hu",
+                     (double)FD_BAM_CONNECT_TIMEOUT_NS/1e9,
+                     ctx->server_fqdn,
+                     FD_IP4_ADDR_FMT_ARGS( ctx->server_ip4_addr ),
+                     ctx->server_tcp_port ));
+    fd_bam_client_reset( ctx );
+    ctx->metrics.failure_cnt[ FD_METRICS_ENUM_BAM_FAILURE_V_CONNECT_TIMEOUT_IDX ]++;
+    *charge_busy = 1;
+    return;
   }
 
   /* Wait for TCP socket to connect */
@@ -935,14 +953,15 @@ fd_bam_client_next_deadline( fd_bam_tile_t const * ctx,
   if( FD_UNLIKELY( ctx->leader_schedule_gate_start_ns ) )
     return fd_bam_client_no_progress_deadline( ctx->leader_schedule_gate_start_ns + FD_BAM_LEADER_SCHEDULE_RECHECK_WALLCLOCK_NS, now );
   if( FD_UNLIKELY( ctx->tcp_sock<0 ) ) return fd_bam_client_no_progress_deadline( ctx->backoff_until, now );
-  if( FD_UNLIKELY( !ctx->tcp_sock_connected ) ) return LONG_MAX;
+  if( FD_UNLIKELY( !ctx->tcp_sock_connected ) ) return fd_bam_client_no_progress_deadline( ctx->connect_deadline, now );
 
   if( FD_UNLIKELY( ctx->is_ssl &&
                    fd_grpc_client_tls_rx_pending( ctx->grpc_client ) &&
                    !fd_grpc_client_tls_tx_pending( ctx->grpc_client ) ) ) return now;
 
   long deadline = fd_grpc_client_next_deadline( ctx->grpc_client );
-  if( FD_UNLIKELY( !fd_grpc_client_is_connected( ctx->grpc_client ) ) ) return fd_bam_client_no_progress_deadline( deadline, now );
+  if( FD_UNLIKELY( !fd_grpc_client_is_connected( ctx->grpc_client ) ) )
+    return fd_bam_client_no_progress_deadline( fd_long_min( deadline, ctx->connect_deadline ), now );
   if( FD_LIKELY( ctx->keepalive->interval ) )
     deadline = fd_long_min( deadline, ctx->keepalive->inflight ? ctx->keepalive->ts_deadline
                                                                : ctx->keepalive->ts_next_tx );
@@ -967,7 +986,8 @@ fd_bam_client_next_deadline( fd_bam_tile_t const * ctx,
 
 static void
 fd_bam_client_grpc_conn_established( void * app_ctx ) {
-  (void)app_ctx;
+  fd_bam_tile_t * ctx = app_ctx;
+  ctx->connect_deadline = LONG_MAX;
   FD_LOG_INFO(( "BAM gRPC connection established" ));
 }
 

@@ -4117,7 +4117,7 @@ static fd_metrics_sample_field_t const fields_motor[ 38 ] = {
   { FD_METRICS_COUNTER_TILE_TIMER_IRQ_OFF, 24U, FD_METRICS_SAMPLE_U64, NULL, 0UL },
 };
 
-static fd_metrics_sample_field_t const fields_bam[ 181 ] = {
+static fd_metrics_sample_field_t const fields_bam[ 182 ] = {
   { FD_METRICS_GAUGE_TILE_PID_OFF, 8U, FD_METRICS_SAMPLE_U64, NULL, 0UL },
   { FD_METRICS_GAUGE_TILE_TID_OFF, 9U, FD_METRICS_SAMPLE_U64, NULL, 0UL },
   { FD_METRICS_GAUGE_TILE_LAST_CPU_INDEX_OFF, 10U, FD_METRICS_SAMPLE_U64, NULL, 0UL },
@@ -4179,6 +4179,7 @@ static fd_metrics_sample_field_t const fields_bam[ 181 ] = {
   { FD_METRICS_COUNTER_BAM_FAILURE_REQUEST_TIMEOUT_OFF, 9U, FD_METRICS_SAMPLE_U64, NULL, 0UL },
   { FD_METRICS_COUNTER_BAM_FAILURE_KEEPALIVE_TIMEOUT_OFF, 10U, FD_METRICS_SAMPLE_U64, NULL, 0UL },
   { FD_METRICS_COUNTER_BAM_FAILURE_BUILDER_ACTIVITY_TIMEOUT_OFF, 11U, FD_METRICS_SAMPLE_U64, NULL, 0UL },
+  { FD_METRICS_COUNTER_BAM_FAILURE_CONNECT_TIMEOUT_OFF, 12U, FD_METRICS_SAMPLE_U64, NULL, 0UL },
   { 0, 0U, FD_METRICS_SAMPLE_CLOSE, NULL, 0UL },
   { FD_METRICS_GAUGE_BAM_HEAP_SIZE_OFF, 37U, FD_METRICS_SAMPLE_U64, NULL, 0UL },
   { FD_METRICS_GAUGE_BAM_HEAP_FREE_BYTES_OFF, 38U, FD_METRICS_SAMPLE_U64, NULL, 0UL },
@@ -4354,7 +4355,7 @@ fd_metrics_sample_schema_t const fd_metrics_sample_tiles[] = {
   { "snaprd", 59U, fields_snaprd, 42UL, 560UL },
   { "snapsv", 60U, fields_snapsv, 46UL, 589UL },
   { "motor", 62U, fields_motor, 38UL, 512UL },
-  { "bam", 442058859U, fields_bam, 181UL, 1915UL },
+  { "bam", 442058859U, fields_bam, 182UL, 1926UL },
   { NULL, 0U, NULL, 0UL, 0UL }
 };
 
