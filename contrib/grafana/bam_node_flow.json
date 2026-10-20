@@ -1071,7 +1071,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Bundle backlog in pack. pack_available_transactions with avail_txn_type=bundles is the count of pending bundle transactions available to schedule; pack_pending_transactions_heap_size is the fixed capacity of pack's pending heap.",
+      "description": "Bundle backlog in pack. pack_txn_pending_used with pending_txn_type=bundle is the count of pending bundle transactions available to schedule; pack_txn_pending_capacity is the fixed capacity of pack's pending heap.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1159,7 +1159,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (pack_available_transactions{instance=~\"$instance\",avail_txn_type=\"bundles\"})",
+          "expr": "sum by (instance) (pack_txn_pending_used{instance=~\"$instance\",pending_txn_type=\"bundle\"})",
           "instant": false,
           "legendFormat": "Bundles Available",
           "range": true,
@@ -1171,7 +1171,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (pack_pending_transactions_heap_size{instance=~\"$instance\"})",
+          "expr": "sum by (instance) (pack_txn_pending_capacity{instance=~\"$instance\"})",
           "instant": false,
           "legendFormat": "Pack Capacity",
           "range": true,
@@ -1821,7 +1821,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second bundle-related transaction failures through verify/dedup/resolv plus pack drops. verify_transaction_result and dedup_transaction_result use bundle_peer_failure result labels; resolv_transaction_bundle_peer_failure counts resolve-stage peer failures; pack_transaction_dropped_partial_bundle counts transactions dropped in pack because the bundle was partial. Failures are per-transaction even when the root cause is a bundle.",
+      "description": "Per-second bundle-related transaction failures through verify/dedup/resolv plus pack drops. verify_txn_processed and dedup_txn_processed use bundle_peer_failed result labels; resolv_txn_dropped with resolv_txn_drop_reason=bundle_peer_failed counts resolve-stage peer failures; pack_txn_dropped with pack_txn_drop_reason=partial_bundle counts transactions dropped in pack because the bundle was partial. Failures are per-transaction even when the root cause is a bundle.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1909,7 +1909,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(verify_transaction_result{instance=~\"$instance\",verify_tile_result=\"bundle_peer_failure\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(verify_txn_processed_total{instance=~\"$instance\",verify_result=\"bundle_peer_failed\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Verify Peer Failures",
           "range": true,
@@ -1921,7 +1921,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(dedup_transaction_result{instance=~\"$instance\",dedup_tile_result=\"bundle_peer_failure\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(dedup_txn_processed_total{instance=~\"$instance\",dedup_result=\"bundle_peer_failed\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Dedup Peer Failures",
           "range": true,
@@ -1933,7 +1933,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(resolv_transaction_bundle_peer_failure{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(resolv_txn_dropped_total{instance=~\"$instance\",resolv_txn_drop_reason=\"bundle_peer_failed\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Resolv Peer Failures",
           "range": true,
@@ -1945,7 +1945,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(pack_transaction_dropped_partial_bundle{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(pack_txn_dropped_total{instance=~\"$instance\",pack_txn_drop_reason=\"partial_bundle\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Pack Partial Bundle Drops",
           "range": true,
@@ -1960,7 +1960,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second rate of full Firedancer execution results labeled transaction_result=bundle_peer. These are transactions that failed because a peer transaction in the same bundle failed (execle_transaction_result counter).",
+      "description": "Per-second rate of full Firedancer execution results labeled txn_result=bundle_peer. These are transactions that failed because a peer transaction in the same bundle failed (execle_txn_processed counter).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2048,7 +2048,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(execle_transaction_result{instance=~\"$instance\",transaction_result=\"bundle_peer\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(execle_txn_processed_total{instance=~\"$instance\",txn_result=\"bundle_peer\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "Bundle Peer Failure",
           "range": true,
@@ -2063,7 +2063,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-second results of pack's bundle crank checks, grouped by bundle_crank_result: not_needed (on-chain state already correct), inserted (initializer bundle inserted), creation_failed, and insertion_failed.",
+      "description": "Per-second results of pack's bundle crank checks, grouped by bundle_crank_result: up_to_date (on-chain state already correct), inserted (initializer bundle inserted), creation_failed, and insertion_failed.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2147,7 +2147,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (bundle_crank_result) (rate(pack_bundle_crank_status{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (bundle_crank_result) (rate(pack_bundle_crank_attempted_total{instance=~\"$instance\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "{{bundle_crank_result}}",
           "range": true,
@@ -2162,7 +2162,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Full Firedancer pack microblock scheduler and completion duration histograms from pack_schedule_microblock_duration_seconds and pack_complete_microblock_duration_seconds.",
+      "description": "Full Firedancer pack microblock scheduler and completion duration histograms from pack_microblock_schedule_duration_nanos and pack_microblock_complete_duration_nanos.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2214,7 +2214,7 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "ns"
         },
         "overrides": []
       },
@@ -2246,7 +2246,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(pack_schedule_microblock_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pack_microblock_schedule_duration_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "schedule p50",
           "range": true,
@@ -2258,7 +2258,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(pack_schedule_microblock_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pack_microblock_schedule_duration_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "schedule p95",
           "range": true,
@@ -2270,7 +2270,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(pack_complete_microblock_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pack_microblock_complete_duration_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "complete p50",
           "range": true,
@@ -2282,7 +2282,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(pack_complete_microblock_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pack_microblock_complete_duration_nanos_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "complete p95",
           "range": true,
