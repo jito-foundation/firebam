@@ -335,7 +335,7 @@ metrics_write( fd_replay_tile_t * ctx ) {
     FD_MGAUGE_SET( REPLAY, ROOT_SLOT_DISTANCE, fd_ulong_sat_sub( ctx->reset_slot, ctx->consensus_root_slot ) ); /* no tower_slot_done */
   }
   FD_MGAUGE_SET( REPLAY, LAST_REWARDED_VOTE_SLOT, fd_ulong_if( ctx->metrics.voted_slot==ULONG_MAX, 0UL, ctx->metrics.voted_slot ) );
-  if( FD_UNLIKELY( ctx->bam_ctrl ) ) FD_MGAUGE_SET( REPLAY, SLOT_DURATION_NANOS, ctx->metrics.slot_duration_ns );
+  if( FD_UNLIKELY( ctx->bam_ctrl ) ) replay_bam_metrics_write( ctx );
 
   FD_MGAUGE_SET( REPLAY, BANK_USED, fd_banks_pool_used_cnt( ctx->banks ) );
 
