@@ -3,7 +3,6 @@
 
 #include "../../util/fd_util_base.h"
 #include "../../choreo/tower/fd_tower_file.h"
-#include "../../choreo/votor/ag_vote_history_file.h"
 
 /* fd_adminctl_t provides APIs for out-of-band command-and-control
    signals to the firedancer process via the admin tile.  It provides a
@@ -64,6 +63,7 @@
 
 #define FD_SET_IDENTITY_RESULT_KEYPAIR_MISMATCH             (0x3001UL)
 #define FD_SET_IDENTITY_RESULT_INVALID_VOTE_HISTORY         (0x3002UL)
+#define FD_SET_IDENTITY_RESULT_SAME_IDENTITY                (0x3003UL)
 
 struct fd_adminctl_add_auth_voter_v1 {
   ulong version; /* ==FD_ADMINCTL_ADD_AUTH_VOTER_PAYLOAD_VERSION */
@@ -81,16 +81,16 @@ struct fd_adminctl_snap_create_v1 {
 typedef struct fd_adminctl_snap_create_v1 fd_adminctl_snap_create_t;
 #define FD_ADMINCTL_SNAP_CREATE_PAYLOAD_VERSION (1UL)
 
-struct fd_adminctl_set_identity_v2 {
-  ulong version; /* ==FD_ADMINCTL_SET_IDENTITY_PAYLOAD_VERSION */
+struct fd_adminctl_set_identity_v3 {
+  ulong version;           /* ==FD_ADMINCTL_SET_IDENTITY_PAYLOAD_VERSION */
   uchar keypair[ 64UL ];
-  ulong vote_history_sz; /* 0 if no vote history file was provided */
-  uchar vote_history[ AG_VOTE_HISTORY_FILE_MAX ];
+  ulong vote_history_slot; /* scanned by the command from the vote history file, 0 if none was provided */
+  ulong tower_file_sz;     /* 0 if no tower file was provided */
+  uchar tower_file[ FD_TOWER_FILE_MAX ];
 };
-typedef struct fd_adminctl_set_identity_v2 fd_adminctl_set_identity_t;
-FD_STATIC_ASSERT( FD_TOWER_FILE_MAX<=AG_VOTE_HISTORY_FILE_MAX, vote_history );
+typedef struct fd_adminctl_set_identity_v3 fd_adminctl_set_identity_t;
 FD_STATIC_ASSERT( sizeof(fd_adminctl_set_identity_t)<=FD_ADMINCTL_PAYLOAD_MAX, set_identity );
-#define FD_ADMINCTL_SET_IDENTITY_PAYLOAD_VERSION (2UL)
+#define FD_ADMINCTL_SET_IDENTITY_PAYLOAD_VERSION (3UL)
 
 struct fd_adminctl_get_identity_req_v1 {
   ulong version; /* ==FD_ADMINCTL_GET_IDENTITY_PAYLOAD_VERSION */

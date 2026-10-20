@@ -582,7 +582,7 @@ struct fd_pack_private {
   ulong      alloc_consumed;
 
   /* counters / gauge for schedule outcome enums */
-  ulong      sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_CNT ];
+  ulong      sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_CNT ];
 
   fd_rng_t * rng;
 
@@ -963,14 +963,14 @@ fd_pack_new( void                   * mem,
   fd_histf_new( pack->vote_per_microblock, FD_MHIST_MIN( PACK, VOTE_PER_MICROBLOCK ),
                                            FD_MHIST_MAX( PACK, VOTE_PER_MICROBLOCK ) );
 
-  fd_histf_new( pack->scheduled_cus_per_block, FD_MHIST_MIN( PACK, CU_SCHEDULED_PER_BLOCK ),
-                                               FD_MHIST_MAX( PACK, CU_SCHEDULED_PER_BLOCK ) );
-  fd_histf_new( pack->rebated_cus_per_block,   FD_MHIST_MIN( PACK, CU_REBATED_PER_BLOCK   ),
-                                               FD_MHIST_MAX( PACK, CU_REBATED_PER_BLOCK   ) );
-  fd_histf_new( pack->net_cus_per_block,       FD_MHIST_MIN( PACK, CU_NET_PER_BLOCK       ),
-                                               FD_MHIST_MAX( PACK, CU_NET_PER_BLOCK       ) );
-  fd_histf_new( pack->pct_cus_per_block,       FD_MHIST_MIN( PACK, CU_PCT       ),
-                                               FD_MHIST_MAX( PACK, CU_PCT       ) );
+  fd_histf_new( pack->scheduled_cus_per_block, FD_MHIST_MIN( PACK, COST_SCHEDULED_PER_BLOCK ),
+                                               FD_MHIST_MAX( PACK, COST_SCHEDULED_PER_BLOCK ) );
+  fd_histf_new( pack->rebated_cus_per_block,   FD_MHIST_MIN( PACK, CU_REBATED_PER_BLOCK     ),
+                                               FD_MHIST_MAX( PACK, CU_REBATED_PER_BLOCK     ) );
+  fd_histf_new( pack->net_cus_per_block,       FD_MHIST_MIN( PACK, COST_NET_PER_BLOCK       ),
+                                               FD_MHIST_MAX( PACK, COST_NET_PER_BLOCK       ) );
+  fd_histf_new( pack->pct_cus_per_block,       FD_MHIST_MIN( PACK, COST_PER_BLOCK_PCT       ),
+                                               FD_MHIST_MAX( PACK, COST_PER_BLOCK_PCT       ) );
 
   pack->compressed_slot_number = (ushort)(FD_PACK_SKIP_CNT+1);
 
@@ -1960,15 +1960,15 @@ fd_pack_metrics_write( fd_pack_t const * pack ) {
   ulong pending_votes  = treap_ele_cnt( pack->pending_votes   );
   ulong pending_bundle = treap_ele_cnt( pack->pending_bundles );
   ulong conflicting    = pack->pending_txn_cnt - pending_votes - pending_bundle - treap_ele_cnt( pack->pending );
-  FD_MGAUGE_SET( PACK, TXN_AVAILABLE_ALL,         pack->pending_txn_cnt       );
-  FD_MGAUGE_SET( PACK, TXN_AVAILABLE_REGULAR,     pending_regular             );
-  FD_MGAUGE_SET( PACK, TXN_AVAILABLE_VOTES,       pending_votes               );
-  FD_MGAUGE_SET( PACK, TXN_AVAILABLE_CONFLICTING, conflicting                 );
-  FD_MGAUGE_SET( PACK, TXN_AVAILABLE_BUNDLES,     pending_bundle              );
-  FD_MGAUGE_SET( PACK, TXN_PENDING_SMALLEST_CU,   pack->pending_smallest->cus );
-  FD_MGAUGE_SET( PACK, BLOCK_CU_CONSUMED,         pack->cumulative_block_cost );
+  ulong smallest_cost  = fd_ulong_if( pack->pending_smallest->cus==ULONG_MAX, 0UL, pack->pending_smallest->cus );
+  FD_MGAUGE_SET( PACK, TXN_PENDING_USED_REGULAR,     pending_regular             );
+  FD_MGAUGE_SET( PACK, TXN_PENDING_USED_VOTE,        pending_votes               );
+  FD_MGAUGE_SET( PACK, TXN_PENDING_USED_CONFLICTING, conflicting                 );
+  FD_MGAUGE_SET( PACK, TXN_PENDING_USED_BUNDLE,      pending_bundle              );
+  FD_MGAUGE_SET( PACK, TXN_PENDING_SMALLEST_COST,    smallest_cost               );
+  FD_MGAUGE_SET( PACK, BLOCK_COST,                   pack->cumulative_block_cost );
 
-  FD_MCNT_ENUM_COPY( PACK, TXN_SCHEDULED, pack->sched_results );
+  FD_MCNT_ENUM_COPY( PACK, TXN_SCHEDULE_ATTEMPTED, pack->sched_results );
 }
 
 void
@@ -2278,14 +2278,14 @@ fd_pack_schedule_impl( fd_pack_t          * pack,
     if( FD_UNLIKELY( (cu_limit<smallest_in_treap->cus) | (txn_limit==0UL) | (byte_limit<smallest_in_treap->bytes) ) ) break;
   }
 
-  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_TAKEN_IDX       ] += txns_scheduled;
-  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_CU_LIMIT_IDX    ] += cu_limit_c;
-  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_FAST_PATH_IDX   ] += fast_path;
-  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_BYTE_LIMIT_IDX  ] += byte_limit_c;
-  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_ALLOC_LIMIT_IDX ] += alloc_limit_c;
-  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_WRITE_COST_IDX  ] += write_limit_c;
-  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_SLOW_PATH_IDX   ] += slow_path;
-  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX  ] += skip_c;
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_TAKEN_IDX               ] += txns_scheduled;
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_CU_LIMIT_IDX            ] += cu_limit_c;
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_CONFLICT_FAST_IDX       ] += fast_path;
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_BYTE_LIMIT_IDX          ] += byte_limit_c;
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_ALLOC_LIMIT_IDX         ] += alloc_limit_c;
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_WRITE_COST_IDX          ] += write_limit_c;
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_CONFLICT_SLOW_IDX       ] += slow_path;
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_WRITE_COST_DEFERRED_IDX ] += skip_c;
 
   /* If we scanned the whole treap and didn't break early, we now have a
      better estimate of the smallest. */
@@ -2490,7 +2490,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
     if( FD_UNLIKELY( cur->compute_est>cu_limit ) ) {
       doesnt_fit = 1;
-      pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_CU_LIMIT_IDX ]++;
+      pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_CU_LIMIT_IDX ]++;
       break;
     }
     cu_limit -= cur->compute_est;
@@ -2498,28 +2498,28 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     /* Each transaction in a bundle turns into a microblock */
     if( FD_UNLIKELY( microblock_limit==0UL ) ) {
       doesnt_fit = 1;
-      FD_MCNT_INC( PACK, MICROBLOCK_PER_BLOCK_LIMIT_REACHED, 1UL );
+      FD_MCNT_INC( PACK, BLOCK_MICROBLOCK_LIMIT_REACHED, 1UL );
       break;
     }
     microblock_limit--;
 
     if( FD_UNLIKELY( cur->txn->payload_sz+MICROBLOCK_DATA_OVERHEAD>byte_limit ) ) {
       doesnt_fit = 1;
-      pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_BYTE_LIMIT_IDX ]++;
+      pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_BYTE_LIMIT_IDX ]++;
       break;
     }
     byte_limit -= cur->txn->payload_sz + MICROBLOCK_DATA_OVERHEAD;
 
     if( FD_UNLIKELY( cur->txn->pack_alloc>alloc_limit ) ) {
       doesnt_fit = 1;
-      pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_ALLOC_LIMIT_IDX ]++;
+      pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_ALLOC_LIMIT_IDX ]++;
       break;
     }
     alloc_limit -= cur->txn->pack_alloc;
 
     if( FD_UNLIKELY( !FD_PACK_BITSET_INTERSECT4_EMPTY( pack->bitset_rw_in_use, pack->bitset_w_in_use, cur->w_bitset, cur->rw_bitset ) ) ) {
       has_conflict = 1;
-      pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_FAST_PATH_IDX ]++;
+      pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_CONFLICT_FAST_IDX ]++;
       break;
     }
 
@@ -2547,7 +2547,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
       ulong carried_cost                  = (ulong)in_bundle_temp->carried_cost;
       if( FD_UNLIKELY( current_cost + carried_cost + cur->compute_est > pack->lim->max_write_cost_per_acct ) ) {
         doesnt_fit = 1;
-        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_WRITE_COST_IDX ]++;
+        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_WRITE_COST_IDX ]++;
         break;
       }
 
@@ -2564,7 +2564,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
       if( FD_UNLIKELY( acct_uses_query( pack->acct_in_use, acct, null_use )->in_use_by ) ) {
         has_conflict = 1;
-        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_SLOW_PATH_IDX ]++;
+        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_CONFLICT_SLOW_IDX ]++;
         break;
       }
     }
@@ -2591,7 +2591,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
 
       if( FD_UNLIKELY( acct_uses_query( pack->acct_in_use,  *acct, null_use )->in_use_by & FD_PACK_IN_USE_WRITABLE ) ) {
         has_conflict = 1;
-        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_SLOW_PATH_IDX ]++;
+        pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_CONFLICT_SLOW_IDX ]++;
         break;
       }
     }
@@ -2752,11 +2752,11 @@ fd_pack_schedule_next_microblock_impl_bundle_hint( fd_pack_t *  pack,
 
 
   if( FD_UNLIKELY( (pack->microblock_cnt>=pack->lim->max_microblocks_per_block) ) ) {
-    FD_MCNT_INC( PACK, MICROBLOCK_PER_BLOCK_LIMIT_REACHED, 1UL );
+    FD_MCNT_INC( PACK, BLOCK_MICROBLOCK_LIMIT_REACHED, 1UL );
     return 0UL;
   }
   if( FD_UNLIKELY( pack->data_bytes_consumed+MICROBLOCK_DATA_OVERHEAD+FD_TXN_MIN_SERIALIZED_SZ>pack->lim->max_data_bytes_per_block) ) {
-    FD_MCNT_INC( PACK, DATA_PER_BLOCK_LIMIT_REACHED, 1UL );
+    FD_MCNT_INC( PACK, BLOCK_BYTE_LIMIT_REACHED, 1UL );
     return 0UL;
   }
 
@@ -2999,11 +2999,11 @@ fd_pack_end_block( fd_pack_t * pack ) {
   FD_MHIST_COPY( PACK, TXN_PER_MICROBLOCK,  pack->txn_per_microblock  );
   FD_MHIST_COPY( PACK, VOTE_PER_MICROBLOCK, pack->vote_per_microblock );
 
-  FD_MGAUGE_SET( PACK, BLOCK_CU_CONSUMED, 0UL                           );
-  FD_MHIST_COPY( PACK, CU_SCHEDULED_PER_BLOCK, pack->scheduled_cus_per_block );
-  FD_MHIST_COPY( PACK, CU_REBATED_PER_BLOCK,   pack->rebated_cus_per_block   );
-  FD_MHIST_COPY( PACK, CU_NET_PER_BLOCK,       pack->net_cus_per_block       );
-  FD_MHIST_COPY( PACK, CU_PCT,                 pack->pct_cus_per_block       );
+  FD_MGAUGE_SET( PACK, BLOCK_COST,               0UL                           );
+  FD_MHIST_COPY( PACK, COST_SCHEDULED_PER_BLOCK, pack->scheduled_cus_per_block );
+  FD_MHIST_COPY( PACK, CU_REBATED_PER_BLOCK,     pack->rebated_cus_per_block   );
+  FD_MHIST_COPY( PACK, COST_NET_PER_BLOCK,       pack->net_cus_per_block       );
+  FD_MHIST_COPY( PACK, COST_PER_BLOCK_PCT,       pack->pct_cus_per_block       );
 }
 
 static void

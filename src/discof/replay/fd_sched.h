@@ -6,11 +6,11 @@
 #include "../../disco/fd_txn_p.h"
 #include "../../disco/store/fd_store.h" /* for fd_store_fec_t */
 #include "../../flamenco/accdb/fd_accdb.h"
-#include "../../discof/poh/fd_poh.h" /* for MAX_SKIPPED_TICKS */
+#include "../../disco/fd_clock_tile.h"
 
-/* Microblocks per slot at the production shred limit; scaled with
-   max_shreds_per_block at runtime. */
-#define FD_SCHED_MAX_MBLK_PER_SLOT (MAX_SKIPPED_TICKS)
+/* Max microblocks (including ticks) that fit in a block's shreds;
+   scaled with max_shreds_per_block at runtime. */
+#define FD_SCHED_MAX_MBLK_PER_SLOT (FD_SHRED_DATA_PAYLOAD_MAX_PER_SLOT/sizeof(fd_microblock_hdr_t))
 
 /* Most exec tiles a scheduler can dispatch to. */
 #define FD_SCHED_MAX_EXEC_TILE_CNT (64UL)
@@ -146,6 +146,7 @@ typedef struct fd_sched_txn_info fd_sched_txn_info_t;
 #define FD_SCHED_TT_LTHASH        (5UL) /* (e) Account lthash. */
 #define FD_SCHED_TT_POH_HASH      (6UL) /* (e) PoH hashing. */
 #define FD_SCHED_TT_MARK_DEAD     (7UL) /* (i) Mark the block dead. */
+#define FD_SCHED_TT_CERT_VERIFY   (8UL) /* (e) Footer cert verify. */
 
 struct fd_sched_block_start {
   ulong bank_idx;        /* Same as in fd_sched_fec_t. */
@@ -340,6 +341,17 @@ fd_sched_is_drained( fd_sched_t * sched );
    next task next_ready returns for it is a BLOCK_START, 0 otherwise. */
 int
 fd_sched_block_start_pending( fd_sched_t * sched );
+
+/* fd_sched_cert_dispatch claims up to cnt idle exec tiles for footer
+   cert verify tasks of the active block, whose BLOCK_END is signaled
+   and not done yet.  Returns the claimed tiles (bit i for tile i).
+   Each completes with fd_sched_task_done( FD_SCHED_TT_CERT_VERIFY,
+   ULONG_MAX, i, NULL ), and the block is not done until all have. */
+
+ulong
+fd_sched_cert_dispatch( fd_sched_t * sched,
+                        ulong        bank_idx,
+                        ulong        cnt );
 
 /* Obtain a transaction eligible for execution.  This implies that all
    prior transactions with w-r or w-w conflicts have completed.
@@ -542,7 +554,8 @@ fd_block_footer_t const *
 fd_sched_get_footer( fd_sched_t * sched, ulong bank_idx );
 
 void
-fd_sched_metrics_write( fd_sched_t * sched );
+fd_sched_metrics_write( fd_sched_t *            sched,
+                        fd_clock_tile_t const * clock );
 
 /* Serialize the current state as a cstr to the returned buffer.  Caller
    may read from the buffer until the next invocation of any fd_sched

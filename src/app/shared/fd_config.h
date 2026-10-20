@@ -132,8 +132,9 @@ struct fd_configf {
   } gossip;
 
   struct {
-    char wait_for_supermajority_with_bank_hash[ FD_BASE58_ENCODED_32_SZ ];
-    int  alpenglow;
+    ulong wait_for_supermajority_at_slot;
+    char  wait_for_supermajority_with_bank_hash[ FD_BASE58_ENCODED_32_SZ ];
+    int   alpenglow;
   } consensus;
 
   struct {
@@ -571,10 +572,6 @@ struct fd_config {
     struct {
       int write_vote_history_file;
     } tower;
-
-    struct {
-      int write_vote_history_file;
-    } votor;
 
     struct {
       ulong max_transaction_lookahead_buffer_size;

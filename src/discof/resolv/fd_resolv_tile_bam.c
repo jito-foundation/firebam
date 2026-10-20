@@ -19,7 +19,7 @@ fd_resolv_tile_bam_after_frag( fd_resolv_ctx_t *   ctx,
   }
 
   if( FD_UNLIKELY( failure_group_id && ctx->bundle_failed ) ) {
-    ctx->metrics.bundle_peer_failure++;
+    ctx->metrics.txn_dropped[ FD_METRICS_ENUM_RESOLV_TXN_DROP_REASON_V_BUNDLE_PEER_FAILED_IDX ]++;
     return;
   }
 
@@ -32,7 +32,7 @@ fd_resolv_tile_bam_after_frag( fd_resolv_ctx_t *   ctx,
     if( FD_LIKELY( blockhash ) ) txnm->reference_block_height = blockhash->block_height;
 
     if( FD_UNLIKELY( txnt->addr_table_adtl_cnt ) ) {
-      if( FD_UNLIKELY( !ctx->bank ) ) FD_MCNT_INC( RESOLV, TXN_NO_BANK, 1 );
+      if( FD_UNLIKELY( !ctx->bank ) ) ctx->metrics.txn_dropped[ FD_METRICS_ENUM_RESOLV_TXN_DROP_REASON_V_NO_BANK_IDX ]++;
       if( FD_UNLIKELY( !ctx->bank || peek_aluts( ctx, txnm ) ) ) txnm->bam.preprocess_failed = 1U;
     }
   }

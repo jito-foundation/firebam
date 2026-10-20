@@ -158,9 +158,9 @@ test_bam_duplicate_and_preprocess_failed( void ) {
   FD_TEST( env->seqs[ 0 ]==3UL );
   fd_txn_m_t const * txnm = test_last_published( env, &sig );
   FD_TEST( sig==1UL && txnm->bam.preprocess_failed && txnm->bam.batch_idx==2U );
-  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_SUCCESS_IDX ]==2UL );
-  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_DEDUP_FAILURE_IDX ]==1UL );
-  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_BUNDLE_PEER_FAILURE_IDX ]==1UL );
+  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_RESULT_V_SUCCESS_IDX ]==2UL );
+  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_RESULT_V_DUPLICATE_IDX ]==1UL );
+  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_RESULT_V_BUNDLE_PEER_FAILED_IDX ]==1UL );
 
   /* The next batch, even with a reused seq_id, starts clean. */
   test_publish( env, 1, 8UL, 7U, 1U, 0U, 0x70U, 0 );
@@ -176,9 +176,9 @@ test_bam_duplicate_and_preprocess_failed( void ) {
   FD_TEST( sig==1UL && txnm->bam.preprocess_failed && txnm->bam.batch_idx==1U );
   test_publish( env, 1, 10UL, 9U, 3U, 2U, 0x82U, 0 );
   FD_TEST( env->seqs[ 0 ]==2UL );
-  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_SUCCESS_IDX ]==1UL );
-  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_DEDUP_FAILURE_IDX ]==0UL );
-  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_BUNDLE_PEER_FAILURE_IDX ]==1UL );
+  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_RESULT_V_SUCCESS_IDX ]==1UL );
+  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_RESULT_V_DUPLICATE_IDX ]==0UL );
+  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_RESULT_V_BUNDLE_PEER_FAILED_IDX ]==1UL );
 
   /* A failed non-revert single fails nothing else. */
   test_publish( env, 1, 0UL, 11U, 1U, 0U, 0x90U, 1 );
@@ -210,7 +210,7 @@ test_bam_duplicate_and_preprocess_failed( void ) {
   FD_TEST( env->seqs[ 0 ]==3UL );
   (void)test_last_published( env, &sig );
   FD_TEST( sig==0UL );
-  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_DEDUP_FAILURE_IDX ]==1UL );
+  FD_TEST( result[ FD_METRICS_ENUM_DEDUP_RESULT_V_DUPLICATE_IDX ]==1UL );
   FD_TEST( fd_tcache_leave( tcache ) );
 }
 

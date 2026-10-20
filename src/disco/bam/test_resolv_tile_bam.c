@@ -175,7 +175,7 @@ test_known_hash_height_distance_defers_to_runtime( void ) {
       FD_TEST( !h->ctx->bundle_failed );
     }
   }
-  FD_TEST( h->ctx->metrics.blockhash_expired==4UL );
+  FD_TEST( h->ctx->metrics.txn_dropped[ FD_METRICS_ENUM_RESOLV_TXN_DROP_REASON_V_BLOCKHASH_EXPIRED_IDX ]==4UL );
   FD_TEST( pool_free( h->ctx->pool )==4UL );
   test_harness_delete( h );
 }
@@ -198,13 +198,13 @@ test_no_bank_deser_marker( uchar batch_idx ) {
 
   /* A non-BAM txn keeps upstream's path: with no bank to resolve its
      lookup tables it is counted and dropped. */
-  ulong no_bank_cnt = FD_MCNT_GET( RESOLV, TXN_NO_BANK );
+  ulong no_bank_cnt = h->ctx->metrics.txn_dropped[ FD_METRICS_ENUM_RESOLV_TXN_DROP_REASON_V_NO_BANK_IDX ];
   txnm = test_prepare_bam_txn( h, 12U, 0, 0U, 1U, 1 );
   txnm->source_tpu = FD_TXN_M_TPU_SOURCE_QUIC;
   test_insert_blockhash( h, txnm, 100UL );
   after_frag( h->ctx, 0UL, 0UL, 0UL, fd_txn_m_realized_footprint( txnm, 1, 0 ), 0UL, 0UL, h->stem );
   FD_TEST( h->seqs[ 0 ]==1UL );
-  FD_TEST( FD_MCNT_GET( RESOLV, TXN_NO_BANK )==no_bank_cnt+1UL );
+  FD_TEST( h->ctx->metrics.txn_dropped[ FD_METRICS_ENUM_RESOLV_TXN_DROP_REASON_V_NO_BANK_IDX ]==no_bank_cnt+1UL );
 
   test_harness_delete( h );
 }
@@ -234,7 +234,7 @@ test_old_hash_bam_member_and_siblings_forwarded( void ) {
       FD_TEST( txnm->reference_block_height==blockhash_height );
       FD_TEST( !h->ctx->bundle_failed );
     }
-    FD_TEST( h->ctx->metrics.blockhash_expired==0UL );
+    FD_TEST( h->ctx->metrics.txn_dropped[ FD_METRICS_ENUM_RESOLV_TXN_DROP_REASON_V_BLOCKHASH_EXPIRED_IDX ]==0UL );
 
     test_harness_delete( h );
   }
@@ -253,8 +253,8 @@ test_unknown_hash_stash_and_bundle_bypass( void ) {
     FD_TEST( !h->seqs[0] );
     FD_TEST( pool_free( h->ctx->pool )==4UL-fd_ulong_min( i+1UL, 4UL ) );
   }
-  FD_TEST( h->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_INSERTED_IDX ]==8UL );
-  FD_TEST( h->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_OVERRUN_IDX ]==4UL );
+  FD_TEST( h->ctx->metrics.stash_inserted==8UL );
+  FD_TEST( h->ctx->metrics.stash_removed[ FD_METRICS_ENUM_STASH_REMOVE_REASON_V_EVICTED_IDX ]==4UL );
 
   /* BAM and Block Engine bundle members bypass the stash. */
   for( ulong source=0UL; source<2UL; source++ ) {
@@ -264,7 +264,7 @@ test_unknown_hash_stash_and_bundle_bypass( void ) {
     FD_TEST( h->seqs[0]==source+1UL );
     FD_TEST( txnm->reference_block_height==1000000UL );
     FD_TEST( !pool_free( h->ctx->pool ) );
-    FD_TEST( h->ctx->metrics.stash[ FD_METRICS_ENUM_RESOLVE_STASH_OPERATION_V_INSERTED_IDX ]==8UL );
+    FD_TEST( h->ctx->metrics.stash_inserted==8UL );
   }
   test_harness_delete( h );
 }

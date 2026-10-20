@@ -5,7 +5,8 @@
    I/O: the rotor tile feeds it contact infos, epoch stakes and request
    outcomes.  Peers sit in slots by stake rank, unstaked last, and in
    latency buckets by srtt+rttvar/4.  A pick takes the fastest
-   bucket's cheaper of the next two peers by srtt*(inflight+1),
+   bucket's cheaper of the next two peers by srtt*(inflight+1), the
+   cursor advancing one peer so every peer meets every neighbor,
    every FD_ROTOR_STRAT_EXPLORE-th pick tries an unmeasured peer first,
    and a request is hedged after srtt+4*rttvar (RFC 6298).  It also
    estimates each leader's turbine time, which decides how long a
@@ -17,6 +18,8 @@
 #define FD_ROTOR_STRAT_PEER_MAX     FD_CONTACT_INFO_TABLE_SIZE
 #define FD_ROTOR_STRAT_INFLIGHT_MAX (8U)
 #define FD_ROTOR_STRAT_EXPLORE      (16UL) /* every 16th pick tries an unmeasured peer first */
+#define FD_ROTOR_STRAT_EXPIRED_MAX  (32U)  /* requests in a row a peer leaves unanswered before it is banned */
+#define FD_ROTOR_STRAT_BYID_MAX     (4U)   /* by-id requests in a row, other replies aside */
 #define FD_ROTOR_STRAT_HEDGE_NS     (200L*1000000L) /* hedge time of an unmeasured peer */
 #define FD_ROTOR_STRAT_EAGER_MIN_NS (20L*1000000L)
 #define FD_ROTOR_STRAT_EAGER_MAX_NS (250L*1000000L)  /* also the eager wait until turbine is measured */
@@ -44,6 +47,8 @@ struct fd_rotor_strat_peer {
   long        rttvar;         /* its mean deviation */
   long        ping_ts;        /* last ping, 0 if none */
   long        ban_ts;         /* skipped until this time */
+  uint        expired_cnt;    /* requests in a row it left unanswered */
+  uint        byid_expired_cnt; /* by-id requests in a row it left unanswered */
   long        turbine_srtt;   /* as leader, smoothed time from a FEC set's first shred to complete, 0 if never measured */
   long        turbine_rttvar; /* its mean deviation */
   ulong       turbine_cnt;    /* its samples */
@@ -132,20 +137,35 @@ fd_rotor_strat_contact_info_removed( fd_rotor_strat_t *  strat,
    flight, or NULL if none is available.  staked restricts it to staked
    peers.  The fastest bucket with an available peer wins; within it the
    cheaper of the next two peers after its cursor, in stake order.
-   Banned peers are skipped. */
+   Banned peers are skipped, and slot avoid unless no other peer is
+   available (ULONG_MAX for none). */
 
 fd_rotor_strat_peer_t *
 fd_rotor_strat_pick( fd_rotor_strat_t * strat,
                      long               now,
-                     int                staked );
+                     int                staked,
+                     ulong              avoid );
+
+/* fd_rotor_strat_pick_staked returns a staked peer at random, higher
+   stake ranks likelier, other than slot avoid, for a request the bucket
+   order keeps failing, and counts it in flight.  r is a random number.
+   NULL if none is available. */
+
+fd_rotor_strat_peer_t *
+fd_rotor_strat_pick_staked( fd_rotor_strat_t * strat,
+                            long               now,
+                            ulong              avoid,
+                            ulong              r );
 
 /* fd_rotor_strat_request_done ends a request picked from id_key with a
-   reply that verified.  rtt is its round trip. */
+   reply that verified.  rtt is its round trip, byid if it answered a
+   by-id request. */
 
 void
 fd_rotor_strat_request_done( fd_rotor_strat_t *  strat,
                              fd_pubkey_t const * id_key,
-                             long                rtt );
+                             long                rtt,
+                             int                 byid );
 
 /* fd_rotor_strat_request_failed ends a request picked from id_key with
    a reply that failed to verify, or no reply at all, and skips the peer
@@ -155,6 +175,19 @@ void
 fd_rotor_strat_request_failed( fd_rotor_strat_t *  strat,
                                fd_pubkey_t const * id_key,
                                long                ban_ts );
+
+/* fd_rotor_strat_request_expired ends a request picked from id_key that
+   a live peer should have answered but did not.  It takes no rtt
+   sample; after FD_ROTOR_STRAT_EXPIRED_MAX in a row with no reply, or
+   FD_ROTOR_STRAT_BYID_MAX by-id ones (byid) with no by-id reply, the
+   peer is skipped until ban_ts.  Returns 1 if the by-id run banned it,
+   -1 if the run of any kind did, 0 if not banned. */
+
+int
+fd_rotor_strat_request_expired( fd_rotor_strat_t *  strat,
+                                fd_pubkey_t const * id_key,
+                                long                ban_ts,
+                                int                 byid );
 
 /* fd_rotor_strat_turbine_done records t, the time from a FEC set's
    first shred to its completion, for the slot's leader id_key. */
@@ -184,6 +217,14 @@ fd_rotor_strat_hedge_ns( fd_rotor_strat_peer_t const * peer ) {
 fd_rotor_strat_peer_t *
 fd_rotor_strat_query( fd_rotor_strat_t *  strat,
                       fd_pubkey_t const * id_key );
+
+/* fd_rotor_strat_slot_remap returns the slot now held by the peer that
+   held slot idx before the last epoch re-sort, or ULONG_MAX if it is
+   gone or idx is ULONG_MAX. */
+
+ulong
+fd_rotor_strat_slot_remap( fd_rotor_strat_t const * strat,
+                           ulong                    idx );
 
 FD_PROTOTYPES_END
 

@@ -191,6 +191,8 @@ typedef struct {
   ulong                      new_dest_cnt;
   ulong                      shredded_txn_cnt;
   ulong                      new_root;
+  ulong                      slot_max;
+  ulong                      future_slot;
 
   ulong poh_in_expect_seq;
 
@@ -273,7 +275,6 @@ typedef struct {
   fd_store_t    * store;
   fd_store_map_t  map_join[1];
   int             disk_fd;
-  int             store_maintenance;
   int             alpenglow;
 
   fd_gossip_update_message_t gossip_upd_buf[1];
@@ -347,6 +348,9 @@ typedef struct {
   /* Bank object that we receive from the PoH tile and pass on to
      the store tile for setting the block_id of a slot. */
   void const * leader_bank;
+
+  fd_sha512_t sha512[1];
+  uchar       bmtree_mem[ FD_BMTREE_COMMIT_FOOTPRINT( FD_SHRED_MERKLE_LAYER_CNT ) ] __attribute__((aligned(FD_BMTREE_COMMIT_ALIGN)));
 } fd_shred_ctx_t;
 
 /* shred features are generally considered active at the epoch *following*
@@ -418,35 +422,25 @@ during_housekeeping( fd_shred_ctx_t * ctx ) {
 
 static inline void
 metrics_write( fd_shred_ctx_t * ctx ) {
-  FD_MHIST_COPY( SHRED, REPAIR_COMPLETION_LAG_SECONDS, fd_fec_resolver_completion_lag_hist( ctx->resolver ) );
-  FD_MHIST_COPY( SHRED, CONTACT_INFO_PER_MESSAGE,   ctx->metrics->contact_info_cnt             );
-  FD_MHIST_COPY( SHRED, BATCH_SIZE_BYTES,           ctx->metrics->batch_sz                     );
-  FD_MHIST_COPY( SHRED, MICROBLOCK_PER_BATCH,       ctx->metrics->batch_microblock_cnt         );
-  FD_MHIST_COPY( SHRED, SHREDDING_DURATION_SECONDS, ctx->metrics->shredding_timing             );
-  FD_MHIST_COPY( SHRED, ADD_SHRED_DURATION_SECONDS, ctx->metrics->add_shred_timing             );
-  FD_MHIST_COPY( SHRED, FEC_FALLBACK_WRITE_SECONDS, ctx->metrics->fec_fallback_write_timing    );
-  FD_MCNT_SET  ( SHRED, SHRED_REPAIR_RX,            ctx->metrics->repair_rcv_cnt               );
-  FD_MCNT_SET  ( SHRED, SHRED_REPAIR_RX_BYTES,      ctx->metrics->repair_rcv_bytes             );
-  FD_MCNT_SET  ( SHRED, SHRED_TURBINE_RX,           ctx->metrics->turbine_rcv_cnt              );
-  FD_MCNT_SET  ( SHRED, SHRED_TURBINE_RX_BYTES,     ctx->metrics->turbine_rcv_bytes            );
-  FD_MCNT_SET  ( SHRED, NONCE_INVALID,              ctx->metrics->bad_nonce                    );
-  FD_MCNT_SET  ( SHRED, FEC_FALLBACK_WRITE,          ctx->metrics->fec_fallback_write_cnt       );
-  FD_MCNT_SET  ( SHRED, FEC_FALLBACK_WRITE_BYTES,    ctx->metrics->fec_fallback_write_bytes     );
+  FD_MHIST_COPY( SHRED, REPAIR_LEAD_DELAY_NANOS,             fd_fec_resolver_completion_lag_hist( ctx->resolver ) );
+  FD_MHIST_COPY( SHRED, DEST_PER_UPDATE,                     ctx->metrics->contact_info_cnt                       );
+  FD_MHIST_COPY( SHRED, BATCH_SIZE_BYTES,                    ctx->metrics->batch_sz                               );
+  FD_MHIST_COPY( SHRED, MICROBLOCK_PER_BATCH,                ctx->metrics->batch_microblock_cnt                   );
+  FD_MHIST_COPY( SHRED, BATCH_SHRED_DURATION_NANOS,          ctx->metrics->shredding_timing                       );
+  FD_MHIST_COPY( SHRED, ADD_SHRED_DURATION_NANOS,            ctx->metrics->add_shred_timing                       );
+  FD_MHIST_COPY( SHRED, STORE_FEC_SYNC_SPILL_DURATION_NANOS, ctx->metrics->fec_fallback_write_timing              );
+  FD_MCNT_SET  ( SHRED, REPAIR_RX,                           ctx->metrics->repair_rcv_cnt                         );
+  FD_MCNT_SET  ( SHRED, REPAIR_RX_BYTES,                     ctx->metrics->repair_rcv_bytes                       );
+  FD_MCNT_SET  ( SHRED, TURBINE_RX,                          ctx->metrics->turbine_rcv_cnt                        );
+  FD_MCNT_SET  ( SHRED, TURBINE_RX_BYTES,                    ctx->metrics->turbine_rcv_bytes                      );
+  FD_MCNT_SET  ( SHRED, REPAIR_NONCE_FAILED,                 ctx->metrics->bad_nonce                              );
+  FD_MCNT_SET  ( SHRED, STORE_FEC_SYNC_SPILLED,              ctx->metrics->fec_fallback_write_cnt                 );
+  FD_MCNT_SET  ( SHRED, STORE_FEC_SYNC_SPILLED_BYTES,        ctx->metrics->fec_fallback_write_bytes               );
 
-  FD_MCNT_SET  ( SHRED, BLOCK_ID_INVALID,           ctx->metrics->invalid_block_id_cnt         );
-  FD_MCNT_SET  ( SHRED, SHRED_UNCHAINED_REJECTED,   ctx->metrics->shred_rejected_unchained_cnt );
+  FD_MCNT_SET  ( SHRED, PARENT_BLOCK_ID_ZEROED, ctx->metrics->invalid_block_id_cnt         );
+  FD_MCNT_SET  ( SHRED, UNCHAINED_REJECTED,     ctx->metrics->shred_rejected_unchained_cnt );
 
-  FD_MCNT_ENUM_COPY( SHRED, SHRED_PROCESSED, ctx->metrics->shred_processing_result             );
-}
-
-static void
-after_credit( fd_shred_ctx_t *    ctx,
-              fd_stem_context_t * stem FD_PARAM_UNUSED,
-              int *               opt_poll_in FD_PARAM_UNUSED,
-              int *               charge_busy ) {
-  if( FD_UNLIKELY( ctx->store_maintenance && ctx->disk_fd>=0 &&
-                   fd_store_disk_maintain( ctx->store, ctx->disk_fd ) ) )
-    *charge_busy = 1;
+  FD_MCNT_ENUM_COPY( SHRED, PROCESSED,      ctx->metrics->shred_processing_result      );
 }
 
 static inline void
@@ -741,7 +735,7 @@ during_frag( fd_shred_ctx_t * ctx,
         ctx->pending_batch.txn_cnt        = 0UL;
         ctx->batch_cnt                    = 0UL;
 
-        FD_MCNT_INC( SHRED, MICROBLOCK_ABANDONED, 1UL );
+        FD_MCNT_INC( SHRED, BATCH_ABANDONED, 1UL );
       }
 
       ctx->pending_batch.slot = target_slot;
@@ -1396,6 +1390,27 @@ after_frag( fd_shred_ctx_t *    ctx,
       ctx->shred_out_chunk = fd_dcache_compact_next( ctx->shred_out_chunk, sizeof(fd_fec_evicted_t), ctx->shred_out_chunk0, ctx->shred_out_wmark );
     }
 
+    /* Send rotor future slots past max_live_slots so that unstaked
+       nodes can catch up. */
+
+    if( FD_UNLIKELY( ctx->alpenglow &&
+                     rv==FD_FEC_RESOLVER_SHRED_IGNORED &&
+                     shred_source==FD_FEC_RESOLVER_SHRED_SRC_TURBINE &&
+                     shred->version==ctx->shredder->shred_version &&
+                     shred->slot>ctx->future_slot &&
+                     ctx->new_root<ULONG_MAX &&
+                     shred->slot>=ctx->new_root+ctx->slot_max &&
+                     fd_shred_type( shred->variant )!=FD_SHRED_TYPE_LEGACY_DATA &&
+                     fd_shred_type( shred->variant )!=FD_SHRED_TYPE_LEGACY_CODE ) ) {
+      fd_bmtree_node_t root[1];
+      int signed_ = fd_shred_merkle_root( shred, ctx->bmtree_mem, root ) &&
+                    FD_ED25519_SUCCESS==fd_ed25519_verify( root->hash, FD_SHRED_MERKLE_ROOT_SZ, shred->signature, slot_leader->uc, ctx->sha512 );
+      if( FD_LIKELY( signed_ ) ) {
+        ctx->future_slot = shred->slot;
+        fd_stem_publish( stem, ctx->shred_out_idx, fd_shred_sig_future( shred->slot ), 0UL, 0UL, 0UL, ctx->tsorig, fd_frag_meta_ts_comp( fd_tickcount() ) );
+      }
+    }
+
     if( FD_LIKELY( ctx->shred_out_idx!=ULONG_MAX  /* Only send to repair/replay in full Firedancer */
                    && ( ( rv==FD_FEC_RESOLVER_SHRED_OKAY )
                       | ( rv==FD_FEC_RESOLVER_SHRED_COMPLETES )
@@ -1534,10 +1549,6 @@ unprivileged_init( fd_topo_t const *      topo,
     FD_TEST( fd_store_map_ljoin( ctx->store, ctx->map_join ) );
   }
   ctx->alpenglow = tile->shred.alpenglow;
-  /* With rserve disabled, shred:0 remains responsible for punching
-     reclaimed spill pages, and will charge busy. */
-  ctx->store_maintenance = !!ctx->store && !ctx->round_robin_id &&
-                           fd_topo_find_tile( topo, "rserve", 0UL )==ULONG_MAX;
 
   /* If the default partial_depth is ever changed, correspondingly
      change the size of the fd_fec_intra_pool in fd_fec_repair. */
@@ -1657,6 +1668,10 @@ unprivileged_init( fd_topo_t const *      topo,
                                                                         tile->shred.alpenglow ? tile->shred.slot_max : 0UL,
                                                                         resolver_sets,
                                                                         ctx->resolver_seed ) ) );
+  FD_TEST( fd_sha512_join( fd_sha512_new( ctx->sha512 ) ) );
+  ctx->new_root    = 0UL;
+  ctx->slot_max    = tile->shred.slot_max;
+  ctx->future_slot = 0UL;
 
   if( FD_LIKELY( !!expected_shred_version ) ) {
     fd_shredder_set_shred_version    ( ctx->shredder, expected_shred_version );
@@ -1761,19 +1776,15 @@ unprivileged_init( fd_topo_t const *      topo,
 
   ctx->leader_bank  = NULL;
 
-  fd_histf_join( fd_histf_new( ctx->metrics->contact_info_cnt,     FD_MHIST_MIN(         SHRED, CONTACT_INFO_PER_MESSAGE   ),
-                                                                   FD_MHIST_MAX(         SHRED, CONTACT_INFO_PER_MESSAGE   ) ) );
+  fd_histf_join( fd_histf_new( ctx->metrics->contact_info_cnt,     FD_MHIST_MIN(         SHRED, DEST_PER_UPDATE            ),
+                                                                   FD_MHIST_MAX(         SHRED, DEST_PER_UPDATE            ) ) );
   fd_histf_join( fd_histf_new( ctx->metrics->batch_sz,             FD_MHIST_MIN(         SHRED, BATCH_SIZE_BYTES           ),
                                                                    FD_MHIST_MAX(         SHRED, BATCH_SIZE_BYTES           ) ) );
   fd_histf_join( fd_histf_new( ctx->metrics->batch_microblock_cnt, FD_MHIST_MIN(         SHRED, MICROBLOCK_PER_BATCH       ),
                                                                    FD_MHIST_MAX(         SHRED, MICROBLOCK_PER_BATCH       ) ) );
-  fd_histf_join( fd_histf_new( ctx->metrics->shredding_timing,     FD_MHIST_SECONDS_MIN( SHRED, SHREDDING_DURATION_SECONDS ),
-                                                                   FD_MHIST_SECONDS_MAX( SHRED, SHREDDING_DURATION_SECONDS ) ) );
-  fd_histf_join( fd_histf_new( ctx->metrics->add_shred_timing,     FD_MHIST_SECONDS_MIN( SHRED, ADD_SHRED_DURATION_SECONDS ),
-                                                                   FD_MHIST_SECONDS_MAX( SHRED, ADD_SHRED_DURATION_SECONDS ) ) );
-  fd_histf_join( fd_histf_new( ctx->metrics->fec_fallback_write_timing,
-                               FD_MHIST_SECONDS_MIN( SHRED, FEC_FALLBACK_WRITE_SECONDS ),
-                               FD_MHIST_SECONDS_MAX( SHRED, FEC_FALLBACK_WRITE_SECONDS ) ) );
+  fd_histf_join( fd_metrics_histf_new_ns( ctx->metrics->shredding_timing,     FD_MHIST_EDGES_NS( SHRED, BATCH_SHRED_DURATION_NANOS ) ) );
+  fd_histf_join( fd_metrics_histf_new_ns( ctx->metrics->add_shred_timing,     FD_MHIST_EDGES_NS( SHRED, ADD_SHRED_DURATION_NANOS ) ) );
+  fd_histf_join( fd_metrics_histf_new_ns( ctx->metrics->fec_fallback_write_timing, FD_MHIST_EDGES_NS( SHRED, STORE_FEC_SYNC_SPILL_DURATION_NANOS ) ) );
   memset( ctx->metrics->shred_processing_result, '\0', sizeof(ctx->metrics->shred_processing_result) );
   ctx->metrics->invalid_block_id_cnt         = 0UL;
   ctx->metrics->shred_rejected_unchained_cnt = 0UL;
@@ -1859,7 +1870,6 @@ populate_allowed_fds( fd_topo_t const *      topo,
 
 #define STEM_CALLBACK_DURING_HOUSEKEEPING during_housekeeping
 #define STEM_CALLBACK_METRICS_WRITE       metrics_write
-#define STEM_CALLBACK_AFTER_CREDIT        after_credit
 #define STEM_CALLBACK_BEFORE_FRAG         before_frag
 #define STEM_CALLBACK_DURING_FRAG         during_frag
 #define STEM_CALLBACK_AFTER_FRAG          after_frag

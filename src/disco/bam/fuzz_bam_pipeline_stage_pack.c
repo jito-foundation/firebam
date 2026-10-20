@@ -134,14 +134,10 @@ bam_fuzz_pack_new( fd_wksp_t *             wksp,
   for( ulong i=0UL; i<FD_PACK_BAM_RECENT_SLOT_CNT; i++ ) ctx->bam_recent_slot[ i ].slot = ULONG_MAX;
   fd_histf_join( fd_histf_new( ctx->bam_work_rx_to_first_outcome_nanos, FD_MHIST_MIN( PACK, BAM_WORK_RX_TO_FIRST_OUTCOME_NANOS ),
                                                                        FD_MHIST_MAX( PACK, BAM_WORK_RX_TO_FIRST_OUTCOME_NANOS ) ) );
-  fd_histf_join( fd_histf_new( ctx->schedule_duration, FD_MHIST_SECONDS_MIN( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS ),
-                                                       FD_MHIST_SECONDS_MAX( PACK, SCHEDULE_MICROBLOCK_DURATION_SECONDS ) ) );
-  fd_histf_join( fd_histf_new( ctx->no_sched_duration, FD_MHIST_SECONDS_MIN( PACK, NO_SCHEDULE_MICROBLOCK_DURATION_SECONDS ),
-                                                       FD_MHIST_SECONDS_MAX( PACK, NO_SCHEDULE_MICROBLOCK_DURATION_SECONDS ) ) );
-  fd_histf_join( fd_histf_new( ctx->insert_duration,   FD_MHIST_SECONDS_MIN( PACK, INSERT_TRANSACTION_DURATION_SECONDS ),
-                                                       FD_MHIST_SECONDS_MAX( PACK, INSERT_TRANSACTION_DURATION_SECONDS ) ) );
-  fd_histf_join( fd_histf_new( ctx->complete_duration, FD_MHIST_SECONDS_MIN( PACK, COMPLETE_MICROBLOCK_DURATION_SECONDS ),
-                                                       FD_MHIST_SECONDS_MAX( PACK, COMPLETE_MICROBLOCK_DURATION_SECONDS ) ) );
+  fd_histf_join( fd_metrics_histf_new_ns( ctx->schedule_duration, FD_MHIST_EDGES_NS( PACK, MICROBLOCK_SCHEDULE_DURATION_NANOS ) ) );
+  fd_histf_join( fd_metrics_histf_new_ns( ctx->no_sched_duration, FD_MHIST_EDGES_NS( PACK, MICROBLOCK_SCHEDULE_EMPTY_DURATION_NANOS ) ) );
+  fd_histf_join( fd_metrics_histf_new_ns( ctx->insert_duration,   FD_MHIST_EDGES_NS( PACK, TXN_INSERT_DURATION_NANOS ) ) );
+  fd_histf_join( fd_metrics_histf_new_ns( ctx->complete_duration, FD_MHIST_EDGES_NS( PACK, MICROBLOCK_COMPLETE_DURATION_NANOS ) ) );
   ctx->metric_state_begin         = fd_tickcount();
   ctx->last_bam_leader_state.slot = ULONG_MAX;
 

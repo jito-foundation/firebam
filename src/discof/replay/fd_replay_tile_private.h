@@ -18,7 +18,7 @@
 #include "../../flamenco/genesis/fd_genesis_parse.h"
 #include "../../flamenco/leaders/fd_multi_epoch_leaders.h"
 #include "../../flamenco/progcache/fd_progcache.h"
-#include "../../flamenco/alpenglow/fd_footer_cache.h"
+#include "../../flamenco/alpenglow/fd_alpenglow.h"
 #include "../../flamenco/runtime/fd_bank.h"
 #include "../../flamenco/runtime/fd_txncache.h"
 #include "../../flamenco/runtime/tests/fd_dump_pb.h"
@@ -170,7 +170,7 @@ struct fd_replay_tile {
      We can't become leader and pack blocks until this flag has been
      set.  This parallels the Agave 'has_new_vote_been_rooted'. */
   int identity_vote_rooted;
-  int wait_for_vote_to_start_leader;
+  int wait_for_vote_to_start_leader; /* FD_BOOLAU_{FALSE,TRUE,AUTO} */
 
   /* vote_account_staked is 1 if stake was delegated to our vote
      account at boot.  vote_account_inadmissible is 1 while our staked
@@ -190,7 +190,9 @@ struct fd_replay_tile {
   int   wfs_enabled;
   int   wfs_complete;
 
+  ulong     wait_for_supermajority_at_slot;
   fd_hash_t expected_bank_hash;
+  int       wfs_hash_is_zero;
 
   ulong            blockhash_seed;
   ulong            reasm_seed;
@@ -471,6 +473,7 @@ struct fd_replay_tile {
 
   fd_votor_certed_t votor_final[ 1 ];                                                /* ALPENGLOW-ONLY: highest finalization, fast over slow at the same slot */
   fd_votor_leader_t votor_leader[ 1 ];                                               /* ALPENGLOW-ONLY: ParentReady trigger behind next_leader_slot     */
+  ulong             votor_parent_ready_slot;                                         /* ALPENGLOW-ONLY: highest window start certs made ParentReady   */
   long              leader_window_start_ns;                                          /* ALPENGLOW-ONLY: ParentReady time of the window we are leading   */
   fd_votor_reward_t votor_reward[ FD_NUM_SLOTS_FOR_REWARD+AG_SLOTS_PER_WINDOW+1UL ];
 
@@ -542,6 +545,10 @@ struct fd_replay_tile {
   ulong ag_last_settled;     /* highest settled slot observed */
   ulong ag_stamp_since;      /* first slot stamped into an empty table */
 
+  /* Signing payload of each exec tile's footer cert verify task */
+  uchar cert_payload   [ FD_SCHED_MAX_EXEC_TILE_CNT ][ FD_ALPENGLOW_CERT_PAYLOAD_MAX ];
+  ulong cert_payload_sz[ FD_SCHED_MAX_EXEC_TILE_CNT ];
+
   fd_keyswitch_t * keyswitch;
   int              halt_replay;
 
@@ -600,8 +607,6 @@ struct fd_replay_tile {
     fd_histf_t store_query_work[1];
     ulong      store_query_cnt;
     ulong      store_query_missing_cnt;
-    ulong      store_query_mr;
-    ulong      store_query_missing_mr;
 
     ulong slots_total;
     ulong transactions_total;
@@ -614,6 +619,9 @@ struct fd_replay_tile {
     ulong leader_bid_wait;
     ulong banks_full;
     ulong parent_unavailable;
+    ulong leader_slot_already_produced;
+    ulong leader_window_superseded;
+    ulong fec_rooted_past;
     ulong storage_root_behind;
 
     ulong voted_slot; /* monotone, ULONG_MAX if none */

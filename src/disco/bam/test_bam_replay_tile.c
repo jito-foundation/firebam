@@ -128,7 +128,7 @@ test_ag_bam_slot_timing( fd_wksp_t * wksp ) {
     *ctx->votor_leader = (fd_votor_leader_t){ .slot = AG_SLOTS_PER_WINDOW, .parent_slot = 0UL, .parent_block_id = parent_dmr, .parent_ready_ns = window_start };
     ulong out_idx = ctx->replay_out->idx;
     ulong seq     = test_stem_seqs[ out_idx ];
-    FD_TEST( try_become_leader_ag( ctx, test_stem ) );
+    FD_TEST( try_become_leader_ag( ctx, test_stem, FD_METRICS_SAMPLE_REASON_LEADER_START, 0UL ) );
     fd_frag_meta_t const * meta = test_stem_mcaches[ out_idx ] + fd_mcache_line_idx( seq+1UL, test_stem_depths[ out_idx ] );
     FD_TEST( meta->sig==REPLAY_SIG_BECAME_LEADER );
     fd_became_leader_t const * leader = fd_chunk_to_laddr_const( ctx->replay_out->mem, meta->chunk );

@@ -1149,7 +1149,7 @@ test_pack_tile_bam_override_drops_block_engine_bundles( int override ) {
   txnm->block_engine.bundle_txn_cnt = override ? 2UL : 0UL;
 
   h->ctx->bam_status_fseq = &bam_status_fseq;
-  ulong partial_cnt = FD_MCNT_GET( PACK, TXN_PARTIAL_BUNDLE );
+  ulong partial_cnt = FD_MCNT_GET( PACK, TXN_DROPPED_PARTIAL_BUNDLE );
 
   h->ctx->current_bundle->id           = 43UL;
   h->ctx->current_bundle->txn_cnt      = 3UL;
@@ -1166,7 +1166,7 @@ test_pack_tile_bam_override_drops_block_engine_bundles( int override ) {
   FD_TEST( test_bundle_cancel_call_cnt == 1UL );
   FD_TEST( test_bundle_cancel_last_txn_cnt == 3UL );
   FD_TEST( test_insert_fini_call_cnt == 0UL );
-  FD_TEST( FD_MCNT_GET( PACK, TXN_PARTIAL_BUNDLE ) == partial_cnt+2UL-(ulong)override );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_DROPPED_PARTIAL_BUNDLE ) == partial_cnt+2UL-(ulong)override );
 
   test_pack_tile_harness_delete( h );
 }
@@ -2698,7 +2698,7 @@ test_pack_tile_block_engine_bundle_straddles_slot_end( void ) {
   ctx->bam_override_snapshot = 0;
   fd_txn_p_t invalid_txn[1], valid_txn[1];
   test_pack_tile_make_d18_poc_txns( invalid_txn, valid_txn );
-  ulong partial_before = FD_MCNT_GET( PACK, TXN_PARTIAL_BUNDLE );
+  ulong partial_before = FD_MCNT_GET( PACK, TXN_DROPPED_PARTIAL_BUNDLE );
   for( uchar i=0U; i<2U; i++ ) {
     uchar resolved_buf[ FD_TPU_RESOLVED_MTU ] __attribute__((aligned(FD_CHUNK_ALIGN)));
     ulong sz = test_pack_tile_prepare_resolv_frag( e->h, resolved_buf, valid_txn->payload,
@@ -2712,7 +2712,7 @@ test_pack_tile_block_engine_bundle_straddles_slot_end( void ) {
     after_frag( ctx, 0UL, 0UL, 100UL, sz, 0UL, 0UL, &e->h->out->stem );
     FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==2UL*i );
   }
-  FD_TEST( FD_MCNT_GET( PACK, TXN_PARTIAL_BUNDLE )==partial_before );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_DROPPED_PARTIAL_BUNDLE )==partial_before );
   test_pack_callbacks_delete( e );
 }
 
@@ -3048,17 +3048,17 @@ test_pack_tile_retention_callbacks( void ) {
   ulong sz = test_pack_tile_prepare_resolv_frag( e->h, resolved, ordinary->payload,
                                                   ordinary->payload_sz, FD_TXN_M_TPU_SOURCE_QUIC, 400UL );
   ctx->leader_slot = ULONG_MAX;
-  ulong expired_before = FD_MCNT_GET( PACK, TXN_EXPIRED );
+  ulong expired_before = FD_MCNT_GET( PACK, TXN_DROPPED_EXPIRED );
   during_frag( ctx, 0UL, 0UL, 400UL, 0UL, sz, 0UL );
   after_frag( ctx, 0UL, 0UL, 400UL, sz, 0UL, 0UL, &e->h->out->stem );
   FD_TEST( ctx->highest_observed_block_height==400UL && ctx->leader_slot==ULONG_MAX );
-  FD_TEST( FD_MCNT_GET( PACK, TXN_EXPIRED )==expired_before+1UL );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_DROPPED_EXPIRED )==expired_before+1UL );
   FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==2UL && pack_tile_bam_pending_work_cnt( ctx )==1UL );
 
   test_pack_tile_insert_pending_single( ctx->pack, ordinary, 340UL );
   FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==3UL );
   test_pack_callbacks_leader( e, 501UL );
-  FD_TEST( FD_MCNT_GET( PACK, TXN_EXPIRED )==expired_before+2UL );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_DROPPED_EXPIRED )==expired_before+2UL );
   FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==2UL && pack_tile_bam_pending_work_cnt( ctx )==1UL );
   FD_TEST( fd_pack_delete_transaction( ctx->pack,
              fd_txn_get_signatures( TXN(nonce), nonce->payload ) )==1UL );
@@ -3765,10 +3765,10 @@ test_pack_tile_bam_activation_purges_block_engine_bundles( void ) {
   FD_TEST( *prio_rejects==prio_before+1UL && pack_tile_bam_pending_work_cnt( ctx )==1UL );
 
   /* The first callback after the edge purges, even when not leader. */
-  ulong deleted_before = FD_MCNT_GET( PACK, TXN_DELETED );
+  ulong deleted_before = FD_MCNT_GET( PACK, TXN_EVICTED );
   test_pack_callbacks_step( e );
   FD_TEST( ctx->leader_slot==ULONG_MAX && ctx->bam_override_snapshot );
-  FD_TEST( FD_MCNT_GET( PACK, TXN_DELETED )==deleted_before+3UL );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_EVICTED )==deleted_before+3UL );
   FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==3UL );
   FD_TEST( !fd_pack_verify( ctx->pack, test_pack_tile_verify_scratch ) );
   fd_ed25519_sig_t sig;
@@ -3785,7 +3785,7 @@ test_pack_tile_bam_activation_purges_block_engine_bundles( void ) {
   test_pack_callbacks_step( e );
   e->status = 0UL;
   test_pack_callbacks_step( e );
-  FD_TEST( FD_MCNT_GET( PACK, TXN_DELETED )==deleted_before+3UL && !ctx->bam_override_snapshot );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_EVICTED )==deleted_before+3UL && !ctx->bam_override_snapshot );
   test_pack_callbacks_delete( e );
 }
 

@@ -1398,12 +1398,12 @@ test_deferred_bundle_skip_count( void ) {
     fd_txn_e_t const * head = fd_pack_peek_bundle_candidate( pack, bam, &hint, NULL );
     FD_TEST( head && candidate_test_txn_id( head->txnp )==(bam ? 700UL : 650UL) );
     FD_TEST( ((hint>>16) & USHORT_MAX)==3UL );
-    ulong before[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_CNT ], after[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_CNT ];
+    ulong before[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_CNT ], after[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_CNT ];
     fd_pack_get_sched_metrics( pack, before );
     FD_TEST( schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0.0f, 0UL, flags, outcome.results )==(bam ? 1UL : 2UL) );
     FD_TEST( candidate_test_txn_id( outcome.results[0].txnp )==(bam ? 700UL : 650UL) );
     fd_pack_get_sched_metrics( pack, after );
-    FD_TEST( after[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]==before[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ]+3UL );
+    FD_TEST( after[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_WRITE_COST_DEFERRED_IDX ]==before[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_WRITE_COST_DEFERRED_IDX ]+3UL );
     FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
     fd_pack_delete( fd_pack_leave( pack ) );
   }
