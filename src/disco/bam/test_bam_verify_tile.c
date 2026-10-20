@@ -169,7 +169,7 @@ test_bam_atomic_verify_failure_result_owner( void ) {
 
     FD_TEST( env->seqs[ 0 ]==1UL+(ulong)( i==2UL ) );
     FD_TEST( env->ctx->bundle_failed );
-    FD_TEST( env->ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_BUNDLE_PEER_FAILURE_IDX ]==(ulong)( i>0UL ) );
+    FD_TEST( env->ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_RESULT_V_BUNDLE_PEER_FAILED_IDX ]==(ulong)( i>0UL ) );
   }
 
   /* A non-BAM frag keeps upstream's path: this empty one fails to parse
@@ -231,13 +231,13 @@ test_bam_sigverify_failure_drops_parsed_txn( void ) {
     FD_TEST( txnm->payload_sz==test_sample_vote_sz );
     FD_TEST( txnm->bam.seq_id==99U );
     if( bad_sig ) {
-      FD_TEST( ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_VERIFY_FAILURE_IDX ]==1UL );
+      FD_TEST( ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_RESULT_V_SIGNATURE_FAILED_IDX ]==1UL );
       FD_TEST( txnm->bam.preprocess_failed );
       FD_TEST( txnm->txn_t_sz==fd_txn_footprint( 0UL, 0UL ) );
       FD_TEST( env->mcache[ 0 ].sz==fd_txn_m_realized_footprint( txnm, 1, 0 ) );
       FD_TEST( !fd_txn_is_simple_vote_transaction( fd_txn_m_txn_t_const( txnm ), fd_txn_m_payload_const( txnm ) ) );
     } else {
-      FD_TEST( ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_SUCCESS_IDX ]==1UL );
+      FD_TEST( ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_RESULT_V_SUCCESS_IDX ]==1UL );
       FD_TEST( !txnm->bam.preprocess_failed );
       FD_TEST( fd_txn_is_simple_vote_transaction( fd_txn_m_txn_t_const( txnm ), fd_txn_m_payload_const( txnm ) ) );
     }
@@ -276,8 +276,8 @@ test_bam_sigverify_failure_drops_parsed_txn( void ) {
 
     after_frag( ctx, IN_IDX_QUIC, 0UL, 0UL, sizeof(fd_txn_m_t)+test_sample_vote_sz, 0UL, 0UL, env->stem );
 
-    FD_TEST( ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_SUCCESS_IDX       ]==non_bam[ i ].success_cnt );
-    FD_TEST( ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_DEDUP_FAILURE_IDX ]==non_bam[ i ].dedup_cnt   );
+    FD_TEST( ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_RESULT_V_SUCCESS_IDX       ]==non_bam[ i ].success_cnt );
+    FD_TEST( ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_RESULT_V_DUPLICATE_IDX ]==non_bam[ i ].dedup_cnt   );
     FD_TEST( env->seqs[ 0 ]==non_bam[ i ].success_cnt );
     FD_TEST( (ctx->out_chunk!=chunk)==(i!=1UL) );
     if( i!=1UL ) FD_TEST( txnm->txn_t_sz && env->mcache[ i/2UL ].sz==fd_txn_m_realized_footprint( txnm, 1, 0 ) );

@@ -487,7 +487,7 @@ pack_tile_evict_invalid_pending_bam_work( fd_pack_ctx_t * ctx,
                                                  (fd_ed25519_sig_t const *)(void const *)&item.sig[ 0 ],
                                                  item.seq_id,
                                                  item.scheduler_gen );
-      FD_MCNT_INC( PACK, TXN_DELETED, deleted );
+      FD_MCNT_INC( PACK, TXN_EVICTED, deleted );
       res.scheduling_error = FD_BAM_SCHED_ERR_OUTSIDE_SLOT;
     }
     pack_tile_enqueue_bam_result( ctx, &res );
@@ -662,7 +662,7 @@ pack_tile_publish_bam_tracking_reject( fd_pack_ctx_t *          ctx,
                                              (fd_ed25519_sig_t const *)sig0,
                                              seq_id,
                                              scheduler_gen );
-  FD_MCNT_INC( PACK, TXN_DELETED, deleted );
+  FD_MCNT_INC( PACK, TXN_EVICTED, deleted );
   pack_tile_log_bam_drop( ctx, "tracking", "tracking_rejected", 0U, 0, PACK_BAM_DROP_STAGING,
                           seq_id, txn_cnt, max_schedule_slot, blockhash_height, first_rx_ts_ns, sig0 );
   ctx->bam_tracking_rejected_cnt++;
@@ -789,7 +789,7 @@ pack_tile_sync_bam_ownership_generation_slow( fd_pack_ctx_t * ctx,
           (fd_ed25519_sig_t const *)(void const *)&work->sig[ 0 ],
           work->seq_id,
           work->scheduler_gen );
-      FD_MCNT_INC( PACK, TXN_DELETED, deleted );
+      FD_MCNT_INC( PACK, TXN_EVICTED, deleted );
       pack_tile_bam_work_swap_remove( ctx, work_idx );
     }
     ctx->bam_ownership_gen = requested_gen;
@@ -857,7 +857,7 @@ pack_tile_snapshot_bam_override( fd_pack_ctx_t * ctx ) {
   _Bool bam_override = pack_tile_bam_override_active( ctx );
   if( FD_UNLIKELY( bam_override!=ctx->bam_override_snapshot ) ) {
     remove_ib( ctx );
-    if( bam_override ) FD_MCNT_INC( PACK, TXN_DELETED, fd_pack_delete_non_bam_bundles( ctx->pack ) );
+    if( bam_override ) FD_MCNT_INC( PACK, TXN_EVICTED, fd_pack_delete_non_bam_bundles( ctx->pack ) );
     ctx->bam_override_snapshot = bam_override;
   }
   return bam_override;
@@ -993,7 +993,7 @@ pack_tile_bam_resolv_after_frag( fd_pack_ctx_t *     ctx,
   if( FD_LIKELY( ctx->is_bundle==PACK_TILE_BUNDLE_KIND_BLOCK_ENGINE ) ) {
     if( FD_LIKELY( !pack_tile_bam_override_active( ctx ) ) ) return 0;
     if( FD_LIKELY( ctx->current_bundle->bundle ) ) {
-      FD_MCNT_INC( PACK, TXN_PARTIAL_BUNDLE,
+      FD_MCNT_INC( PACK, TXN_DROPPED_PARTIAL_BUNDLE,
                    fd_ulong_min( ctx->current_bundle->txn_received+1UL, ctx->current_bundle->txn_cnt ) );
       fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
       ctx->current_bundle->bundle = NULL;
@@ -1099,7 +1099,7 @@ pack_tile_bam_batch_after_frag( fd_pack_ctx_t *     ctx,
                                                            (fd_ed25519_sig_t const *)(void const *)bam_sig[ 0 ],
                                                            duplicate_seq_id,
                                                            duplicate_scheduler_gen );
-      FD_MCNT_INC( PACK, TXN_DELETED, duplicate_deleted );
+      FD_MCNT_INC( PACK, TXN_EVICTED, duplicate_deleted );
     } else {
       pre_insert_duplicate_reject = 1;
     }
@@ -1123,7 +1123,7 @@ pack_tile_bam_batch_after_frag( fd_pack_ctx_t *     ctx,
     reject_txn_idx   = fd_pack_insert_bundle_reject_txn_idx( ctx->pack );
     if( FD_UNLIKELY( deleted ) ) pack_tile_maybe_reconcile_pending_bam_work( ctx );
 
-    FD_MCNT_INC( PACK, TXN_DELETED, deleted );
+    FD_MCNT_INC( PACK, TXN_EVICTED, deleted );
     ctx->insert_result[ result + FD_PACK_INSERT_RETVAL_OFF ] += ctx->current_bundle->txn_received;
     fd_histf_sample( ctx->insert_duration, (ulong)insert_duration );
   }
@@ -1254,7 +1254,7 @@ PACK_TILE_BAM_HOOK int
 pack_tile_bam_be_bundle( fd_pack_ctx_t * ctx ) {
   if( FD_UNLIKELY( pack_tile_bam_override_active( ctx ) ) ) {
     if( FD_UNLIKELY( ctx->current_bundle->bundle && !ctx->current_bundle_bam->is_bam ) ) {
-      FD_MCNT_INC( PACK, TXN_PARTIAL_BUNDLE, ctx->current_bundle->txn_received );
+      FD_MCNT_INC( PACK, TXN_DROPPED_PARTIAL_BUNDLE, ctx->current_bundle->txn_received );
       fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
       ctx->current_bundle->bundle = NULL;
     }
@@ -1301,7 +1301,7 @@ pack_tile_bam_bundle_spot( fd_pack_ctx_t *    ctx,
                      ctx->current_bundle->txn_received!=ctx->current_bundle->txn_cnt ) ) {
       pack_tile_abandon_current_bam_bundle( ctx, PACK_TILE_BAM_BUNDLE_ASSEMBLY_ABANDON_NEW_SEQ_BEFORE_COMPLETE );
     } else if( FD_UNLIKELY( ctx->current_bundle->bundle ) ) {
-      FD_MCNT_INC( PACK, TXN_PARTIAL_BUNDLE, ctx->current_bundle->txn_received );
+      FD_MCNT_INC( PACK, TXN_DROPPED_PARTIAL_BUNDLE, ctx->current_bundle->txn_received );
       fd_pack_insert_bundle_cancel( ctx->pack, ctx->current_bundle->bundle, ctx->current_bundle->txn_cnt );
       ctx->current_bundle->bundle = NULL;
     }

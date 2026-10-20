@@ -185,7 +185,9 @@ struct fd_tower_tile {
 
   int    halt_signing;
   int    hard_fork_fatal;
-  int    wfs;           /* 1 if booted with wait_for_supermajority */
+  ulong  wfs_slot;
+  int    wfs_hash_is_zero;
+  ushort wfs_shred_version;
   ushort shred_version;
   int    init; /* 1 after ghost_init has been called */
 
@@ -217,23 +219,23 @@ struct fd_tower_tile {
     ulong root_slot;
     ulong init_slot;
 
-    ulong fork[ FD_METRICS_ENUM_TOWER_FORK_DECISION_CNT ];
-    ulong gate[ FD_METRICS_ENUM_TOWER_VOTE_GATE_CNT ];
+    ulong fork[ FD_METRICS_ENUM_TOWER_FORK_RESULT_CNT ];
+    ulong gate[ FD_METRICS_ENUM_TOWER_VOTE_GATE_RESULT_CNT ];
 
     ulong tower_file_write;
     ulong tower_file_slot;
     ulong tower_file_sz;
 
-    ulong votes     [ FD_METRICS_ENUM_VOTE_TXN_RESULT_CNT         ];
-    ulong vote_slots[ FD_METRICS_ENUM_VOTE_SLOT_RESULT_CNT        ];
-    ulong gate_int  [ FD_METRICS_ENUM_VOTE_INTERMEDIATE_GATE_CNT  ];
+    ulong votes     [ FD_METRICS_ENUM_VOTE_TXN_RESULT_CNT                ];
+    ulong vote_slots[ FD_METRICS_ENUM_VOTE_SLOT_RESULT_CNT               ];
+    ulong gate_int  [ FD_METRICS_ENUM_VOTE_INTERMEDIATE_SLOT_RESULT_CNT  ];
 
-    ulong eqvoc_success;
-    ulong eqvoc_err;
+    ulong eqvoc[ FD_METRICS_ENUM_EQVOC_PROOF_RESULT_CNT ];
 
     ulong ghost[ FD_METRICS_ENUM_GHOST_VOTE_RESULT_CNT ];
 
-    ulong hfork[ FD_METRICS_ENUM_HARD_FORK_VOTE_RESULT_CNT ];
+    ulong hfork     [ FD_METRICS_ENUM_HARD_FORK_VOTE_RESULT_CNT       ];
+    ulong hfork_bank[ FD_METRICS_ENUM_HARD_FORK_BANK_HASH_RESULT_CNT ];
 
     ulong hfork_matched_slot;
     ulong hfork_mismatched_slot;

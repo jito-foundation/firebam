@@ -49,7 +49,8 @@ ag_parent_ready_tracker_new( void * shmem,
   void *                      state_map  = FD_SCRATCH_ALLOC_APPEND( l, ag_parent_ready_state_map_align(),  ag_parent_ready_state_map_footprint ( chain_cnt )           );
   FD_TEST( FD_SCRATCH_ALLOC_FINI( l, ag_parent_ready_tracker_align() ) == (ulong)shmem + footprint );
 
-  tracker->root        = ULONG_MAX;
+  tracker->root          = ULONG_MAX;
+  tracker->highest_ready = 0UL;
   tracker->states.pool = ag_parent_ready_state_pool_join( ag_parent_ready_state_pool_new( state_pool, slot_max        ) );
   tracker->states.map  = ag_parent_ready_state_map_join ( ag_parent_ready_state_map_new ( state_map,  chain_cnt, seed ) );
 
@@ -128,6 +129,7 @@ add_to_ready( ag_parent_ready_tracker_t * self,
               ulong *                     newly_certified_cnt ) {
   ag_parent_ready_state_t * state = slot_state( self, slot );
   if( FD_LIKELY( state->parent_ready_lo.slot==ULONG_MAX || ag_block_id_lt( parent, &state->parent_ready_lo ) ) ) state->parent_ready_lo = *parent;
+  self->highest_ready = fd_ulong_max( self->highest_ready, slot );
   if( FD_UNLIKELY( state->ready ) ) return;
   state->ready = 1;
   newly_certified[ *newly_certified_cnt ].slot   = slot;
@@ -158,6 +160,16 @@ ag_parent_ready_tracker_mark_notar_fallback( ag_parent_ready_tracker_t * self,
     ag_parent_ready_state_t const * next = ag_parent_ready_state_map_ele_query_const( self->states.map, &s, NULL, self->states.pool );
     if( FD_LIKELY( !next || !next->skip ) ) break;
   }
+  return newly_certified_cnt;
+}
+
+ulong
+ag_parent_ready_tracker_mark_root( ag_parent_ready_tracker_t * self,
+                                   ag_block_id_t const *       root,
+                                   ag_parent_ready_t *         newly_certified ) {
+  ulong newly_certified_cnt = ag_parent_ready_tracker_mark_notar_fallback( self, root, newly_certified );
+  ag_parent_ready_state_t * next = slot_state( self, root->slot+1UL );
+  if( FD_LIKELY( next->parent_ready_lo.slot==ULONG_MAX ) ) next->parent_ready_lo = *root;
   return newly_certified_cnt;
 }
 

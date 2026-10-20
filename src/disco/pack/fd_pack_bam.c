@@ -120,7 +120,7 @@ fd_pack_bam_first_bundle( fd_pack_t * pack,
   } else {
     iter = fd_pack_bundle_candidate( pack, !!(schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY), &skipped_txn_cnt );
   }
-  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_V_DEFER_SKIP_IDX ] += skipped_txn_cnt;
+  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_WRITE_COST_DEFERRED_IDX ] += skipped_txn_cnt;
   return iter;
 }
 

@@ -33,21 +33,21 @@ fd_verify_tile_bam_after_frag( fd_verify_ctx_t *   ctx,
   }
 
   if( FD_UNLIKELY( failure_group_id && ctx->bundle_failed ) ) {
-    ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_BUNDLE_PEER_FAILURE_IDX ]++;
+    ctx->metrics.verify_tile_result[ FD_METRICS_ENUM_VERIFY_RESULT_V_BUNDLE_PEER_FAILED_IDX ]++;
     return;
   }
 
-  ulong result_idx = FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_PARSE_FAILURE_IDX;
+  ulong result_idx = FD_METRICS_ENUM_VERIFY_RESULT_V_PARSE_FAILED_IDX;
   if( FD_LIKELY( txnm->txn_t_sz ) ) {
     ulong _txn_sig;
     int res = fd_txn_verify( ctx, fd_txn_m_payload( txnm ), txnm->payload_sz, txnt, 0, &_txn_sig );
     result_idx = fd_ulong_if( res==FD_TXN_VERIFY_SUCCESS,
-                              FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_SUCCESS_IDX,
-                              FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_VERIFY_FAILURE_IDX );
+                              FD_METRICS_ENUM_VERIFY_RESULT_V_SUCCESS_IDX,
+                              FD_METRICS_ENUM_VERIFY_RESULT_V_SIGNATURE_FAILED_IDX );
   }
   ctx->metrics.verify_tile_result[ result_idx ]++;
 
-  if( FD_UNLIKELY( result_idx!=FD_METRICS_ENUM_VERIFY_TILE_RESULT_V_SUCCESS_IDX ) ) {
+  if( FD_UNLIKELY( result_idx!=FD_METRICS_ENUM_VERIFY_RESULT_V_SUCCESS_IDX ) ) {
     if( FD_UNLIKELY( failure_group_id ) ) ctx->bundle_failed = 1;
     txnm->bam.preprocess_failed = 1U;
     txnm->txn_t_sz = (ushort)fd_txn_footprint( 0UL, 0UL );

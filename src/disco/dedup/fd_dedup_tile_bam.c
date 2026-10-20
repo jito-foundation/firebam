@@ -23,7 +23,7 @@ fd_dedup_tile_bam_after_frag( fd_dedup_ctx_t *    ctx,
   }
 
   if( FD_UNLIKELY( failure_group_id && ctx->bundle_failed ) ) {
-    ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_BUNDLE_PEER_FAILURE_IDX ]++;
+    ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_RESULT_V_BUNDLE_PEER_FAILED_IDX ]++;
     return;
   }
 
@@ -45,10 +45,10 @@ fd_dedup_tile_bam_after_frag( fd_dedup_ctx_t *    ctx,
 
     if( FD_UNLIKELY( is_dup ) ) {
       ctx->bundle_failed = 1;
-      ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_DEDUP_FAILURE_IDX ]++;
+      ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_RESULT_V_DUPLICATE_IDX ]++;
       txnm->bam.preprocess_failed = 1U;
     } else {
-      ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_TILE_RESULT_V_SUCCESS_IDX ]++;
+      ctx->metrics.dedup_tile_result[ FD_METRICS_ENUM_DEDUP_RESULT_V_SUCCESS_IDX ]++;
     }
   }
 

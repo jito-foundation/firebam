@@ -50,6 +50,7 @@ typedef struct ag_parent_ready_states ag_parent_ready_states_t;
 struct __attribute__((aligned(128UL))) ag_parent_ready_tracker {
   ag_parent_ready_states_t states;
   ulong                    root;
+  ulong                    highest_ready;
 };
 typedef struct ag_parent_ready_tracker ag_parent_ready_tracker_t;
 
@@ -74,6 +75,17 @@ ag_parent_ready_tracker_leave( ag_parent_ready_tracker_t const * tracker );
 
 void *
 ag_parent_ready_tracker_delete( void * shtracker );
+
+/* ag_parent_ready_tracker_mark_root marks root notarized-fallback and
+   makes root+1 ParentReady with root as its parent, even if root+1
+   does not start a window.  Only a window start emits an event.
+
+   https://github.com/anza-xyz/agave/blob/v4.3.0-beta.0/votor/src/consensus_pool/parent_ready_tracker.rs#L65-L108 */
+
+ulong
+ag_parent_ready_tracker_mark_root( ag_parent_ready_tracker_t * self,
+                                   ag_block_id_t const *       root,
+                                   ag_parent_ready_t *         newly_certified );
 
 /* Definition 15. ParentReadyTracker::mark_notar_fallback */
 
