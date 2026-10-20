@@ -25,6 +25,9 @@ expected_genesis_hash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 max_retry_abort = 100
 min_download_speed_mibs = 195
 
+[snapshots.sources]
+servers = [ "http://solana-mainnet-rpc.jumpisolated.com:8899" ]
+
 [tiles.bundle]
 enabled = true
 url = "https://mainnet.block-engine.jito.wtf"
