@@ -4,20 +4,20 @@
     "description": "Metrics of one pack tile instance, one row per sweep",
     "local": true,
     "fields": {
-        "sample_id":                          { "type": "UInt64",                                                         "description": "Identifier shared by every row of one sweep" },
-        "sample_reason":                      { "type": "ref:MetricsSampleReason",                                        "description": "Why the sweep was taken" },
-        "sample_slot":                        { "type": "UInt64",                                                         "description": "Slot that triggered the sweep, 0 for periodic sweeps" },
-        "sample_snapct_state":                { "type": "ref:MetricsSnapctLoadState",                                     "description": "Snapshot load state entered, for snapct_state sweeps; unknown otherwise" },
-        "sample_caught_up":                   { "type": "Bool",                                                           "description": "Whether replay had caught up to the cluster tip when the sweep was taken (replay IsCaughtUp); set once per run, never cleared" },
-        "sample_tile_cnt":                    { "type": "UInt64",                                                         "description": "Tile instances in the sweep, to detect partial sweeps" },
-        "kind_id":                            { "type": "UInt64",                                                         "description": "Index of this tile instance among tiles of its kind" },
-        "pid":                                { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Process ID of the tile" },
-        "tid":                                { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Thread ID of the tile. Same as Pid in production, but might differ in development" },
-        "last_cpu_index":                     { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "CPU the tile last ran on" },
-        "context_switch_involuntary":         { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Involuntary context switches" },
-        "context_switch_voluntary":           { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Voluntary context switches" },
-        "page_fault_major":                   { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Major page faults" },
-        "page_fault_minor":                   { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Minor page faults" },
+        "sample_id":                      { "type": "UInt64",                                                         "description": "Identifier shared by every row of one sweep" },
+        "sample_reason":                  { "type": "ref:MetricsSampleReason",                                        "description": "Why the sweep was taken" },
+        "sample_slot":                    { "type": "UInt64",                                                         "description": "Slot that triggered the sweep, 0 for periodic sweeps" },
+        "sample_snapct_state":            { "type": "ref:MetricsSnapctLoadState",                                     "description": "Snapshot load state entered, for snapct_state sweeps; unknown otherwise" },
+        "sample_caught_up":               { "type": "Bool",                                                           "description": "Whether replay had caught up to the cluster tip when the sweep was taken (replay IsCaughtUp); set once per run, never cleared" },
+        "sample_tile_cnt":                { "type": "UInt64",                                                         "description": "Tile instances in the sweep, to detect partial sweeps" },
+        "kind_id":                        { "type": "UInt64",                                                         "description": "Index of this tile instance among tiles of its kind" },
+        "pid":                            { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Process ID of the tile" },
+        "tid":                            { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Thread ID of the tile. Same as Pid in production, but might differ in development" },
+        "last_cpu_index":                 { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "CPU the tile last ran on" },
+        "context_switch_involuntary":     { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Involuntary context switches" },
+        "context_switch_voluntary":       { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Voluntary context switches" },
+        "page_fault_major":               { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Major page faults" },
+        "page_fault_minor":               { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Minor page faults" },
         "state": {
             "type": "LowCardinality(String)",
             "description": "Tile lifecycle state: 0=booting, 1=running, 2=shutdown",
@@ -27,9 +27,9 @@
                 "shutdown": { "description": "Shutdown" }
             }
         },
-        "heartbeat_time":                     { "type": "DateTime64(9)",              "compression": "Delta, ZSTD",       "description": "Last wall-clock time the tile heartbeated" },
-        "is_backpressured":                   { "type": "Bool",                                                           "description": "Whether the tile is currently backpressured" },
-        "backpressure":                       { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Times the tile waited for one or more consumers to catch up to resume publishing" },
+        "heartbeat_time":                 { "type": "DateTime64(9)",              "compression": "Delta, ZSTD",       "description": "Last wall-clock time the tile heartbeated" },
+        "is_backpressured":               { "type": "Bool",                                                           "description": "Whether the tile is currently backpressured" },
+        "backpressure":                   { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Times the tile waited for one or more consumers to catch up to resume publishing" },
         "regime_duration_nanos": {
             "type": "Tuple",
             "description": "Tile wall time, by regime; regimes are exhaustive and groups Busy, Idle, Backpressure and Housekeeping partition it",
@@ -66,9 +66,9 @@
                 "pending":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Pre-park recheck found work, did not park" }
             }
         },
-        "device_irq":                         { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Device IRQs on the tile's dedicated CPU, 0 for tiles not pinned" },
-        "tlb_shootdown":                      { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. TLB shootdowns on the tile's dedicated CPU, 0 for tiles not pinned" },
-        "timer_irq":                          { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Local timer interrupts (LOC) on the tile's dedicated CPU, 0 for tiles not pinned" },
+        "device_irq":                     { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Device IRQs on the tile's dedicated CPU, 0 for tiles not pinned" },
+        "tlb_shootdown":                  { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. TLB shootdowns on the tile's dedicated CPU, 0 for tiles not pinned" },
+        "timer_irq":                      { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "counter: cumulative since tile start, query deltas. Local timer interrupts (LOC) on the tile's dedicated CPU, 0 for tiles not pinned" },
         "microblock_schedule_duration_nanos": {
             "type": "Tuple",
             "description": "Duration of scheduling one microblock",
@@ -207,7 +207,7 @@
                 "sum": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Sum of samples" }
             }
         },
-        "txn_rx":                             { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Transactions received from resolv, including bundle members" },
+        "txn_rx":                         { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Transactions received from resolv, including bundle members" },
         "txn_insert_attempted": {
             "type": "Tuple",
             "description": "Insert attempts, by result; bundle members are counted individually with the bundle's result",
@@ -268,7 +268,7 @@
                 "partial_bundle":   { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Part of a partial bundle" }
             }
         },
-        "txn_evicted":                        { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Transactions evicted from pack to make room for others, including the bundle initializer transaction removed when a leader slot ends" },
+        "txn_evicted":                    { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Transactions evicted from pack to make room for others, including the bundle initializer transaction removed when a leader slot ends" },
         "txn_pending_used": {
             "type": "Tuple",
             "description": "Pending transactions in pack's pool, by type",
@@ -279,10 +279,10 @@
                 "bundle":      { "type": "UInt64", "compression": "T64, ZSTD", "description": "Transactions that are part of a bundle" }
             }
         },
-        "txn_pending_capacity":               { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Maximum pending transactions pack can hold" },
-        "txn_pending_smallest_cost":          { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Lower bound on the cost of the cheapest pending non-vote transaction, 0 if none pending" },
-        "block_microblock_limit_reached":     { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Times pack did not schedule a microblock because the block microblock limit was reached" },
-        "block_byte_limit_reached":           { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Times pack did not schedule a microblock because the block byte limit was reached" },
+        "txn_pending_capacity":           { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Maximum pending transactions pack can hold" },
+        "txn_pending_smallest_cost":      { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Lower bound on the cost of the cheapest pending non-vote transaction, 0 if none pending" },
+        "block_microblock_limit_reached": { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Times pack did not schedule a microblock because the block microblock limit was reached" },
+        "block_byte_limit_reached":       { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Times pack did not schedule a microblock because the block byte limit was reached" },
         "txn_schedule_attempted": {
             "type": "Tuple",
             "description": "Times a pending transaction was considered for a microblock, by outcome; one transaction may be considered many times",
@@ -307,7 +307,7 @@
                 "insertion_failed": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Tried to insert an initializer bundle to update the on-chain state, but insertion failed" }
             }
         },
-        "block_cost":                         { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Cost units used in the current block, 0 if not packing a block" },
+        "block_cost":                     { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Cost units used in the current block, 0 if not packing a block" },
         "cost_scheduled_per_block": {
             "type": "Tuple",
             "description": "Cost units scheduled for each block pack produced; can exceed the block limit because of rebates",
@@ -399,114 +399,6 @@
                 "b15": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[100, inf) pct" },
                 "sum": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Sum of samples (pct)" }
             }
-        },
-        "bam_bundle_assembly_abandon": {
-            "type": "Tuple",
-            "description": "Cumulative number of in-progress multi-transaction BAM bundles abandoned before full assembly, by reason",
-            "field_number": 329214531,
-            "fields": {
-                "new_seq_before_complete": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Active BAM bundle abandoned because a new sequence arrived before completion" },
-                "leader_slot_end":         { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Active BAM bundle abandoned at leader slot end" },
-                "poh_timeout":             { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Active BAM bundle abandoned because the PoH leader-slot wallclock deadline elapsed" }
-            }
-        },
-        "bam_work_rejected_pre_pending": {
-            "type": "Tuple",
-            "description": "Cumulative number of BAM transactions or fully assembled BAM bundles rejected by slot/blockhash revalidation before they were accepted into pack's pending-work tracker, by work kind and reason",
-            "field_number": 329194193,
-            "fields": {
-                "single_outside_slot": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Independent BAM transaction invalidated because packing moved outside its allowed slot window" },
-                "bundle_outside_slot": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Fully assembled BAM bundle invalidated because packing moved outside its allowed slot window" }
-            }
-        },
-        "bam_pending_work_evicted": {
-            "type": "Tuple",
-            "description": "Cumulative number of BAM pending-work items evicted after acceptance into pack because slot/blockhash revalidation later failed, by work kind and reason",
-            "field_number": 501593127,
-            "fields": {
-                "single_outside_slot": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Independent BAM transaction invalidated because packing moved outside its allowed slot window" },
-                "bundle_outside_slot": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Fully assembled BAM bundle invalidated because packing moved outside its allowed slot window" }
-            }
-        },
-        "bam_work_items": {
-            "type": "Tuple",
-            "description": "Cumulative number of BAM work items observed at each pack lifecycle stage. Multi-transaction BAM bundles count as one item.",
-            "field_number": 525952693,
-            "fields": {
-                "received":             { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work reached pack after ingress preprocessing and resolution" },
-                "accepted":             { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work was accepted into pack's main transaction pool" },
-                "rejected_pre_pending": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work was rejected before entering pack's pending-work tracker" },
-                "pending_entered":      { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work entered pack's pending-work tracker after acceptance" },
-                "pending_evicted":      { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work was evicted from pack's pending-work tracker by later slot or blockhash revalidation" },
-                "scheduled":            { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work was removed from the pending-work tracker and scheduled into a microblock" },
-                "landed":               { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work was observed as landed via execution feedback" },
-                "completed_unlanded":   { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work completed execution but at least one transaction did not land" }
-            }
-        },
-        "bam_tracking_rejected":              { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Cumulative number of BAM work items rejected because the local tracked-work table was at capacity", "field_number": 269001641 },
-        "bam_tracking_rejected_transactions": { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Cumulative number of BAM transactions rejected because the local tracked-work table was at capacity", "field_number": 467465192 },
-        "bam_pending_work_count":             { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Current number of BAM work items tracked in pack's pending-work set after acceptance and before scheduling or cleanup", "field_number": 282560490 },
-        "leader_slot":                        { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Current pack leader slot, or 0 if pack is not the leader", "field_number": 278586409 },
-        "leader_slot_end_nanos":              { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Current pack leader slot end wallclock timestamp (nanoseconds), or 0 if pack is not the leader", "field_number": 495414595 },
-        "bam_leader_slot_first_insert_result": {
-            "type": "Tuple",
-            "description": "Cumulative number of pack leader slots finalized with no BAM insert, a first BAM insert before slot end, or a first BAM insert at or after slot end",
-            "field_number": 330248187,
-            "fields": {
-                "no_event":   { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "No BAM event of this kind was observed before the leader slot finished" },
-                "before_end": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "The first BAM event of this kind was observed before slot end" },
-                "after_end":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "The first BAM event of this kind was observed at or after slot end" }
-            }
-        },
-        "bam_leader_slot_first_schedule_result": {
-            "type": "Tuple",
-            "description": "Cumulative number of pack leader slots finalized with no BAM schedule, a first BAM schedule before slot end, or a first BAM schedule at or after slot end",
-            "field_number": 312225837,
-            "fields": {
-                "no_event":   { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "No BAM event of this kind was observed before the leader slot finished" },
-                "before_end": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "The first BAM event of this kind was observed before slot end" },
-                "after_end":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "The first BAM event of this kind was observed at or after slot end" }
-            }
-        },
-        "bam_work_first_outcome": {
-            "type": "Tuple",
-            "description": "Cumulative number of BAM work items bucketed by their first terminal pack outcome",
-            "field_number": 505174557,
-            "fields": {
-                "rejected_pre_pending":      { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work was first rejected before entering pack's pending-work tracker" },
-                "tracking_rejected":         { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work was accepted into pack but rejected because the tracked-work table was full" },
-                "pending_evicted":           { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work entered pack's pending-work tracker and was later evicted by slot or blockhash revalidation" },
-                "scheduled":                 { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "BAM work entered pack's pending-work tracker and was later first scheduled into a microblock" },
-                "bundle_assembly_abandoned": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Multi-transaction BAM work was abandoned before full assembly completed" }
-            }
-        },
-        "bam_work_rx_to_first_outcome_nanos": {
-            "type": "Tuple",
-            "description": "Distribution of BAM scheduler-receive to first terminal pack outcome for a BAM work item, sampled once when that work is first rejected, tracking-rejected, pending-evicted, scheduled, or bundle-assembly-abandoned (nanoseconds)",
-            "field_number": 270741496,
-            "fields": {
-                "b0":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[0, 1) nanos" },
-                "b1":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[1, 5) nanos" },
-                "b2":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[5, 26) nanos" },
-                "b3":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[26, 135) nanos" },
-                "b4":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[135, 701) nanos" },
-                "b5":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[701, 3640) nanos" },
-                "b6":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[3640, 18903) nanos" },
-                "b7":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[18903, 98167) nanos" },
-                "b8":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[98167, 509799) nanos" },
-                "b9":  { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[509799, 2647479) nanos" },
-                "b10": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[2647479, 13748839) nanos" },
-                "b11": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[13748839, 71400215) nanos" },
-                "b12": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[71400215, 370794269) nanos" },
-                "b13": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[370794269, 1925601903) nanos" },
-                "b14": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[1925601903, 10000000000) nanos" },
-                "b15": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "[10000000000, inf) nanos" },
-                "sum": { "type": "UInt64", "compression": "DoubleDelta, ZSTD", "description": "Sum of samples (nanos)" }
-            }
-        },
-        "bam_conflict_blocked":               { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Scheduling attempts blocked by account conflicts on the selected BAM candidate. Does not establish that a later independent batch was runnable or measure lost earnings.", "field_number": 495005723 },
-        "bam_unscheduled_at_slot_end":        { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Tracked BAM batches still pending when a leader slot closes, retired as OUTSIDE_LEADER_SLOT. Excludes dispatched batches; does not establish validity, schedulability, or lost earnings.", "field_number": 530314929 },
-        "bam_capacity_deferred":              { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "BAM candidate groups newly deferred for the current block after exhausting the capacity-miss budget. Counts each candidate group's first deferral.", "field_number": 465601206 },
-        "bam_lookahead_empty":                { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Bounded conflict lookahead scans, run after the selected BAM candidate was blocked by account conflicts, that found no independent ready batch", "field_number": 447865920 }
+        }
     }
 }

@@ -3,7 +3,8 @@ FireBAM metrics.  generate/bam.py merges this file into metrics.xml
 before code generation: enums and the bam tile are appended, and the
 metrics of a tile that already exists in metrics.xml (pack, replay) are
 appended to the end of that tile.  Run `make -C src/disco/metrics
-metrics` after changing either file.
+metrics` after changing either file.  BAM metrics carry
+telemetry="false" to stay out of upstream event telemetry.
 -->
 <metrics>
 
@@ -92,7 +93,7 @@ metrics` after changing either file.
     <int value="3" name="SendFail" label="Pong send was attempted on a live scheduler stream after local readiness checks but fd_grpc_client_stream_send returned failure" />
 </enum>
 
-<tile name="bam">
+<tile name="bam" telemetry="false">
     <gauge name="Enabled" summary="Boolean gauge: 1 when BAM is enabled by operator, 0 when disabled" />
     <gauge name="Healthy" summary="Boolean gauge: 1 when the BAM client transport, auth, config, scheduler stream, and BuilderHeartBeat recency checks are healthy; otherwise 0. This does not imply that fresh work for the current leader slot has arrived yet." />
     <gauge name="StreamLive" summary="Boolean gauge: 1 while the BAM scheduler gRPC stream is open, from its response headers on, 0 otherwise. The BAM node may still reject an open stream; bam_stream_transition counts accepted streams" />
@@ -183,29 +184,29 @@ metrics` after changing either file.
 </enum>
 
 <tile name="pack">
-    <counter name="BamBundleAssemblyAbandon" enum="PackBamBundleAssemblyAbandonReason" summary="Cumulative number of in-progress multi-transaction BAM bundles abandoned before full assembly, by reason" />
-    <counter name="BamWorkRejectedPrePending" enum="PackBamWorkInvalidReason" summary="Cumulative number of BAM transactions or fully assembled BAM bundles rejected by slot/blockhash revalidation before they were accepted into pack's pending-work tracker, by work kind and reason" />
-    <counter name="BamPendingWorkEvicted" enum="PackBamWorkInvalidReason" summary="Cumulative number of BAM pending-work items evicted after acceptance into pack because slot/blockhash revalidation later failed, by work kind and reason" />
-    <counter name="BamWorkItems" enum="PackBamWorkStage" summary="Cumulative number of BAM work items observed at each pack lifecycle stage. Multi-transaction BAM bundles count as one item." />
-    <counter name="BamTrackingRejected" summary="Cumulative number of BAM work items rejected because the local tracked-work table was at capacity" />
-    <counter name="BamTrackingRejectedTransactions" summary="Cumulative number of BAM transactions rejected because the local tracked-work table was at capacity" />
-    <gauge name="BamPendingWorkCount" summary="Current number of BAM work items tracked in pack's pending-work set after acceptance and before scheduling or cleanup" />
-    <gauge name="LeaderSlot" summary="Current pack leader slot, or 0 if pack is not the leader" />
-    <gauge name="LeaderSlotEndNanos" summary="Current pack leader slot end wallclock timestamp (nanoseconds), or 0 if pack is not the leader" />
-    <counter name="BamLeaderSlotFirstInsertResult" enum="PackBamFirstEventResult" summary="Cumulative number of pack leader slots finalized with no BAM insert, a first BAM insert before slot end, or a first BAM insert at or after slot end" />
-    <counter name="BamLeaderSlotFirstScheduleResult" enum="PackBamFirstEventResult" summary="Cumulative number of pack leader slots finalized with no BAM schedule, a first BAM schedule before slot end, or a first BAM schedule at or after slot end" />
-    <counter name="BamWorkFirstOutcome" enum="PackBamWorkFirstOutcome" summary="Cumulative number of BAM work items bucketed by their first terminal pack outcome" />
-    <histogram name="BamWorkRxToFirstOutcomeNanos" min="0" max="10000000000">
+    <counter name="BamBundleAssemblyAbandon" telemetry="false" enum="PackBamBundleAssemblyAbandonReason" summary="Cumulative number of in-progress multi-transaction BAM bundles abandoned before full assembly, by reason" />
+    <counter name="BamWorkRejectedPrePending" telemetry="false" enum="PackBamWorkInvalidReason" summary="Cumulative number of BAM transactions or fully assembled BAM bundles rejected by slot/blockhash revalidation before they were accepted into pack's pending-work tracker, by work kind and reason" />
+    <counter name="BamPendingWorkEvicted" telemetry="false" enum="PackBamWorkInvalidReason" summary="Cumulative number of BAM pending-work items evicted after acceptance into pack because slot/blockhash revalidation later failed, by work kind and reason" />
+    <counter name="BamWorkItems" telemetry="false" enum="PackBamWorkStage" summary="Cumulative number of BAM work items observed at each pack lifecycle stage. Multi-transaction BAM bundles count as one item." />
+    <counter name="BamTrackingRejected" telemetry="false" summary="Cumulative number of BAM work items rejected because the local tracked-work table was at capacity" />
+    <counter name="BamTrackingRejectedTransactions" telemetry="false" summary="Cumulative number of BAM transactions rejected because the local tracked-work table was at capacity" />
+    <gauge name="BamPendingWorkCount" telemetry="false" summary="Current number of BAM work items tracked in pack's pending-work set after acceptance and before scheduling or cleanup" />
+    <gauge name="LeaderSlot" telemetry="false" summary="Current pack leader slot, or 0 if pack is not the leader" />
+    <gauge name="LeaderSlotEndNanos" telemetry="false" summary="Current pack leader slot end wallclock timestamp (nanoseconds), or 0 if pack is not the leader" />
+    <counter name="BamLeaderSlotFirstInsertResult" telemetry="false" enum="PackBamFirstEventResult" summary="Cumulative number of pack leader slots finalized with no BAM insert, a first BAM insert before slot end, or a first BAM insert at or after slot end" />
+    <counter name="BamLeaderSlotFirstScheduleResult" telemetry="false" enum="PackBamFirstEventResult" summary="Cumulative number of pack leader slots finalized with no BAM schedule, a first BAM schedule before slot end, or a first BAM schedule at or after slot end" />
+    <counter name="BamWorkFirstOutcome" telemetry="false" enum="PackBamWorkFirstOutcome" summary="Cumulative number of BAM work items bucketed by their first terminal pack outcome" />
+    <histogram name="BamWorkRxToFirstOutcomeNanos" telemetry="false" min="0" max="10000000000">
         <summary>Distribution of BAM scheduler-receive to first terminal pack outcome for a BAM work item, sampled once when that work is first rejected, tracking-rejected, pending-evicted, scheduled, or bundle-assembly-abandoned (nanoseconds)</summary>
     </histogram>
-    <counter name="BamConflictBlocked" summary="Scheduling attempts blocked by account conflicts on the selected BAM candidate. Does not establish that a later independent batch was runnable or measure lost earnings." />
-    <counter name="BamUnscheduledAtSlotEnd" summary="Tracked BAM batches still pending when a leader slot closes, retired as OUTSIDE_LEADER_SLOT. Excludes dispatched batches; does not establish validity, schedulability, or lost earnings." />
-    <counter name="BamCapacityDeferred" summary="BAM candidate groups newly deferred for the current block after exhausting the capacity-miss budget. Counts each candidate group's first deferral." />
-    <counter name="BamLookaheadEmpty" summary="Bounded conflict lookahead scans, run after the selected BAM candidate was blocked by account conflicts, that found no independent ready batch" />
+    <counter name="BamConflictBlocked" telemetry="false" summary="Scheduling attempts blocked by account conflicts on the selected BAM candidate. Does not establish that a later independent batch was runnable or measure lost earnings." />
+    <counter name="BamUnscheduledAtSlotEnd" telemetry="false" summary="Tracked BAM batches still pending when a leader slot closes, retired as OUTSIDE_LEADER_SLOT. Excludes dispatched batches; does not establish validity, schedulability, or lost earnings." />
+    <counter name="BamCapacityDeferred" telemetry="false" summary="BAM candidate groups newly deferred for the current block after exhausting the capacity-miss budget. Counts each candidate group's first deferral." />
+    <counter name="BamLookaheadEmpty" telemetry="false" summary="Bounded conflict lookahead scans, run after the selected BAM candidate was blocked by account conflicts, that found no independent ready batch" />
 </tile>
 
 <tile name="replay">
-    <gauge name="SlotDurationNanos" summary="Replay's current slot-duration assumption in nanoseconds (0 without BAM)" />
+    <gauge name="SlotDurationNanos" telemetry="false" summary="Replay's current slot-duration assumption in nanoseconds (0 without BAM)" />
 </tile>
 
 </metrics>
