@@ -2,7 +2,8 @@
 """Compare four release trees without modifying the repository.
 
 Exit 0: no non-overlap deviations (shared-path review may remain).
-Exit 2: non-overlap deviations requiring explanation. Exit 1: invalid inputs.
+Exit 2: non-overlap deviations requiring explanation. Exit 1: invalid inputs,
+including merge commits between upstream and new.
 This is evidence, never a semantic correctness or publication verdict.
 """
 
@@ -48,6 +49,9 @@ def audit(repo, refs):
     for first, second in (("base", "old"), ("base", "upstream"), ("upstream", "new")):
         if not ancestor(repo, revisions[first], revisions[second]):
             raise ValueError(f"{first} is not an ancestor of {second}; reconcile release boundaries")
+    merges = git(repo, "rev-list", "--merges", revisions["upstream"] + ".." + revisions["new"]).split()
+    if merges:
+        raise ValueError(f"{len(merges)} merge commit(s) between upstream and new; rebase the lane onto the release tag")
     trees = {name: tree(repo, rev) for name, rev in revisions.items()}
     paths = set().union(*(set(t) for t in trees.values()))
     incoming = {p for p in paths if trees["base"].get(p) != trees["upstream"].get(p)}
