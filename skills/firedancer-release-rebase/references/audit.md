@@ -16,9 +16,9 @@ Lanes don't carry this skill; take the script from `main` with
 The script expects every path outside the overlap to hold the new upstream
 blob for upstream-only changes and the old FireBAM blob otherwise. Exit 0 means
 no deviation, exit 2 means deviations to explain (intentional fixes included),
-and exit 1 means bad inputs. It compares trees and gitlinks only: paths both
-sides changed still need semantic review, and submodule contents are audited
-separately.
+and exit 1 means bad inputs, including merge commits between `new_base` and
+`new_tip`. It compares trees and gitlinks only: paths both sides changed still
+need semantic review, and submodule contents are audited separately.
 
 Read the full `git range-diff "$old_base..$old_tip" "$new_base..$new_tip"`, and
 prove each already-upstream drop in the final tree. Review interactions as for

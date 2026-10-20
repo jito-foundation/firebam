@@ -16,9 +16,14 @@ peeled commit with the official repository and stop if the tag moved.
 Rebase in a separate worktree, with a backup ref of the lane tip, using the
 `git rebase --no-update-refs` command in
 [the main-rebase migration](../../firebam-upstream-rebase-audit/references/migration.md).
-Don't merge upstream or squash FireBAM history to dodge conflicts. In test-list
-conflicts keep both sides' cases. Derive gitlinks from the four pinned parent
-trees and migrate only the ones that changed.
+Never merge the release into the lane, whether to dodge conflicts or to let a
+pull request land without a force-push: the merge hides the sync work from the
+audit's range-diff, and the next sync must resolve the same conflicts again.
+Don't squash FireBAM history either. When the release renames or removes
+something FireBAM uses, fold the fix into the earliest FireBAM commit that needs
+it, so every commit builds. In test-list conflicts keep both sides' cases.
+Derive gitlinks from the four pinned parent trees and migrate only the ones
+that changed.
 
 Mainnet promotion reruns the repository's binary finalization. Today
 `contrib/tag-release-firedancer.py` and `contrib/tag-release-frankendancer.py`

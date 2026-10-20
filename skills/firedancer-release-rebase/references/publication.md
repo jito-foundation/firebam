@@ -5,6 +5,11 @@ force-with-lease pushes. Every branch requires signed commits, so pushing the
 unsigned official commits needs an admin bypass. Never re-sign them: the
 official tag must stay an ancestor.
 
+A sync pull request is for review only. Its head must be the rebased
+candidate, and it lands through the leased push below, never through a GitHub
+merge button: merging adds a merge commit, and rebase or squash merging
+rewrites the official commits, so the tag stops being an ancestor.
+
 Copy the previous release in the same lane for the title (for example
 "Firedancer Testnet vX"), flags, and tag style (lightweight tag, no binary
 assets). The usual body:
@@ -21,7 +26,8 @@ the preceding tag belongs to the other lane. Testnet releases are
 Release text is effectively immutable: get it right first, and fix a published
 mistake with the correction-release procedure rather than an edit.
 
-Right before pushing, check that the official tag still peels to `new_base`.
+Right before pushing, check that the official tag still peels to `new_base`
+and that `git rev-list --merges "$new_base..$new_tip"` prints nothing.
 Push the branch and tag together, leased on the lane's pinned remote tip:
 
 ```bash
