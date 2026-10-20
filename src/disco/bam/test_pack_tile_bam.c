@@ -2488,7 +2488,6 @@ typedef struct {
   fd_rng_t rng[1];
   void * pack_mem;
   void * exec_dcache_mem[2];
-  void * extra_mem;
   ulong status;
   ulong generation;
   ulong busy[2];
@@ -2529,11 +2528,6 @@ test_pack_callbacks_new( test_pack_callbacks_t * e,
     ctx->execle_current[i] = &e->busy[i];
     ctx->execle_expect[i] = 0UL;
   }
-#if FD_PACK_USE_EXTRA_STORAGE
-  e->extra_mem = aligned_alloc( extra_txn_deq_align(), fd_ulong_align_up( extra_txn_deq_footprint(), extra_txn_deq_align() ) );
-  FD_TEST( e->extra_mem );
-  ctx->extra_txn_deq = extra_txn_deq_join( extra_txn_deq_new( e->extra_mem ) );
-#endif
   fd_histf_new( ctx->schedule_duration, 1UL, 1000000UL );
   fd_histf_new( ctx->no_sched_duration, 1UL, 1000000UL );
   fd_histf_new( ctx->insert_duration, 1UL, 1000000UL );
@@ -2548,7 +2542,6 @@ test_pack_callbacks_delete( test_pack_callbacks_t * e ) {
   fd_rng_delete( fd_rng_leave( e->rng ) );
   free( e->pack_mem );
   for( ulong i=0UL; i<2UL; i++ ) free( e->exec_dcache_mem[i] );
-  free( e->extra_mem );
   test_pack_tile_harness_delete( e->h );
 }
 
