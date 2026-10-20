@@ -1,6 +1,6 @@
 ---
 name: firedancer-release-rebase
-description: Rebase FireBAM onto a versioned upstream Firedancer release (a monthly YY.MM lane), audit such a candidate, or publish it. Upstream main uses firebam-upstream-rebase-audit.
+description: Rebase FireBAM onto a versioned upstream Firedancer release (a monthly YY.MM lane), including syncing a lane such as v26.10 to a new patch release, audit such a candidate, or publish it. Upstream main uses firebam-upstream-rebase-audit.
 ---
 
 # Firedancer release rebase
@@ -10,6 +10,10 @@ release tag. Lane rules:
 
 - A lane carries only code that `main` already ships, copied verbatim. A fix
   that is not on `main` lands there first; never write lane-only code.
+- A lane is the official tag followed only by FireBAM commits, with no merge
+  commits: `git rev-list --merges "$new_base..$new_tip"` prints nothing. A sync
+  replaces the lane branch with a leased force-push. Never merge the release
+  into a lane, even to let a pull request land without a force-push.
 - Testnet and mainnet are separate lanes within a month; tell them apart from
   release metadata and history, not the patch suffix. A mainnet promotion adds
   no application change over the qualified testnet tag. Compare both the
