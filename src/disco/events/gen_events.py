@@ -192,12 +192,36 @@ def live(fields: Dict[str, Field]) -> Dict[str, Field]:
     and are never encoded."""
     return {k: f for k, f in fields.items() if not f.deprecated}
 
-def has_provisional(fields: Dict[str, Field]) -> bool:
-    for f in fields.values():
-        if f.field_number is not None: return True
+def provisional_fields(schema_name: str, fields: Dict[str, Field], prefix: str = "") -> set[str]:
+    result = set()
+    for name, f in fields.items():
+        path = f"{prefix}.{name}" if prefix else f"{schema_name}.{name}"
+        if f.field_number is not None: result.add(path)
         inner = f.element if f.chtype == ClickHouseType.Array else f
-        if inner.fields and has_provisional(inner.fields): return True
-    return False
+        if inner.fields: result.update(provisional_fields(schema_name, inner.fields, path))
+    return result
+
+FIREBAM_PROVISIONAL_SCHEMAS = {"metrics_bam"}
+FIREBAM_PROVISIONAL_FIELDS = {
+    "metrics_pack.bam_bundle_assembly_abandon",
+    "metrics_pack.bam_work_rejected_pre_pending",
+    "metrics_pack.bam_pending_work_evicted",
+    "metrics_pack.bam_work_items",
+    "metrics_pack.bam_tracking_rejected",
+    "metrics_pack.bam_tracking_rejected_transactions",
+    "metrics_pack.bam_pending_work_count",
+    "metrics_pack.leader_slot",
+    "metrics_pack.leader_slot_end_nanos",
+    "metrics_pack.bam_leader_slot_first_insert_result",
+    "metrics_pack.bam_leader_slot_first_schedule_result",
+    "metrics_pack.bam_work_first_outcome",
+    "metrics_pack.bam_work_rx_to_first_outcome_nanos",
+    "metrics_pack.bam_conflict_blocked",
+    "metrics_pack.bam_unscheduled_at_slot_end",
+    "metrics_pack.bam_capacity_deferred",
+    "metrics_pack.bam_lookahead_empty",
+    "metrics_replay.slot_duration_nanos",
+}
 
 def check_field_numbers(where: str, fields: Dict[str, Field]) -> None:
     """Fields are numbered by position.  An explicit field_number is only a
@@ -983,7 +1007,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate protobuf from JSON schemas")
     parser.add_argument("--skip-check", action="store_true", help="Skip buf breaking changes check")
     parser.add_argument("--no-provisional", action="store_true", help="Fail if a local schema still has a provisional id")
+    parser.add_argument("--allow-firebam-provisional", action="store_true", help="Allow only the known FireBAM provisional schema additions")
     args = parser.parse_args()
+    if args.allow_firebam_provisional and not args.no_provisional:
+        parser.error("--allow-firebam-provisional requires --no-provisional")
 
     schema_dir = Path(__file__).parent / "schema"
     proto_path = schema_dir / "events.proto"
@@ -994,13 +1021,22 @@ def main() -> None:
     schemas = sorted([parse_schema(f, shared_types) for f in schema_files], key=lambda s: s.id)
     seen_ids: Dict[int, str] = {}
     seen_names: Dict[str, int] = {}
+    seen_provisional_schemas = set()
+    seen_provisional_fields = set()
     for s in schemas:
         if not s.local and not (1 <= s.id <= 254):
             raise SystemExit(f"ERROR: schema id {s.id} ({s.name}) must fit the 8-bit event type of FD_EVENT_SIG (1..254; 255 is FD_EVENT_TYPE_METRICS_TRIGGER)")
         if s.local and ( not (1 <= s.id <= PB_FIELD_NUMBER_MAX) or s.id in PB_RESERVED ):
             raise SystemExit(f"ERROR: schema id {s.id} ({s.name}) is not a valid protobuf field number")
-        if args.no_provisional and ( s.id >= EVENT_ID_PROVISIONAL or has_provisional(s.fields) ):
-            raise SystemExit(f"ERROR: schema {s.name} has a provisional id or field number; run `make -C src/disco/metrics metrics-assign` and regenerate before landing")
+        provisional_schema = s.id >= EVENT_ID_PROVISIONAL
+        schema_provisional_fields = provisional_fields(s.name, s.fields)
+        if provisional_schema: seen_provisional_schemas.add(s.name)
+        seen_provisional_fields.update(schema_provisional_fields)
+        if args.no_provisional:
+            allowed_schemas = FIREBAM_PROVISIONAL_SCHEMAS if args.allow_firebam_provisional else set()
+            allowed_fields = FIREBAM_PROVISIONAL_FIELDS if args.allow_firebam_provisional else set()
+            if ( provisional_schema and s.name not in allowed_schemas ) or schema_provisional_fields - allowed_fields:
+                raise SystemExit(f"ERROR: schema {s.name} has an unapproved provisional id or field number; run `make -C src/disco/metrics metrics-assign` and regenerate before landing")
         check_field_numbers(s.name, s.fields)
         if s.id in seen_ids:
             raise SystemExit(f"ERROR: duplicate schema id {s.id}: {seen_ids[s.id]} and {s.name}")
@@ -1008,6 +1044,9 @@ def main() -> None:
             raise SystemExit(f"ERROR: duplicate schema name {s.name!r} (ids {seen_names[s.name]} and {s.id})")
         seen_ids[s.id]     = s.name
         seen_names[s.name] = s.id
+    if args.allow_firebam_provisional:
+        if seen_provisional_schemas != FIREBAM_PROVISIONAL_SCHEMAS or seen_provisional_fields != FIREBAM_PROVISIONAL_FIELDS:
+            raise SystemExit("ERROR: the FireBAM provisional allowlist is stale; update it to exactly match the approved additions")
     proto_path.write_text(generate_protobuf(schemas))
 
     print(f"Protobuf generated successfully from {len(schemas)} schemas")
