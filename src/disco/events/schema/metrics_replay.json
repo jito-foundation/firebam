@@ -412,7 +412,6 @@
         "stake_delegation_delta_spilled":          { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Stake delegation fork deltas written to disk because the in-memory delta pool was full" },
         "stake_delegation_disk_read":              { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Reads from the stake delegation spill file by all tiles" },
         "stake_delegation_disk_written":           { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Writes to the stake delegation spill file by all tiles" },
-        "stake_delegation_disk_duration_nanos":    { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Time all tiles spent in stake delegation spill file reads and writes" },
-        "slot_duration_nanos":                     { "type": "UInt64",                     "compression": "T64, ZSTD",         "description": "Replay's current slot-duration assumption in nanoseconds (0 without BAM)", "field_number": 339447289 }
+        "stake_delegation_disk_duration_nanos":    { "type": "UInt64",                     "compression": "DoubleDelta, ZSTD", "description": "Time all tiles spent in stake delegation spill file reads and writes" }
     }
 }
