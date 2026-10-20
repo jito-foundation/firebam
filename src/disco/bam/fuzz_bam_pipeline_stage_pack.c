@@ -65,9 +65,6 @@ bam_fuzz_pack_new( fd_wksp_t *             wksp,
   ulong result_cnt     = 2UL*BAM_FUZZ_PACK_PENDING_TXN_MAX;
   ulong l = FD_LAYOUT_INIT;
   l = FD_LAYOUT_APPEND( l, fd_pack_align(),                pack_footprint );
-#if FD_PACK_USE_EXTRA_STORAGE
-  l = FD_LAYOUT_APPEND( l, extra_txn_deq_align(),          extra_txn_deq_footprint() );
-#endif
   l = FD_LAYOUT_APPEND( l, alignof(pack_bam_work_t),        BAM_FUZZ_PACK_PENDING_TXN_MAX*sizeof(pack_bam_work_t) );
   l = FD_LAYOUT_APPEND( l, alignof(pack_bam_sig_ele_t),     sig_ele_cnt*sizeof(pack_bam_sig_ele_t) );
   l = FD_LAYOUT_APPEND( l, pack_bam_sig_map_align(),        pack_bam_sig_map_footprint( sig_chain_cnt ) );
@@ -84,10 +81,6 @@ bam_fuzz_pack_new( fd_wksp_t *             wksp,
                                          BAM_FUZZ_PACK_PENDING_TXN_MAX, BUNDLE_META_SZ, BAM_FUZZ_PACK_EXECLE_CNT,
                                          &lower, NULL, 0UL, h->rng ) );
   FD_TEST( ctx->pack );
-#if FD_PACK_USE_EXTRA_STORAGE
-  ctx->extra_txn_deq = extra_txn_deq_join( extra_txn_deq_new( FD_SCRATCH_ALLOC_APPEND( alloc, extra_txn_deq_align(), extra_txn_deq_footprint() ) ) );
-  FD_TEST( ctx->extra_txn_deq );
-#endif
   ctx->bam_work         = FD_SCRATCH_ALLOC_APPEND( alloc, alignof(pack_bam_work_t), BAM_FUZZ_PACK_PENDING_TXN_MAX*sizeof(pack_bam_work_t) );
   ctx->bam_work_max     = BAM_FUZZ_PACK_PENDING_TXN_MAX;
   ctx->bam_sig_pool     = FD_SCRATCH_ALLOC_APPEND( alloc, alignof(pack_bam_sig_ele_t), sig_ele_cnt*sizeof(pack_bam_sig_ele_t) );
