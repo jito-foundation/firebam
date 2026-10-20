@@ -135,6 +135,12 @@ test_ag_bam_slot_timing( fd_wksp_t * wksp ) {
     fd_slot_params_t const *   params = &ctx->leader_bank->f.slot_params;
     FD_TEST( leader->slot_end_ns==window_start+(long)params->ns_per_slot-(long)FD_TARGET_SLOT_ADJUSTMENT_NS-AG_TIME_TO_COMPLETE_BROADCAST_NS );
     FD_TEST( leader->tick_duration_ns==params->ns_per_slot_adjusted/leader->ticks_per_slot );
+
+    /* The gauge follows the epoch info, not the Tower-only cache. */
+    ctx->metrics.slot_duration_ns = 1UL;
+    ctx->ns_per_slot              = params->ns_per_slot; /* as refresh_epoch_info */
+    replay_bam_metrics_write( ctx );
+    FD_TEST( FD_MGAUGE_GET( REPLAY, SLOT_DURATION_NANOS )==params->ns_per_slot_adjusted );
   }
   FD_LOG_NOTICE(( "pass: test_ag_bam_slot_timing" ));
 }
