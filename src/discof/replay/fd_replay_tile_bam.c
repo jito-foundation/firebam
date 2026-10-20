@@ -15,6 +15,17 @@ replay_poh_slot_duration_ns( fd_replay_tile_t *       ctx,
   return ctx->metrics.slot_duration_ns;
 }
 
+/* replay_bam_metrics_write sets the SlotDurationNanos gauge.  Alpenglow
+   leader timing does not use replay_poh_slot_duration_ns, so under
+   Alpenglow the gauge reports the adjusted duration of the slot replay
+   last refreshed its epoch info from, which Alpenglow PoH ticks use. */
+
+static inline void
+replay_bam_metrics_write( fd_replay_tile_t const * ctx ) {
+  ulong slot_duration_ns = ctx->alpenglow ? fd_ulong_sat_sub( ctx->ns_per_slot, FD_TARGET_SLOT_ADJUSTMENT_NS ) : ctx->metrics.slot_duration_ns;
+  FD_MGAUGE_SET( REPLAY, SLOT_DURATION_NANOS, slot_duration_ns );
+}
+
 static void
 replay_bam_init( fd_replay_tile_t * ctx,
                  fd_topo_t const *  topo ) {
