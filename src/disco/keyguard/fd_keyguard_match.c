@@ -425,6 +425,19 @@ fd_keyguard_payload_matches_vote_history( uchar const * data,
   return 1;
 }
 
+/* BAM auth: the 24 byte FD_BAM_AUTH_LABEL (fd_bam_tile.h), with its
+   NUL, then 1 to 128 (sizeof(bam_api_AuthChallengeResponse)) challenge
+   bytes */
+
+FD_FN_PURE static int
+fd_keyguard_payload_matches_bam_auth( uchar const * data,
+                                      ulong         sz,
+                                      int           sign_type ) {
+  if( sign_type!=FD_KEYGUARD_SIGN_TYPE_ED25519 ) return 0;
+  if( sz<=24UL || sz>24UL+128UL                ) return 0;
+  return !memcmp( data, "X_OFF_CHAIN_JITO_BAM_V1", 24UL );
+}
+
 FD_FN_PURE ulong
 fd_keyguard_payload_match( uchar const * data,
                            ulong         sz,
@@ -444,5 +457,6 @@ fd_keyguard_payload_match( uchar const * data,
   res |= fd_ulong_if( fd_keyguard_payload_matches_bls_pubkey  ( data, sz, sign_type ), FD_KEYGUARD_PAYLOAD_BLS_PUBKEY,   0 );
   res |= fd_ulong_if( fd_keyguard_payload_matches_tower       ( data, sz, sign_type ), FD_KEYGUARD_PAYLOAD_TOWER,        0 );
   res |= fd_ulong_if( fd_keyguard_payload_matches_vote_history( data, sz, sign_type ), FD_KEYGUARD_PAYLOAD_VOTE_HISTORY, 0 );
+  res |= fd_ulong_if( fd_keyguard_payload_matches_bam_auth    ( data, sz, sign_type ), FD_KEYGUARD_PAYLOAD_BAM_AUTH,     0 );
   return res;
 }

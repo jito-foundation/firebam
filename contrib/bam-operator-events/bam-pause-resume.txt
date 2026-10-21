@@ -1,0 +1,7 @@
+# Pause and resume the BAM controller after the scheduler stream is active, and
+# wait for fresh controller-side BAM feedback afterward.
+wait_log bam 30000 InitSchedulerStream:
+signal bam stop
+sleep_ms 2000
+signal bam cont
+wait_log_growth bam 30000 scheduler<-validator

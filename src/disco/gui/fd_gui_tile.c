@@ -18,6 +18,7 @@
 #include "generated/fd_gui_tile_seccomp.h"
 
 #include "../../disco/tiles.h"
+#include "../../disco/bam/fd_bam_microblock.h"
 #include "../../disco/keyguard/fd_keyload.h"
 #include "../../disco/keyguard/fd_keyswitch.h"
 #include "../../disco/gui/fd_gui.h"
@@ -610,6 +611,7 @@ after_frag( fd_gui_ctx_t *      ctx,
       break;
     }
     case IN_KIND_EXECLE_POH: {
+      fd_bam_microblock_strip_result( src, &sz );
       FD_TEST( sz>=sizeof(fd_microblock_trailer_t) );
       FD_TEST( (sz-sizeof(fd_microblock_trailer_t))%sizeof(fd_txn_p_t)==0UL );
 

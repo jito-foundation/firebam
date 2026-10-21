@@ -11,6 +11,7 @@
 #include "../../util/net/fd_ip6.h"
 #include "../pack/fd_pack_acct_blocklist.h"
 #include "../keyguard/fd_keyguard.h"
+#include "fd_topo_bam.h"
 
 /* Maximum number of workspaces that may be present in a topology. */
 #define FD_TOPO_MAX_WKSPS          ( 256UL)
@@ -351,6 +352,8 @@ struct fd_topo_tile {
       char   launch_cgroup[ PATH_MAX ];
     } event;
 
+    fd_topo_tile_bam_t bam;
+
     struct {
       ulong max_pending_transactions;
       ulong execle_tile_count;
@@ -359,6 +362,8 @@ struct fd_topo_tile {
       ulong bench_max_shreds_per_block; /* [development.bench], floors the leader's per-slot shred limit */
       int   use_consumed_cus;
       int   schedule_strategy;
+      uchar dump_bam_mode : 2;
+      uchar bam_enabled   : 1;
       struct {
         int   enabled;
         uchar tip_distribution_program_addr[ 32 ];

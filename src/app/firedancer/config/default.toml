@@ -1684,6 +1684,28 @@ telemetry = true
         # this option to 'false'.
         tls_cert_verify = true
 
+    [tiles.bam]
+        # True if a BAM tile should be enabled.  The BAM tile receives
+        # scheduled transactions and bundles from a BAM node and reports
+        # their results back to it.
+        enabled = false
+
+        # The URL of the BAM node to connect to.
+        url = ""
+
+        # Optional override for the TLS domain name presented by the
+        # BAM node.  If empty, the host portion of the URL is used.
+        tls_domain_name = ""
+
+        # Roughly the time between HTTP/2 PING keepalives to the BAM
+        # node, randomized to reduce burst loads.  Must be within range
+        # [3e3,3600e3]
+        keepalive_interval_millis = 5000
+
+        # Set to 'true' to verify the BAM node's TLS certificate against
+        # the CA certs in /etc/ssl/certs for HTTPS URLs.
+        tls_cert_verify = false
+
     # The pack tile takes incoming transactions that have been verified
     # by the verify tile and then deduplicated, and attempts to order
     # them in an optimal way to generate the most fees per compute
@@ -2298,6 +2320,26 @@ telemetry = true
         # volume of events and should only be used for debugging and
         # development purposes.
         report_runtime_diffs = false
+
+    [development.bam]
+        # Maximum Protobuf message size in KiB, sizing the BAM gRPC
+        # buffers as for [development.bundle].  Must be at least 256 KiB
+        # so one maximum scheduler response fits.
+        buffer_size_kib = 256
+
+        # Append BAM TLS keys in NSS SSLKEYLOGFILE format to this file,
+        # for decrypting packet captures.  Empty disables key logging.
+        ssl_key_log_file = ""
+
+        # Log every inbound BAM batch as one multiline NOTICE record of
+        # decoded transactions, LUTs and instructions, and log pack's
+        # bam_drop diagnostics.  Very verbose; keep disabled in
+        # production.
+        dump_bam_txns = false
+
+        # Like dump_bam_txns, but only for the first inbound BAM batch
+        # of each run of batches with the same max_schedule_slot.
+        dump_bam_slot_first_txn = false
 
     # The following options relate to the 'firedance-dev pktgen' tool
     # only.  pktgen tests net tile transmit throughput by generating a

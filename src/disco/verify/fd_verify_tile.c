@@ -9,6 +9,7 @@
 #define IN_KIND_BUNDLE (1UL)
 #define IN_KIND_GOSSIP (2UL)
 #define IN_KIND_TXSEND (3UL)
+#define IN_KIND_BAM    (4UL)
 
 FD_FN_CONST static inline ulong
 scratch_align( void ) {
@@ -47,7 +48,7 @@ before_frag( fd_verify_ctx_t * ctx,
 
   if( FD_LIKELY( is_bundle_packet || ctx->in_kind[ in_idx ]==IN_KIND_QUIC ) ) {
     return (seq % ctx->round_robin_cnt) != ctx->round_robin_idx;
-  } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE ) ) {
+  } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BUNDLE || ctx->in_kind[ in_idx ]==IN_KIND_BAM ) ) {
     return ctx->round_robin_idx!=0UL;
   } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_GOSSIP ) ) {
       return (seq % ctx->round_robin_cnt) != ctx->round_robin_idx ||
@@ -56,6 +57,8 @@ before_frag( fd_verify_ctx_t * ctx,
 
   return 0;
 }
+
+#include "fd_verify_tile_bam.c"
 
 /* during_frag is called between pairs for sequence number checks, as
    we are reading incoming frags.  We don't actually need to copy the
@@ -71,6 +74,7 @@ during_frag( fd_verify_ctx_t * ctx,
              ulong             ctl FD_PARAM_UNUSED ) {
 
   ulong in_kind = ctx->in_kind[ in_idx ];
+  if( FD_UNLIKELY( in_kind==IN_KIND_BAM ) ) { fd_verify_tile_bam_during_frag( ctx, in_idx, chunk, sz ); return; }
   if( FD_UNLIKELY( in_kind==IN_KIND_BUNDLE || in_kind==IN_KIND_QUIC || in_kind==IN_KIND_TXSEND ) ) {
     if( FD_UNLIKELY( chunk<ctx->in[in_idx].chunk0 || chunk>ctx->in[in_idx].wmark || sz>FD_TPU_RAW_MTU ) )
       FD_LOG_ERR(( "chunk %lu %lu corrupt, not in range [%lu,%lu,%lu]", chunk, sz, ctx->in[in_idx].chunk0, ctx->in[in_idx].wmark, FD_TPU_RAW_MTU ));
@@ -113,6 +117,7 @@ after_frag( fd_verify_ctx_t *   ctx,
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_TXSEND ) ) ctx->metrics.own_votes_cnt++;
 
   fd_txn_m_t * txnm = (fd_txn_m_t *)fd_chunk_to_laddr( ctx->out_mem, ctx->out_chunk );
+  if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) { fd_verify_tile_bam_after_frag( ctx, txnm, tsorig, stem ); return; }
   if( FD_UNLIKELY( txnm->payload_sz>FD_TPU_MTU ) ) {
     FD_LOG_ERR(( "verify: txn payload size %hu exceeds max %lu", txnm->payload_sz, FD_TPU_MTU ));
   }
@@ -219,6 +224,7 @@ unprivileged_init( fd_topo_t const *      topo,
     if(      !strcmp( link->name, "quic_verify"  ) ) ctx->in_kind[ i ] = IN_KIND_QUIC;
     else if( !strcmp( link->name, "bundle_verif" ) ) ctx->in_kind[ i ] = IN_KIND_BUNDLE;
     else if( !strcmp( link->name, "txsend_out"   ) ) ctx->in_kind[ i ] = IN_KIND_TXSEND;
+    else if( !strcmp( link->name, "bam_verif"    ) ) ctx->in_kind[ i ] = IN_KIND_BAM;
     else if( !strcmp( link->name, "gossip_vote"  ) ) ctx->in_kind[ i ] = IN_KIND_GOSSIP;
     else FD_LOG_ERR(( "unexpected link name %s", link->name ));
   }
