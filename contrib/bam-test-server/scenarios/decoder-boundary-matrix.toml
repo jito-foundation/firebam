@@ -1,0 +1,82 @@
+description = "Exercise live BAM packet metadata, bundle-size, payload-size, and multi-batch wrapper boundaries."
+heartbeat_interval_ms = 1000
+expected_terminal_results = 134
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 5101
+packet_count = 6
+max_schedule_slot = "max"
+revert_on_error = true
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5102
+packet_count = 2
+max_schedule_slot = "max"
+revert_on_error_sequence = [true, false]
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 2
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5103
+expect_result = false
+packet_count = 1
+packet_data_size = 1233
+max_schedule_slot = "max"
+revert_on_error = true
+
+[[events]]
+type = "send_batch"
+seq_id = 5104
+packet_count = 2
+packet_meta_sequence = ["missing_meta", "missing_flags"]
+max_schedule_slot = "max"
+revert_on_error = false
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 3
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch_flood"
+batch_count = 130
+start_seq_id = 5200
+packet_count = 0
+max_schedule_slot = "max"
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 133
+timeout_ms = 30000
+
+[[events]]
+type = "send_batch"
+seq_id = 5400
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 134
+timeout_ms = 30000

@@ -23,6 +23,7 @@
 #include "../../disco/events/generated/fd_event_gen.h"
 #include "../../util/fd_hash32.h"
 #include "../../ballet/bmtree/fd_bmtree.h"
+#include "fd_replay_tile_bam.h"
 #include <stdio.h>
 
 struct fd_replay_in_link {
@@ -644,6 +645,7 @@ struct fd_replay_tile {
 
   /* If non-zero, emit the runtime events during replay. */
   int report_runtime_diffs;
+  REPLAY_TILE_BAM_CTX
 };
 
 typedef struct fd_replay_tile fd_replay_tile_t;

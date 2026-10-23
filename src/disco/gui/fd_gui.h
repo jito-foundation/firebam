@@ -735,6 +735,7 @@ struct fd_gui_txn_waterfall {
     ulong block_success;
     ulong block_fail;
   } out;
+  ulong in_bam; /* FireBAM: published as in.bam */
 };
 
 typedef struct fd_gui_txn_waterfall fd_gui_txn_waterfall_t;

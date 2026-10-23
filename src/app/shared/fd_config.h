@@ -4,6 +4,7 @@
 #include "../../disco/topo/fd_topo.h"
 #include "../../ballet/base58/fd_base58.h"
 #include "../../waltz/http/fd_url.h"
+#include "fd_config_bam.h"
 
 #include <net/if.h>
 
@@ -480,6 +481,7 @@ struct fd_config {
     int   dump_txn_as_fixture;
     int   dump_block_to_pb;
   } capture;
+  fd_config_bam_t bam;
 };
 
 typedef struct fd_config fd_config_t;
