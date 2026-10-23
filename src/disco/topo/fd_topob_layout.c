@@ -31,6 +31,7 @@ static struct { char const * name; uint flags; } const TILE_CLASS[] = {
   { "sock",   ALWAYS|PIN_EFF               },
   { "quic",   ALWAYS                       },
   { "bundle", ALWAYS                       },
+  { "bam",    ALWAYS                       },
   { "verify", ALWAYS|THRUPUT               },
   { "dedup",  ALWAYS                       },
   { "resolv", ALWAYS                       },
@@ -572,7 +573,7 @@ smt_rank( fd_topo_tile_t const * tile,
           int                    replay_first ) {
   static char const * const T4[] = { "votor", "shred", "net", "mlx5", "sock", "accdb", NULL };
   static char const * const T5[] = { "rotor", NULL };
-  static char const * const T6[] = { "execle", "dedup", "sign", "resolv", "quic", "verify", "bundle", "shred", "net", "mlx5", "sock", NULL };
+  static char const * const T6[] = { "execle", "dedup", "sign", "resolv", "quic", "verify", "bundle", "bam", "shred", "net", "mlx5", "sock", NULL };
   static char const * const T7[] = { "gui", "rpc", "event", "rserve", "gossip", "gossvf", NULL };
 
   char const * name = tile->name;
@@ -657,7 +658,7 @@ smt_plan( fd_topo_t const *      topo,
         int hot_a  = (key[ a ]>>24)<=4UL && !( fd_topob_tile_class( ta->name ) & FD_TOPOB_TILE_DEDICATED );
         int cold_a = (key[ a ]>>24)==SMT_TIER_COLD;
         int cold_b = (key[ b ]>>24)==SMT_TIER_COLD;
-        int same   = !strcmp( ta->name, tb->name );
+        int same   = !strcmp( ta->name, tb->name ) || fd_topo_bam_smt_pair( ta->name, tb->name );
         int avx    = !same && name_idx( ta->name, AVX )!=ULONG_MAX && name_idx( tb->name, AVX )!=ULONG_MAX;
         int pin_a  = !!( fd_topob_tile_class( ta->name ) & FD_TOPOB_TILE_EFFICIENT_PINNED );
         int pin_b  = !!( fd_topob_tile_class( tb->name ) & FD_TOPOB_TILE_EFFICIENT_PINNED );

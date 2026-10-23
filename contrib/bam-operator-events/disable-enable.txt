@@ -1,0 +1,8 @@
+# Low-frequency BAM control-plane churn for live local testing.
+# Wait until BAM traffic is already flowing, then flip BAM off and back on,
+# and confirm that new BAM decode activity resumes afterward.
+wait_log fd 30000 BAM rx bundle:
+set_bam --disable
+sleep_ms 2000
+set_bam --enable
+wait_log_growth fd 30000 BAM rx bundle:

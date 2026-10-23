@@ -99,6 +99,8 @@ struct fd_execle_tile {
     ulong txn_commit_cum_ticks;
   } metrics;
 
+  fd_txn_bam_t    _bam; /* First transaction's, only set for BAM */
+  fd_execle_out_t out_bam[1];
 };
 
 typedef struct fd_execle_tile fd_execle_tile_t;
@@ -205,6 +207,8 @@ before_frag( fd_execle_tile_t * ctx,
   return 0;
 }
 
+#include "fd_execle_tile_bam.c"
+
 static inline void
 during_frag( fd_execle_tile_t * ctx,
              ulong              in_idx,
@@ -239,6 +243,7 @@ during_frag( fd_execle_tile_t * ctx,
     ulong alt_cnt = fd_ulong_min( (ulong)t->addr_table_adtl_cnt, FD_TXN_ACCT_ADDR_MAX );
     fd_memcpy( ctx->_alt_accts[i], src_txn_e[i].alt_accts, alt_cnt * sizeof(fd_acct_addr_t) );
   }
+  if( FD_UNLIKELY( txn_cnt && src_txn_e->txnp->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) ctx->_bam = src_txn_e->bam;
 
   fd_microblock_execle_trailer_t * trailer = (fd_microblock_execle_trailer_t *)( src+sz-sizeof(fd_microblock_execle_trailer_t) );
   ctx->_bank_idx  = trailer->bank_idx;
@@ -296,6 +301,9 @@ handle_microblock( fd_execle_tile_t *  ctx,
   trailer->bank_seq         = bank->bank_seq;
   trailer->exec_end_ticks   = LONG_MAX;
 
+  fd_bam_bundle_result_t bam_res[1];
+  int bam_nonrevert = bam_result_start( ctx, dst, txn_cnt, slot, 0, bam_res );
+
   /* exec_start_ticks is the first transaction's load_start_ticks (an
      empty microblock reads the clock itself); microblock_start_ticks
      stays pack's publish time, decompressed against it. */
@@ -343,6 +351,7 @@ handle_microblock( fd_execle_tile_t *  ctx,
 
     if( FD_UNLIKELY( !txn_out->err.is_committable ) ) {
       FD_TEST( !txn_out->err.is_fees_only );
+      if( FD_UNLIKELY( bam_nonrevert ) ) bam_result_txn( bam_res, txn_out );
       fd_runtime_cancel_txn( ctx->runtime, bank, txn_in, txn_out );
       /* Use pre-resolved ALT accounts for rebates even for unlanded transactions */
       fd_acct_addr_t const * writable_alt = ctx->_alt_accts[i];
@@ -365,6 +374,7 @@ handle_microblock( fd_execle_tile_t *  ctx,
         FD_LOG_WARNING(( "FeesOnly txn actual CUs (%u+%u) exceed requested (%u), dropping",
                          fee_only_actual_exec_cus, fee_only_actual_data_cus, requested_exec_plus_acct_data_cus ));
         txn_out->err.is_committable = 0;
+        if( FD_UNLIKELY( bam_nonrevert ) ) bam_result_txn( bam_res, txn_out );
         fd_runtime_cancel_txn( ctx->runtime, bank, txn_in, txn_out );
         /* txn->execle_cu already initialized to full rebate at top of loop */
         fd_acct_addr_t const * writable_alt = ctx->_alt_accts[i];
@@ -387,6 +397,7 @@ handle_microblock( fd_execle_tile_t *  ctx,
        transactions. */
     txn->flags |= FD_TXN_P_FLAGS_EXECUTE_SUCCESS | FD_TXN_P_FLAGS_SANITIZE_SUCCESS;
     fd_metrics_tl[ MIDX( COUNTER, EXECLE, TXN_PROCESSED )+(ulong)fd_execle_err_from_runtime_err( txn_out->err.txn_err ) ]++;
+    if( FD_UNLIKELY( bam_nonrevert ) ) bam_result_txn( bam_res, txn_out );
 
     /* Commit must succeed so no failure path.  Once commit is called,
        the transactions MUST be mixed into the PoH otherwise we will
@@ -468,6 +479,8 @@ handle_microblock( fd_execle_tile_t *  ctx,
     if( FD_LIKELY( ctx->enable_rebates ) ) fd_pack_rebate_sum_add_txn( ctx->rebater, txn, &writable_alt, 1UL );
   }
 
+  if( FD_UNLIKELY( bam_nonrevert && !bam_res->execution_success ) ) bam_publish_result( ctx, stem, bam_res );
+
   /* Indicate to pack tile we are done processing the transactions so
      it can pack new microblocks using these accounts. */
   fd_fseq_update( ctx->busy_fseq, seq );
@@ -492,6 +505,7 @@ handle_microblock( fd_execle_tile_t *  ctx,
      it has seen.  PoH ignores tspub and the GUI takes it as the end of
      execution, which every path through the loop leaves in last_ticks. */
   ulong new_sz = txn_cnt*sizeof(fd_txn_p_t) + sizeof(fd_microblock_trailer_t);
+  if( FD_UNLIKELY( bam_nonrevert && bam_res->execution_success ) ) new_sz = fd_bam_microblock_attach_result( trailer, bam_res );
   fd_stem_publish( stem, ctx->out_poh->idx, execle_sig, ctx->out_poh->chunk, new_sz, 0UL, (ulong)fd_frag_meta_ts_comp( microblock_start_ticks ), (ulong)fd_frag_meta_ts_comp( last_ticks ) );
   ctx->out_poh->chunk = fd_dcache_compact_next( ctx->out_poh->chunk, new_sz, ctx->out_poh->chunk0, ctx->out_poh->wmark );
 }
@@ -531,6 +545,9 @@ handle_bundle( fd_execle_tile_t *  ctx,
     ctx->txn_in[ i ].index_in_slot    = ctx->_txn_idx + i;
     ctx->txn_out[ i ].err.txn_err     = FD_RUNTIME_EXECUTE_SUCCESS;
   }
+
+  fd_bam_bundle_result_t bam_res[1];
+  int is_bam_revert = bam_result_start( ctx, txns, txn_cnt, slot, 1, bam_res );
 
   /* Acquire all accdb resources in order to execute the bundle. */
   int const setup_bundle = fd_runtime_prepare_bundle_accounts( ctx->runtime, bank, ctx->txn_in, ctx->txn_out, txn_cnt )==FD_RUNTIME_EXECUTE_SUCCESS;
@@ -574,6 +591,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
       fd_txn_out_t * txn_out   = &ctx->txn_out[ i ];
       uchar *        signature = (uchar *)txn_in->txn->payload + TXN( txn_in->txn )->signature_off;
 
+      if( FD_UNLIKELY( is_bam_revert ) ) bam_fill_txn_result( bam_res, i, txn_out );
       fd_runtime_commit_txn( ctx->runtime, bank, txn_in, txn_out );
 
       txn_end_ticks[ i ] = fd_tickcount();
@@ -620,6 +638,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
     /* A failed bundle is dropped in its entirety: every transaction is
        marked non-committable and none of them land in the block. We
        intentionally do NOT emit runtime_txn events here */
+    if( FD_UNLIKELY( is_bam_revert ) ) bam_bundle_failed_result( ctx, stem, bam_res, txn_cnt, failed_idx, setup_bundle );
     for( ulong i=0UL; i<txn_cnt; i++ ) {
 
       ctx->txn_out[ i ].err.is_committable = 0;
@@ -695,6 +714,7 @@ handle_bundle( fd_execle_tile_t *  ctx,
     trailer->txn_ns_dt.commit_end   = fd_float_if( txn_end_ticks[ i ]==LONG_MAX,                  trailer->txn_ns_dt.commit_start, (float)fd_long_max( 0L, txn_end_ticks[ i ]                  - microblock_start_ticks ) * ctx->ns_per_tick );
 
     ulong new_sz = sizeof(fd_txn_p_t) + sizeof(fd_microblock_trailer_t);
+    if( FD_UNLIKELY( is_bam_revert && bam_res->execution_success && i==txn_cnt-1UL ) ) new_sz = fd_bam_microblock_attach_result( trailer, bam_res );
     fd_stem_publish( stem, ctx->out_poh->idx, execle_sig, ctx->out_poh->chunk, new_sz, 0UL, (ulong)fd_frag_meta_ts_comp( microblock_start_ticks ), (ulong)fd_frag_meta_ts_comp( fd_tickcount() ) );
     ctx->out_poh->chunk = fd_dcache_compact_next( ctx->out_poh->chunk, new_sz, ctx->out_poh->chunk0, ctx->out_poh->wmark );
   }
@@ -850,6 +870,7 @@ unprivileged_init( fd_topo_t const *      topo,
 
   *ctx->out_poh = out1( topo, tile, "execle_poh" ); FD_TEST( ctx->out_poh->idx!=ULONG_MAX );
   *ctx->out_pack = out1( topo, tile, "execle_pack" );
+  *ctx->out_bam = out1( topo, tile, "bank_bam" );
 
   ctx->enable_rebates = ctx->out_pack->idx!=ULONG_MAX;
 

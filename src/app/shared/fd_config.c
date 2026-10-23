@@ -621,6 +621,12 @@ fd_config_validate( fd_config_t const * config ) {
     FD_LOG_ERR(( "`tiles.bundle.keepalive_interval_millis` must be in range [3000, 3,600,000]" ));
   }
 
+  if( FD_UNLIKELY( ( config->bam.tiles.enabled || config->bam.tiles.keepalive_interval_millis ) &&
+                   ( config->bam.tiles.keepalive_interval_millis <    3000 ||
+                     config->bam.tiles.keepalive_interval_millis > 3600000 ) ) ) {
+    FD_LOG_ERR(( "`tiles.bam.keepalive_interval_millis` must be in range [3000, 3,600,000]" ));
+  }
+
   CFG_HAS_NON_EMPTY( development.core_dump );
 
   CFG_HAS_NON_ZERO( development.genesis.target_tick_duration_micros );
