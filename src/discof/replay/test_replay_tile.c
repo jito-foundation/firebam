@@ -437,6 +437,25 @@ setup_mleaders( fd_replay_tile_t * ctx ) {
   }
 }
 
+/* Rooting and footer validation use the bank-hash mismatch tracker that
+   unprivileged_init normally creates. */
+
+static void
+setup_bhm( fd_replay_tile_t * ctx,
+           fd_wksp_t *        wksp,
+           ulong              bank_cnt ) {
+  ulong chain_cnt = fd_bhm_map_chain_cnt_est( bank_cnt );
+  void * map_mem   = fd_wksp_alloc_laddr( wksp, fd_bhm_map_align(),   fd_bhm_map_footprint( chain_cnt ), 1UL );
+  void * pool_mem  = fd_wksp_alloc_laddr( wksp, fd_bhm_pool_align(),  fd_bhm_pool_footprint( bank_cnt ), 1UL );
+  void * dlist_mem = fd_wksp_alloc_laddr( wksp, fd_bhm_dlist_align(), fd_bhm_dlist_footprint(),          1UL );
+  FD_TEST( map_mem && pool_mem && dlist_mem );
+  ctx->bhm_map_seed = 7UL;
+  ctx->bhm_map   = fd_bhm_map_join( fd_bhm_map_new( map_mem, chain_cnt, ctx->bhm_map_seed ) );
+  ctx->bhm_pool  = fd_bhm_pool_join( fd_bhm_pool_new( pool_mem, bank_cnt ) );
+  ctx->bhm_dlist = fd_bhm_dlist_join( fd_bhm_dlist_new( dlist_mem ) );
+  FD_TEST( ctx->bhm_map && ctx->bhm_pool && ctx->bhm_dlist );
+}
+
 static void
 setup_ctx( fd_replay_tile_t * ctx,
            fd_wksp_t *        wksp ) {
@@ -464,6 +483,7 @@ setup_ctx( fd_replay_tile_t * ctx,
   ctx->ag_block_id_map_seed = 7UL;
   ctx->ag_block_id_map = fd_ag_block_id_map_join( fd_ag_block_id_map_new( bid_map_mem, chain_cnt, ctx->ag_block_id_map_seed ) );
   FD_TEST( ctx->ag_block_id_map );
+  setup_bhm( ctx, wksp, bid_cnt );
 
   ctx->reception_stats_cnt = bid_cnt;
   ctx->reception_stats = fd_wksp_alloc_laddr( wksp, alignof(fd_reception_stats_t), sizeof(fd_reception_stats_t)*bid_cnt, 1UL );
@@ -1411,6 +1431,7 @@ setup_rooting_ctx( fd_replay_tile_t * ctx,
   ctx->ag_block_id_map_seed = 7UL;
   ctx->ag_block_id_map      = fd_ag_block_id_map_join( fd_ag_block_id_map_new( ag_map_mem, chain_cnt, ctx->ag_block_id_map_seed ) );
   FD_TEST( ctx->ag_block_id_map );
+  setup_bhm( ctx, wksp, bank_cnt );
   ctx->block_id_len   = bank_cnt;
   ctx->max_live_slots = bank_cnt;
 
