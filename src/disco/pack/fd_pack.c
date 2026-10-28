@@ -892,6 +892,8 @@ fd_pack_new( void                   * mem,
   pack->expire_before               = 0UL;
   pack->outstanding_microblock_mask = 0UL;
   pack->cumulative_rebated_cus      = 0UL;
+  pack->initializer_bundle_state    = FD_PACK_IB_STATE_NOT_INITIALIZED;
+  pack->relative_bundle_idx         = 1UL;
   pack->bundle_hint_generation      = 0UL;
 
   acct_blocklist_new( pack->acct_blocklist );
