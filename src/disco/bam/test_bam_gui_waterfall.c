@@ -37,8 +37,9 @@ main( int     argc,
   fd_memcpy( topo->tiles[ 0 ].name, "bam", 4UL );
   topo->tiles[ 0 ].metrics = metrics;
 
-  fd_gui_t * gui = calloc( 1UL, sizeof(fd_gui_t) );
+  fd_gui_t * gui = aligned_alloc( alignof(fd_gui_t), sizeof(fd_gui_t) );
   FD_TEST( gui );
+  fd_memset( gui, 0, sizeof(fd_gui_t) );
   gui->topo = topo;
 
   fd_gui_txn_waterfall_t waterfall = {0};
