@@ -133,6 +133,7 @@ typedef struct {
   long                     bam_crank_next_ticks;  /* earliest retry of that version */                         \
   /* Restored if an unscheduled initializer is deleted */                                                      \
   fd_bundle_crank_tip_payment_config_t bam_prev_config_before_ib[1];                                           \
+  fd_acct_addr_t                       bam_tip_receiver_owner_before_ib[1];                                    \
                                                                                                                \
   /* Pending and scheduled BAM batches awaiting completion */                                                  \
   pack_bam_work_t *        bam_work;                                                                           \

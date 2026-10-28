@@ -3616,6 +3616,32 @@ test_pack_tile_bam_crank_recertifies_each_slot( void ) {
   test_pack_callbacks_delete( e );
 }
 
+/* An ownership handoff deleting a queued initializer restores its crank
+   state: the retry creates the tip distribution account only if missing. */
+static void
+test_pack_tile_bam_deleted_initializer_restores_crank_state( void ) {
+  for( int exists=0; exists<2; exists++ ) {
+    test_pack_callbacks_t e[1];
+    fd_pack_ctx_t * ctx = test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+    test_pack_callbacks_crank( e, 0x41 );
+    if( !exists ) fd_memset( ctx->crank->tip_receiver_owner, 0, sizeof(fd_acct_addr_t) );
+    test_pack_callbacks_builder_fill( e, 0x42, 2U );
+    test_pack_callbacks_leader( e, 104UL );
+    test_pack_callbacks_insert( e, 41U, 104UL, 0 );
+    ctx->execle_idle_bitset = 0UL; /* the initializer stays queued */
+    test_pack_callbacks_step( e );
+    e->generation = (8UL<<1) | 1UL;
+    pack_tile_sync_bam_ownership_generation( ctx );
+    ctx->execle_idle_bitset = 3UL;
+    test_pack_callbacks_insert( e, 42U, 104UL, 0 );
+    test_pack_callbacks_step( e );
+    fd_microblock_execle_trailer_t const * trailer;
+    FD_TEST( ctx->crank->metrics[1]==2UL && test_pack_callbacks_output( e, 0UL, &trailer )->txnp->payload_sz==
+             ( exists ? sizeof(fd_bundle_crank_2_t) : sizeof(fd_bundle_crank_3_t) ) );
+    test_pack_callbacks_delete( e );
+  }
+}
+
 /* As in jito-solana, slot end retires all BAM work: a batch for a later
    slot that is still assembling when this one ends reports OUTSIDE. */
 static void
@@ -4060,6 +4086,7 @@ main( int     argc,
   test_pack_tile_bam_crank_binds_dispatch_to_builder();
   test_pack_tile_bam_activation_requires_bam_crank();
   test_pack_tile_bam_crank_recertifies_each_slot();
+  test_pack_tile_bam_deleted_initializer_restores_crank_state();
 
   test_pack_tile_bam_leader_state_is_rate_limited();
   test_pack_tile_bam_work_partition_mutations();

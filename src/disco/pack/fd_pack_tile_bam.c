@@ -572,12 +572,20 @@ pack_tile_reconcile_pending_bam_work( fd_pack_ctx_t * ctx ) {
   pack_tile_evict_invalid_pending_bam_work( ctx, PACK_BAM_EVICT_PACK_EVICTED );
 }
 
+/* Saves what fd_bundle_crank_apply overwrites, for pack_tile_bam_ib_deleted. */
+static inline void
+pack_tile_bam_ib_inserted( fd_pack_ctx_t * ctx ) {
+  *ctx->bam_prev_config_before_ib        = *ctx->crank->prev_config;
+  *ctx->bam_tip_receiver_owner_before_ib = *ctx->crank->tip_receiver_owner;
+}
+
 /* BAM part of remove_ib.  pack_tile_bam_ib_deleted runs when remove_ib
    deleted a queued initializer, which never applied its configuration;
    pack_tile_bam_ib_removed runs on every remove_ib. */
 static inline void
 pack_tile_bam_ib_deleted( fd_pack_ctx_t * ctx ) {
-  *ctx->crank->prev_config = *ctx->bam_prev_config_before_ib;
+  *ctx->crank->prev_config        = *ctx->bam_prev_config_before_ib;
+  *ctx->crank->tip_receiver_owner = *ctx->bam_tip_receiver_owner_before_ib;
   if( FD_UNLIKELY( pack_tile_bam_pending_work_cnt( ctx ) ) ) pack_tile_reconcile_pending_bam_work( ctx );
 }
 

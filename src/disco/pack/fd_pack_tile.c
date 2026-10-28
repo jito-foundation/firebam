@@ -741,7 +741,7 @@ after_credit_impl( fd_pack_ctx_t * ctx, fd_stem_context_t * stem, int * charge_b
 
              Otherwise, the initializer bundle succeeded, which means
              that these are the right values to use. */
-          *ctx->bam_prev_config_before_ib = *ctx->crank->prev_config;
+          pack_tile_bam_ib_inserted( ctx );
           fd_bundle_crank_apply( ctx->crank->gen, ctx->crank->prev_config, top_meta->commission_pubkey,
                                  ctx->crank->tip_receiver_owner, ctx->crank->epoch, top_meta->commission );
           ctx->crank->metrics[ 1 ]++; /* BUNDLE_CRANK_ATTEMPTED_INSERTED */
