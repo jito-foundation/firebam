@@ -139,6 +139,8 @@ fd_block_id_ele_get_idx( fd_block_id_ele_t * ele_arr, fd_block_id_ele_t * ele ) 
   return (ulong)(ele - ele_arr);
 }
 
+#include "fd_replay_tile_bam.c"
+
 FD_FN_CONST static inline ulong
 scratch_align( void ) {
   return 128UL;
@@ -328,6 +330,7 @@ metrics_write( fd_replay_tile_t * ctx ) {
     FD_MGAUGE_SET( REPLAY, ROOT_SLOT_DISTANCE, fd_ulong_sat_sub( ctx->reset_slot, ctx->consensus_root_slot ) );
   }
   FD_MGAUGE_SET( REPLAY, LAST_REWARDED_VOTE_SLOT, fd_ulong_if( ctx->metrics.voted_slot==ULONG_MAX, 0UL, ctx->metrics.voted_slot ) );
+  if( FD_UNLIKELY( ctx->bam_enabled ) ) replay_bam_metrics_write( ctx );
 
   FD_MGAUGE_SET( REPLAY, BANK_USED, fd_banks_pool_used_cnt( ctx->banks ) );
 
@@ -4603,6 +4606,7 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->is_leader             = 0;
   ctx->drain_rotor_fecs      = 0;
   ctx->supports_leader       = fd_topo_find_tile( topo, "pack", 0UL )!=ULONG_MAX;
+  replay_bam_init( ctx, topo );
   ctx->snapmk.active                        = 0;
   ctx->snapmk.supported                     = fd_topo_find_tile( topo, "snapmk", 0UL )!=ULONG_MAX;
   ctx->snapmk.scheduled_at_slot             = ULONG_MAX;

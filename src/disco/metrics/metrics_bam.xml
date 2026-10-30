@@ -1,0 +1,217 @@
+<!--
+FireBAM metrics.  generate/bam.py merges this file into metrics.xml
+before code generation: enums and the bam tile are appended, and the
+metrics of a tile that already exists in metrics.xml (pack, replay) are
+appended to the end of that tile.  The merged schema must pass
+lint_metrics.py, so BAM names follow the NAMING RULES at the top of
+metrics.xml.  Run `make -C src/disco/metrics metrics` after changing
+either file.  BAM metrics carry telemetry="false" to stay out of
+upstream's per-tile event telemetry rows.  The event tile still reports
+the link rows of every polled input link, including the bam tile's.
+-->
+
+<metrics>
+
+<enum name="BamClientFailureReason">
+    <int value="0" name="AuthChallengeDecode" label="Local protobuf or validation failure while decoding bam_api.AuthChallengeResponse" />
+    <int value="1" name="ConfigDecode" label="Local protobuf decode failure while decoding bam_api.ConfigResponse" />
+    <int value="2" name="SchedulerEnvelopeDecode" label="Local protobuf or scheduler-envelope decode failure while decoding bam_api.SchedulerResponse" />
+    <int value="3" name="RequestFailed" label="HTTP or gRPC request completed with a non-OK status" />
+    <int value="4" name="Resolve" label="DNS resolution failure while resolving the BAM endpoint" />
+    <int value="5" name="Connect" label="TCP connect failure while establishing the BAM transport" />
+    <int value="6" name="Io" label="TLS, HTTP/2, or stream I/O failure on an established BAM connection" />
+    <int value="7" name="UnsupportedVersion" label="Unsupported scheduler-response version received from the BAM peer" />
+    <int value="8" name="RequestTimeout" label="Auth, config, or scheduler-stream gRPC request timed out" />
+    <int value="9" name="KeepaliveTimeout" label="HTTP/2 keepalive PING timed out" />
+    <int value="10" name="BuilderActivityTimeout" label="Scheduler-stream BuilderHeartBeat watchdog timed out while the scheduler stream was live" />
+    <int value="11" name="ConnectTimeout" label="TCP, TLS, or HTTP/2 handshake did not complete within 5 seconds of dialing" />
+</enum>
+
+<enum name="BamIngressBatchRejectReason">
+    <int value="0" name="InvalidBatch" label="Batch rejected because AtomicTxnBatch decode or structural validation failed" />
+    <int value="1" name="EmptyBatch" label="Batch rejected because it contained zero packets" />
+    <int value="2" name="VoteTxn" label="Batch rejected because it contained a simple vote transaction" />
+</enum>
+
+<enum name="BamIngressMessageRejectReason">
+    <int value="0" name="EmptyMessage" label="multiple_atomic_txn_batch wrapper rejected because it contained zero AtomicTxnBatch entries" />
+    <int value="1" name="OverflowMessage" label="multiple_atomic_txn_batch wrapper rejected because it exceeded the local max batch count" />
+</enum>
+
+<enum name="BamEnqueueResult">
+    <int value="0" name="LeaderStateEnqueued" label="Leader-state message accepted by gRPC stream_send" />
+    <int value="1" name="LeaderStateEnqueueFailed" label="Leader-state send attempted but fd_grpc_client_stream_send returned failure" />
+    <int value="2" name="ResultEnqueued" label="Result message accepted by gRPC stream_send" />
+    <int value="3" name="ResultEnqueueFailed" label="Result send attempted but fd_grpc_client_stream_send returned failure" />
+    <int value="4" name="HeartbeatEnqueued" label="Validator heartbeat message accepted by gRPC stream_send" />
+    <int value="5" name="HeartbeatEnqueueFailed" label="Validator heartbeat send attempted on a live scheduler stream but fd_grpc_client_stream_send returned failure" />
+</enum>
+
+<enum name="BamStreamTransitionType">
+    <int value="0" name="DownToLive" label="Scheduler stream accepted: the BAM node sent its first BuilderHeartBeat" />
+    <int value="1" name="LiveToDown" label="Accepted scheduler stream ended" />
+</enum>
+
+<enum name="BamLeaderPendingDropReason">
+    <int value="0" name="ClientReset" label="Pending leader-state cleared because BAM client was reset" />
+    <int value="1" name="RequestFailed" label="Pending leader-state cleared because scheduler stream request failed" />
+    <int value="2" name="StreamEnded" label="Pending leader-state cleared because scheduler stream ended" />
+    <int value="3" name="StreamTimeout" label="Pending leader-state cleared because scheduler stream timed out" />
+</enum>
+
+<enum name="BamLeaderStateSuppressReason">
+    <int value="0" name="NotLeader" label="Leader-state send suppressed because pack reported no active leader slot" />
+    <int value="1" name="Expired" label="Leader-state send suppressed because slot_end_ns was known and already elapsed" />
+    <int value="2" name="SchedulerRejected" label="Retained leader state cleared because the scheduler rejected it as outside the valid slot range" />
+</enum>
+
+<enum name="BamHealthyLeaderSlotResult">
+    <int value="0" name="FreshWork" label="Healthy BAM-owned leader slot ended after fresh current-slot BAM work arrived before slot end" />
+    <int value="1" name="None" label="Healthy BAM-owned leader slot ended without fresh current-slot BAM work arriving before slot end" />
+</enum>
+
+<enum name="BamSlotIngressResult">
+    <int value="0" name="NoIngress" label="No BAM ingress was observed for the slot before its local retention window expired" />
+    <int value="1" name="FirstBeforeEnd" label="The first BAM ingress observed for the slot arrived before slot end" />
+    <int value="2" name="FirstAfterEnd" label="The first BAM ingress observed for the slot arrived after slot end" />
+    <int value="3" name="UnknownSlotEnd" label="BAM ingress was observed for the slot but slot_end_ns was unavailable when the slot aged out of the retention window" />
+</enum>
+
+<enum name="BamSlotIngressTxnTimingClass">
+    <int value="0" name="BeforeEnd" label="BAM ingress transactions observed before slot end" />
+    <int value="1" name="AfterEnd" label="BAM ingress transactions observed after slot end" />
+    <int value="2" name="UnknownSlotEnd" label="BAM ingress transactions observed while slot_end_ns was unavailable" />
+</enum>
+
+<enum name="BamLeaderSlotFirstIngressState">
+    <int value="0" name="NoIngress" label="No scheduler-receive callback yet" />
+    <int value="1" name="SlotEndUnknown" label="First callback seen, slot end not known yet" />
+    <int value="2" name="BeforeEnd" label="First callback before slot end" />
+    <int value="3" name="AfterEnd" label="First callback at or after slot end" />
+</enum>
+
+<enum name="BamSchedulerPongSendResult">
+    <int value="0" name="Enqueued" label="Pong message was accepted by fd_grpc_client_stream_send on a live scheduler stream" />
+    <int value="1" name="FrameTxBusy" label="Scheduler Ping arrived on a live stream but the local HTTP/2 TX frame buffer was not empty, so Pong was skipped" />
+    <int value="2" name="RequestBusy" label="Scheduler Ping arrived on a live stream but a gRPC request body was still sending, so Pong was skipped" />
+    <int value="3" name="SendFailed" label="Pong send was attempted on a live scheduler stream after local readiness checks but fd_grpc_client_stream_send returned failure" />
+</enum>
+
+<tile name="bam" telemetry="false">
+    <bool name="IsEnabled" summary="Whether the operator has enabled BAM" />
+    <bool name="IsHealthy" summary="Whether the BAM client transport, auth, config, scheduler stream, and builder heartbeat recency checks all pass; does not imply that fresh work for the current leader slot has arrived" />
+    <bool name="IsStreamLive" summary="Whether the BAM scheduler gRPC stream is open, from its response headers on; the BAM node may still reject an open stream, StreamTransitioned counts accepted streams" />
+    <gauge name="LeaderStateSlot" summary="Validator leader slot in the latest pack leader-state snapshot, 0 if none has been observed yet" />
+    <gauge name="LeaderStateTick" summary="Tick within the leader slot in the latest pack leader-state snapshot, 0 if none" lint-allow="vocab" />
+    <time name="LeaderStateSlotEndTime" summary="Wall-clock end of the leader slot in the latest pack leader-state snapshot, 0 if unknown" />
+    <counter name="TxnPublished" summary="Transactions published to verify, including transactions unpacked from bundles" />
+    <counter name="AtomicBatchPublished" summary="Revert-on-error atomic transaction batches published to verify as atomic BAM batches" />
+    <counter name="FeedbackResultDropped" summary="Feedback results dropped because the local result queue was full, a result link was overrun, the validator identity or BAM endpoint changed, BAM was disabled, or the BAM node repeated a scheduler stream rejection while no leader slot in the current epoch was known" />
+    <counter name="IngressPktOversizeRejected" summary="BAM packets rejected because their protobuf data payload exceeded the local transaction MTU" />
+    <counter name="BuilderHeartbeatDecoded" summary="Builder heartbeat messages decoded from the BAM node" />
+    <counter name="ClientFailed" enum="BamClientFailureReason" summary="BAM control-plane or session failures, by cause; scheduler payload and atomic batch rejects are counted in IngressBatchRejected" />
+    <gauge name="HeapCapacityBytes" summary="Workspace capacity reserved for the BAM tile; sampled at most once per second to avoid repeated workspace scans" />
+    <gauge name="HeapFreeBytes" summary="Estimated free capacity in the BAM tile workspace heap; sampled at most once per second to avoid repeated workspace scans" />
+    <counter name="KeepaliveAcked" summary="HTTP/2 keepalive PING acknowledgments received from the BAM node" />
+    <counter name="HealthyConnected" summary="Transitions into the BAM CONNECTED_HEALTHY state" />
+    <counter name="HealthyDisconnected" summary="Transitions out of the BAM CONNECTED_HEALTHY state" />
+    <counter name="GrpcStreamChunkTx" summary="Unary gRPC request bodies (auth challenge and config) fully written to the HTTP/2 send buffer with END_STREAM; scheduler-stream messages are not counted" />
+    <counter name="GrpcStreamChunkTxBytes" summary="Outbound HTTP/2 bytes of all frame types, before TLS encryption, handed by the BAM gRPC client to the transport" />
+    <counter name="GrpcStreamChunkRx" summary="Inbound gRPC message segments processed from HTTP/2 DATA payloads; one DATA frame can yield several segments when it carries several messages or arrives in pieces" />
+    <counter name="GrpcStreamChunkRxBytes" summary="Inbound HTTP/2 bytes of all frame types, after TLS decryption, received by the BAM gRPC client from the transport" />
+    <counter name="GrpcRequestSent" summary="gRPC requests started (auth challenge, config, and scheduler-stream calls), counted when the request is queued, whether or not its body has finished sending" />
+    <gauge name="GrpcStreamOpen" summary="HTTP/2 streams opened by the BAM gRPC client that are not closed, as counted against the BAM node's concurrent-stream limit" />
+    <counter name="IngressMultiMessageReceived" summary="multiple_atomic_txn_batch messages decoded from BAM ingress" />
+    <counter name="IngressBatchCommitAttempted" summary="Atomic transaction batches that entered BAM validate and commit" />
+    <counter name="IngressBatchPublished" summary="Atomic transaction batches published to verify" />
+    <counter name="TxnBackpressureRejected" summary="BAM scheduler transactions rejected because the pending transaction queue lacked capacity" />
+    <counter name="IngressBatchRejected" enum="BamIngressBatchRejectReason" summary="Atomic transaction batches rejected after decode and batch-level validation, by reason; wrapper-level message rejects are counted in IngressMessageRejected" />
+    <counter name="IngressMessageRejected" enum="BamIngressMessageRejectReason" summary="multiple_atomic_txn_batch wrapper messages rejected, by reason; these count scheduler messages, not atomic batches" />
+    <counter name="OutboundEnqueueAttempted" enum="BamEnqueueResult" summary="Leader-state, result, and heartbeat fd_grpc_client_stream_send calls on a live scheduler stream, by result; sends deferred because the stream is not live or the gRPC client cannot accept another message yet are not counted" />
+    <counter name="StreamTransitioned" enum="BamStreamTransitionType" summary="Scheduler stream acceptance transitions, by type; a stream counts as accepted from the BAM node's first builder heartbeat, and one the node rejects after its response headers is counted in ClientFailed instead" />
+    <counter name="LeaderPendingDropped" enum="BamLeaderPendingDropReason" summary="Pending leader-state updates cleared before send because the BAM client reset, the scheduler request failed, or the stream ended or timed out, by reason" />
+    <counter name="LeaderStateSuppressed" enum="BamLeaderStateSuppressReason" summary="Pack-provided BAM leader-state updates suppressed or cleared because the state was not locally live, by reason" />
+    <counter name="LeaderPendingReplaced" summary="Pending leader-state updates replaced by a newer leader-state update before send" />
+    <counter name="SlotIngressRetired" enum="BamSlotIngressResult" summary="BAM slot-ingress records retired after they aged out of the local retention window, by when the first scheduler-receive callback for that slot arrived relative to slot end, unknown when slot_end_ns was unavailable" />
+    <counter name="SlotIngressTxnRx" enum="BamSlotIngressTxnTimingClass" summary="BAM ingress transactions counted in retired slot-ingress records using scheduler-receive callback timestamps, by timing class: before or after slot end only when slot_end_ns was known at observation time, else unknown" />
+    <counter name="HealthyLeaderSlotEnded" enum="BamHealthyLeaderSlotResult" summary="Local leader slots that reached slot_end_ns while BAM status was CONNECTED_HEALTHY, by whether fresh current-slot BAM work had arrived before slot end" />
+    <counter name="SchedulerPongSendAttempted" enum="BamSchedulerPongSendResult" summary="Scheduler Ping-to-Pong sends on a live scheduler stream, by result, including local send-boundary contention and fd_grpc_client_stream_send failures" />
+    <gauge name="LastKeepaliveRttNanos" summary="Last HTTP/2 keepalive round-trip sample, 0 if none since the client last reset" />
+    <gauge name="KeepaliveRttSmoothedNanos" summary="Exponentially smoothed HTTP/2 keepalive round-trip estimate, 0 if none since the client last reset" />
+    <gauge name="KeepaliveRttDeviationNanos" summary="Smoothed HTTP/2 keepalive round-trip variation estimate, 0 if none since the client last reset" />
+    <bool name="IsKeepaliveRttValid" summary="Whether an HTTP/2 keepalive round-trip sample has been observed since the client last reset, so the keepalive round-trip gauges hold estimates" />
+    <gauge name="FeedbackResultPending" summary="BAM feedback results buffered for send" />
+    <gauge name="TxnPending" summary="Validated BAM scheduler transactions buffered and waiting for bam_verif credits" />
+    <gauge name="LeaderSlotFirstIngressState" states="BamLeaderSlotFirstIngressState" summary="When the first scheduler-receive callback for the current leader slot arrived relative to slot end" />
+    <histogram name="BuilderHeartbeatArrivalDelayNanos" min="10000" max="100000000">
+        <summary>Local scheduler-stream receive callback time minus the remote builder heartbeat timestamp; includes clock offset and is intended only for relative trend analysis</summary>
+    </histogram>
+    <histogram name="SchedulerPongSendDurationNanos" min="1" max="100000000">
+        <summary>Local BAM scheduler Ping-to-Pong send-boundary turnaround, from the scheduler-message receive callback to local readiness classification or the fd_grpc_client_stream_send outcome on a live scheduler stream; local processing and send-boundary latency, not network round trip</summary>
+    </histogram>
+</tile>
+
+<enum name="PackBamBundleAssemblyAbandonReason">
+    <int value="0" name="NewSeqBeforeComplete" label="Active BAM bundle abandoned because a new sequence arrived before completion" />
+    <int value="1" name="LeaderSlotEnd" label="Active BAM bundle abandoned at leader slot end" />
+    <!-- Keep the existing metric series name for telemetry continuity. -->
+    <int value="2" name="PohTimeout" label="Active BAM bundle abandoned because the leader-slot wallclock deadline elapsed" />
+</enum>
+
+<enum name="PackBamWorkInvalidReason">
+    <int value="0" name="SingleOutsideSlot" label="Independent BAM transaction invalidated because packing moved outside its allowed slot window" />
+    <int value="1" name="BundleOutsideSlot" label="Fully assembled BAM bundle invalidated because packing moved outside its allowed slot window" />
+</enum>
+
+<enum name="PackBamWorkState">
+    <int value="0" name="Received" label="BAM work reached pack after ingress preprocessing and resolution" />
+    <int value="1" name="Accepted" label="BAM work was accepted into pack's main transaction pool" />
+    <int value="2" name="RejectedPrePending" label="BAM work was rejected before entering pack's pending-work tracker" />
+    <int value="3" name="PendingEntered" label="BAM work entered pack's pending-work tracker after acceptance" />
+    <int value="4" name="PendingEvicted" label="BAM work was evicted from pack's pending-work tracker by later slot or blockhash revalidation" />
+    <int value="5" name="Scheduled" label="BAM work was removed from the pending-work tracker and scheduled into a microblock" />
+    <int value="6" name="Landed" label="BAM work was observed as landed via execution feedback" />
+    <int value="7" name="CompletedUnlanded" label="BAM work completed execution but at least one transaction did not land" />
+</enum>
+
+<enum name="PackBamWorkFirstResult">
+    <int value="0" name="RejectedPrePending" label="BAM work was first rejected before entering pack's pending-work tracker" />
+    <int value="1" name="TrackingRejected" label="BAM work was accepted into pack but rejected because the tracked-work table was full" />
+    <int value="2" name="PendingEvicted" label="BAM work entered pack's pending-work tracker and was later evicted by slot or blockhash revalidation" />
+    <int value="3" name="Scheduled" label="BAM work entered pack's pending-work tracker and was later first scheduled into a microblock" />
+    <int value="4" name="BundleAssemblyAbandoned" label="Multi-transaction BAM work was abandoned before full assembly completed" />
+</enum>
+
+<enum name="PackBamFirstEventResult">
+    <int value="0" name="NoEvent" label="No BAM event of this kind was observed before the leader slot finished" />
+    <int value="1" name="BeforeEnd" label="The first BAM event of this kind was observed before slot end" />
+    <int value="2" name="AfterEnd" label="The first BAM event of this kind was observed at or after slot end" />
+</enum>
+
+<tile name="pack">
+    <counter name="BamBundleAssemblyAbandoned" telemetry="false" enum="PackBamBundleAssemblyAbandonReason" summary="In-progress multi-transaction BAM bundles abandoned before full assembly, by reason" />
+    <counter name="BamWorkPrePendingRejected" telemetry="false" enum="PackBamWorkInvalidReason" summary="BAM transactions or fully assembled BAM bundles rejected by slot or blockhash revalidation before they were accepted into pack's pending-work tracker, by work kind and reason" />
+    <counter name="BamPendingWorkEvicted" telemetry="false" enum="PackBamWorkInvalidReason" summary="BAM pending-work items evicted after acceptance into pack because slot or blockhash revalidation later failed, by work kind and reason" />
+    <counter name="BamWorkObserved" telemetry="false" enum="PackBamWorkState" summary="BAM work items observed at each pack lifecycle state, by state; a multi-transaction BAM bundle counts as one item" />
+    <counter name="BamTrackingRejected" telemetry="false" summary="BAM work items rejected because the local tracked-work table was at capacity" />
+    <counter name="BamTrackingTxnRejected" telemetry="false" summary="BAM transactions rejected because the local tracked-work table was at capacity" />
+    <gauge name="BamPendingWorkCount" telemetry="false" summary="BAM work items tracked in pack's pending-work set after acceptance and before scheduling or cleanup" />
+    <gauge name="LeaderSlot" telemetry="false" summary="Slot at which we are currently leader, or 0 if none" />
+    <time name="LeaderSlotEndTime" telemetry="false" summary="Wall-clock end of the current pack leader slot, 0 if pack is not the leader" />
+    <counter name="BamLeaderSlotEndedByInsert" telemetry="false" enum="PackBamFirstEventResult" summary="Pack leader slots ended, by whether the first BAM insert came before slot end, at or after slot end, or not at all" />
+    <counter name="BamLeaderSlotEndedBySchedule" telemetry="false" enum="PackBamFirstEventResult" summary="Pack leader slots ended, by whether the first BAM schedule came before slot end, at or after slot end, or not at all" />
+    <counter name="BamWorkProcessed" telemetry="false" enum="PackBamWorkFirstResult" summary="BAM work items that reached a first terminal pack outcome, by that outcome" />
+    <histogram name="BamWorkRxToFirstOutcomeNanos" telemetry="false" min="0" max="10000000000">
+        <summary>BAM scheduler receive to first terminal pack outcome of a BAM work item, sampled once when that work is first rejected, tracking-rejected, pending-evicted, scheduled, or bundle-assembly-abandoned</summary>
+    </histogram>
+    <counter name="BamConflictBlocked" telemetry="false" summary="Scheduling attempts blocked by account conflicts on the selected BAM candidate; does not establish that a later independent batch was runnable or measure lost earnings" />
+    <counter name="BamWorkSlotEndUnscheduled" telemetry="false" summary="Tracked BAM batches still pending when a leader slot closes, retired as OUTSIDE_LEADER_SLOT; excludes dispatched batches and does not establish validity, schedulability, or lost earnings" />
+    <counter name="BamCapacityDeferred" telemetry="false" summary="BAM candidate groups newly deferred for the current block after exhausting the capacity-miss budget; counts each candidate group's first deferral" />
+    <counter name="BamLookaheadMiss" telemetry="false" summary="Bounded conflict lookahead scans, run after the selected BAM candidate was blocked by account conflicts, that found no independent ready batch" />
+</tile>
+
+<tile name="replay">
+    <gauge name="SlotDurationNanos" telemetry="false" summary="Slot duration replay currently assumes, 0 without BAM" />
+</tile>
+
+</metrics>

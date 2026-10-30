@@ -797,4 +797,5 @@ int fd_pack_verify( fd_pack_t * pack, void * scratch );
 
 FD_PROTOTYPES_END
 
+#include "fd_pack_bam.h"
 #endif /* HEADER_fd_src_disco_pack_fd_pack_h */

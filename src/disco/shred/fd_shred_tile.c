@@ -19,6 +19,7 @@
 #include "fd_stake_ci.h"
 #include "fd_rnonce_ss.h"
 #include "fd_shred_tile.h"
+#include "fd_shred_tile_bam.h"
 #include "../store/fd_store.h"
 #include "../keyguard/fd_keyload.h"
 #include "../keyguard/fd_keyguard.h"
@@ -99,6 +100,7 @@
 #define IN_KIND_IPECHO  ( 7UL)
 #define IN_KIND_GOSSIP  ( 8UL)
 #define IN_KIND_ROOTEDR (11UL) /* Alpenglow */
+#define IN_KIND_BAM_SHRED (12UL)
 
 #define NET_OUT_IDX     1
 #define SIGN_OUT_IDX    2
@@ -321,6 +323,7 @@ typedef struct {
 
   fd_sha512_t sha512[1];
   uchar       bmtree_mem[ FD_BMTREE_COMMIT_FOOTPRINT( FD_SHRED_MERKLE_LAYER_CNT ) ] __attribute__((aligned(FD_BMTREE_COMMIT_ALIGN)));
+  SHRED_TILE_BAM_CTX
 } fd_shred_ctx_t;
 
 /* shred features are generally considered active at the epoch *following*
@@ -382,6 +385,7 @@ during_housekeeping( fd_shred_ctx_t * ctx ) {
 
     memcpy( ctx->identity_key->uc, ctx->keyswitch->bytes, 32UL );
     fd_stake_ci_set_identity( ctx->stake_ci, ctx->identity_key );
+    ctx->bam_leader_soon_slot = ULONG_MAX; /* cached answer was for the old identity */
     fd_keyswitch_state( ctx->keyswitch, FD_KEYSWITCH_STATE_COMPLETED );
   }
 }
@@ -407,6 +411,8 @@ metrics_write( fd_shred_ctx_t * ctx ) {
 
   FD_MCNT_ENUM_COPY( SHRED, PROCESSED,      ctx->metrics->shred_processing_result      );
 }
+
+#include "fd_shred_tile_bam.c"
 
 static inline int
 before_frag( fd_shred_ctx_t * ctx,
@@ -438,6 +444,7 @@ before_frag( fd_shred_ctx_t * ctx,
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_ROOTEDR ) ) {
     return sig!=REPLAY_SIG_ROOT_ADVANCED; /* only care about root_advanced messages */
   }
+  if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BAM_SHRED ) ) return sig!=FD_BAM_STEM_SIG_SHRED_UPDATE;
   return 0;
 }
 
@@ -525,6 +532,8 @@ during_frag( fd_shred_ctx_t * ctx,
 
     return;
   }
+
+  if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BAM_SHRED ) ) { fd_shred_bam_update_during_frag( ctx, in_idx, chunk, sz ); return; }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_SIGN ) ) {
     if( FD_UNLIKELY( chunk<ctx->in[ in_idx ].chunk0 || chunk>ctx->in[ in_idx ].wmark || sz!=64UL ) ) FD_LOG_ERR(( "chunk %lu %lu corrupt, not in range [%lu,%lu]", chunk, sz, ctx->in[ in_idx ].chunk0, ctx->in[ in_idx ].wmark ));
@@ -870,6 +879,7 @@ fan_out( fd_shred_ctx_t *     ctx,
     if( !!(set->parity_shred_rcvd & (1U<<i))==!!received ) shreds[ k++ ] = set->parity_shreds[ i ].s;
 
   if( FD_UNLIKELY( !k ) ) return;
+  if( FD_UNLIKELY( ctx->bam_dests_cnt ) ) for( ulong i=0UL; i<k; i++ ) fd_shred_send_bam_shred( ctx, stem, shreds[ i ], !is_leader, tsorig );
   fd_shred_dest_t * sdest = fd_stake_ci_get_sdest_for_slot( ctx->stake_ci, shreds[ 0 ]->slot );
   if( FD_UNLIKELY( !sdest ) ) return;
 
@@ -1064,6 +1074,7 @@ after_frag( fd_shred_ctx_t *    ctx,
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_EPOCH ) ) {
     fd_stake_ci_epoch_msg_fini( ctx->stake_ci );
+    ctx->bam_leader_soon_slot = ULONG_MAX; /* leader schedule changed */
     return;
   }
 
@@ -1097,6 +1108,8 @@ after_frag( fd_shred_ctx_t *    ctx,
     }
     return;
   }
+
+  if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_BAM_SHRED ) ) { fd_shred_bam_update_after_frag( ctx ); return; }
 
   if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_SIGN ) ) {
     FD_TEST( ctx->sign_pend_cnt );
@@ -1250,6 +1263,7 @@ after_frag( fd_shred_ctx_t *    ctx,
         ctx->rtx_slot = shred->slot;
         fd_fseq_update( ctx->rtx_fseq, shred->slot );
       }
+      if( FD_UNLIKELY( ctx->bam_dests_cnt ) ) fd_shred_send_bam_shred( ctx, stem, *out_shred, 1, ctx->tsorig );
       ulong max_dest_cnt[1];
       do {
         /* If we've validated the shred and it COMPLETES but we can't
@@ -1469,6 +1483,9 @@ unprivileged_init( fd_topo_t const *      topo,
   fd_ip4_udp_hdr_init( ctx->data_shred_net_hdr,   FD_SHRED_MIN_SZ, 0, tile->shred.shred_listen_port );
   fd_ip4_udp_hdr_init( ctx->parity_shred_net_hdr, FD_SHRED_MAX_SZ, 0, tile->shred.shred_listen_port );
 
+  ctx->bam_dests_cnt        = 0U;
+  ctx->bam_leader_soon_slot = ULONG_MAX;
+
   for( ulong i=0UL; i<tile->in_cnt; i++ ) {
     fd_topo_link_t const * link = &topo->links[ tile->in_link_id[ i ] ];
     fd_topo_wksp_t const * link_wksp = &topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ];
@@ -1484,6 +1501,7 @@ unprivileged_init( fd_topo_t const *      topo,
     else if( FD_LIKELY( !strcmp( link->name, "ipecho_out"    ) ) ) ctx->in_kind[ i ] = IN_KIND_IPECHO;
     else if( FD_LIKELY( !strcmp( link->name, "replay_slot"   ) ) ) ctx->in_kind[ i ] = IN_KIND_ROOTEDR;
     else if( FD_LIKELY( !strcmp( link->name, "gossip_ciaddr" ) ) ) ctx->in_kind[ i ] = IN_KIND_GOSSIP;
+    else if( FD_LIKELY( !strcmp( link->name, "bam_shred"     ) ) ) ctx->in_kind[ i ] = IN_KIND_BAM_SHRED;
 
     else FD_LOG_ERR(( "shred tile has unexpected input link %lu %s", i, link->name ));
 

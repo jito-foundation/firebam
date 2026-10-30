@@ -88,6 +88,8 @@ wire_event_links( fd_topo_t * topo ) {
   }
 }
 
+#include "topology_bam.c"
+
 fd_topo_obj_t *
 setup_topo_banks( fd_topo_t *  topo,
                   char const * wksp_name,
@@ -283,6 +285,7 @@ fd_topo_initialize( config_t * config ) {
   int leader_enabled      = !!config->firedancer.layout.enable_block_production;
   int rserve_enabled      = config->tiles.rserve.enabled;
   int efficient_mode      = !strcmp( config->firedancer.layout.mode, "efficient" );
+  int bam_enabled         = leader_enabled && config->bam.tiles.enabled;
 
   if( FD_UNLIKELY( snapmk_enabled ) ) {
     FD_CHECK_ERR( config->firedancer.snapshots.max_full_snapshots_to_keep,
@@ -520,6 +523,8 @@ fd_topo_initialize( config_t * config ) {
     /**/                   fd_topob_link( topo, "poh_replay",    "poh_replay",    4096UL,                                   sizeof(fd_poh_leader_slot_ended_t), 1UL );
   }
 
+  if( FD_UNLIKELY( bam_enabled ) ) topo_bam_links( topo, execle_tile_cnt );
+
   FOR(resolv_tile_cnt) fd_topob_link( topo, "resolv_replay", "resolv_replay", 4096UL,                                   sizeof(fd_resolv_slot_exchanged_t), 1UL );
 
   FOR(shred_tile_cnt)  fd_topob_link( topo, "shred_sign",    "shred_sign",    128UL,                                    32UL,                          1UL );
@@ -615,11 +620,13 @@ fd_topo_initialize( config_t * config ) {
     FOR(verify_tile_cnt) fd_topob_tile( topo, "verify",  "verify",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,               0,               0 );
     /**/                 fd_topob_tile( topo, "dedup",   "dedup",   "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,               0,               0 );
     FOR(resolv_tile_cnt) fd_topob_tile( topo, "resolv",  "resolv",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,               0,               0 );
-    /**/                 fd_topob_tile( topo, "pack",    "pack",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], config->tiles.bundle.enabled, 0, 0 );
+    /**/                 fd_topob_tile( topo, "pack",    "pack",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], TIP_CRANK_ENABLED( config ), 0, 0 );
     FOR(execle_tile_cnt) fd_topob_tile( topo, "execle",  "execle",  "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,               0,               0 );
     /**/                 fd_topob_tile( topo, "motor",   "motor",   "metric_in",  tile_to_cpu[ topo->tile_cnt ], 0,               0,               0 );
   }
   FOR(sign_tile_cnt)   fd_topob_tile( topo, "sign",    "sign",    "metric_in",  tile_to_cpu[ topo->tile_cnt ], 1,               1,               0 );
+
+  if( FD_UNLIKELY( bam_enabled ) ) fd_topob_tile( topo, "bam", "bam", "metric_in", tile_to_cpu[ topo->tile_cnt ], 1, 0, topo->sleep_obj_id!=ULONG_MAX ); /* like net, waits on the waker only when tiles can park */
 
   if( FD_UNLIKELY( rpc_enabled ) ) {
     fd_topob_wksp( topo, "rpc" );
@@ -782,6 +789,8 @@ fd_topo_initialize( config_t * config ) {
     FOR(shred_tile_cnt)  fd_topob_tile_in ( topo, "shred",   i,            "metric_in", "poh_shred",     0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
   }
 
+  if( FD_UNLIKELY( bam_enabled ) ) topo_bam_tile_links( topo, config, execle_tile_cnt, shred_tile_cnt );
+
   FOR(shred_tile_cnt)    fd_topob_tile_in ( topo, "shred",   i,            "metric_in", "replay_epoch",  0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
   FOR(shred_tile_cnt)    fd_topob_tile_in ( topo, "shred",   i,            "metric_in", "gossip_ciaddr", 0UL,          FD_TOPOB_RELIABLE,   FD_TOPOB_POLLED );
   FOR(shred_tile_cnt)    fd_topob_tile_out( topo, "shred",   i,                         "shred_out",     i                                                  );
@@ -926,6 +935,8 @@ fd_topo_initialize( config_t * config ) {
   fd_topo_obj_t * admin_ctl = fd_topob_obj_named( topo, "adminctl", "adminctl", "admin" );
   FD_TEST( fd_pod_insertf_ulong( topo->props, admin_ctl->id, "adminctl" ) );
   fd_topob_tile_uses( topo, admin_tile, admin_ctl, FD_SHMEM_JOIN_MODE_READ_WRITE );
+
+  if( FD_UNLIKELY( bam_enabled ) ) topo_bam_objs( topo, config );
 
   /* There is a special fseq that sits between the pack, execle, and poh
      tiles to indicate when the execle/poh tiles are done processing a
@@ -1202,7 +1213,7 @@ fd_topo_initialize( config_t * config ) {
       8192UL,
       partition_sz,
       config->firedancer.accounts.cache_size_gib*(1UL<<30UL),
-      config->tiles.bundle.enabled,
+      TIP_CRANK_ENABLED( config ),
       accdb_joiners,
       snapmk_enabled ? config->firedancer.snapshots.max_incremental_snapshot_accounts : 0UL );
   fd_topob_tile_uses( topo, &topo->tiles[ fd_topo_find_tile( topo, "accdb", 0UL ) ], accdb_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
@@ -1612,7 +1623,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->replay.dump_block_to_pb = config->capture.dump_block_to_pb;
     tile->replay.report_runtime_diffs = config->development.event.report_runtime_diffs;
 
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_UNLIKELY( TIP_CRANK_ENABLED( config ) ) ) {
 #define PARSE_BUNDLE_PUBKEY( _tile, f ) \
       if( FD_UNLIKELY( !fd_base58_decode_32( config->tiles.bundle.f, tile->_tile.bundle.f ) ) )  \
         FD_LOG_ERR(( "[tiles.bundle.enabled] set to true, but failed to parse [tiles.bundle."#f"] %s", config->tiles.bundle.f ));
@@ -1693,6 +1704,9 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     tile->quic.retry                          = config->tiles.quic.retry;
     fd_cstr_fini( fd_cstr_append_cstr_safe( fd_cstr_init( tile->quic.key_log_path ), config->tiles.quic.ssl_key_log_file, sizeof(tile->quic.key_log_path) ) );
 
+  } else if( FD_UNLIKELY( !strcmp( tile->name, "bam" ) ) ) {
+    topo_bam_configure_tile( tile, config );
+
   } else if( FD_UNLIKELY( !strcmp( tile->name, "verify" ) ) ) {
 
     tile->verify.tcache_depth = config->tiles.verify.signature_cache_size;
@@ -1725,8 +1739,10 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
         FD_LOG_ERR(( "could not parse account %s at index %lu in [tiles.pack.account_blocklist]", config->tiles.pack.account_blocklist[i], i ));
       }
     }
+    tile->pack.dump_bam_mode                 = BAM_DUMP_MODE( config );
+    tile->pack.bam_enabled                   = !!config->bam.tiles.enabled;
 
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_UNLIKELY( TIP_CRANK_ENABLED( config ) ) ) {
 
       tile->pack.bundle.enabled = 1;
       PARSE_BUNDLE_PUBKEY( pack, tip_distribution_program_addr );
@@ -1779,7 +1795,7 @@ fd_topo_configure_tile( fd_topo_tile_t * tile,
     for( ulong i=0UL; i<tile->sign.authorized_voter_paths_cnt; i++ ) {
       fd_cstr_ncpy( tile->sign.authorized_voter_paths[ i ], config->firedancer.paths.authorized_voter_paths[ i ], sizeof(tile->sign.authorized_voter_paths[ i ]) );
     }
-    if( FD_UNLIKELY( config->tiles.bundle.enabled ) ) {
+    if( FD_UNLIKELY( TIP_CRANK_ENABLED( config ) ) ) {
       PARSE_BUNDLE_PUBKEY( sign, tip_distribution_program_addr );
       PARSE_BUNDLE_PUBKEY( sign, tip_payment_program_addr      );
     } else {

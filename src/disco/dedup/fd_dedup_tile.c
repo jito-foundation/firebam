@@ -140,6 +140,8 @@ during_frag( fd_dedup_ctx_t * ctx,
   }
 }
 
+#include "fd_dedup_tile_bam.c"
+
 /* After the transaction has been fully received, and we know we were
    not overrun while reading it, check if it's a duplicate of a prior
    transaction. */
@@ -165,6 +167,7 @@ after_frag( fd_dedup_ctx_t *    ctx,
     FD_LOG_ERR(( "dedup: txn payload size %hu exceeds max %lu", txnm->payload_sz, FD_TPU_MTU ));
   }
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
+  if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) { fd_dedup_tile_bam_after_frag( ctx, txnm, txn, tsorig, stem ); return; }
 
   if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;

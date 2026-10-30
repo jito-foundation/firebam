@@ -3,6 +3,7 @@
 #include "../shared/boot/fd_boot.h"
 #include "../shared/commands/configure/configure.h"
 #include "../shared/fd_action.h"
+#include "main_bam.h"
 
 char const * FD_APP_NAME    = "Firedancer";
 char const * FD_BINARY_NAME = "firedancer";
@@ -42,6 +43,8 @@ fd_topo_obj_callbacks_t * CALLBACKS[] = {
   &fd_obj_cb_node_info,
   &fd_obj_cb_wait_info,
   &fd_obj_cb_leader_txn_timing,
+  &fd_obj_cb_bam_ctrl,
+  &fd_obj_cb_bam_fee_cfg,
   &fd_obj_cb_tile,
   &fd_obj_cb_store,
   &fd_obj_cb_fec_sets,
@@ -147,6 +150,7 @@ fd_topo_run_tile_t * TILES[] = {
   &fd_tile_gui,
   &fd_tile_rpc,
   &fd_tile_bundle,
+  &fd_tile_bam,
   &fd_tile_gossvf,
   &fd_tile_gossip,
   &fd_tile_rotor,
@@ -215,6 +219,8 @@ action_t * ACTIONS[] = {
   &fd_action_ps,
   &fd_action_snapshot_create,
   &fd_action_wait,
+  &fd_action_set_bam,
+  &fd_action_get_bam,
   NULL,
 };
 

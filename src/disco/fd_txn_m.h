@@ -5,12 +5,14 @@
    payload */
 
 #include "../ballet/txn/fd_txn.h"
+#include "fd_txn_bam.h"
 
 #define FD_TXN_M_TPU_SOURCE_QUIC   (1UL)
 #define FD_TXN_M_TPU_SOURCE_UDP    (2UL)
 #define FD_TXN_M_TPU_SOURCE_GOSSIP (3UL)
 #define FD_TXN_M_TPU_SOURCE_BUNDLE (4UL)
 #define FD_TXN_M_TPU_SOURCE_TXSEND (5UL)
+#define FD_TXN_M_TPU_SOURCE_BAM    (6UL)
 
 struct fd_txn_m {
   /* The block height of the computed slot that this transaction is
@@ -36,6 +38,7 @@ struct fd_txn_m {
      validator. */
   long     first_seen_nanos;
 
+  union {
   struct {
     /* If the transaction is part of a bundle, the bundle_id will be
        non-zero.  The bundle tile sets bundle_txn_cnt on every
@@ -64,6 +67,8 @@ struct fd_txn_m {
     /* alignof is 8, so 7 bytes of padding here */
 
   } block_engine;
+  fd_txn_m_bam_t bam; /* overlays block_engine, see fd_txn_bam.h */
+  };
 
   /* There are three additional fields at the end here, which are
      variable length and not included in the size of this struct. txn_t
