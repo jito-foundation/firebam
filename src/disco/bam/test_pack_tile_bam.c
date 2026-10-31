@@ -3293,8 +3293,9 @@ test_pack_tile_bam_readiness_identity_and_mode( void ) {
   fd_pack_ctx_t * ctx = test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
   test_pack_callbacks_leader( e, 104UL );
   test_pack_callbacks_insert( e, 91U, 104UL, 0 );
-  /* A normal snapshot never turns buffered BAM work into a normal-mode
-     initializer.  Invalid on-chain config exposes attempts before signing. */
+  /* A normal snapshot retires buffered BAM work before initializer
+     selection, so it never becomes a normal-mode initializer.  Invalid
+     on-chain config exposes attempts before signing. */
   ctx->crank->enabled = 1;
   ctx->bam_fee_meta->commission_pubkey->b[0] = 1U;
   ctx->crank->gen->configured_epoch = ctx->crank->epoch;
@@ -3302,9 +3303,10 @@ test_pack_tile_bam_readiness_identity_and_mode( void ) {
   ulong cancel_before = test_bundle_cancel_call_cnt;
   test_pack_callbacks_step( e );
   FD_TEST( !test_pack_callbacks_dispatch_count( e ) && !ctx->crank->ib_inserted && test_bundle_cancel_call_cnt==cancel_before );
-  FD_TEST( !ctx->crank->metrics[2] );
+  FD_TEST( !ctx->crank->metrics[2] && !pack_tile_bam_pending_work_cnt( ctx ) );
   e->status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
   ctx->bam_override_snapshot = 1;
+  test_pack_callbacks_insert( e, 91U, 104UL, 0 );
   ulong hint;
   fd_txn_e_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint, NULL );
   FD_TEST( candidate && pack_tile_bam_candidate_ready( ctx, candidate )==1 );
@@ -3805,11 +3807,71 @@ test_pack_tile_bam_activation_purges_block_engine_bundles( void ) {
   FD_TEST( *prio_rejects==prio_before+1UL && pack_tile_bam_pending_work_cnt( ctx )==2UL );
   FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==4UL );
 
-  /* Later callbacks and a deactivation edge delete nothing more. */
+  /* Later callbacks delete nothing more, and the deactivation edge
+     retires only the pending BAM work. */
   test_pack_callbacks_step( e );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_EVICTED )==deleted_before+3UL );
   e->status = 0UL;
   test_pack_callbacks_step( e );
-  FD_TEST( FD_MCNT_GET( PACK, TXN_EVICTED )==deleted_before+3UL && !ctx->bam_override_snapshot );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_EVICTED )==deleted_before+5UL && !ctx->bam_override_snapshot );
+  FD_TEST( !pack_tile_bam_pending_work_cnt( ctx ) && fd_pack_avail_txn_cnt( ctx->pack )==2UL );
+  FD_TEST( !fd_pack_verify( ctx->pack, test_pack_tile_verify_scratch ) );
+  test_pack_callbacks_delete( e );
+}
+
+/* A deactivation bumps the generation and holds the override until Pack
+   acknowledges.  Work drained in that window carries the new generation,
+   so Pack admits it, and once the override is released it can never
+   dispatch.  Pack retires it before scheduling, as it does a frag that
+   lands after the release, so it cannot hold a Block Engine bundle
+   until slot end. */
+static void
+test_pack_tile_bam_deactivation_retires_pending_work( void ) {
+  test_pack_callbacks_t e[1];
+  fd_pack_ctx_t * ctx = test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+  test_pack_callbacks_leader( e, 104UL );
+
+  e->generation = (8UL<<1) | 1UL;
+  test_pack_callbacks_step( e );
+  FD_TEST( ctx->bam_ownership_gen==8U && e->generation==(8UL<<1) );
+  test_pack_callbacks_insert( e, 60U, 104UL, 0 );
+  FD_TEST( pack_tile_bam_pending_work_cnt( ctx )==1UL );
+
+  /* Both workers stay busy, so the batch cannot dispatch before the release. */
+  e->busy[0] = ctx->execle_expect[0]+1UL; e->busy[1] = ctx->execle_expect[1]+1UL;
+  ctx->execle_idle_bitset = 0UL;
+  ulong evicted = FD_MCNT_GET( PACK, TXN_EVICTED );
+  e->status = 0UL;
+  test_pack_callbacks_step( e );
+  FD_TEST( !ctx->bam_override_snapshot && !pack_tile_bam_pending_work_cnt( ctx ) );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_EVICTED )==evicted+1UL );
+
+  test_pack_callbacks_insert( e, 61U, 104UL, 0 );
+  test_pack_callbacks_insert_block_engine_bundle( e, 88UL, 1UL, 80U );
+  e->busy[0] = ctx->execle_expect[0]; e->busy[1] = ctx->execle_expect[1];
+  ctx->execle_idle_bitset = 3UL;
+  test_pack_callbacks_steps( e, 16UL );
+  FD_TEST( !pack_tile_bam_pending_work_cnt( ctx ) && FD_MCNT_GET( PACK, TXN_EVICTED )==evicted+2UL );
+  FD_TEST( test_pack_callbacks_dispatch_count( e )==1UL );
+  FD_TEST( !fd_pack_verify( ctx->pack, test_pack_tile_verify_scratch ) );
+  test_pack_callbacks_delete( e );
+}
+
+/* Pack refreshes its snapshot before retiring, so work the bam tile
+   drained right after activating, which reached Pack before Pack saw
+   the activation, is kept and dispatches. */
+static void
+test_pack_tile_bam_activation_keeps_early_work( void ) {
+  test_pack_callbacks_t e[1];
+  fd_pack_ctx_t * ctx = test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+  test_pack_callbacks_leader( e, 104UL );
+  e->status = 0UL;
+  test_pack_callbacks_step( e );
+  e->status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+  test_pack_callbacks_insert( e, 62U, 104UL, 0 );
+  FD_TEST( !ctx->bam_override_snapshot && pack_tile_bam_pending_work_cnt( ctx )==1UL );
+  test_pack_callbacks_step( e );
+  FD_TEST( ctx->bam_override_snapshot && test_pack_callbacks_dispatch_count( e )==1UL );
   test_pack_callbacks_delete( e );
 }
 
@@ -4059,6 +4121,8 @@ main( int     argc,
   test_pack_tile_unprivileged_init_maps_executed_txn();
   test_pack_tile_bam_activation_purges_block_engine_bundles();
   test_pack_tile_bam_tpu_dropped_until_deactivation();
+  test_pack_tile_bam_deactivation_retires_pending_work();
+  test_pack_tile_bam_activation_keeps_early_work();
   test_pack_tile_bam_tpu_drop_between_bam_members();
 
   test_pack_tile_bam_target_slot_callbacks();

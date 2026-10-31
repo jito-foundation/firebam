@@ -756,6 +756,23 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
   ctx->current_bundle_bam->is_bam = (uchar)!is_new_seq_abandon;
 }
 
+/* Deletes pending BAM work.  Dispatched work remains tracked through
+   completion. */
+static void
+pack_tile_bam_retire_pending_work( fd_pack_ctx_t * ctx ) {
+  while( pack_tile_bam_pending_work_cnt( ctx ) ) {
+    ulong work_idx = ctx->bam_scheduled_work_cnt;
+    pack_bam_work_t const * work = &ctx->bam_work[ work_idx ];
+    ulong deleted = fd_pack_delete_bam_bundle(
+        ctx->pack,
+        (fd_ed25519_sig_t const *)(void const *)&work->sig[ 0 ],
+        work->seq_id,
+        work->scheduler_gen );
+    FD_MCNT_INC( PACK, TXN_EVICTED, deleted );
+    pack_tile_bam_work_swap_remove( ctx, work_idx );
+  }
+}
+
 /* Retire partial and pending work before acknowledging the new ownership
    generation.  Already-dispatched work remains tracked through completion. */
 static __attribute__((noinline)) void
@@ -785,17 +802,7 @@ pack_tile_sync_bam_ownership_generation_slow( fd_pack_ctx_t * ctx,
       ctx->cur_spot                     = NULL;
     }
 
-    while( pack_tile_bam_pending_work_cnt( ctx ) ) {
-      ulong work_idx = ctx->bam_scheduled_work_cnt;
-      pack_bam_work_t const * work = &ctx->bam_work[ work_idx ];
-      ulong deleted = fd_pack_delete_bam_bundle(
-          ctx->pack,
-          (fd_ed25519_sig_t const *)(void const *)&work->sig[ 0 ],
-          work->seq_id,
-          work->scheduler_gen );
-      FD_MCNT_INC( PACK, TXN_EVICTED, deleted );
-      pack_tile_bam_work_swap_remove( ctx, work_idx );
-    }
+    pack_tile_bam_retire_pending_work( ctx );
     ctx->bam_ownership_gen = requested_gen;
   }
 
@@ -876,6 +883,10 @@ pack_tile_bam_after_credit_begin( fd_pack_ctx_t *     ctx,
   pack_tile_sync_bam_ownership_generation( ctx );
   /* Observed even when not leader, so activation purges promptly. */
   _Bool bam_override = pack_tile_snapshot_bam_override( ctx );
+  /* Only the override dispatches BAM work, and pending BAM work holds
+     the Block Engine bundles behind it.  Work admitted while the bam
+     tile handed ownership back is retired here, before any scheduling. */
+  if( FD_UNLIKELY( !bam_override && pack_tile_bam_pending_work_cnt( ctx ) ) ) pack_tile_bam_retire_pending_work( ctx );
   /* One result publication per credited callback, including while draining. */
   if( FD_UNLIKELY( pack_tile_drain_one_pending_bam_result( ctx, stem ) ) ) *charge_busy = 1;
   return bam_override;
