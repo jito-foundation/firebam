@@ -1,0 +1,19 @@
+description = "Deliver a BAM batch whose max_schedule_slot is already stale for the local cluster."
+heartbeat_interval_ms = 1000
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_batch"
+seq_id = 7
+packet_count = 5
+max_schedule_slot = 0
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events]]
+type = "sleep"
+ms = 4000

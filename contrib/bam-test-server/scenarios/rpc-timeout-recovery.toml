@@ -1,0 +1,26 @@
+description = "Trigger a scheduler activity timeout, then prove live recovery with a terminal batch result."
+resume_on_reconnect = true
+
+[[events]]
+type = "send_heartbeat"
+
+[[events]]
+type = "sleep_resume_safe"
+ms = 7500
+
+[[events]]
+type = "send_heartbeat"
+
+[[events]]
+type = "send_batch"
+seq_id = 4242004
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000

@@ -1,0 +1,66 @@
+description = "Exercise auth, config, and stream RPC failure/recovery paths against a live validator."
+heartbeat_interval_ms = 1000
+resume_on_reconnect = true
+auth_status_sequence = [
+  { code = "unavailable", message = "scripted auth unavailable" },
+  { code = "internal", message = "scripted auth internal" },
+]
+auth_challenge_sequence = [
+  "",
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "12345678",
+  "test-challenge",
+]
+config_status_sequence = [
+  { code = "unavailable", message = "scripted config unavailable" },
+  { code = "internal", message = "scripted config internal" },
+]
+config_variant_sequence = [
+  "empty_config",
+  "missing_block_engine",
+  "missing_bam",
+  "bad_builder_commission",
+  "bad_builder_pubkey",
+  "empty_priority_fee_recipient",
+  "bad_priority_fee_recipient",
+  "missing_tpu_socket",
+  "bad_tpu_ip",
+  "zero_tpu_port",
+  "oversized_tpu_port",
+  "missing_tpu_fwd_socket",
+  "bad_tpu_fwd_ip",
+  "zero_tpu_fwd_port",
+  "oversized_tpu_fwd_port",
+  "empty_shred",
+  "duplicate_shred",
+  "bad_shred_ip",
+  "zero_shred_port",
+  "oversized_shred_port",
+  "shred_overflow",
+  "normal",
+]
+stream_status_sequence = [
+  { code = "unavailable", message = "scripted stream unavailable" },
+  { code = "internal", message = "scripted stream internal" },
+]
+
+[[events]]
+type = "sleep"
+ms = 30000
+
+[[events]]
+type = "send_heartbeat"
+
+[[events]]
+type = "send_batch"
+seq_id = 4242002
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000

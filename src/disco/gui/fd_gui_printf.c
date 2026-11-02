@@ -825,6 +825,7 @@ fd_gui_printf_waterfall( fd_gui_t *               gui,
       jsonp_ulong( gui->http, "udp",             cur->in.udp    - prev->in.udp );
       jsonp_ulong( gui->http, "gossip",          0UL );
       jsonp_ulong( gui->http, "block_engine",    cur->in.block_engine - prev->in.block_engine );
+      jsonp_ulong( gui->http, "bam",             cur->in_bam    - prev->in_bam );
     jsonp_close_object( gui->http );
 
     jsonp_open_object( gui->http, "out" );
@@ -2606,6 +2607,10 @@ fd_gui_printf_slot_transactions_request( fd_gui_t *            gui,
                 }
                 case FD_TXN_M_TPU_SOURCE_TXSEND: {
                   jsonp_string( gui->http, NULL, "send");
+                  break;
+                }
+                case FD_TXN_M_TPU_SOURCE_BAM: {
+                  jsonp_string( gui->http, NULL, "bam");
                   break;
                 }
                 default: FD_LOG_ERR(("unknown tpu"));

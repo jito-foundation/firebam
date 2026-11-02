@@ -1,0 +1,35 @@
+syntax = "proto3";
+package org.solana.sealevel.v1;
+
+import "context.proto";
+import "metadata.proto";
+
+message InstrAcct {
+  uint32 index = 1;
+  bool is_writable = 2;
+  bool is_signer = 3;
+}
+
+message InstrContext {
+  bytes program_id = 1;
+  repeated AcctState accounts = 3;
+  repeated InstrAcct instr_accounts = 4;
+  bytes data = 5;
+  uint64 cu_avail = 6;
+  SlotContext slot_context = 8;
+  EpochContext epoch_context = 9;
+}
+
+message InstrEffects {
+  int32 result = 1;
+  uint32 custom_err = 2;
+  repeated AcctState modified_accounts = 3;
+  uint64 cu_avail = 4;
+  bytes return_data = 5;
+}
+
+message InstrFixture {
+  FixtureMetadata metadata = 1;
+  InstrContext input = 2;
+  InstrEffects output = 3;
+}

@@ -1,0 +1,93 @@
+description = "Exercise scheduler envelope, version, empty-wrapper, ping, heartbeat, and gRPC status handling against a live validator."
+resume_on_reconnect = true
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_heartbeat"
+time_sent_microseconds = 0
+
+[[events]]
+type = "send_ping"
+id = 0
+
+[[events]]
+type = "send_empty_envelope"
+
+[[events]]
+type = "send_empty_v0"
+
+[[events]]
+type = "send_unsupported_v0"
+
+[[events]]
+type = "send_empty_multi_batch"
+
+[[events]]
+type = "sleep"
+ms = 250
+
+[[events]]
+type = "send_unsupported_version"
+
+[[events]]
+type = "sleep"
+ms = 250
+
+[[events]]
+type = "send_status"
+code = "invalid_argument"
+message = "Leader state slot 1 is outside of valid range 2..=3"
+
+[[events]]
+type = "sleep"
+ms = 250
+
+[[events]]
+type = "send_status"
+code = "unauthenticated"
+message = "scripted auth reset"
+
+[[events]]
+type = "sleep"
+ms = 250
+
+[[events]]
+type = "send_status"
+code = "permission_denied"
+message = "scripted permission reset"
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_heartbeat"
+
+[[events]]
+type = "send_ping"
+id = 4294967295
+
+[[events]]
+type = "send_ping"
+id = 7
+
+[[events]]
+type = "sleep"
+ms = 500
+
+[[events]]
+type = "send_batch"
+seq_id = 4242001
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000

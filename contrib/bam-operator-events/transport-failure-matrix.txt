@@ -1,0 +1,15 @@
+wait_log bam 30000 scheduler<-validator batch_result seq_id=4242003
+
+signal bam stop
+wait_log fd 30000 HTTP/2 PING went unanswered
+signal bam cont
+wait_log_growth bam 30000 InitSchedulerStream:
+
+set_bam --url http://bam-coverage-does-not-exist.invalid:50055
+wait_log fd 30000 fd_getaddrinfo `bam-coverage-does-not-exist.invalid` failed
+
+set_bam --url http://127.0.0.1:59999
+wait_log_growth fd 30000 BAM gRPC connect attempt failed
+
+set_bam --url http://127.0.0.1:50055
+wait_log_growth bam 30000 InitSchedulerStream:

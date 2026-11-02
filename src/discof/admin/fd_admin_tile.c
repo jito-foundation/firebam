@@ -288,7 +288,8 @@ unprivileged_init( fd_topo_t const *      topo,
            outgoing pings.
        (e) Shred.  The shred tile has the sign tile sign FEC sets
            asynchronously; it waits for its outstanding requests to be
-           answered under the old key before switching. */
+           answered under the old key before switching.
+       (f) BAM.  The BAM tile signs the BAM node's auth challenge. */
 #define FD_SET_IDENTITY_STATE_SIGNERS_HALT_REQUESTED   (6UL)
 
 /* State 7: SIGNERS_HALTED
@@ -439,6 +440,7 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
             strcmp( tile->name, "gossip" ) &&
             strcmp( tile->name, "bundle" ) &&
             strcmp( tile->name, "rserve" ) &&
+            strcmp( tile->name, "bam"    ) &&
             strcmp( tile->name, "shred"  ) ) {
           continue;
         }
@@ -463,6 +465,7 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
             strcmp( tile->name, "gossip" ) &&
             strcmp( tile->name, "bundle" ) &&
             strcmp( tile->name, "rserve" ) &&
+            strcmp( tile->name, "bam"    ) &&
             strcmp( tile->name, "shred"  ) ) {
           continue;
         }
@@ -511,6 +514,7 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
                        !strcmp( tile->name, "votor" ) ||
                        !strcmp( tile->name, "bundle" ) ||
                        !strcmp( tile->name, "rserve" ) ||
+                       !strcmp( tile->name, "bam"    ) ||
                        !strcmp( tile->name, "shred"  ) ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
@@ -536,6 +540,7 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
                        !strcmp( tile->name, "votor"  ) ||
                        !strcmp( tile->name, "bundle" ) ||
                        !strcmp( tile->name, "rserve" ) ||
+                       !strcmp( tile->name, "bam"    ) ||
                        !strcmp( tile->name, "shred"  ) ) ) continue;
 
         fd_keyswitch_t * tile_ks = fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id );
@@ -570,6 +575,7 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
             strcmp( tile->name, "gossip" ) &&
             strcmp( tile->name, "votor" ) &&
             strcmp( tile->name, "bundle" ) &&
+            strcmp( tile->name, "bam"    ) &&
             strcmp( tile->name, "rserve" ) ) {
           continue;
         }
@@ -594,6 +600,7 @@ poll_set_identity( fd_admin_tile_ctx_t * ctx,
             strcmp( tile->name, "gossip" ) &&
             strcmp( tile->name, "votor" ) &&
             strcmp( tile->name, "bundle" ) &&
+            strcmp( tile->name, "bam"    ) &&
             strcmp( tile->name, "rserve" ) ) {
           continue;
         }

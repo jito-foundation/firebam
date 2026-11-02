@@ -1,0 +1,20 @@
+description = "Two atomic batches in one message reuse the same seq_id with a [5,1] split."
+heartbeat_interval_ms = 2000
+
+[[events]]
+type = "sleep"
+ms = 1000
+
+[[events]]
+type = "send_split_batch"
+seq_id = 42
+splits = [5, 1]
+packet_count = 6
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+cu_per_tx = 1000000
+
+[[events]]
+type = "sleep"
+ms = 4000

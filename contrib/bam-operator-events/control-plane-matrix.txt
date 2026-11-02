@@ -1,0 +1,44 @@
+wait_log bam 30000 scheduler<-validator batch_result seq_id=4242003
+
+set_bam_expect_fail --url ftp://127.0.0.1:50055
+set_bam_expect_fail --url HTTP://127.0.0.1:50055
+set_bam_expect_fail --url http://user@127.0.0.1:50055
+set_bam_expect_fail --url http://:50055
+set_bam_expect_fail --url http://127.0.0.1:0
+set_bam_expect_fail --url http://127.0.0.1:65536
+set_bam_expect_fail --url http://127.0.0.1:123456
+
+set_bam --url http://127.0.0.1:12x
+sleep_ms 1000
+set_bam --url http://127.0.0.1:50055
+wait_log_growth bam 30000 InitSchedulerStream:
+
+set_bam --url http://127.0.0.1
+sleep_ms 1000
+set_bam --url http://127.0.0.1:50055/path
+wait_log_growth bam 30000 InitSchedulerStream:
+
+set_bam --url https://127.0.0.1:50055 --sni 127.0.0.1
+sleep_ms 1500
+set_bam --url http://127.0.0.1:50055 --sni 127.0.0.1
+wait_log_growth bam 30000 InitSchedulerStream:
+
+set_bam --sni matrix.invalid
+sleep_ms 500
+set_bam_clear_sni
+wait_log_growth bam 30000 InitSchedulerStream:
+
+set_bam --disable
+set_bam --disable
+set_bam --enable
+wait_log_growth bam 30000 InitSchedulerStream:
+
+set_bam_clear_url
+set_bam --enable
+sleep_ms 1000
+set_bam --sni matrix.invalid
+set_bam --url http://127.0.0.1:50055
+wait_log_growth bam 30000 InitSchedulerStream:
+
+set_bam --url http://127.0.0.1:50055 --sni 127.0.0.1 --enable
+wait_log_growth bam 30000 InitSchedulerStream:

@@ -203,6 +203,8 @@ struct fd_bundle_tile {
     ulong       chunk0;
     ulong       wmark;
   } replay_in;
+  ulong * bam_status_fseq;     /* Read-only BAM status from the bam tile (NULL without BAM) */
+  _Bool   bam_override_active; /* BAM was active at the last sync, holding sleep_mode */
 };
 
 typedef struct fd_bundle_tile fd_bundle_tile_t;
