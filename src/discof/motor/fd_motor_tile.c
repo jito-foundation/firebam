@@ -1,6 +1,7 @@
 #include "../poh/fd_poh.h"
 #include "../../flamenco/alpenglow/fd_block_marker_serde.h"
 #include "../replay/fd_replay_tile.h"
+#include "../../disco/bam/fd_bam_microblock.h"
 #include "../../disco/tiles.h"
 #include "../../discof/fd_startup.h"
 #include "../../util/pod/fd_pod.h"
@@ -88,6 +89,7 @@ struct fd_motor_tile {
 
   fd_poh_out_t shred_out[ 1 ];
   fd_poh_out_t replay_out[ 1 ];
+  fd_poh_out_t bam_out[ 1 ];
 };
 typedef struct fd_motor_tile fd_motor_tile_t;
 
@@ -342,6 +344,7 @@ returnable_frag( fd_motor_tile_t *   ctx,
     if( FD_UNLIKELY( ((int)(pack_idx-ctx->expect_pack_idx))<0L ) ) FD_LOG_ERR(( "received out of order pack_idx %u (expecting %u)", pack_idx, ctx->expect_pack_idx ));
     if( FD_UNLIKELY( pack_idx!=ctx->expect_pack_idx ) ) return 1;
     ctx->expect_pack_idx++;
+    if( FD_UNLIKELY( fd_disco_execle_sig_slot( sig )<ctx->slot && ctx->in_kind[ in_idx ]==IN_KIND_EXECLE ) ) fd_bam_publish_dropped_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk, ctx->bam_out->chunk0, ctx->bam_out->wmark, fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk ), sz );
     if( FD_UNLIKELY( fd_disco_execle_sig_slot( sig )<ctx->slot ) ) return 0;
   }
 
@@ -368,12 +371,14 @@ returnable_frag( fd_motor_tile_t *   ctx,
       break;
     }
     case IN_KIND_EXECLE: {
+      fd_bam_bundle_result_t const * bam_result = fd_bam_microblock_strip_result( fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk ), &sz );
       FD_TEST( sz>=sizeof(fd_microblock_trailer_t) && (sz-sizeof(fd_microblock_trailer_t))%sizeof(fd_txn_p_t)==0UL );
       ulong txn_cnt = (sz-sizeof(fd_microblock_trailer_t))/sizeof(fd_txn_p_t);
       fd_txn_p_t const * txns = fd_chunk_to_laddr_const( ctx->in[ in_idx ].mem, chunk );
       fd_microblock_trailer_t const * trailer = fd_type_pun_const( (uchar const *)txns+sz-sizeof(fd_microblock_trailer_t) );
       ulong payload_sz = prepare_entry( ctx, trailer, txn_cnt, txns );
       if( FD_LIKELY( payload_sz ) ) publish_shred( ctx, stem, payload_sz, 0 );
+      if( FD_UNLIKELY( bam_result ) ) fd_bam_publish_result( stem, ctx->bam_out->idx, ctx->bam_out->mem, &ctx->bam_out->chunk, ctx->bam_out->chunk0, ctx->bam_out->wmark, bam_result );
       break;
     }
     default: {
@@ -415,6 +420,7 @@ unprivileged_init( fd_topo_t const *      topo,
 
   *ctx->replay_out = out1( topo, tile, "poh_replay" );
   *ctx->shred_out  = out1( topo, tile, "poh_shred"  );
+  *ctx->bam_out    = fd_topo_find_tile_out_link( topo, tile, "motor_bam", tile->kind_id )==ULONG_MAX ? (fd_poh_out_t){ .idx = ULONG_MAX } : out1( topo, tile, "motor_bam" );
 
   ulong ldr_tt_obj_id   = fd_pod_query_ulong( topo->props, "ldr_tt", ULONG_MAX );
   ctx->timing_tables    = ldr_tt_obj_id==ULONG_MAX ? NULL : fd_topo_obj_laddr( topo, ldr_tt_obj_id );

@@ -1,0 +1,3 @@
+[submodule "src/disco/bam/proto/bam-protos"]
+	path = src/disco/bam/proto/bam-protos
+	url = https://github.com/jito-labs/bam-protos.git
