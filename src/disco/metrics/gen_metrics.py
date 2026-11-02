@@ -3,12 +3,13 @@ from generate.write_codegen import write_codegen
 from generate.write_docs import write_docs
 from generate.write_schemas import write_schema_files
 from generate.write_sample import write_sample
+from generate.bam import merge_bam
 from pathlib import Path
 import sys
 
 def main():
     assign = '--assign' in sys.argv[1:]   # replace provisional schema numbers with the next free ones
-    xml = Path('metrics.xml').read_text()
+    xml = merge_bam(Path('metrics.xml').read_text())   # FireBAM: fold in metrics_bam.xml
     metrics = parse_metrics(xml)
     metrics.layout()
 

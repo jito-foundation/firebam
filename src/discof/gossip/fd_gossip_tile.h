@@ -8,6 +8,7 @@
 #include "../../flamenco/leaders/fd_leaders_base.h"
 #include "../../disco/keyguard/fd_keyswitch.h"
 #include "../../disco/gui/fd_gui_gossip_bw.h"
+#include "../../disco/bam/fd_bam_types.h"
 
 typedef struct {
   int         kind;
@@ -101,6 +102,7 @@ struct fd_gossip_tile_ctx {
   ulong peer_sat_hwm;        /* high-water mark of peer count       */
   long  peer_sat_hwm_nanos;  /* wallclock when HWM last increased   */
   int   peer_sat_published;  /* one-shot latch (0 -> 1)             */
+  fd_bam_gossip_contact_t bam_contact;
 };
 
 typedef struct fd_gossip_tile_ctx fd_gossip_tile_ctx_t;

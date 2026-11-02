@@ -2,6 +2,7 @@
 #include "fd_bundle_tile_private.h"
 #include "fd_bundle_tile.h"
 #include "../fd_txn_m.h"
+#include "fd_bundle_tile_bam.h"
 #include "../metrics/fd_metrics.h"
 #include "../topo/fd_topo.h"
 #include "../keyguard/fd_keyload.h"
@@ -254,6 +255,8 @@ static void
 before_credit( fd_bundle_tile_t *  ctx,
                fd_stem_context_t * stem,
                int *               charge_busy ) {
+  fd_bundle_tile_sync_bam_override( ctx );
+
   if( FD_UNLIKELY( !ctx->stem ) ) {
     ctx->stem = stem;
   }
@@ -609,6 +612,8 @@ unprivileged_init( fd_topo_t const *      topo,
   } else {
     ctx->plugin_out = (fd_bundle_out_ctx_t){ .idx=ULONG_MAX };
   }
+
+  fd_bundle_tile_bam_init( ctx, topo );
 
   /* Set socket receive buffer size */
   ulong so_rcvbuf = tile->bundle.buf_sz;

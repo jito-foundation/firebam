@@ -7,6 +7,7 @@
 #include "../metrics/fd_metrics.h"
 
 #include "../../discof/replay/fd_replay_tile.h"
+#include "fd_dedup_tile_bam.h"
 
 /* fd_dedup provides services to deduplicate multiple streams of input
    fragments and present them to a mix of reliable and unreliable
@@ -58,6 +59,7 @@ typedef struct {
   struct {
     ulong dedup_tile_result[ FD_METRICS_ENUM_DEDUP_RESULT_CNT ];
   } metrics;
+  DEDUP_TILE_BAM_CTX
 } fd_dedup_ctx_t;
 
 FD_FN_CONST static inline ulong
@@ -140,6 +142,8 @@ during_frag( fd_dedup_ctx_t * ctx,
   }
 }
 
+#include "fd_dedup_tile_bam.c"
+
 /* After the transaction has been fully received, and we know we were
    not overrun while reading it, check if it's a duplicate of a prior
    transaction. */
@@ -165,6 +169,7 @@ after_frag( fd_dedup_ctx_t *    ctx,
     FD_LOG_ERR(( "dedup: txn payload size %hu exceeds max %lu", txnm->payload_sz, FD_TPU_MTU ));
   }
   fd_txn_t * txn = fd_txn_m_txn_t( txnm );
+  if( FD_UNLIKELY( txnm->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ) ) { fd_dedup_tile_bam_after_frag( ctx, txnm, txn, tsorig, stem ); return; }
 
   if( FD_UNLIKELY( txnm->block_engine.bundle_id && (txnm->block_engine.bundle_id!=ctx->bundle_id) ) ) {
     ctx->bundle_failed = 0;
@@ -272,6 +277,7 @@ unprivileged_init( fd_topo_t const *      topo,
       FD_LOG_ERR(( "unexpected link name %s", link->name ));
     }
   }
+  fd_dedup_tile_bam_init( ctx, tile->in_cnt );
 
   ctx->out_mem    = topo->workspaces[ topo->objs[ topo->links[ tile->out_link_id[ 0 ] ].dcache_obj_id ].wksp_id ].wksp;
   ctx->out_chunk0 = fd_dcache_compact_chunk0( ctx->out_mem, topo->links[ tile->out_link_id[ 0 ] ].dcache );
@@ -318,6 +324,7 @@ populate_allowed_fds( fd_topo_t const *      topo,
 #define STEM_CALLBACK_CONTEXT_ALIGN alignof(fd_dedup_ctx_t)
 
 #define STEM_CALLBACK_METRICS_WRITE metrics_write
+#define STEM_CALLBACK_BEFORE_FRAG   fd_dedup_tile_bam_before_frag
 #define STEM_CALLBACK_DURING_FRAG   during_frag
 #define STEM_CALLBACK_AFTER_FRAG    after_frag
 
