@@ -1,0 +1,27 @@
+description = "Reject one non-NUL-terminated 128-byte auth challenge, then authenticate and commit a valid batch."
+heartbeat_interval_ms = 1000
+auth_challenge_sequence = [
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "test-challenge",
+]
+
+[[events]]
+type = "sleep"
+ms = 10000
+
+[[events]]
+type = "send_heartbeat"
+
+[[events]]
+type = "send_batch"
+seq_id = 56128
+packet_count = 1
+max_schedule_slot = "max"
+revert_on_error = true
+simple_vote_tx = false
+
+[[events]]
+type = "wait_inbound"
+kind = "batch_result"
+min_count = 1
+timeout_ms = 30000
