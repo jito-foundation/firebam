@@ -1,6 +1,6 @@
 ifdef FD_HAS_INT128
 $(call add-hdrs,fd_bam_types.h fd_bam_tile.h fd_bam_microblock.h)
-$(call add-objs,fd_bam_client fd_bam_client_decode,fd_disco)
+$(call add-objs,fd_bam_client fd_bam_client_decode fd_bam_registry fd_bam_webpki_roots,fd_disco)
 
 ifdef FD_HAS_DOUBLE
 $(call add-objs,fd_bam_tile,fd_disco)
@@ -13,6 +13,9 @@ endif
 ifdef FD_HAS_HOSTED
 $(call make-unit-test,test_bam_event_tile,test_bam_event_tile,fd_disco fd_waltz fd_tls fd_flamenco fd_tango fd_ballet fd_util)
 $(call run-unit-test,test_bam_event_tile)
+$(call make-unit-test,test_bam_registry,test_bam_registry,fd_discof fd_disco fd_waltz fd_tls fd_flamenco fd_tango fd_ballet fd_util)
+$(call run-unit-test,test_bam_registry)
+$(call make-fuzz-test,fuzz_bam_registry,fuzz_bam_registry,fd_discof fd_disco fd_waltz fd_tls fd_flamenco fd_tango fd_ballet fd_util)
 $(call make-fuzz-test,fuzz_bam_client,fuzz_bam_client,fd_disco fd_waltz fd_tls fd_flamenco fd_tango fd_ballet fd_util)
 
 # Upstream tiles with BAM traffic, in pipeline order
