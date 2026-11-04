@@ -1427,8 +1427,9 @@ slot_drive( fd_bam_tile_t *          ctx,
             fd_bam_registry_slot_t * s,
             long                     now ) {
   int busy = 0;
-  int io = fd_grpc_client_rxtx_tls( s->grpc, s->conn, s->fd, now, &busy );
-  if( s->dead || io || reg_cert_failed( &ctx->registry, s->conn, s->tls ) ) return 1;
+  int io   = fd_grpc_client_rxtx_tls( s->grpc, s->conn, s->fd, now, &busy );
+  int cert = reg_cert_failed( &ctx->registry, s->conn, s->tls ); /* counted even when io failed */
+  if( s->dead || io || cert ) return 1;
   if( !fd_grpc_client_is_connected( s->grpc ) ) return now>=s->deadline;
 
   if( s->inflight && now-s->sample_ns>=FD_BAM_REGISTRY_PROBE_REQUEST_NS ) slot_sample_done( s, 0 );
