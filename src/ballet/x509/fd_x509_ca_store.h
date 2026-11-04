@@ -60,6 +60,17 @@ long
 fd_x509_ca_store_load( fd_x509_ca_store_t * store,
                        char const *         pem_path );
 
+/* fd_x509_ca_store_add_pem appends the supported CA certificates in
+   the PEM text [pem,pem+pem_sz) to store, with the same filtering as
+   fd_x509_ca_store_load.  label names the source in log messages.
+   Returns the number of trust anchors added. */
+
+long
+fd_x509_ca_store_add_pem( fd_x509_ca_store_t * store,
+                          char const *         pem,
+                          ulong                pem_sz,
+                          char const *         label );
+
 /* fd_x509_ca_store_load_system loads the host's system CA bundle into
    store, trying the well known bundle paths of the common distros in
    order.  Returns the number of trust anchors loaded from the first bundle

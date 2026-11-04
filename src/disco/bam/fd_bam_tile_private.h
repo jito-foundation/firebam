@@ -62,6 +62,7 @@ typedef struct fd_bam_pending_txn fd_bam_pending_txn_t;
 #include "../../waltz/tlsrec/fd_tlsrec.h"
 #include "../../ballet/x509/fd_x509_ca_store.h"
 #include "../../ballet/x509/fd_x509_verify.h"
+#include "fd_bam_registry.h"
 
 struct fd_bam_out_ctx {
   ulong       idx;
@@ -368,6 +369,8 @@ struct fd_bam_tile {
   fd_plugin_bam_update_status_t bam_status_counted; /* last status used for healthy-edge counters */
   fd_plugin_bam_update_status_t bam_status_logged;  /* last logged BAM status */
   long  last_bam_status_log_nanos;
+
+  fd_bam_registry_t registry;
 };
 
 FD_FN_PURE static inline _Bool

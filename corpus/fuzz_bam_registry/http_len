@@ -1,0 +1,4 @@
+HTTP/1.1 200 OK
+Content-Length: 65
+
+{"nodes":[{"ip":"203.0.113.1","grpc_port":50056,"region":"fra"}]}
