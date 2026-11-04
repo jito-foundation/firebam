@@ -238,6 +238,14 @@ test_rank_and_choose( void ) {
   reg->ranked[0].node = nodes[0];
   FD_TEST( !fd_bam_registry_choose( reg, 1, now+2000000000L, &out ) );
   FD_TEST( reg->stalled_since==now+2000000000L );
+
+  /* Healthy but delisted: move to the best ranked node, or hold the
+     live connection when nothing ranked. */
+  reg->dial_ip4 = FD_IP4_ADDR( 198, 51, 100, 9 );
+  FD_TEST( fd_bam_registry_choose( reg, 1, now+3000000000L, &out ) );
+  FD_TEST( out.ip4==nodes[0].ip4 && out.grpc_port==nodes[0].grpc_port );
+  reg->ranked_cnt = 0UL;
+  FD_TEST( !fd_bam_registry_choose( reg, 1, now+3000000000L, &out ) );
 }
 
 static void
