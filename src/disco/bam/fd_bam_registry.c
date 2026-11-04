@@ -813,6 +813,7 @@ static void
 reg_fetch_done( fd_bam_tile_t * ctx,
                 int             ok ) {
   fd_bam_registry_t * reg = &ctx->registry;
+  ulong body_len = reg->body_len; /* reg_close clears it */
   reg_close( reg );
   reg->phase = FD_BAM_REG_IDLE;
   /* jito schedules from the start of the step that fetched. */
@@ -820,7 +821,7 @@ reg_fetch_done( fd_bam_tile_t * ctx,
   reg->fetch_after = fd_bam_now()+FD_BAM_REGISTRY_POLL_NS;
   if( ok ) {
     ulong cnt = 0UL;
-    if( !fd_bam_registry_parse( reg->body, reg->body_len, reg->parsed, FD_BAM_REGISTRY_NODE_CAP, &cnt ) ) {
+    if( !fd_bam_registry_parse( reg->body, body_len, reg->parsed, FD_BAM_REGISTRY_NODE_CAP, &cnt ) ) {
       fd_bam_registry_on_fetch( reg, reg->parsed, cnt, now, reg_live( ctx ), ctx->rng );
       reg->fetch_ok++;
       FD_LOG_INFO(( "BAM registry list: %lu nodes from %s", cnt, reg->url ));

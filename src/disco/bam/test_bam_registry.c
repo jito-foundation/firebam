@@ -3,9 +3,15 @@
 #include "fd_bam_webpki_roots.h"
 #include "../../ballet/x509/fd_x509_verify.h"
 #include "../../util/fd_util.h"
+#include "../../util/net/fd_ip4.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 static int
 is_registry( char const * raw ) {
@@ -333,6 +339,71 @@ test_webpki_roots( void ) {
 }
 
 static void
+test_fetch_loopback( void ) {
+  static fd_bam_tile_t ctx[1];
+  memset( ctx, 0, sizeof(*ctx) );
+  ctx->registry.fd = -1;
+  FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 1U, 0UL ) ) );
+
+  int lfd = socket( AF_INET, SOCK_STREAM, 0 );
+  FD_TEST( lfd>=0 );
+  struct sockaddr_in addr = { .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
+  socklen_t addr_sz = sizeof(addr);
+  FD_TEST( !bind( lfd, fd_type_pun( &addr ), addr_sz ) );
+  FD_TEST( !listen( lfd, 1 ) );
+  FD_TEST( !getsockname( lfd, fd_type_pun( &addr ), &addr_sz ) );
+  FD_TEST( fcntl( lfd, F_SETFL, O_NONBLOCK )==0 );
+
+  char raw[ 64 ];
+  FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "http://127.0.0.1:%hu/v1/nodes", fd_ushort_bswap( addr.sin_port ) ) );
+  fd_url_t url[1];
+  ushort   port = 0;
+  _Bool    ssl  = 0;
+  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &port, &ssl, NULL ) );
+  char err[ 128 ];
+  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, port, err, sizeof(err) )==1 );
+
+  char const * body = "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
+  char resp[ 256 ];
+  ulong resp_len = 0UL;
+  FD_TEST( fd_cstr_printf_check( resp, sizeof(resp), &resp_len, "HTTP/1.0 200 OK\r\nContent-Length: %lu\r\n\r\n%s", strlen( body ), body ) );
+
+  /* One-shot server: read the request, answer, half-close. */
+  int   cfd = -1;
+  int   sent = 0;
+  char  req[ 1024 ];
+  ulong req_len = 0UL;
+  fd_bam_registry_t * reg = &ctx->registry;
+  long  end = fd_log_wallclock()+(long)5e9;
+  while( !reg->fetch_ok && !reg->fetch_fail && fd_log_wallclock()<end ) {
+    int  busy = 0;
+    long dl   = 0L;
+    fd_bam_registry_step( ctx, &busy, &dl );
+    if( cfd<0 ) {
+      cfd = accept( lfd, NULL, NULL );
+      continue;
+    }
+    if( sent ) continue;
+    long n = recv( cfd, req+req_len, sizeof(req)-1UL-req_len, MSG_DONTWAIT );
+    if( n>0 ) req_len += (ulong)n;
+    req[ req_len ] = '\0';
+    if( strstr( req, "\r\n\r\n" ) ) {
+      FD_TEST( send( cfd, resp, resp_len, MSG_NOSIGNAL )==(long)resp_len );
+      FD_TEST( !shutdown( cfd, SHUT_WR ) );
+      sent = 1;
+    }
+  }
+  FD_TEST( !strncmp( req, "GET /v1/nodes HTTP/1.1\r\nHost: 127.0.0.1:", 40UL ) );
+  FD_TEST( reg->fetch_ok==1UL && !reg->fetch_fail );
+  FD_TEST( reg->node_cnt==1UL );
+  FD_TEST( reg->nodes[0].ip4==FD_IP4_ADDR( 203, 0, 113, 1 ) && reg->nodes[0].grpc_port==50056 );
+
+  fd_bam_registry_disable( ctx );
+  close( cfd );
+  close( lfd );
+}
+
+static void
 test_probe_join( void ) {
   static fd_bam_tile_t ctx[1];
   memset( ctx, 0, sizeof(*ctx) );
@@ -369,6 +440,7 @@ main( int     argc,
   test_take_url();
   test_redirect();
   test_webpki_roots();
+  test_fetch_loopback();
   test_probe_join();
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
