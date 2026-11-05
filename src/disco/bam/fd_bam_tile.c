@@ -151,6 +151,20 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MHIST_COPY(     BAM, BUILDER_HEARTBEAT_ARRIVAL_DELAY_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
   FD_MHIST_COPY(     BAM, SCHEDULER_PONG_SEND_DURATION_NANOS,    ctx->metrics.scheduler_pong_send_nanos );
 
+  fd_bam_registry_t const * reg = &ctx->registry;
+  int dialed = reg->on && reg->have_dial;
+  FD_MGAUGE_SET(       BAM, IS_REGISTRY_ENABLED,                 (ulong)reg->on );
+  FD_MCNT_ENUM_COPY(   BAM, REGISTRY_LIST_FETCHED,               reg->fetch_cnt );
+  FD_MGAUGE_SET(       BAM, REGISTRY_NODE_COUNT,                 reg->node_cnt );
+  FD_MGAUGE_SET(       BAM, LAST_REGISTRY_LIST_AGE_NANOS,        reg->list_age_ns );
+  FD_MCNT_ENUM_COPY(   BAM, REGISTRY_PROBE_ROUND_ENDED,          reg->round_cnt );
+  FD_MGAUGE_ENUM_COPY( BAM, LAST_REGISTRY_PROBE_NODE_COUNT,      reg->last_round );
+  FD_MCNT_SET(         BAM, REGISTRY_PROBE_CERT_REJECTED,        reg->probe_cert_cnt );
+  FD_MCNT_SET(         BAM, REGISTRY_NODE_SELECTED,              reg->select_cnt );
+  FD_MGAUGE_SET(       BAM, REGISTRY_SELECTED_IP,                dialed ? (ulong)fd_uint_bswap( reg->dial_ip4 ) : 0UL );
+  FD_MGAUGE_SET(       BAM, REGISTRY_SELECTED_PORT,              dialed ? (ulong)reg->dial_port : 0UL );
+  FD_MGAUGE_SET(       BAM, REGISTRY_SELECTED_RTT_NANOS,         dialed ? reg->dial_rtt_us*1000UL : 0UL );
+
   /* Gauges keep their value, so the workspace scan runs at most once per refresh interval. */
   if( FD_UNLIKELY( !ctx->heap_usage_last_update_ns ||
                    now_ns - ctx->heap_usage_last_update_ns >= FD_BAM_HEAP_USAGE_REFRESH_NS ) ) {

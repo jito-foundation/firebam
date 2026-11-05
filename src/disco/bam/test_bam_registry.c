@@ -29,45 +29,76 @@ test_url_class( void ) {
   FD_TEST( !is_registry( "https://203.0.113.1:50056?x=1" ) );
 }
 
+static long
+ts( char const * s ) {
+  return fd_bam_registry_rfc3339( s, strlen( s ) );
+}
+
+static void
+test_rfc3339( void ) {
+  long const s = 1000000000L;
+  FD_TEST( ts( "2026-11-04T23:40:00Z" )==1793835600L*s );
+  FD_TEST( ts( "2026-11-04t23:40:00z" )==1793835600L*s );
+  FD_TEST( ts( "2026-11-04 23:40:00Z" )==1793835600L*s );
+  FD_TEST( ts( "2026-11-05T00:40:00+01:00" )==1793835600L*s );
+  FD_TEST( ts( "2026-11-04T22:10:00-01:30" )==1793835600L*s );
+  FD_TEST( ts( "2026-10-20T19:06:50.756956Z" )==1792523210L*s+756956000L );
+  FD_TEST( ts( "2026-10-20T19:06:50.1234567891Z" )==1792523210L*s+123456789L );
+  FD_TEST( ts( "2024-02-29T00:00:00Z" )==1709164800L*s );
+  FD_TEST( !ts( "2026-02-29T00:00:00Z" ) );
+  FD_TEST( !ts( "2026-04-31T00:00:00Z" ) );
+  FD_TEST( !ts( "2026-11-04T24:00:00Z" ) );
+  FD_TEST( !ts( "2026-11-04T23:40:00" ) );
+  FD_TEST( !ts( "2026-11-04T23:40:00.Z" ) );
+  FD_TEST( !ts( "2026-11-04T23:40:00+0100" ) );
+  FD_TEST( !ts( "2026-11-04T23:40:00Zjunk" ) );
+  FD_TEST( !ts( "1969-12-31T23:59:59Z" ) );
+  FD_TEST( !ts( "not-a-timestamp" ) );
+}
+
 static void
 test_parse( void ) {
   fd_bam_registry_node_t nodes[ 8 ];
   ulong cnt = 0UL;
   char const * golden =
     "{\"generated_at\":\"2026-09-09T12:34:56Z\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"fra\"}]}";
-  FD_TEST( !fd_bam_registry_parse( golden, strlen( golden ), nodes, 8UL, &cnt ) );
+  long gen_ns = 0L;
+  FD_TEST( !fd_bam_registry_parse( golden, strlen( golden ), nodes, 8UL, &cnt, &gen_ns ) );
   FD_TEST( cnt==1UL );
+  FD_TEST( gen_ns==1788957296L*1000000000L );
   FD_TEST( nodes[0].grpc_port==50056 );
   FD_TEST( !strcmp( nodes[0].region, "fra" ) );
   FD_TEST( nodes[0].ip4==(203U | (0U<<8) | (113U<<16) | (1U<<24)) );
 
   char const * bad_ts =
     "{\"generated_at\":\"not-a-timestamp\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"fra\",\"added_later\":true}],\"extra\":1}";
-  FD_TEST( !fd_bam_registry_parse( bad_ts, strlen( bad_ts ), nodes, 8UL, &cnt ) );
+  gen_ns = 1L;
+  FD_TEST( !fd_bam_registry_parse( bad_ts, strlen( bad_ts ), nodes, 8UL, &cnt, &gen_ns ) );
+  FD_TEST( !gen_ns );
   FD_TEST( cnt==1UL );
 
   char const * dup =
     "{\"nodes\":[{\"region\":\"a\",\"grpc_port\":50056,\"ip\":\"203.0.113.1\"},{\"ip\":\"203.0.113.9\",\"grpc_port\":50056,\"region\":\"b\"},{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"c\"}]}";
-  FD_TEST( !fd_bam_registry_parse( dup, strlen( dup ), nodes, 8UL, &cnt ) );
+  FD_TEST( !fd_bam_registry_parse( dup, strlen( dup ), nodes, 8UL, &cnt, NULL ) );
   FD_TEST( cnt==2UL );
   FD_TEST( nodes[0].ip4==(203U | (0U<<8) | (113U<<16) | (1U<<24)) );
   FD_TEST( nodes[1].ip4==(203U | (0U<<8) | (113U<<16) | (9U<<24)) );
 
   char const * empty = "{\"nodes\":[]}";
-  FD_TEST( fd_bam_registry_parse( empty, strlen( empty ), nodes, 8UL, &cnt ) );
+  FD_TEST( fd_bam_registry_parse( empty, strlen( empty ), nodes, 8UL, &cnt, NULL )==-2 );
   char const * junk = "{";
-  FD_TEST( fd_bam_registry_parse( junk, strlen( junk ), nodes, 8UL, &cnt ) );
+  FD_TEST( fd_bam_registry_parse( junk, strlen( junk ), nodes, 8UL, &cnt, NULL )==-1 );
   char const * v6 =
     "{\"nodes\":[{\"ip\":\"2001:db8::1\",\"grpc_port\":50056,\"region\":\"fra\"}]}";
-  FD_TEST( fd_bam_registry_parse( v6, strlen( v6 ), nodes, 8UL, &cnt ) );
+  FD_TEST( fd_bam_registry_parse( v6, strlen( v6 ), nodes, 8UL, &cnt, NULL )==-2 );
   char const * mixed =
     "{\"nodes\":[{\"ip\":\"2001:db8::1\",\"grpc_port\":50056,\"region\":\"fra\"},{\"ip\":\"203.0.113.9\",\"grpc_port\":50056,\"region\":\"ams\"}]}";
-  FD_TEST( !fd_bam_registry_parse( mixed, strlen( mixed ), nodes, 8UL, &cnt ) );
+  FD_TEST( !fd_bam_registry_parse( mixed, strlen( mixed ), nodes, 8UL, &cnt, NULL ) );
   FD_TEST( cnt==1UL );
   FD_TEST( nodes[0].ip4==(203U | (0U<<8) | (113U<<16) | (9U<<24)) );
   char const * long_key =
     "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"fra\",\"this_key_is_longer_than_thirty_one_chars\":1}]}";
-  FD_TEST( !fd_bam_registry_parse( long_key, strlen( long_key ), nodes, 8UL, &cnt ) );
+  FD_TEST( !fd_bam_registry_parse( long_key, strlen( long_key ), nodes, 8UL, &cnt, NULL ) );
   FD_TEST( cnt==1UL );
 }
 
@@ -77,7 +108,7 @@ static int
 parses( char const * json ) {
   fd_bam_registry_node_t nodes[ 8 ];
   ulong cnt = 0UL;
-  return !fd_bam_registry_parse( json, strlen( json ), nodes, 8UL, &cnt );
+  return !fd_bam_registry_parse( json, strlen( json ), nodes, 8UL, &cnt, NULL );
 }
 
 static void
@@ -104,7 +135,7 @@ test_parse_serde( void ) {
 
   /* escapes */
   char const * esc = "{\"nodes\":[{\"\\u0069p\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\\u00e9\\ud83d\\ude00\\b\\f\\r\"}]}";
-  FD_TEST( !fd_bam_registry_parse( esc, strlen( esc ), nodes, 8UL, &cnt ) );
+  FD_TEST( !fd_bam_registry_parse( esc, strlen( esc ), nodes, 8UL, &cnt, NULL ) );
   FD_TEST( !strcmp( nodes[0].region, "a\xc3\xa9\xf0\x9f\x98\x80\b\f\r" ) );
   FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"\\ud83d\"}]}" ) );
   FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"\\ude00\"}]}" ) );
@@ -119,7 +150,7 @@ test_parse_serde( void ) {
   /* a long region is kept, truncated */
   char const * long_region =
     "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"0123456789012345678901234567890123456789012345678901234567890123456789\"}]}";
-  FD_TEST( !fd_bam_registry_parse( long_region, strlen( long_region ), nodes, 8UL, &cnt ) );
+  FD_TEST( !fd_bam_registry_parse( long_region, strlen( long_region ), nodes, 8UL, &cnt, NULL ) );
   FD_TEST( strlen( nodes[0].region )==sizeof(nodes[0].region)-1UL );
 
   /* IpAddr: invalid IPv6 fails the document, valid IPv6 is skipped */
@@ -130,7 +161,7 @@ test_parse_serde( void ) {
   /* sorted by octets, not by the in-memory word */
   char const * order =
     "{\"nodes\":[{\"ip\":\"2.0.0.1\",\"grpc_port\":1,\"region\":\"a\"},{\"ip\":\"1.0.0.2\",\"grpc_port\":1,\"region\":\"b\"}]}";
-  FD_TEST( !fd_bam_registry_parse( order, strlen( order ), nodes, 8UL, &cnt ) );
+  FD_TEST( !fd_bam_registry_parse( order, strlen( order ), nodes, 8UL, &cnt, NULL ) );
   FD_TEST( cnt==2UL && !strcmp( nodes[0].region, "b" ) );
 }
 
@@ -346,8 +377,17 @@ test_webpki_roots( void ) {
   FD_TEST( total==119L && store->cnt==119UL );
 }
 
+static ulong
+fetch_total( fd_bam_registry_t const * reg ) {
+  ulong total = 0UL;
+  for( ulong i=0UL; i<FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_CNT; i++ ) total += reg->fetch_cnt[ i ];
+  return total;
+}
+
 static void
-test_fetch_loopback( void ) {
+test_fetch_loopback( char const * status,
+                     char const * body,
+                     ulong        result ) {
   static fd_bam_tile_t ctx[1];
   memset( ctx, 0, sizeof(*ctx) );
   ctx->registry.fd = -1;
@@ -371,10 +411,9 @@ test_fetch_loopback( void ) {
   char err[ 128 ];
   FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, port, err, sizeof(err) )==1 );
 
-  char const * body = "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
   char resp[ 256 ];
   ulong resp_len = 0UL;
-  FD_TEST( fd_cstr_printf_check( resp, sizeof(resp), &resp_len, "HTTP/1.0 200 OK\r\nContent-Length: %lu\r\n\r\n%s", strlen( body ), body ) );
+  FD_TEST( fd_cstr_printf_check( resp, sizeof(resp), &resp_len, "HTTP/1.0 %s\r\nContent-Length: %lu\r\n\r\n%s", status, strlen( body ), body ) );
 
   /* One-shot server: read the request, answer, half-close. */
   int   cfd = -1;
@@ -383,7 +422,7 @@ test_fetch_loopback( void ) {
   ulong req_len = 0UL;
   fd_bam_registry_t * reg = &ctx->registry;
   long  end = fd_log_wallclock()+(long)5e9;
-  while( !reg->fetch_ok && !reg->fetch_fail && fd_log_wallclock()<end ) {
+  while( !fetch_total( reg ) && fd_log_wallclock()<end ) {
     int  busy = 0;
     long dl   = 0L;
     fd_bam_registry_step( ctx, &busy, &dl );
@@ -402,13 +441,54 @@ test_fetch_loopback( void ) {
     }
   }
   FD_TEST( !strncmp( req, "GET /v1/nodes HTTP/1.1\r\nHost: 127.0.0.1:", 40UL ) );
-  FD_TEST( reg->fetch_ok==1UL && !reg->fetch_fail );
-  FD_TEST( reg->node_cnt==1UL );
-  FD_TEST( reg->nodes[0].ip4==FD_IP4_ADDR( 203, 0, 113, 1 ) && reg->nodes[0].grpc_port==50056 );
+  FD_TEST( fetch_total( reg )==1UL && reg->fetch_cnt[ result ]==1UL );
+  if( result==FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX ) {
+    FD_TEST( reg->node_cnt==1UL );
+    FD_TEST( reg->nodes[0].ip4==FD_IP4_ADDR( 203, 0, 113, 1 ) && reg->nodes[0].grpc_port==50056 );
+    FD_TEST( reg->list_age_ns>0UL );
+  } else {
+    FD_TEST( !reg->node_cnt );
+  }
 
   fd_bam_registry_disable( ctx );
   close( cfd );
   close( lfd );
+}
+
+static void
+test_fetch_refused( void ) {
+  static fd_bam_tile_t ctx[1];
+  memset( ctx, 0, sizeof(*ctx) );
+  ctx->registry.fd = -1;
+  FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 2U, 0UL ) ) );
+
+  /* A port that was just bound and closed refuses connections. */
+  int lfd = socket( AF_INET, SOCK_STREAM, 0 );
+  FD_TEST( lfd>=0 );
+  struct sockaddr_in addr = { .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
+  socklen_t addr_sz = sizeof(addr);
+  FD_TEST( !bind( lfd, fd_type_pun( &addr ), addr_sz ) );
+  FD_TEST( !getsockname( lfd, fd_type_pun( &addr ), &addr_sz ) );
+  close( lfd );
+
+  char raw[ 64 ];
+  FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "http://127.0.0.1:%hu/v1/nodes", fd_ushort_bswap( addr.sin_port ) ) );
+  fd_url_t url[1];
+  ushort   port = 0;
+  _Bool    ssl  = 0;
+  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &port, &ssl, NULL ) );
+  char err[ 128 ];
+  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, port, err, sizeof(err) )==1 );
+
+  fd_bam_registry_t * reg = &ctx->registry;
+  long end = fd_log_wallclock()+(long)5e9;
+  while( !fetch_total( reg ) && fd_log_wallclock()<end ) {
+    int  busy = 0;
+    long dl   = 0L;
+    fd_bam_registry_step( ctx, &busy, &dl );
+  }
+  FD_TEST( fetch_total( reg )==1UL && reg->fetch_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_CONNECT_IDX ]==1UL );
+  fd_bam_registry_disable( ctx );
 }
 
 static void
@@ -440,6 +520,7 @@ main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
   test_url_class();
+  test_rfc3339();
   test_parse();
   test_parse_serde();
   test_http();
@@ -448,7 +529,12 @@ main( int     argc,
   test_take_url();
   test_redirect();
   test_webpki_roots();
-  test_fetch_loopback();
+  char const * one = "{\"generated_at\":\"2026-01-01T00:00:00Z\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
+  test_fetch_loopback( "200 OK", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX );
+  test_fetch_loopback( "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX );
+  test_fetch_loopback( "200 OK", "{\"nodes\":", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX );
+  test_fetch_loopback( "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX );
+  test_fetch_refused();
   test_probe_join();
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
