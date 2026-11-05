@@ -1722,7 +1722,7 @@ test_pack_tile_bam_disable_retires_pending_before_override_clear( void ) {
     bam_status = 0UL;
     FD_TEST( !pack_tile_bam_override_active( h->ctx ) );
     /* Even a buffered candidate cannot inherit normal-mode readiness.
-       The generation barrier still owns retirement of pending BAM work. */
+       Retiring it is after_credit's job, which this test doesn't run. */
     fd_txn_e_t scheduled[ FD_PACK_MAX_TXN_PER_BUNDLE ];
     FD_TEST( !fd_pack_schedule_next_microblock( pack, FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND, 0UL,
                FD_PACK_SCHEDULE_BUNDLE | FD_PACK_SCHEDULE_TXN, scheduled ) );
@@ -2821,7 +2821,8 @@ test_pack_tile_bam_conflict_lookahead_callbacks( void ) {
     /* As in jito-solana, a future target (scenarios 1 and 2) is ready. */
     ulong expected = scenario<=2 ? 2UL : 1UL;
     FD_TEST( test_pack_callbacks_dispatch_count( e )==expected );
-    FD_TEST( ctx->bam_work_cnt==3UL-expected );
+    /* A normal snapshot (scenario 5) retires the pending work. */
+    FD_TEST( ctx->bam_work_cnt==(scenario==5 ? 0UL : 3UL-expected) );
     FD_TEST( ctx->bam_work_item_stage_cnt[ FD_METRICS_ENUM_PACK_BAM_WORK_STATE_V_SCHEDULED_IDX ]==expected );
     if( scenario<=2 ) {
       fd_microblock_execle_trailer_t const * trailer;
@@ -3226,8 +3227,9 @@ test_pack_tile_bam_readiness_identity_and_mode( void ) {
   fd_pack_ctx_t * ctx = test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
   test_pack_callbacks_leader( e, 104UL );
   test_pack_callbacks_insert( e, 91U, 104UL, 0 );
-  /* A normal snapshot never turns buffered BAM work into a normal-mode
-     initializer.  Invalid on-chain config exposes attempts before signing. */
+  /* A normal snapshot retires buffered BAM work before initializer
+     selection, so it never becomes a normal-mode initializer.  Invalid
+     on-chain config exposes attempts before signing. */
   ctx->crank->enabled = 1;
   ctx->bam_fee_meta->commission_pubkey->b[0] = 1U;
   ctx->crank->gen->configured_epoch = ctx->crank->epoch;
@@ -3235,12 +3237,23 @@ test_pack_tile_bam_readiness_identity_and_mode( void ) {
   ulong cancel_before = test_bundle_cancel_call_cnt;
   test_pack_callbacks_step( e );
   FD_TEST( !test_pack_callbacks_dispatch_count( e ) && !ctx->crank->ib_inserted && test_bundle_cancel_call_cnt==cancel_before );
-  FD_TEST( !ctx->crank->metrics[2] );
+  FD_TEST( !ctx->crank->metrics[2] && !ctx->bam_work_cnt );
   e->status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
   ctx->bam_override_snapshot = 1;
+  test_pack_callbacks_insert( e, 91U, 104UL, 0 );
   ulong hint;
   fd_txn_e_t const * candidate = fd_pack_peek_bundle_candidate( ctx->pack, 1, &hint, NULL );
   FD_TEST( candidate && pack_tile_bam_candidate_ready( ctx, candidate )==1 );
+  /* Retirement leaves normal mode no BAM work to see, so these only fail
+     closed: no readiness, and no normal initializer from BAM metadata. */
+  ctx->bam_override_snapshot = 0;
+  FD_TEST( !pack_tile_bam_candidate_ready( ctx, candidate ) );
+  ctx->bam_override_snapshot = 1;
+  block_builder_info_t top_meta[1] = {{ .is_bam=1 }};
+  int bam_ready = 1;
+  FD_TEST( !pack_tile_bam_crank_meta( ctx, top_meta, 0, &bam_ready, 0L ) && bam_ready==1 );
+  top_meta->is_bam = 0;
+  FD_TEST( pack_tile_bam_crank_meta( ctx, top_meta, 0, &bam_ready, 0L )==top_meta && !bam_ready );
   ctx->bam_work[0].scheduler_gen++;
   FD_TEST( !pack_tile_bam_candidate_ready( ctx, candidate ) );
   test_pack_callbacks_step( e );
@@ -3737,19 +3750,74 @@ test_pack_tile_bam_activation_purges_block_engine_bundles( void ) {
   FD_TEST( *prio_rejects==prio_before+1UL && ctx->bam_work_cnt==2UL );
   FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==4UL );
 
-  /* Later callbacks and a deactivation edge delete nothing more. */
+  /* Later callbacks delete nothing more, and the deactivation edge
+     retires only the pending BAM work. */
   test_pack_callbacks_step( e );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_EVICTED )==deleted_before+3UL );
   e->status = 0UL;
   test_pack_callbacks_step( e );
-  FD_TEST( FD_MCNT_GET( PACK, TXN_EVICTED )==deleted_before+3UL && !ctx->bam_override_snapshot );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_EVICTED )==deleted_before+5UL && !ctx->bam_override_snapshot );
+  FD_TEST( !ctx->bam_work_cnt && fd_pack_avail_txn_cnt( ctx->pack )==2UL );
+  FD_TEST( !fd_pack_verify( ctx->pack, test_pack_tile_verify_scratch ) );
   test_pack_callbacks_delete( e );
 }
 
-/* A normal-mode crank leaves BAM work unready.  A failed crank does not
-   invalidate the candidate view, so buffered BAM work behind a deferred
-   Block Engine head, whose metadata drove the crank, must still wait. */
+/* A deactivation bumps the generation and holds the override until Pack
+   acknowledges.  Work drained in that window carries the new generation,
+   so Pack admits it, and once the override is released it cannot
+   dispatch until BAM reactivates.  Pack retires it before scheduling, as
+   it does a frag that lands after the release, so it cannot hold a Block
+   Engine bundle until slot end. */
 static void
-test_pack_tile_bam_failed_normal_crank_keeps_bam_unready( void ) {
+test_pack_tile_bam_deactivation_retires_pending_work( void ) {
+  test_pack_callbacks_t e[1];
+  fd_pack_ctx_t * ctx = test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+  test_pack_callbacks_leader( e, 104UL );
+
+  e->generation = (8UL<<1) | 1UL;
+  test_pack_callbacks_step( e );
+  FD_TEST( ctx->bam_ownership_gen==8U && e->generation==(8UL<<1) );
+  test_pack_callbacks_insert( e, 60U, 104UL, 0 );
+  FD_TEST( ctx->bam_work_cnt==1UL );
+
+  ulong evicted = FD_MCNT_GET( PACK, TXN_EVICTED );
+  e->status = 0UL;
+  test_pack_callbacks_step( e );
+  FD_TEST( !ctx->bam_override_snapshot && !ctx->bam_work_cnt );
+  FD_TEST( FD_MCNT_GET( PACK, TXN_EVICTED )==evicted+1UL );
+
+  test_pack_callbacks_insert( e, 61U, 104UL, 0 );
+  test_pack_callbacks_insert_block_engine_bundle( e, 88UL, 1UL, 80U );
+  test_pack_callbacks_steps( e, 16UL );
+  FD_TEST( !ctx->bam_work_cnt && FD_MCNT_GET( PACK, TXN_EVICTED )==evicted+2UL );
+  FD_TEST( test_pack_callbacks_dispatch_count( e )==1UL );
+  FD_TEST( !fd_pack_verify( ctx->pack, test_pack_tile_verify_scratch ) );
+  test_pack_callbacks_delete( e );
+}
+
+/* Pack refreshes its snapshot before retiring, so work the bam tile
+   drained right after activating, which reached Pack before Pack saw
+   the activation, is kept and dispatches. */
+static void
+test_pack_tile_bam_activation_keeps_early_work( void ) {
+  test_pack_callbacks_t e[1];
+  fd_pack_ctx_t * ctx = test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
+  test_pack_callbacks_leader( e, 104UL );
+  e->status = 0UL;
+  test_pack_callbacks_step( e );
+  e->status = FD_BAM_STATUS_FSEQ_OVERRIDE_ACTIVE;
+  test_pack_callbacks_insert( e, 62U, 104UL, 0 );
+  FD_TEST( !ctx->bam_override_snapshot && ctx->bam_work_cnt==1UL );
+  test_pack_callbacks_step( e );
+  FD_TEST( ctx->bam_override_snapshot && test_pack_callbacks_dispatch_count( e )==1UL );
+  test_pack_callbacks_delete( e );
+}
+
+/* Retiring BAM work at the head exposes the deferred Block Engine bundle
+   behind it, whose metadata drives the normal crank.  The crank fails
+   before signing and leaves that bundle in pack. */
+static void
+test_pack_tile_bam_retired_work_unblocks_normal_crank( void ) {
   test_pack_callbacks_t e[1];
   fd_pack_ctx_t * ctx = test_pack_callbacks_new( e, FD_PACK_STRATEGY_BALANCED );
   e->status = 0UL;
@@ -3777,7 +3845,7 @@ test_pack_tile_bam_failed_normal_crank_keeps_bam_unready( void ) {
   test_pack_callbacks_step( e );
   FD_TEST( ctx->crank->metrics[2]==1UL );
   FD_TEST( !test_pack_callbacks_dispatch_count( e ) );
-  FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==2UL && ctx->bam_work_cnt==1UL );
+  FD_TEST( fd_pack_avail_txn_cnt( ctx->pack )==1UL && !ctx->bam_work_cnt );
   test_pack_callbacks_delete( e );
 }
 
@@ -4078,8 +4146,10 @@ main( int     argc,
   test_pack_tile_unprivileged_init_maps_replay_feedback();
   test_pack_tile_unprivileged_init_enables_bam();
   test_pack_tile_bam_activation_purges_block_engine_bundles();
-  test_pack_tile_bam_failed_normal_crank_keeps_bam_unready();
+  test_pack_tile_bam_retired_work_unblocks_normal_crank();
   test_pack_tile_bam_tpu_dropped_until_deactivation();
+  test_pack_tile_bam_deactivation_retires_pending_work();
+  test_pack_tile_bam_activation_keeps_early_work();
   test_pack_tile_bam_tpu_drop_between_bam_members();
 
   test_pack_tile_bam_target_slot_callbacks();

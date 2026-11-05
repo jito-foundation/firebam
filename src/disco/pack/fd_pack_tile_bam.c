@@ -444,8 +444,9 @@ pack_tile_bam_candidate_ready( fd_pack_ctx_t *       ctx,
            !memcmp( fd_txn_get_signatures( TXN(txnp), txnp->payload ), ctx->crank->last_sig, sizeof(fd_ed25519_sig_t) );
   }
   if( FD_LIKELY( txnp->source_tpu!=FD_TXN_M_TPU_SOURCE_BAM ) ) return 1;
-  /* Normal-mode traversal can see BAM entries while ownership changes.
-     They must not dispatch or prepare a normal-mode fee initializer. */
+  /* Normal mode retires pending BAM work before it schedules, so this
+     only fails closed: BAM work must not dispatch or prepare a
+     normal-mode fee initializer. */
   if( FD_UNLIKELY( !ctx->bam_override_snapshot ) ) return 0;
   ulong idx = pack_tile_bam_work_find( ctx,
                   fd_txn_get_signatures( TXN(txnp), txnp->payload ), NULL );
@@ -674,6 +675,23 @@ pack_tile_abandon_current_bam_bundle( fd_pack_ctx_t *              ctx,
   ctx->current_bundle_bam->is_bam = (uchar)!is_new_seq_abandon;
 }
 
+/* Deletes pending BAM work.  Dispatched work is not tracked: execution
+   answers it. */
+static void
+pack_tile_bam_retire_pending_work( fd_pack_ctx_t * ctx ) {
+  while( ctx->bam_work_cnt ) {
+    ulong work_idx = ctx->bam_work_cnt-1UL;
+    pack_bam_work_t const * work = &ctx->bam_work[ work_idx ];
+    ulong deleted = fd_pack_delete_bam_bundle(
+        ctx->pack,
+        (fd_ed25519_sig_t const *)(void const *)&work->sig[ 0 ],
+        work->seq_id,
+        work->scheduler_gen );
+    FD_MCNT_INC( PACK, TXN_EVICTED, deleted );
+    pack_tile_bam_work_swap_remove( ctx, work_idx );
+  }
+}
+
 /* Retire partial and pending work before acknowledging the new ownership
    generation.  Dispatched work is not tracked: execution answers it. */
 static __attribute__((noinline)) void
@@ -703,17 +721,7 @@ pack_tile_sync_bam_ownership_generation_slow( fd_pack_ctx_t * ctx,
       ctx->cur_spot                     = NULL;
     }
 
-    while( ctx->bam_work_cnt ) {
-      ulong work_idx = ctx->bam_work_cnt-1UL;
-      pack_bam_work_t const * work = &ctx->bam_work[ work_idx ];
-      ulong deleted = fd_pack_delete_bam_bundle(
-          ctx->pack,
-          (fd_ed25519_sig_t const *)(void const *)&work->sig[ 0 ],
-          work->seq_id,
-          work->scheduler_gen );
-      FD_MCNT_INC( PACK, TXN_EVICTED, deleted );
-      pack_tile_bam_work_swap_remove( ctx, work_idx );
-    }
+    pack_tile_bam_retire_pending_work( ctx );
     ctx->bam_ownership_gen = requested_gen;
   }
 
@@ -800,7 +808,12 @@ PACK_TILE_BAM_HOOK _Bool
 pack_tile_bam_after_credit_begin( fd_pack_ctx_t * ctx ) {
   pack_tile_sync_bam_ownership_generation( ctx );
   /* Observed even when not leader, so activation purges promptly. */
-  return pack_tile_snapshot_bam_override( ctx );
+  _Bool bam_override = pack_tile_snapshot_bam_override( ctx );
+  /* Only the override dispatches BAM work, and pending BAM work holds
+     the Block Engine bundles behind it.  Work admitted while the bam
+     tile handed ownership back is retired here, before any scheduling. */
+  if( FD_UNLIKELY( !bam_override && ctx->bam_work_cnt ) ) pack_tile_bam_retire_pending_work( ctx );
+  return bam_override;
 }
 
 /* Peeks at the bundle candidate for the mode and returns its readiness
