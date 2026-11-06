@@ -1,0 +1,3 @@
+HTTP/1.1 302 Found
+Location: //b.example:8443/v1/nodes#f
+
