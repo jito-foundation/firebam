@@ -964,53 +964,6 @@ reg_hdr( char const *   p,
   return v;
 }
 
-/* reg_chunked decodes buf[0,len) in place.  Returns 1 with *out_len
-   once the last chunk and trailers are in, 0 if more bytes are needed,
-   -1 if malformed.  With write==0 it only scans. */
-
-static int
-reg_chunked( char * buf,
-             ulong  len,
-             int    write,
-             ulong * out_len ) {
-  ulong r = 0UL, w = 0UL;
-  for(;;) {
-    ulong sz = 0UL, digits = 0UL;
-    while( r<len ) {
-      char h = buf[ r ];
-      ulong d;
-      if(      h>='0' && h<='9' ) d = (ulong)(h-'0');
-      else if( h>='a' && h<='f' ) d = (ulong)(h-'a'+10);
-      else if( h>='A' && h<='F' ) d = (ulong)(h-'A'+10);
-      else break;
-      sz = (sz<<4)|d;
-      if( ++digits>8UL || sz>FD_BAM_REGISTRY_BODY_MAX ) return -1;
-      r++;
-    }
-    if( r>=len ) return 0;
-    if( !digits ) return -1;
-    while( r<len && buf[ r ]!='\n' ) r++; /* chunk extensions */
-    if( r>=len ) return 0;
-    if( buf[ r-1UL ]!='\r' ) return -1;
-    r++;
-    if( !sz ) break;
-    if( len-r<sz+2UL ) return 0;
-    if( buf[ r+sz ]!='\r' || buf[ r+sz+1UL ]!='\n' ) return -1;
-    if( write ) memmove( buf+w, buf+r, sz );
-    w += sz;
-    r += sz+2UL;
-  }
-  for(;;) { /* trailers end at an empty line */
-    char const * nl = memchr( buf+r, '\n', len-r );
-    if( !nl ) return 0;
-    ulong line = (ulong)(nl-(buf+r));
-    r += line+1UL;
-    if( line==0UL || (line==1UL && nl[-1]=='\r') ) break;
-  }
-  *out_len = w;
-  return 1;
-}
-
 static char const *
 reg_hdr_end( char const * buf,
              ulong        len ) {
@@ -1020,8 +973,7 @@ reg_hdr_end( char const * buf,
   return NULL;
 }
 
-/* Any 2xx passes, as with reqwest's error_for_status.  Unlike reqwest,
-   1xx interim responses fail the fetch. */
+/* Any 2xx passes, as with reqwest's error_for_status. */
 
 int
 fd_bam_registry_http_body( char *  buf,
@@ -1029,16 +981,13 @@ fd_bam_registry_http_body( char *  buf,
                            int     eof ) {
   char const * hdr_end = reg_hdr_end( buf, *len );
   if( !hdr_end ) return eof ? -1 : 0;
-  ulong hdr_len = (ulong)(hdr_end-buf);
   if( *len<12UL || memcmp( buf, "HTTP/1.", 7 ) || buf[8]!=' ' ||
       buf[9]!='2' || buf[10]<'0' || buf[10]>'9' ||
       buf[11]<'0' || buf[11]>'9' ) {
     return -1;
   }
   long content_len = -1L;
-  int  chunked     = 0;
-  char const * p = buf;
-  while( p<hdr_end ) {
+  for( char const * p=buf; p<hdr_end; ) {
     char const * nl = memchr( p, '\n', (ulong)(hdr_end-p) );
     if( !nl ) nl = hdr_end;
     char const * ve = NULL;
@@ -1052,31 +1001,18 @@ fd_bam_registry_http_body( char *  buf,
         if( content_len>(long)FD_BAM_REGISTRY_BODY_MAX ) return -1;
       }
     }
-    v = reg_hdr( p, nl, "transfer-encoding:", &ve );
-    if( v ) {
-      if( (ulong)(ve-v)!=7UL || !reg_lower_eq( v, "chunked", 7UL ) ) return -1;
-      chunked = 1;
-    }
+    /* Servers must not send a transfer coding to HTTP/1.0 clients. */
+    if( reg_hdr( p, nl, "transfer-encoding:", &ve ) ) return -1;
     p = nl+1;
   }
-  ulong body_at = hdr_len+4UL;
-  if( chunked ) {
-    ulong n = 0UL;
-    int rc = reg_chunked( buf+body_at, *len-body_at, 0, &n );
-    if( rc<=0 ) return ( rc<0 || eof ) ? -1 : 0;
-    reg_chunked( buf+body_at, *len-body_at, 1, &n );
-    memmove( buf, buf+body_at, n );
-    *len = n;
-    return 1;
-  }
+  ulong body_at = (ulong)(hdr_end-buf)+4UL;
+  ulong n       = *len-body_at;
   if( content_len>=0L ) {
-    if( *len<body_at+(ulong)content_len ) return eof ? -1 : 0;
-    memmove( buf, buf+body_at, (ulong)content_len );
-    *len = (ulong)content_len;
-    return 1;
+    if( n<(ulong)content_len ) return eof ? -1 : 0;
+    n = (ulong)content_len;
+  } else if( !eof ) {
+    return 0;
   }
-  if( !eof ) return 0;
-  ulong n = *len-body_at;
   memmove( buf, buf+body_at, n );
   *len = n;
   return 1;
@@ -1109,27 +1045,21 @@ fd_bam_registry_http_redirect( char const * buf,
   return 0;
 }
 
+/* reg_set_path sets the fetch path to p[0,n) without its fragment,
+   adding the leading '/' an absolute URL may omit. */
+
 static int
 reg_set_path( fd_bam_registry_t * reg,
-              char const *        a,
-              ulong               a_len,
-              char const *        b,
-              ulong               b_len ) {
-  ulong bn = 0UL;
-  while( bn<b_len && b[ bn ]!='#' ) bn++;
-  if( a_len+bn+1UL>=FD_BAM_REGISTRY_PATH_MAX ) return -1;
-  char path[ FD_BAM_REGISTRY_PATH_MAX ];
-  if( a_len ) memcpy( path, a, a_len );
-  memcpy( path+a_len, b, bn );
-  ulong n = a_len+bn;
-  if( !n || path[0]!='/' ) {
-    memmove( path+1, path, n );
-    path[0] = '/';
-    n++;
-  }
-  memcpy( reg->f_path, path, n );
-  reg->f_path[ n ] = '\0';
-  reg->f_path_len = (ushort)n;
+              char const *        p,
+              ulong               n ) {
+  ulong k = 0UL;
+  while( k<n && p[ k ]!='#' ) k++;
+  ulong slash = ( !k || p[0]!='/' ) ? 1UL : 0UL;
+  if( k+slash>=FD_BAM_REGISTRY_PATH_MAX ) return -1;
+  reg->f_path[0] = '/';
+  memcpy( reg->f_path+slash, p, k );
+  reg->f_path_len = (ushort)(k+slash);
+  reg->f_path[ reg->f_path_len ] = '\0';
   return 0;
 }
 
@@ -1137,40 +1067,18 @@ int
 fd_bam_registry_redirect_target( fd_bam_registry_t * reg,
                                  char const *        loc ) {
   ulong n = strlen( loc );
-  char abs[ FD_URL_MAX+FD_BAM_REGISTRY_PATH_MAX+8UL ];
-  if( n>=2UL && loc[0]=='/' && loc[1]=='/' ) {
-    if( !fd_cstr_printf_check( abs, sizeof(abs), &n, "%s:%s", reg->f_ssl ? "https" : "http", loc ) ) return -1;
-    loc = abs;
-  }
-  if( !strncmp( loc, "http://", 7UL ) || !strncmp( loc, "https://", 8UL ) ) {
-    fd_url_t url[1];
-    ushort port = 0;
-    _Bool  ssl  = 0;
-    if( fd_url_parse_endpoint( url, loc, n, &port, &ssl, "BAM registry redirect" ) ) return -1;
-    if( !url->host_len || url->host_len>=sizeof(reg->f_host) ) return -1;
-    if( reg_set_path( reg, NULL, 0UL, url->tail, url->tail_len ) ) return -1;
-    memcpy( reg->f_host, url->host, url->host_len );
-    reg->f_host[ url->host_len ] = '\0';
-    reg->f_host_len = (ushort)url->host_len;
-    reg->f_port     = port;
-    reg->f_ssl      = (uchar)ssl;
-    return 0;
-  }
-  if( loc[0]=='/' ) return reg_set_path( reg, NULL, 0UL, loc, n );
-  /* Any other scheme is an error in reqwest. */
-  for( char const * c=loc; *c && *c!='/' && *c!='?' && *c!='#'; c++ ) if( *c==':' ) return -1;
-  /* Relative reference: keep the base up to its last '/', or the whole
-     path when only the query changes. */
-  ulong q = 0UL;
-  while( q<reg->f_path_len && reg->f_path[ q ]!='?' ) q++;
-  ulong base = q;
-  if( loc[0]!='?' ) {
-    base = 0UL;
-    for( ulong i=0UL; i<q; i++ ) if( reg->f_path[ i ]=='/' ) base = i+1UL;
-  }
-  char cur[ FD_BAM_REGISTRY_PATH_MAX ];
-  memcpy( cur, reg->f_path, base );
-  return reg_set_path( reg, cur, base, loc, n );
+  if( loc[0]=='/' && loc[1]!='/' ) return reg_set_path( reg, loc, n );
+  fd_url_t url[1];
+  ushort   port = 0;
+  _Bool    ssl  = 0;
+  if( fd_url_parse_endpoint( url, loc, n, &port, &ssl, "BAM registry redirect" ) ) return -1;
+  if( !url->host_len || url->host_len>=sizeof(reg->f_host) || reg_set_path( reg, url->tail, url->tail_len ) ) return -1;
+  memcpy( reg->f_host, url->host, url->host_len );
+  reg->f_host[ url->host_len ] = '\0';
+  reg->f_host_len = (ushort)url->host_len;
+  reg->f_port     = port;
+  reg->f_ssl      = (uchar)ssl;
+  return 0;
 }
 
 /* ---- probe ------------------------------------------------------- */
@@ -1501,7 +1409,7 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
   char req[ FD_BAM_REGISTRY_PATH_MAX+FD_FQDN_BUF_MAX+128UL ];
   ulong req_len = 0UL;
   if( !fd_cstr_printf_check( req, sizeof(req), &req_len,
-                             "GET %s HTTP/1.1\r\nHost: %s%s\r\nConnection: close\r\nAccept: */*\r\n\r\n",
+                             "GET %s HTTP/1.0\r\nHost: %s%s\r\nAccept: */*\r\n\r\n",
                              reg->f_path, reg->f_host, port ) ) {
     reg_fetch_done( ctx, REG_FETCH_HTTP );
     return;
@@ -1516,6 +1424,7 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
   char loc[ FD_URL_MAX+FD_BAM_REGISTRY_PATH_MAX ];
   if( fd_bam_registry_http_redirect( reg->body, reg->body_len, loc, sizeof(loc) ) ) {
     if( ++reg->redirects>FD_BAM_REGISTRY_REDIRECT_MAX || fd_bam_registry_redirect_target( reg, loc ) ) {
+      FD_LOG_WARNING(( "BAM registry redirect to `%s` not followed", loc ));
       reg_fetch_done( ctx, REG_FETCH_REDIRECT );
       return;
     }

@@ -190,14 +190,9 @@ test_http( void ) {
   FD_TEST( http( "HTTP/1.1 404 Not Found\r\n\r\n", 1, body, &n )==-1 );
   FD_TEST( http( "HTTP/1.1 503 Busy\r\n\r\n", 1, body, &n )==-1 );
 
-  char const * chunked =
-    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
-    "3;ext=1\r\n{\"a\r\n4\r\n\":1}\r\n0\r\nX-Trailer: y\r\n\r\n";
-  FD_TEST( http( chunked, 0, body, &n )==1 && !strcmp( body, "{\"a\":1}" ) );
-  FD_TEST( http( "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n{\"a", 0, body, &n )==0 );
-  FD_TEST( http( "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n{\"a", 1, body, &n )==-1 );
-  FD_TEST( http( "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n", 1, body, &n )==-1 );
-  FD_TEST( http( "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n", 1, body, &n )==-1 );
+  /* An HTTP/1.0 client gets no transfer coding. */
+  FD_TEST( http( "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n", 1, body, &n )==-1 );
+  FD_TEST( http( "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\n{}junk", 0, body, &n )==1 && !strcmp( body, "{}" ) );
 }
 
 static void
@@ -354,18 +349,20 @@ test_redirect( void ) {
   strcpy( reg->f_path, "/v1/nodes?x=1" ); reg->f_path_len = 13;
   reg->f_port = 443; reg->f_ssl = 1;
 
-  FD_TEST( !fd_bam_registry_redirect_target( reg, "list#frag" ) );
-  FD_TEST( !strcmp( reg->f_path, "/v1/list" ) && reg->f_path_len==8 );
-  FD_TEST( !fd_bam_registry_redirect_target( reg, "?y=2" ) );
-  FD_TEST( !strcmp( reg->f_path, "/v1/list?y=2" ) );
-  FD_TEST( !fd_bam_registry_redirect_target( reg, "/root" ) );
-  FD_TEST( !strcmp( reg->f_path, "/root" ) && !strcmp( reg->f_host, "a.example" ) );
-  FD_TEST( !fd_bam_registry_redirect_target( reg, "//b.example:8443/n" ) );
-  FD_TEST( !strcmp( reg->f_host, "b.example" ) && reg->f_port==8443 && reg->f_ssl && !strcmp( reg->f_path, "/n" ) );
+  FD_TEST( !fd_bam_registry_redirect_target( reg, "/root#frag" ) );
+  FD_TEST( !strcmp( reg->f_path, "/root" ) && reg->f_path_len==5 && !strcmp( reg->f_host, "a.example" ) );
+  FD_TEST( !fd_bam_registry_redirect_target( reg, "https://b.example:8443/n?x=1" ) );
+  FD_TEST( !strcmp( reg->f_host, "b.example" ) && reg->f_port==8443 && reg->f_ssl && !strcmp( reg->f_path, "/n?x=1" ) );
   FD_TEST( !fd_bam_registry_redirect_target( reg, "http://c.example" ) );
   FD_TEST( !strcmp( reg->f_host, "c.example" ) && reg->f_port==80 && !reg->f_ssl && !strcmp( reg->f_path, "/" ) );
+  FD_TEST( !fd_bam_registry_redirect_target( reg, "http://c.example?y" ) );
+  FD_TEST( !strcmp( reg->f_path, "/?y" ) );
+  /* Registries answer with absolute URLs or paths; nothing else is
+     followed. */
+  FD_TEST( fd_bam_registry_redirect_target( reg, "list" )==-1 );
+  FD_TEST( fd_bam_registry_redirect_target( reg, "?y=2" )==-1 );
+  FD_TEST( fd_bam_registry_redirect_target( reg, "//d.example/n" )==-1 );
   FD_TEST( fd_bam_registry_redirect_target( reg, "ftp://d.example/" )==-1 );
-  FD_TEST( fd_bam_registry_redirect_target( reg, "a:b/" )==-1 );
   FD_TEST( !strcmp( reg->f_host, "c.example" ) );
 }
 
@@ -376,8 +373,13 @@ fetch_total( fd_bam_registry_t const * reg ) {
   return total;
 }
 
+/* test_fetch_loopback fetches path from a local server that answers
+   /old with a redirect to /v1/nodes and anything else with status and
+   body, one request per connection. */
+
 static void
-test_fetch_loopback( char const * status,
+test_fetch_loopback( char const * path,
+                     char const * status,
                      char const * body,
                      ulong        result ) {
   static fd_bam_tile_t ctx[1];
@@ -391,26 +393,30 @@ test_fetch_loopback( char const * status,
   struct sockaddr_in addr = { .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
   socklen_t addr_sz = sizeof(addr);
   FD_TEST( !bind( lfd, fd_type_pun( &addr ), addr_sz ) );
-  FD_TEST( !listen( lfd, 1 ) );
+  FD_TEST( !listen( lfd, 4 ) );
   FD_TEST( !getsockname( lfd, fd_type_pun( &addr ), &addr_sz ) );
   FD_TEST( fcntl( lfd, F_SETFL, O_NONBLOCK )==0 );
+  ushort port = fd_ushort_bswap( addr.sin_port );
 
   char raw[ 64 ];
-  FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "http://127.0.0.1:%hu/v1/nodes", fd_ushort_bswap( addr.sin_port ) ) );
+  FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "http://127.0.0.1:%hu%s", port, path ) );
   fd_url_t url[1];
-  ushort   port = 0;
-  _Bool    ssl  = 0;
-  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &port, &ssl, NULL ) );
+  ushort   url_port = 0;
+  _Bool    ssl      = 0;
+  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &url_port, &ssl, NULL ) );
   char err[ 128 ];
-  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, port, err, sizeof(err) )==1 );
+  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, url_port, err, sizeof(err) )==1 );
 
   char resp[ 256 ];
   ulong resp_len = 0UL;
   FD_TEST( fd_cstr_printf_check( resp, sizeof(resp), &resp_len, "HTTP/1.0 %s\r\nContent-Length: %lu\r\n\r\n%s", status, strlen( body ), body ) );
+  char moved[ 128 ];
+  ulong moved_len = 0UL;
+  FD_TEST( fd_cstr_printf_check( moved, sizeof(moved), &moved_len, "HTTP/1.1 301 Moved\r\nLocation: http://127.0.0.1:%hu/v1/nodes\r\n\r\n", port ) );
 
-  /* One-shot server: read the request, answer, half-close. */
+  /* Answer each request, then close. */
   int   cfd = -1;
-  int   sent = 0;
+  ulong served = 0UL;
   char  req[ 1024 ];
   ulong req_len = 0UL;
   fd_bam_registry_t * reg = &ctx->registry;
@@ -421,19 +427,23 @@ test_fetch_loopback( char const * status,
     fd_bam_registry_step( ctx, &busy, &dl );
     if( cfd<0 ) {
       cfd = accept( lfd, NULL, NULL );
+      req_len = 0UL;
       continue;
     }
-    if( sent ) continue;
     long n = recv( cfd, req+req_len, sizeof(req)-1UL-req_len, MSG_DONTWAIT );
     if( n>0 ) req_len += (ulong)n;
     req[ req_len ] = '\0';
-    if( strstr( req, "\r\n\r\n" ) ) {
-      FD_TEST( send( cfd, resp, resp_len, MSG_NOSIGNAL )==(long)resp_len );
-      FD_TEST( !shutdown( cfd, SHUT_WR ) );
-      sent = 1;
-    }
+    if( !strstr( req, "\r\n\r\n" ) ) continue;
+    FD_TEST( !strncmp( req, "GET ", 4UL ) );
+    FD_TEST( strstr( req, " HTTP/1.0\r\nHost: 127.0.0.1:" ) );
+    int old = !strncmp( req+4, "/old ", 5UL );
+    FD_TEST( old || !strncmp( req+4, "/v1/nodes ", 10UL ) );
+    FD_TEST( send( cfd, old ? moved : resp, old ? moved_len : resp_len, MSG_NOSIGNAL )==(long)( old ? moved_len : resp_len ) );
+    close( cfd );
+    cfd = -1;
+    served++;
   }
-  FD_TEST( !strncmp( req, "GET /v1/nodes HTTP/1.1\r\nHost: 127.0.0.1:", 40UL ) );
+  FD_TEST( served==( strcmp( path, "/old" ) ? 1UL : 2UL ) );
   FD_TEST( fetch_total( reg )==1UL && reg->fetch_cnt[ result ]==1UL );
   if( result==FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX ) {
     FD_TEST( reg->node_cnt==1UL );
@@ -444,7 +454,6 @@ test_fetch_loopback( char const * status,
   }
 
   fd_bam_registry_disable( ctx );
-  close( cfd );
   close( lfd );
 }
 
@@ -523,10 +532,11 @@ main( int     argc,
   test_take_url();
   test_redirect();
   char const * one = "{\"generated_at\":\"2026-01-01T00:00:00Z\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
-  test_fetch_loopback( "200 OK", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX );
-  test_fetch_loopback( "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX );
-  test_fetch_loopback( "200 OK", "{\"nodes\":", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX );
-  test_fetch_loopback( "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX );
+  test_fetch_loopback( "/v1/nodes", "200 OK", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX );
+  test_fetch_loopback( "/old", "200 OK", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX );
+  test_fetch_loopback( "/v1/nodes", "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX );
+  test_fetch_loopback( "/v1/nodes", "200 OK", "{\"nodes\":", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX );
+  test_fetch_loopback( "/v1/nodes", "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX );
   test_fetch_refused();
   test_probe_join();
   FD_LOG_NOTICE(( "pass" ));

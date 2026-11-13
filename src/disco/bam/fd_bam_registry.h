@@ -181,10 +181,11 @@ long
 fd_bam_registry_rfc3339( char const * s,
                          ulong        n );
 
-/* fd_bam_registry_http_body strips an HTTP/1.x response in buf[0,*len)
-   to its body in place.  Content-Length, chunked, and read-to-EOF
-   bodies are accepted.  Returns 1 with *len set, 0 if more bytes are
-   needed, -1 on a non-2xx status or malformed framing. */
+/* fd_bam_registry_http_body strips the response to an HTTP/1.0
+   request in buf[0,*len) to its body in place.  The body is
+   Content-Length bytes, or runs to EOF.  Returns 1 with *len set, 0 if
+   more bytes are needed, -1 on a non-2xx status, a transfer coding, or
+   malformed framing. */
 
 int
 fd_bam_registry_http_body( char *  buf,
@@ -202,10 +203,11 @@ fd_bam_registry_http_redirect( char const * buf,
                                char *       loc,
                                ulong        loc_max );
 
-/* fd_bam_registry_redirect_target points the fetch target at loc,
-   resolved against the current one: absolute, scheme-relative,
-   absolute-path, or relative-path, without the fragment.  Returns -1
-   for a non-http(s) scheme, a bad URL, or an oversized host or path. */
+/* fd_bam_registry_redirect_target points the fetch at loc: an
+   absolute http(s) URL, or a path on the current host, without the
+   fragment.  Returns -1 for anything else (relative and
+   scheme-relative references, other schemes) and for an oversized
+   host or path. */
 
 int
 fd_bam_registry_redirect_target( fd_bam_registry_t * reg,
