@@ -901,14 +901,22 @@ fd_bam_test_check_credit( fd_bam_tile_t *     ctx,
 
 static void
 fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
-  ctx->ctrl->url[0] = '\0';
-  ctx->ctrl->sni[0] = '\0';
+  ctx->ctrl->url[0]  = '\0';
+  ctx->ctrl->sni[0]  = '\0';
+  ctx->ctrl->node[0] = '\0';
   ctx->ctrl->enable = ctx->enabled;
   FD_VOLATILE( ctx->ctrl->applied_enable ) = ctx->enabled;
-  if( FD_UNLIKELY( !ctx->server_fqdn_len || !ctx->server_tcp_port ) ) {
-    if( ctx->registry.on ) fd_cstr_ncpy( ctx->ctrl->url, ctx->registry.url, sizeof(ctx->ctrl->url) );
+  /* Registry mode reports the registry URL and the node it picked; the
+     node's IP is its TLS name, so there is no SNI. */
+  if( ctx->registry.on ) {
+    fd_bam_registry_t const * reg = &ctx->registry;
+    fd_cstr_ncpy( ctx->ctrl->url, reg->url, sizeof(ctx->ctrl->url) );
+    if( reg->have_dial ) fd_cstr_printf( ctx->ctrl->node, sizeof(ctx->ctrl->node), NULL, FD_IP4_ADDR_FMT ":%hu",
+                                         FD_IP4_ADDR_FMT_ARGS( reg->dial_ip4 ), reg->dial_port );
+    else                 fd_cstr_ncpy( ctx->ctrl->node, "(none)", sizeof(ctx->ctrl->node) );
     return;
   }
+  if( FD_UNLIKELY( !ctx->server_fqdn_len || !ctx->server_tcp_port ) ) return;
   snprintf( ctx->ctrl->url, sizeof(ctx->ctrl->url), "%s://%.*s:%u",
             ctx->is_ssl ? "https" : "http", ctx->server_fqdn_len, ctx->server_fqdn, ctx->server_tcp_port );
   fd_cstr_ncpy( ctx->ctrl->sni, ctx->server_sni, sizeof( ctx->ctrl->sni ) );
@@ -1007,6 +1015,10 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     }
     if( FD_UNLIKELY( !runtime_url.port_len ) ) new_port = new_ssl ? FD_BAM_HTTPS_PORT : FD_BAM_HTTP_PORT;
 
+    if( FD_UNLIKELY( ( command & FD_BAM_CTRL_CMD_SNI ) && fd_bam_registry_is_url( &runtime_url ) ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "--sni does not apply to a BAM registry URL; nodes are verified by IP" );
+      return -1;
+    }
     int reg_rc = fd_bam_registry_take_url( ctx, ctx->ctrl->url, &runtime_url, new_ssl, new_port, err, err_sz );
     if( reg_rc<0 ) return -1;
     if( reg_rc>0 ) {
@@ -1025,6 +1037,10 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
                                  new_ssl != !!ctx->is_ssl );
     }
   } else {
+    if( FD_UNLIKELY( ( command & FD_BAM_CTRL_CMD_SNI ) && ctx->registry.on ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "--sni does not apply to a BAM registry URL; nodes are verified by IP" );
+      return -1;
+    }
     fd_cstr_ncpy( new_host, ctx->server_fqdn, sizeof( new_host ) );
   }
 
@@ -1043,6 +1059,8 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
       return -1;
     }
     if( command & FD_BAM_CTRL_CMD_URL ) {
+      /* Leave registry mode only once the direct URL is known good. */
+      if( ctx->registry.on ) fd_bam_registry_disable( ctx );
       fd_cstr_ncpy( ctx->server_fqdn, new_host, sizeof( ctx->server_fqdn ) );
       ctx->server_fqdn_len = (ushort)fd_cstr_nlen( ctx->server_fqdn, sizeof( ctx->server_fqdn ) );
       ctx->server_tcp_port = new_port;
@@ -1117,6 +1135,7 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *        ctx,
   int reg_rc = fd_bam_registry_take_url( ctx, tile->bam.url, url, is_ssl, ctx->server_tcp_port, NULL, 0UL );
   if( FD_UNLIKELY( reg_rc<0 ) ) FD_LOG_ERR(( "Rejected BAM registry URL `%s`", tile->bam.url ));
   if( reg_rc>0 ) {
+    if( FD_UNLIKELY( tile->bam.sni[0] ) ) FD_LOG_WARNING(( "[tiles.bam.sni] is ignored with a registry URL; nodes are verified by IP" ));
     fd_bam_tile_clear_dial( ctx );
     fd_bam_tile_ctrl_update_current( ctx );
     return;

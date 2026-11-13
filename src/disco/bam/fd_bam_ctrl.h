@@ -24,6 +24,7 @@ typedef struct fd_bam_ctrl {
   char url[ FD_URL_MAX ];            /* Desired gRPC endpoint; empty string clears URL when command includes URL. */
   char sni[ FD_SNI_BUF_MAX ];        /* (Optional) Desired TLS SNI override; empty string clears override when command includes SNI. */
   char error[ FD_BAM_CTRL_ERR_MAX ]; /* Error message when state==ERROR; cleared by CLI for new requests. */
+  char node[ 24 ];                   /* Registry URL only: the node dialed ("ip:port", "(none)" before one is chosen); empty otherwise.  Written only by the BAM tile. */
 } fd_bam_ctrl_t;
 
 #endif /* HEADER_fd_src_disco_bam_fd_bam_ctrl_h */

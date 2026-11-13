@@ -306,10 +306,7 @@ fd_bam_registry_take_url( fd_bam_tile_t *  ctx,
                           ushort           port,
                           char *           err,
                           ulong            err_sz ) {
-  if( !fd_bam_registry_is_url( url ) ) {
-    if( ctx->registry.on ) fd_bam_registry_disable( ctx );
-    return 0;
-  }
+  if( !fd_bam_registry_is_url( url ) ) return 0;
   /* reqwest's default ports, not the BAM node ports the caller
      filled in. */
   if( !url->port_len ) port = is_ssl ? (ushort)443 : (ushort)80;

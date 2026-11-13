@@ -223,7 +223,8 @@ fd_bam_registry_redirect_target( fd_bam_registry_t * reg,
                                  char const *        loc );
 
 /* fd_bam_registry_take_url returns 1 when raw is now the registry
-   target, 0 when raw is a direct node (registry mode cleared), and
+   target, 0 when raw is a direct node (nothing changed; the caller
+   leaves registry mode once it has accepted the URL), and
    -1 when its host or path is too long or no system CA bundle was
    loaded (registry fetches and nodes are always verified). */
 

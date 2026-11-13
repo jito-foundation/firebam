@@ -326,6 +326,8 @@ test_take_url( void ) {
   char const * direct = "https://203.0.113.1:50056";
   FD_TEST( fd_url_parse_cstr( url, direct, strlen( direct ), NULL ) );
   FD_TEST( !fd_bam_registry_take_url( ctx, direct, url, 1, 50056, err, sizeof(err) ) );
+  FD_TEST( ctx->registry.on ); /* the caller leaves registry mode */
+  fd_bam_registry_disable( ctx );
   FD_TEST( !ctx->registry.on );
   FD_TEST( !ctx->tls->ca_store );
 }
