@@ -961,8 +961,6 @@ fd_bam_tile_dial_node( fd_bam_tile_t *                ctx,
   ctx->backoff_until = 0L;
   ctx->next_step_deadline = 0L;
   if( ctx->ctrl ) fd_bam_tile_ctrl_update_current( ctx );
-  FD_LOG_INFO(( "BAM registry selected " FD_IP4_ADDR_FMT ":%hu (%s)",
-                FD_IP4_ADDR_FMT_ARGS( node->ip4 ), node->grpc_port, node->region ));
   return 1;
 }
 

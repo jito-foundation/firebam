@@ -39,6 +39,7 @@
    covers ~160 unreachable nodes (PROBE_CONNECT_NS each) in budget. */
 #define FD_BAM_REGISTRY_PROBE_FANOUT      (8UL)
 #define FD_BAM_REGISTRY_POLL_NS           ((long)1e9)
+#define FD_BAM_REGISTRY_WARN_INTERVAL_NS  ((long)60e9)
 
 /* A healthy session is left alone this many slots either side of our
    next leader slot: no fetch, probe, or node switch.  A switch needs
@@ -82,6 +83,16 @@ struct fd_bam_registry_slot {
 };
 
 typedef struct fd_bam_registry_slot fd_bam_registry_slot_t;
+
+/* A repeated failure warns once a minute; reason 0 means the last
+   attempt succeeded. */
+
+struct fd_bam_registry_warn {
+  ulong reason;
+  long  at;
+};
+
+typedef struct fd_bam_registry_warn fd_bam_registry_warn_t;
 
 struct fd_bam_registry {
   uchar  on;
@@ -153,6 +164,10 @@ struct fd_bam_registry {
   void *                   probe_mem;
   fd_bam_registry_slot_t * slots;
   ulong                    slot_cnt;
+
+  char                   why[ 128 ]; /* detail of the current fetch's failure */
+  fd_bam_registry_warn_t fetch_warn[1];
+  fd_bam_registry_warn_t probe_warn[1];
 
   ulong fetch_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_CNT ];
   ulong round_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_ROUND_RESULT_CNT ];
@@ -255,9 +270,10 @@ fd_bam_registry_step( fd_bam_tile_t * ctx,
 
 /* fd_bam_registry_on_fetch replaces the cached list when any node
    differs, region included, and drops the ranking.  live is non-zero
-   when the session is CONNECTED_HEALTHY. */
+   when the session is CONNECTED_HEALTHY.  Returns 1 if the list
+   changed. */
 
-void
+int
 fd_bam_registry_on_fetch( fd_bam_registry_t *            reg,
                           fd_bam_registry_node_t const * nodes,
                           ulong                          cnt,

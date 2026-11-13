@@ -73,6 +73,26 @@ reg_fail_msg( char *       err,
   FD_LOG_WARNING(( "%s", msg ));
 }
 
+/* reg_log logs msg at WARNING for the first failure, a new reason, or
+   a minute after the last warning, and at INFO otherwise.  reason 0
+   records a success. */
+
+static void
+reg_log( fd_bam_registry_warn_t * w,
+         ulong                    reason,
+         long                     now,
+         char const *             msg ) {
+  if( !reason ) {
+    w->reason = 0UL;
+  } else if( w->reason!=reason || now-w->at>=FD_BAM_REGISTRY_WARN_INTERVAL_NS ) {
+    w->reason = reason;
+    w->at     = now;
+    FD_LOG_WARNING(( "%s", msg ));
+  } else {
+    FD_LOG_INFO(( "%s", msg ));
+  }
+}
+
 static void
 reg_schedule( fd_bam_registry_t * reg,
               long                now,
@@ -212,14 +232,15 @@ reg_nodes_match( fd_bam_registry_t const *      reg,
   return 1;
 }
 
-void
+int
 fd_bam_registry_on_fetch( fd_bam_registry_t *            reg,
                           fd_bam_registry_node_t const * nodes,
                           ulong                          cnt,
                           long                           now,
                           int                            live,
                           fd_rng_t *                     rng ) {
-  if( !reg_nodes_match( reg, nodes, cnt ) ) {
+  int changed = !reg_nodes_match( reg, nodes, cnt );
+  if( changed ) {
     memcpy( reg->nodes, nodes, cnt*sizeof(*nodes) );
     reg->node_cnt   = cnt;
     reg->ranked_cnt = 0UL;
@@ -227,6 +248,7 @@ fd_bam_registry_on_fetch( fd_bam_registry_t *            reg,
     reg->probe_at   = now;
   }
   reg_schedule( reg, now, live, rng );
+  return changed;
 }
 
 void
@@ -368,12 +390,9 @@ fd_bam_registry_take_url( fd_bam_tile_t *  ctx,
    failed certificate verification, 1 for any other TLS failure. */
 
 static int
-reg_tls_failed( fd_tlsrec_conn_t * conn,
-                fd_tls_t const *   tls ) {
+reg_tls_failed( fd_tlsrec_conn_t const * conn ) {
   if( !fd_tlsrec_conn_is_failed( conn ) ) return 0;
-  if( conn->hs.base.reason!=FD_TLS_REASON_CERT_VERIFY ) return 1;
-  FD_LOG_WARNING(( "BAM registry TLS certificate rejected for %s", tls->server_name ));
-  return 2;
+  return conn->hs.base.reason==FD_TLS_REASON_CERT_VERIFY ? 2 : 1;
 }
 
 /* reg_tls_init starts a client handshake verified against ca. */
@@ -405,14 +424,23 @@ reg_tls_init( fd_x509_ca_store_t const * ca,
   return 0;
 }
 
+static void
+reg_connect_failed( fd_bam_registry_t * reg,
+                    uint                ip4,
+                    ushort              port,
+                    int                 err ) {
+  fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "connect to " FD_IP4_ADDR_FMT ":%hu failed (%s)",
+                  FD_IP4_ADDR_FMT_ARGS( ip4 ), port, fd_io_strerror( err ) );
+}
+
 /* reg_socket returns a nonblocking socket with connect in flight, or
-   -1.  quiet drops the connect-failure warning for probes. */
+   -1.  fetch records a refused connect as the fetch's failure. */
 
 static int
 reg_socket( fd_bam_tile_t * ctx,
             uint            ip4,
             ushort          port,
-            int             quiet ) {
+            int             fetch ) {
   int fd = socket( AF_INET, SOCK_STREAM|SOCK_CLOEXEC, 0 );
   if( FD_UNLIKELY( fd<0 ) ) {
     FD_LOG_WARNING(( "BAM registry socket failed (%i-%s)", errno, fd_io_strerror( errno ) ));
@@ -444,7 +472,7 @@ reg_socket( fd_bam_tile_t * ctx,
   if( connect_err==-1 ) connect_err = errno;
   if( FD_UNLIKELY( connect_err && connect_err!=EINPROGRESS ) ) {
     close( fd );
-    if( !quiet ) FD_LOG_WARNING(( "BAM registry connect failed (%i-%s)", connect_err, fd_io_strerror( connect_err ) ));
+    if( fetch ) reg_connect_failed( &ctx->registry, ip4, port, connect_err );
     return -1;
   }
   return fd;
@@ -464,7 +492,7 @@ static int
 reg_dns_found( fd_bam_registry_t * reg,
                int                 cnt ) {
   if( cnt<=0 ) {
-    FD_LOG_WARNING(( "BAM registry resolve `%s` failed (%d-%s)", reg->f_host, cnt, fd_gai_strerror( cnt ) ));
+    fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "resolve `%s` failed (%s)", reg->f_host, fd_gai_strerror( cnt ) );
     return -1;
   }
   reg->addr_cnt = (ulong)cnt;
@@ -540,7 +568,7 @@ reg_fetch_connect( fd_bam_tile_t * ctx ) {
   fd_bam_registry_t * reg = &ctx->registry;
   reg_close( reg );
   while( reg->addr_i<reg->addr_cnt ) {
-    int fd = reg_socket( ctx, reg->addrs[ reg->addr_i++ ], reg->f_port, 0 );
+    int fd = reg_socket( ctx, reg->addrs[ reg->addr_i++ ], reg->f_port, 1 );
     if( fd<0 ) continue;
     reg->fd = fd;
     if( reg->f_ssl ) {
@@ -567,22 +595,19 @@ reg_fetch_begin( fd_bam_tile_t * ctx ) {
   return reg_fetch_connect( ctx ) ? REG_FETCH_CONNECT : 0UL;
 }
 
-/* reg_tcp_check returns 1 when a polled connect finished cleanly and
-   -1 when it failed. */
+/* reg_tcp_err returns 0 when a polled connect finished cleanly, else
+   why it failed as an errno. */
 
 static int
-reg_tcp_check( int   fd,
-               short revents,
-               int   quiet ) {
+reg_tcp_err( int   fd,
+             short revents ) {
   int so_err = 0;
   socklen_t sz = sizeof(so_err);
   if( FD_UNLIKELY( getsockopt( fd, SOL_SOCKET, SO_ERROR, &so_err, &sz ) || so_err ||
                    (revents & (POLLERR|POLLHUP|POLLNVAL)) ) ) {
-    if( !so_err ) so_err = ECONNABORTED;
-    if( !quiet ) FD_LOG_WARNING(( "BAM registry connect failed (%i-%s)", so_err, fd_io_strerror( so_err ) ));
-    return -1;
+    return so_err ? so_err : ECONNABORTED;
   }
-  return 1;
+  return 0;
 }
 
 static int
@@ -594,7 +619,10 @@ reg_tcp_ready( fd_bam_registry_t * reg ) {
     return -1;
   }
   if( !pr ) return 0;
-  return reg_tcp_check( reg->fd, pfd.revents, 0 );
+  int err = reg_tcp_err( reg->fd, pfd.revents );
+  if( !err ) return 1;
+  reg_connect_failed( reg, reg->addrs[ reg->addr_i-1UL ], reg->f_port, err );
+  return -1;
 }
 
 /* jito counts a session live only after wait_until_healthy_and_config_received
@@ -623,16 +651,32 @@ reg_fetch_done( fd_bam_tile_t * ctx,
     ulong cnt = 0UL;
     int rc = fd_bam_registry_parse( reg->body, body_len, reg->parsed, FD_BAM_REGISTRY_NODE_CAP, &cnt );
     if( !rc ) {
-      fd_bam_registry_on_fetch( reg, reg->parsed, cnt, now, reg_live( ctx ), ctx->rng );
+      if( fd_bam_registry_on_fetch( reg, reg->parsed, cnt, now, reg_live( ctx ), ctx->rng ) ) {
+        FD_LOG_NOTICE(( "BAM registry %s lists %lu nodes", reg->url, cnt ));
+      }
       reg->fetch_cnt[ REG_FETCH_ACCEPTED ]++;
-      FD_LOG_INFO(( "BAM registry list: %lu nodes from %s", cnt, reg->url ));
+      reg_log( reg->fetch_warn, 0UL, now, NULL );
       return;
     }
     result = rc==-2 ? REG_FETCH_EMPTY_LIST : REG_FETCH_JSON;
   }
   reg->fetch_cnt[ result ]++;
   reg_schedule( reg, now, reg_live( ctx ), ctx->rng );
-  FD_LOG_WARNING(( "BAM registry fetch failed; keeping %lu cached nodes", reg->node_cnt ));
+  static char const * const why[ FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_CNT ] = {
+    [ REG_FETCH_RESOLVE       ] = "DNS lookup failed",
+    [ REG_FETCH_CONNECT       ] = "TCP connect failed",
+    [ REG_FETCH_IO            ] = "connection failed",
+    [ REG_FETCH_CERT_REJECTED ] = "TLS certificate rejected",
+    [ REG_FETCH_TIMEOUT       ] = "no response within 5 s",
+    [ REG_FETCH_HTTP          ] = "bad HTTP response or over 256 KiB",
+    [ REG_FETCH_REDIRECT      ] = "more than 10 redirects",
+    [ REG_FETCH_JSON          ] = "malformed node list",
+    [ REG_FETCH_EMPTY_LIST    ] = "no IPv4 node listed",
+  };
+  char msg[ 512 ];
+  fd_cstr_printf( msg, sizeof(msg), NULL, "BAM registry fetch from %s failed: %s; keeping %lu cached nodes",
+                  reg->url, reg->why[0] ? reg->why : why[ result ], reg->node_cnt );
+  reg_log( reg->fetch_warn, result, now, msg );
 }
 
 static int
@@ -772,7 +816,9 @@ fd_bam_registry_redirect_target( fd_bam_registry_t * reg,
   fd_url_t url[1];
   ushort   port = 0;
   _Bool    ssl  = 0;
-  if( fd_url_parse_endpoint( url, loc, n, &port, &ssl, "BAM registry redirect" ) ) return -1;
+  /* Parse quietly first: the failed fetch's warning names loc. */
+  if( !fd_url_parse_cstr( url, loc, n, NULL ) ||
+      fd_url_parse_endpoint( url, loc, n, &port, &ssl, "BAM registry redirect" ) ) return -1;
   if( !url->host_len || url->host_len>=sizeof(reg->f_host) || reg_set_path( reg, url->tail, url->tail_len ) ) return -1;
   memcpy( reg->f_host, url->host, url->host_len );
   reg->f_host[ url->host_len ] = '\0';
@@ -795,9 +841,6 @@ reg_round_end( fd_bam_tile_t * ctx,
   for( ulong i=0UL; i<reg->slot_cnt; i++ ) slot_close( &reg->slots[ i ] );
   reg->probe_active = 0UL;
   int over = now-reg->round_start>=FD_BAM_REGISTRY_PROBE_BUDGET_NS;
-  if( over ) {
-    FD_LOG_WARNING(( "BAM probe round hit its budget, ranking the %lu nodes that answered", reg->probe_answered ));
-  }
   reg->round_cnt[ over ? FD_METRICS_ENUM_BAM_REGISTRY_PROBE_ROUND_RESULT_V_BUDGET_EXCEEDED_IDX
                        : FD_METRICS_ENUM_BAM_REGISTRY_PROBE_ROUND_RESULT_V_SETTLED_IDX ]++;
   fd_bam_registry_finish_round( reg );
@@ -806,8 +849,12 @@ reg_round_end( fd_bam_tile_t * ctx,
   reg->last_round[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_NODE_RESULT_V_UNANSWERED_IDX ] = reg->order_cnt-reg->probe_answered;
   reg->phase       = FD_BAM_REG_IDLE;
   reg->fetch_after = now+FD_BAM_REGISTRY_POLL_NS;
-  FD_LOG_INFO(( "BAM probe round: %lu/%lu nodes answered, %lu usable",
-                reg->probe_answered, reg->order_cnt, reg->ranked_cnt ));
+  FD_LOG_INFO(( "BAM probe round: %lu/%lu nodes answered, %lu usable%s",
+                reg->probe_answered, reg->order_cnt, reg->ranked_cnt, over ? ", budget exceeded" : "" ));
+  char msg[ 192 ];
+  fd_cstr_printf( msg, sizeof(msg), NULL, "BAM probe round found no usable node: %lu of %lu answered, none within %lu ms; probing again in %ld s",
+                  reg->probe_answered, reg->order_cnt, FD_BAM_REGISTRY_MAX_RTT_US/1000UL, FD_BAM_REGISTRY_PROBE_COOLDOWN_NS/(long)1e9 );
+  reg_log( reg->probe_warn, !reg->ranked_cnt, now, msg );
 }
 
 static void
@@ -832,7 +879,7 @@ slot_open( fd_bam_tile_t *          ctx,
   char ip[ 16 ];
   ulong ip_len = 0UL;
   fd_cstr_printf( ip, sizeof(ip), &ip_len, FD_IP4_ADDR_FMT, FD_IP4_ADDR_FMT_ARGS( node->ip4 ) );
-  int fd = reg_socket( ctx, node->ip4, node->grpc_port, 1 );
+  int fd = reg_socket( ctx, node->ip4, node->grpc_port, 0 );
   if( fd<0 ) return -1;
   s->fd = fd;
   if( reg_tls_init( ctx->ca_store, s->tls, s->conn, ip, ip_len, 0 ) ) {
@@ -977,6 +1024,7 @@ reg_start_fetch( fd_bam_tile_t * ctx ) {
   reg->f_port     = reg->port;
   reg->f_ssl      = reg->ssl;
   reg->redirects  = 0U;
+  reg->why[0]     = '\0';
   ulong rc = reg_fetch_begin( ctx );
   if( rc ) reg_fetch_done( ctx, rc );
 }
@@ -1016,8 +1064,12 @@ reg_drive_tls( fd_bam_tile_t * ctx,
   int rc = fd_tlsrec_sock_rx( reg->sock, reg->conn, reg->fd, &rx_sz );
   if( rc==FD_TLSREC_SOCK_ERR_EOF && !fd_tlsrec_conn_is_ready( reg->conn ) ) *failed = 1;
   else if( rc && rc!=FD_TLSREC_SOCK_ERR_EOF ) *failed = 1;
-  int tls = reg_tls_failed( reg->conn, reg->tls );
-  if( tls ) *failed = tls;
+  int tls = reg_tls_failed( reg->conn );
+  if( tls ) {
+    *failed = tls;
+    fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "TLS handshake with %s failed (%s)",
+                    reg->f_host, fd_tls_reason_cstr( reg->conn->hs.base.reason ) );
+  }
 }
 
 /* reg_fetch_rx appends received plaintext to body.  Returns 1 on EOF,
@@ -1086,7 +1138,7 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
   fd_bam_registry_t * reg = &ctx->registry;
   long now = fd_bam_now();
   if( now>=reg->deadline ) {
-    if( reg->io==FD_BAM_REG_IO_RESOLVE ) FD_LOG_WARNING(( "BAM registry resolve `%s` timed out", reg->f_host ));
+    if( reg->io==FD_BAM_REG_IO_RESOLVE ) fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "resolve `%s` timed out", reg->f_host );
     reg_fetch_done( ctx, reg->io==FD_BAM_REG_IO_RESOLVE ? REG_FETCH_RESOLVE : REG_FETCH_TIMEOUT );
     return;
   }
@@ -1136,7 +1188,7 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
   char loc[ FD_URL_MAX+FD_BAM_REGISTRY_PATH_MAX ];
   if( fd_bam_registry_http_redirect( reg->body, reg->body_len, loc, sizeof(loc) ) ) {
     if( ++reg->redirects>FD_BAM_REGISTRY_REDIRECT_MAX || fd_bam_registry_redirect_target( reg, loc ) ) {
-      FD_LOG_WARNING(( "BAM registry redirect to `%s` not followed", loc ));
+      fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "redirect to `%.64s` not followed", loc );
       reg_fetch_done( ctx, REG_FETCH_REDIRECT );
       return;
     }
@@ -1147,7 +1199,13 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
   int done = fd_bam_registry_http_body( reg->body, &reg->body_len, eof );
   if( !done && reg->body_len>=FD_BAM_REGISTRY_BODY_MAX ) done = -1;
   if( !done ) return;
-  if( done<0 ) { reg_fetch_done( ctx, REG_FETCH_HTTP ); return; }
+  if( done<0 ) {
+    ulong line = 0UL;
+    while( line<reg->body_len && line<64UL && reg->body[ line ]!='\r' && reg->body[ line ]!='\n' ) line++;
+    if( line>=12UL && !memcmp( reg->body, "HTTP/", 5UL ) ) fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "%.*s", (int)line, reg->body );
+    reg_fetch_done( ctx, REG_FETCH_HTTP );
+    return;
+  }
   reg_fetch_done( ctx, REG_FETCH_ACCEPTED );
 }
 
@@ -1160,7 +1218,7 @@ slot_drive( fd_bam_tile_t *          ctx,
             long                     now ) {
   int busy = 0;
   int io   = fd_grpc_client_rxtx_tls( s->grpc, s->conn, s->fd, now, &busy );
-  int tls  = reg_tls_failed( s->conn, s->tls ); /* counted even when io failed */
+  int tls  = reg_tls_failed( s->conn ); /* counted even when io failed */
   if( tls==2 ) ctx->registry.probe_cert_cnt++;
   if( s->dead || io || tls ) return 1;
   if( !fd_grpc_client_is_connected( s->grpc ) ) return now>=s->deadline;
@@ -1215,7 +1273,7 @@ reg_drive_probe( fd_bam_tile_t * ctx ) {
       for( ulong k=0UL; pr>0 && k<pcnt; k++ ) {
         if( !pfd[ k ].revents ) continue;
         fd_bam_registry_slot_t * s = &reg->slots[ pidx[ k ] ];
-        if( reg_tcp_check( s->fd, pfd[ k ].revents, 1 )<0 ) slot_done( ctx, s );
+        if( reg_tcp_err( s->fd, pfd[ k ].revents ) ) slot_done( ctx, s );
         else s->io = FD_BAM_REG_IO_TLS;
       }
     }
@@ -1276,8 +1334,10 @@ reg_idle( fd_bam_tile_t * ctx,
   int hold = fd_bam_tile_waiting_for_leader_slot( ctx );
   fd_bam_registry_node_t node;
   if( fd_bam_registry_choose( reg, live, hold, now, &node ) && fd_bam_tile_dial_node( ctx, &node ) ) {
-    reg->stalled_ns = 0L;
-    reg->dial_rtt_us   = reg->ranked[ reg->cursor ].rtt_us;
+    reg->stalled_ns  = 0L;
+    reg->dial_rtt_us = reg->ranked[ reg->cursor ].rtt_us;
+    FD_LOG_NOTICE(( "BAM registry selected " FD_IP4_ADDR_FMT ":%hu (%s), probe RTT %lu us",
+                    FD_IP4_ADDR_FMT_ARGS( node.ip4 ), node.grpc_port, node.region, reg->dial_rtt_us ));
   }
   *deadline = fd_long_max( reg->resync_at, reg->fetch_after );
   if( !reg->ranked_cnt && reg->node_cnt ) *deadline = fd_long_min( *deadline, reg->probe_at );

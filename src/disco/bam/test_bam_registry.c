@@ -564,8 +564,96 @@ test_fetch_refused( void ) {
     long dl   = 0L;
     fd_bam_registry_step( ctx, &busy, &dl );
   }
-  FD_TEST( fetch_total( reg )==1UL && reg->fetch_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_CONNECT_IDX ]==1UL );
+  ulong const refused = FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_CONNECT_IDX;
+  FD_TEST( fetch_total( reg )==1UL && reg->fetch_cnt[ refused ]==1UL );
+  FD_TEST( reg->fetch_warn->reason==refused );
+
+  /* The same failure again within a minute does not warn again; a
+     minute later it does. */
+  long warned_at = reg->fetch_warn->at;
+  for( ulong want=2UL; want<=3UL; want++ ) {
+    reg->resync_at   = 0L;
+    reg->fetch_after = 0L;
+    while( fetch_total( reg )<want && fd_log_wallclock()<end ) {
+      int  busy = 0;
+      long dl   = 0L;
+      fd_bam_registry_step( ctx, &busy, &dl );
+    }
+    FD_TEST( fetch_total( reg )==want && reg->fetch_warn->reason==refused );
+    if( want==2UL ) {
+      FD_TEST( reg->fetch_warn->at==warned_at );
+      reg->fetch_warn->at -= FD_BAM_REGISTRY_WARN_INTERVAL_NS;
+    } else {
+      FD_TEST( reg->fetch_warn->at>warned_at );
+    }
+  }
   fd_bam_registry_disable( ctx );
+}
+
+/* test_probe_round probes a refused port and one that accepts TCP but
+   never answers TLS: the round settles with no usable node, warns, and
+   dials nothing. */
+
+static void
+test_probe_round( void ) {
+  static fd_bam_tile_t ctx[1];
+  memset( ctx, 0, sizeof(*ctx) );
+  ctx->registry.fd = -1;
+  FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 4U, 0UL ) ) );
+  ctx->ca_store->cnt = 1UL;
+  ctx->enabled       = 1U;
+  ulong align = fd_bam_registry_probe_align();
+  ulong fp    = fd_bam_registry_probe_footprint();
+  void * mem  = aligned_alloc( align, fd_ulong_align_up( fp, align ) );
+  FD_TEST( mem );
+  ctx->registry.probe_mem = mem;
+  fd_bam_registry_join_probe( ctx, 9UL );
+
+  struct sockaddr_in addr[2];
+  int lfd[2];
+  for( ulong i=0UL; i<2UL; i++ ) {
+    lfd[ i ] = socket( AF_INET, SOCK_STREAM, 0 );
+    FD_TEST( lfd[ i ]>=0 );
+    addr[ i ] = (struct sockaddr_in){ .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
+    socklen_t addr_sz = sizeof(addr[ i ]);
+    FD_TEST( !bind( lfd[ i ], fd_type_pun( &addr[ i ] ), addr_sz ) );
+    FD_TEST( !listen( lfd[ i ], 4 ) );
+    FD_TEST( !getsockname( lfd[ i ], fd_type_pun( &addr[ i ] ), &addr_sz ) );
+  }
+  close( lfd[0] ); /* refused */
+
+  char const * raw = "http://127.0.0.1:1/v1/nodes";
+  fd_url_t url[1];
+  ushort   port = 0;
+  _Bool    ssl  = 0;
+  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &port, &ssl, NULL ) );
+  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, port, NULL, 0UL )==1 );
+  fd_bam_registry_t * reg = &ctx->registry;
+  fd_bam_registry_node_t nodes[2];
+  memset( nodes, 0, sizeof(nodes) );
+  for( ulong i=0UL; i<2UL; i++ ) {
+    nodes[ i ].ip4       = addr[ i ].sin_addr.s_addr;
+    nodes[ i ].grpc_port = fd_ushort_bswap( addr[ i ].sin_port );
+  }
+  fd_bam_registry_on_fetch( reg, nodes, 2UL, fd_bam_now(), 0, ctx->rng );
+
+  int  busy = 0;
+  long dl   = 0L;
+  fd_bam_registry_step( ctx, &busy, &dl );
+  FD_TEST( reg->phase==2 );
+  long end = fd_log_wallclock()+(long)3e9;
+  while( reg->phase==2 && fd_log_wallclock()<end ) fd_bam_registry_step( ctx, &busy, &dl );
+  FD_TEST( !reg->phase && !reg->probe_active );
+  FD_TEST( reg->round_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_ROUND_RESULT_V_SETTLED_IDX ]==1UL );
+  FD_TEST( reg->last_round[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_NODE_RESULT_V_UNANSWERED_IDX ]==2UL );
+  FD_TEST( !reg->ranked_cnt && reg->probe_warn->reason==1UL );
+  FD_TEST( reg->probe_at>fd_bam_now()+FD_BAM_REGISTRY_PROBE_COOLDOWN_NS-(long)5e9 );
+  fd_bam_registry_step( ctx, &busy, &dl );
+  FD_TEST( !reg->have_dial && !reg->phase );
+
+  fd_bam_registry_disable( ctx );
+  close( lfd[1] );
+  free( mem );
 }
 
 static void
@@ -696,6 +784,7 @@ main( int     argc,
   test_fetch_refused();
   test_probe_join();
   test_pause();
+  test_probe_round();
   test_near_leader();
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
