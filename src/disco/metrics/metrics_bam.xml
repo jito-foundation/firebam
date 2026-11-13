@@ -104,7 +104,7 @@ the link rows of every polled input link, including the bam tile's.
     <int value="3" name="Io" label="TLS handshake, other than certificate rejection, or socket send or receive failed" />
     <int value="4" name="CertRejected" label="Registry TLS certificate failed verification" />
     <int value="5" name="Timeout" label="Fetch did not finish within 5 seconds" />
-    <int value="6" name="Http" label="Non-2xx status, malformed HTTP framing, or a body over 1 MiB" />
+    <int value="6" name="Http" label="Non-2xx status, malformed HTTP framing, or a body over 256 KiB" />
     <int value="7" name="Redirect" label="More than 10 redirects, or a Location the fetch cannot follow" />
     <int value="8" name="Json" label="Registry document is not valid JSON in the node-list shape" />
     <int value="9" name="EmptyList" label="Registry document parsed but listed no usable IPv4 node" />

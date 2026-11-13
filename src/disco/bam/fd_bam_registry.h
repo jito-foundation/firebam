@@ -15,9 +15,9 @@
 #include "../metrics/fd_metrics.h"
 
 /* jito-solana has no such limits; these sit far above any real
-   registry. */
+   registry (BODY_MAX fits NODE_CAP nodes of 256 bytes each). */
 #define FD_BAM_REGISTRY_NODE_CAP   (1024UL)
-#define FD_BAM_REGISTRY_BODY_MAX   (1UL<<20)
+#define FD_BAM_REGISTRY_BODY_MAX   (1UL<<18)
 #define FD_BAM_REGISTRY_PATH_MAX   (1024UL)
 #define FD_BAM_REGISTRY_ADDR_MAX   (16UL)
 #define FD_BAM_REGISTRY_REDIRECT_MAX (10U)  /* reqwest Policy::default() */
@@ -33,7 +33,11 @@
 #define FD_BAM_REGISTRY_PROBE_REQUEST_NS  ((long)60e6)
 #define FD_BAM_REGISTRY_PROBE_BUDGET_NS   ((long)10e9)
 #define FD_BAM_REGISTRY_PROBE_SAMPLES     (3U)
-#define FD_BAM_REGISTRY_PROBE_FANOUT      (32UL)
+/* jito probes 32 nodes at once.  Each slot holds a TLS and a gRPC
+   client (~300 KB), and a reply that lands while the tile handshakes
+   with other slots reads late, so FireBAM probes 8: a round still
+   covers ~160 unreachable nodes (PROBE_CONNECT_NS each) in budget. */
+#define FD_BAM_REGISTRY_PROBE_FANOUT      (8UL)
 #define FD_BAM_REGISTRY_POLL_NS           ((long)1e9)
 
 struct fd_bam_registry_node {
