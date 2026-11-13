@@ -590,6 +590,20 @@ test_probe_join( void ) {
   free( mem );
 }
 
+static void
+test_near_leader( void ) {
+  ulong const g = FD_BAM_REGISTRY_LEADER_GUARD_SLOTS;
+  FD_TEST( !fd_bam_registry_near_leader( ULONG_MAX, 1000UL ) );
+  FD_TEST( !fd_bam_registry_near_leader( 1000UL+g+1UL, 1000UL ) );
+  FD_TEST(  fd_bam_registry_near_leader( 1000UL+g,     1000UL ) );
+  FD_TEST(  fd_bam_registry_near_leader( 1000UL,       999UL  ) ); /* leading */
+  FD_TEST(  fd_bam_registry_near_leader( 1000UL,       1000UL+g ) );
+  FD_TEST( !fd_bam_registry_near_leader( 1000UL,       1000UL+g+1UL ) ); /* stale hint */
+  FD_TEST( !fd_bam_registry_near_leader( 1000UL,       0UL ) ); /* no slot yet */
+  FD_TEST(  fd_bam_registry_near_leader( 5UL,          0UL ) );
+  FD_TEST(  fd_bam_registry_near_leader( ULONG_MAX-1UL, ULONG_MAX-1UL ) );
+}
+
 /* test_pause: disabling BAM idles the follower, and a probe round it
    cut short reruns as soon as BAM is enabled again. */
 
@@ -680,6 +694,7 @@ main( int     argc,
   test_fetch_refused();
   test_probe_join();
   test_pause();
+  test_near_leader();
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
   return 0;

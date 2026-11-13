@@ -412,6 +412,8 @@ fd_bam_note_replay_schedule_slot( fd_bam_tile_t * ctx,
   ulong const old_recheck_slot = ctx->leader_schedule_recheck_slot;
   ulong       new_recheck_slot = old_recheck_slot;
 
+  if( FD_LIKELY( slot!=ULONG_MAX ) ) ctx->registry.replay_slot = fd_ulong_max( ctx->registry.replay_slot, slot );
+
   if( FD_LIKELY( fd_bam_tile_leader_slot_known( ctx ) ) ) {
     new_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
   } else if( FD_UNLIKELY( slot==ULONG_MAX ||

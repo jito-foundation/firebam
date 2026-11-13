@@ -1257,6 +1257,10 @@ reg_idle( fd_bam_tile_t * ctx,
   fd_bam_registry_t * reg = &ctx->registry;
   long now = fd_bam_now();
   int live = reg_live( ctx );
+  if( live && fd_bam_registry_near_leader( ctx->next_leader_slot, reg->replay_slot ) ) {
+    *deadline = now+FD_BAM_REGISTRY_POLL_NS;
+    return;
+  }
   if( !live ) reg->resync_at = fd_long_min( reg->resync_at, now+FD_BAM_REGISTRY_RESYNC_STALLED_NS );
   if( now>=reg->resync_at && now>=reg->fetch_after ) {
     reg_start_fetch( ctx );

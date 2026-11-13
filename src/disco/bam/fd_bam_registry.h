@@ -40,6 +40,12 @@
 #define FD_BAM_REGISTRY_PROBE_FANOUT      (8UL)
 #define FD_BAM_REGISTRY_POLL_NS           ((long)1e9)
 
+/* A healthy session is left alone this many slots either side of our
+   next leader slot: no fetch, probe, or node switch.  A switch needs
+   about 2 s for the new node's first heartbeat, so this leaves it ~2 s
+   to spare before the window. */
+#define FD_BAM_REGISTRY_LEADER_GUARD_SLOTS (10UL)
+
 struct fd_bam_registry_node {
   uint   ip4;       /* IPv4, FD_IP4_ADDR_FMT order */
   ushort grpc_port;
@@ -118,6 +124,7 @@ struct fd_bam_registry {
 
   long resync_at;
   long probe_at;
+  ulong replay_slot; /* newest slot replay reported, 0 if none */
   long stalled_ns; /* time down, not counting leader-schedule waits */
   long stalled_at; /* when stalled_ns was last advanced */
   long deadline;
@@ -262,6 +269,19 @@ fd_bam_registry_on_fetch( fd_bam_registry_t *            reg,
 
 void
 fd_bam_registry_finish_round( fd_bam_registry_t * reg );
+
+/* fd_bam_registry_near_leader returns 1 when replay_slot is within
+   FD_BAM_REGISTRY_LEADER_GUARD_SLOTS of next_leader_slot (ULONG_MAX if
+   unknown).  While we lead, replay reports the current leader slot as
+   the next one. */
+
+FD_FN_CONST static inline int
+fd_bam_registry_near_leader( ulong next_leader_slot,
+                             ulong replay_slot ) {
+  return next_leader_slot!=ULONG_MAX &&
+         next_leader_slot<=fd_ulong_sat_add( replay_slot, FD_BAM_REGISTRY_LEADER_GUARD_SLOTS ) &&
+         replay_slot<=fd_ulong_sat_add( next_leader_slot, FD_BAM_REGISTRY_LEADER_GUARD_SLOTS );
+}
 
 /* fd_bam_registry_choose returns 1 if the caller should dial *out.
    The dialed node is replaced once it has been down CONNECT_GRACE,
