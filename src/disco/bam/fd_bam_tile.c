@@ -1133,7 +1133,7 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *        ctx,
   int reg_rc = fd_bam_registry_take_url( ctx, tile->bam.url, url, is_ssl, ctx->server_tcp_port, NULL, 0UL );
   if( FD_UNLIKELY( reg_rc<0 ) ) FD_LOG_ERR(( "Rejected BAM registry URL `%s`", tile->bam.url ));
   if( reg_rc>0 ) {
-    if( FD_UNLIKELY( tile->bam.sni[0] ) ) FD_LOG_WARNING(( "[tiles.bam.sni] is ignored with a registry URL; nodes are verified by IP" ));
+    if( FD_UNLIKELY( tile->bam.sni[0] ) ) FD_LOG_WARNING(( "[tiles.bam.tls_domain_name] is ignored with a registry URL; nodes are verified by IP" ));
     fd_bam_tile_clear_dial( ctx );
     fd_bam_tile_ctrl_update_current( ctx );
     return;
