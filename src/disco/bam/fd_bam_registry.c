@@ -3,6 +3,7 @@
 
 #include "../../ballet/ed25519/fd_x25519.h"
 #include "../../util/net/fd_ip4.h"
+#include "../../ballet/json/fd_jtok.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -91,301 +92,42 @@ fd_bam_registry_is_url( fd_url_t const * url ) {
 
 /* ---- JSON ---------------------------------------------------------- */
 
-struct reg_cur {
-  char const * p;
-  char const * end;
-};
+/* reg_node reads one node as jito's serde derive does: each field
+   exactly once, unknown fields ignored.  Returns 0 for an IPv4 node,
+   1 for a valid IPv6 node (skipped), -1 if the document must fail. */
 
 static int
-reg_ws( struct reg_cur * c ) {
-  while( c->p<c->end ) {
-    char ch = *c->p;
-    if( ch!=' ' && ch!='\t' && ch!='\n' && ch!='\r' ) break;
-    c->p++;
-  }
-  return c->p<c->end;
-}
-
-struct reg_str {
-  char * dst;
-  ulong  max;
-  ulong  n;
-  int    cut;
-};
-
-static void
-reg_put( struct reg_str * s,
-         uint             ch ) {
-  if( s->cut ) return;
-  if( !ch || s->n+1UL>=s->max ) { s->cut = 1; return; }
-  s->dst[ s->n++ ] = (char)ch;
-}
-
-static void
-reg_put_cp( struct reg_str * s,
-            uint             cp ) {
-  if( cp<0x80U ) {
-    reg_put( s, cp );
-  } else if( cp<0x800U ) {
-    reg_put( s, 0xC0U|(cp>>6) );
-    reg_put( s, 0x80U|(cp&0x3FU) );
-  } else if( cp<0x10000U ) {
-    reg_put( s, 0xE0U|(cp>>12) );
-    reg_put( s, 0x80U|((cp>>6)&0x3FU) );
-    reg_put( s, 0x80U|(cp&0x3FU) );
-  } else {
-    reg_put( s, 0xF0U|(cp>>18) );
-    reg_put( s, 0x80U|((cp>>12)&0x3FU) );
-    reg_put( s, 0x80U|((cp>>6)&0x3FU) );
-    reg_put( s, 0x80U|(cp&0x3FU) );
-  }
-}
-
-static int
-reg_hex4( struct reg_cur * c,
-          uint *           out ) {
-  if( c->end-c->p<4L ) return -1;
-  uint v = 0U;
-  for( ulong i=0UL; i<4UL; i++ ) {
-    char h = *c->p++;
-    uint d;
-    if(      h>='0' && h<='9' ) d = (uint)(h-'0');
-    else if( h>='a' && h<='f' ) d = (uint)(h-'a'+10);
-    else if( h>='A' && h<='F' ) d = (uint)(h-'A'+10);
-    else return -1;
-    v = (v<<4)|d;
-  }
-  *out = v;
-  return 0;
-}
-
-/* Strict UTF-8, as Rust's str: no overlongs, surrogates, or >U+10FFFF. */
-
-static int
-reg_utf8( struct reg_cur * c,
-          uchar            lead,
-          struct reg_str * s ) {
-  ulong more;
-  uint  cp, min;
-  if(      (lead&0xE0U)==0xC0U ) { more = 1UL; cp = lead&0x1FU; min = 0x80U;    }
-  else if( (lead&0xF0U)==0xE0U ) { more = 2UL; cp = lead&0x0FU; min = 0x800U;   }
-  else if( (lead&0xF8U)==0xF0U ) { more = 3UL; cp = lead&0x07U; min = 0x10000U; }
-  else return -1;
-  reg_put( s, lead );
-  for( ulong i=0UL; i<more; i++ ) {
-    if( c->p>=c->end ) return -1;
-    uchar b = (uchar)*c->p++;
-    if( (b&0xC0U)!=0x80U ) return -1;
-    cp = (cp<<6)|(b&0x3FU);
-    reg_put( s, b );
-  }
-  if( cp<min || cp>0x10FFFFU || (cp>=0xD800U && cp<=0xDFFFU) ) return -1;
-  return 0;
-}
-
-/* reg_string reads a JSON string.  With dst it decodes like serde_json
-   parse_str: escapes, surrogate pairs, and UTF-8 are checked.  Returns
-   1 when the value was cut (too long, or an embedded NUL); dst then
-   holds the prefix.  Without dst it checks what serde_json checks when
-   ignoring a value: escape syntax and control characters. */
-
-static int
-reg_string( struct reg_cur * c,
-            char *           dst,
-            ulong            dst_max ) {
-  if( !reg_ws( c ) || *c->p!='"' ) return -1;
-  c->p++;
-  struct reg_str s = { dst, dst_max, 0UL, 0 };
-  for(;;) {
-    if( c->p>=c->end ) return -1;
-    uchar ch = (uchar)*c->p++;
-    if( ch=='"' ) break;
-    if( ch<0x20U ) return -1;
-    if( ch!='\\' ) {
-      if( !dst ) continue;
-      if( ch<0x80U ) reg_put( &s, ch );
-      else if( reg_utf8( c, ch, &s ) ) return -1;
-      continue;
-    }
-    if( c->p>=c->end ) return -1;
-    char e = *c->p++;
-    uint cp;
-    switch( e ) {
-    case '"': case '\\': case '/': cp = (uint)(uchar)e; break;
-    case 'b': cp = '\b'; break;
-    case 'f': cp = '\f'; break;
-    case 'n': cp = '\n'; break;
-    case 'r': cp = '\r'; break;
-    case 't': cp = '\t'; break;
-    case 'u':
-      if( reg_hex4( c, &cp ) ) return -1;
-      if( !dst ) break;
-      if( cp>=0xDC00U && cp<=0xDFFFU ) return -1;
-      if( cp>=0xD800U && cp<=0xDBFFU ) {
-        uint lo;
-        if( c->end-c->p<2L || c->p[0]!='\\' || c->p[1]!='u' ) return -1;
-        c->p += 2;
-        if( reg_hex4( c, &lo ) || lo<0xDC00U || lo>0xDFFFU ) return -1;
-        cp = 0x10000U+((cp-0xD800U)<<10)+(lo-0xDC00U);
-      }
-      break;
-    default:
-      return -1;
-    }
-    if( dst ) reg_put_cp( &s, cp );
-  }
-  if( dst ) dst[ s.n ] = '\0';
-  return s.cut;
-}
-
-static int
-reg_skip( struct reg_cur * c );
-
-static int
-reg_skip_lit( struct reg_cur * c,
-              char const *     lit ) {
-  ulong n = strlen( lit );
-  if( (ulong)(c->end-c->p)<n || memcmp( c->p, lit, n ) ) return -1;
-  c->p += n;
-  return 0;
-}
-
-static int
-reg_skip( struct reg_cur * c ) {
-  if( !reg_ws( c ) ) return -1;
-  char ch = *c->p;
-  if( ch=='"' ) return reg_string( c, NULL, 0UL );
-  if( ch=='t' ) return reg_skip_lit( c, "true" );
-  if( ch=='f' ) return reg_skip_lit( c, "false" );
-  if( ch=='n' ) return reg_skip_lit( c, "null" );
-  if( ch=='-' || (ch>='0' && ch<='9') ) {
-    if( ch=='-' ) c->p++;
-    if( c->p>=c->end || *c->p<'0' || *c->p>'9' ) return -1;
-    if( *c->p=='0' ) c->p++;
-    else while( c->p<c->end && *c->p>='0' && *c->p<='9' ) c->p++;
-    if( c->p<c->end && *c->p=='.' ) {
-      c->p++;
-      if( c->p>=c->end || *c->p<'0' || *c->p>'9' ) return -1;
-      while( c->p<c->end && *c->p>='0' && *c->p<='9' ) c->p++;
-    }
-    if( c->p<c->end && (*c->p=='e' || *c->p=='E') ) {
-      c->p++;
-      if( c->p<c->end && (*c->p=='+' || *c->p=='-') ) c->p++;
-      if( c->p>=c->end || *c->p<'0' || *c->p>'9' ) return -1;
-      while( c->p<c->end && *c->p>='0' && *c->p<='9' ) c->p++;
-    }
-    return 0;
-  }
-  if( ch=='{' || ch=='[' ) {
-    char open = ch;
-    char shut = (char)(open=='{' ? '}' : ']');
-    c->p++;
-    if( !reg_ws( c ) ) return -1;
-    if( *c->p==shut ) { c->p++; return 0; }
-    for( ;; ) {
-      if( open=='{' ) {
-        if( reg_string( c, NULL, 0UL ) ) return -1;
-        if( !reg_ws( c ) || *c->p!=':' ) return -1;
-        c->p++;
-      }
-      if( reg_skip( c ) ) return -1;
-      if( !reg_ws( c ) ) return -1;
-      if( *c->p==shut ) { c->p++; return 0; }
-      if( *c->p!=',' ) return -1;
-      c->p++;
-    }
-  }
-  return -1;
-}
-
-static int
-reg_ipv4( char const * s,
-          uint *       ip ) {
-  uint oct[ 4 ] = {0};
-  ulong i = 0UL;
-  char const * p = s;
-  while( i<4UL ) {
-    if( *p<'0' || *p>'9' ) return -1;
-    uint v = 0U;
-    ulong digits = 0UL;
-    while( *p>='0' && *p<='9' ) {
-      if( digits==1UL && v==0U ) return -1;
-      v = v*10U+(uint)(*p-'0');
-      if( v>255U || ++digits>3UL ) return -1;
-      p++;
-    }
-    if( !digits ) return -1;
-    oct[ i++ ] = v;
-    if( i==4UL ) break;
-    if( *p!='.' ) return -1;
-    p++;
-  }
-  if( *p ) return -1;
-  *ip = oct[0] | (oct[1]<<8) | (oct[2]<<16) | (oct[3]<<24);
-  return 0;
-}
-
-static int
-reg_u16( struct reg_cur * c,
-         ushort *         out ) {
-  if( !reg_ws( c ) || *c->p<'0' || *c->p>'9' ) return -1;
-  ulong v = 0UL;
-  ulong digits = 0UL;
-  while( c->p<c->end && *c->p>='0' && *c->p<='9' ) {
-    if( digits==1UL && v==0UL ) return -1;
-    v = v*10UL+(ulong)(*c->p-'0');
-    if( v>65535UL || ++digits>5UL ) return -1;
-    c->p++;
-  }
-  *out = (ushort)v;
-  return 0;
-}
-
-static int
-reg_node( struct reg_cur *         c,
+reg_node( fd_jtok_t *              j,
           fd_bam_registry_node_t * node ) {
-  if( !reg_ws( c ) || *c->p!='{' ) return -1;
-  c->p++;
   memset( node, 0, sizeof(*node) );
-  int got_ip = 0, got_port = 0, got_region = 0, skip = 0;
-  if( !reg_ws( c ) ) return -1;
-  if( *c->p=='}' ) return -1;
-  for( ;; ) {
-    char key[ 32 ];
-    int kr = reg_string( c, key, sizeof(key) );
-    if( kr<0 ) return -1;
-    if( !reg_ws( c ) || *c->p!=':' ) return -1;
-    c->p++;
-    /* serde derive rejects a repeated known field. */
-    if( kr>0 ) {
-      if( reg_skip( c ) ) return -1;
-    } else if( !strcmp( key, "ip" ) ) {
-      if( got_ip ) return -1;
-      got_ip = 1;
-      char ip[ 64 ];
-      uchar ip6[ 16 ];
-      if( reg_string( c, ip, sizeof(ip) ) ) return -1;
-      if( reg_ipv4( ip, &node->ip4 ) ) {
-        if( inet_pton( AF_INET6, ip, ip6 )!=1 ) return -1;
-        skip = 1;
-      }
-    } else if( !strcmp( key, "grpc_port" ) ) {
-      if( got_port ) return -1;
-      got_port = 1;
-      if( reg_u16( c, &node->grpc_port ) ) return -1;
-    } else if( !strcmp( key, "region" ) ) {
-      if( got_region ) return -1;
-      got_region = 1;
-      if( reg_string( c, node->region, sizeof(node->region) )<0 ) return -1;
-    } else if( reg_skip( c ) ) return -1;
-    if( !reg_ws( c ) ) return -1;
-    if( *c->p=='}' ) { c->p++; break; }
-    if( *c->p!=',' ) return -1;
-    c->p++;
+  char  ip[ 64 ];
+  ulong port = 0UL;
+  int   seen = 0;
+  fd_jtok_str_t key;
+  fd_jtok_obj_enter( j );
+  while( fd_jtok_obj_next( j, &key ) ) {
+    int bit = fd_jtok_str_eq( &key, "ip"        ) ? 1 :
+              fd_jtok_str_eq( &key, "grpc_port" ) ? 2 :
+              fd_jtok_str_eq( &key, "region"    ) ? 4 : 0;
+    if( seen & bit ) return -1;
+    seen |= bit;
+    if( bit==1 ) fd_jtok_cstr( j, ip, sizeof(ip) );
+    if( bit==2 ) fd_jtok_ulong( j, &port );
+    if( bit==4 ) {
+      /* Only logged, so kept undecoded and cut at a character. */
+      fd_jtok_str_t r = {0};
+      fd_jtok_str( j, &r );
+      ulong k = fd_ulong_min( r.sz, sizeof(node->region)-1UL );
+      while( k<r.sz && k && ((uchar)r.ptr[ k ]&0xC0U)==0x80U ) k--;
+      if( k ) memcpy( node->region, r.ptr, k );
+      node->region[ k ] = '\0';
+    }
   }
-  if( skip ) return 1;
-  if( !got_ip || !got_port || !got_region ) return -1;
-  return 0;
+  if( fd_jtok_err( j ) || seen!=7 || port>USHORT_MAX ) return -1;
+  node->grpc_port = (ushort)port;
+  if( inet_pton( AF_INET, ip, &node->ip4 )==1 ) return 0;
+  uchar ip6[ 16 ];
+  return inet_pton( AF_INET6, ip, ip6 )==1 ? 1 : -1;
 }
 
 static void
@@ -412,146 +154,41 @@ reg_dedupe( fd_bam_registry_node_t * nodes,
   *cnt = w;
 }
 
-static long
-reg_digits( char const * s,
-            ulong        n ) {
-  long v = 0L;
-  for( ulong i=0UL; i<n; i++ ) {
-    if( s[ i ]<'0' || s[ i ]>'9' ) return -1L;
-    v = v*10L + (long)(s[ i ]-'0');
-  }
-  return v;
-}
-
-long
-fd_bam_registry_rfc3339( char const * s,
-                         ulong        n ) {
-  if( n<20UL || s[4]!='-' || s[7]!='-' || s[13]!=':' || s[16]!=':' ) return 0L;
-  if( s[10]!='T' && s[10]!='t' && s[10]!=' ' ) return 0L;
-  long y  = reg_digits( s,    4UL );
-  long mo = reg_digits( s+5,  2UL );
-  long d  = reg_digits( s+8,  2UL );
-  long h  = reg_digits( s+11, 2UL );
-  long mi = reg_digits( s+14, 2UL );
-  long se = reg_digits( s+17, 2UL );
-  if( y<0L || mo<1L || mo>12L || d<1L || h<0L || h>23L || mi<0L || mi>59L || se<0L || se>60L ) return 0L;
-  static uchar const mdays[ 12 ] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
-  int leap = !(y%4L) && ( (y%100L) || !(y%400L) );
-  if( d>(long)mdays[ mo-1L ]+( mo==2L && leap ) ) return 0L;
-
-  ulong i = 19UL;
-  long  frac = 0L;
-  if( i<n && s[ i ]=='.' ) {
-    ulong j = ++i;
-    long  scale = 100000000L;
-    while( i<n && s[ i ]>='0' && s[ i ]<='9' ) {
-      frac += (long)(s[ i ]-'0')*scale;
-      scale /= 10L;
-      i++;
-    }
-    if( i==j ) return 0L;
-  }
-  long off = 0L;
-  if( i+1UL==n && ( s[ i ]=='Z' || s[ i ]=='z' ) ) {
-    i++;
-  } else if( i+6UL==n && ( s[ i ]=='+' || s[ i ]=='-' ) && s[ i+3UL ]==':' ) {
-    long oh = reg_digits( s+i+1UL, 2UL );
-    long om = reg_digits( s+i+4UL, 2UL );
-    if( oh<0L || oh>23L || om<0L || om>59L ) return 0L;
-    off = ( oh*3600L+om*60L )*( s[ i ]=='-' ? -1L : 1L );
-    i += 6UL;
-  }
-  if( i!=n ) return 0L;
-
-  /* days_from_civil, Howard Hinnant's algorithm */
-  long yy  = y-( mo<=2L );
-  long era = yy/400L;
-  long yoe = yy-era*400L;
-  long doy = ( 153L*( mo+( mo>2L ? -3L : 9L ) )+2L )/5L+d-1L;
-  long doe = yoe*365L+yoe/4L-yoe/100L+doy;
-  long days = era*146097L+doe-719468L;
-  long secs = days*86400L+h*3600L+mi*60L+se-off;
-  return secs>0L ? secs*1000000000L+frac : 0L;
-}
-
 int
 fd_bam_registry_parse( char const *             json,
                        ulong                    json_sz,
                        fd_bam_registry_node_t * nodes,
                        ulong                    cap,
-                       ulong *                  cnt,
-                       long *                   generated_ns ) {
-  struct reg_cur c = { json, json+json_sz };
-  if( !reg_ws( &c ) || *c.p!='{' ) return -1;
-  c.p++;
-  int saw_nodes = 0, saw_ts = 0;
-  long gen_ns = 0L;
-  ulong n = 0UL;
-  if( !reg_ws( &c ) ) return -1;
-  if( *c.p!='}' ) {
-    for( ;; ) {
-      char key[ 32 ];
-      int kr = reg_string( &c, key, sizeof(key) );
-      if( kr<0 ) return -1;
-      if( !reg_ws( &c ) || *c.p!=':' ) return -1;
-      c.p++;
-      if( kr>0 ) {
-        if( reg_skip( &c ) ) return -1;
-      } else if( !strcmp( key, "generated_at" ) ) {
-        /* lenient_rfc3339 swallows a bad scalar, but serde_json does not
-           consume an object or array there, so the document fails. */
-        if( saw_ts ) return -1;
-        saw_ts = 1;
-        if( !reg_ws( &c ) || *c.p=='{' || *c.p=='[' ) return -1;
-        char const * val = c.p;
-        char ts[ 64 ];
-        int tr = *c.p=='"' ? reg_string( &c, ts, sizeof(ts) ) : -1;
-        if( !tr ) {
-          gen_ns = fd_bam_registry_rfc3339( ts, strlen( ts ) );
-        } else {
-          /* Cut or undecodable: reg_skip accepts what serde_json ignores,
-             lone surrogates included. */
-          c.p = val;
-          if( reg_skip( &c ) ) return -1;
-        }
-      } else if( !strcmp( key, "nodes" ) ) {
-        if( saw_nodes ) return -1;
-        if( !reg_ws( &c ) || *c.p!='[' ) return -1;
-        c.p++;
-        saw_nodes = 1;
-        if( !reg_ws( &c ) ) return -1;
-        if( *c.p!=']' ) {
-          for( ;; ) {
-            fd_bam_registry_node_t node;
-            int nr = reg_node( &c, &node );
-            if( nr<0 ) return -1;
-            if( !nr ) {
-              if( n>=cap ) return -1;
-              nodes[ n++ ] = node;
-            }
-            if( !reg_ws( &c ) ) return -1;
-            if( *c.p==']' ) break;
-            if( *c.p!=',' ) return -1;
-            c.p++;
-          }
-        }
-        if( !reg_ws( &c ) || *c.p!=']' ) return -1;
-        c.p++;
-      } else if( reg_skip( &c ) ) return -1;
-      if( !reg_ws( &c ) ) return -1;
-      if( *c.p=='}' ) break;
-      if( *c.p!=',' ) return -1;
-      c.p++;
+                       ulong *                  cnt ) {
+  fd_jtok_t j[1];
+  fd_jtok_init( j, json, json_sz );
+  int   seen = 0;
+  ulong n    = 0UL;
+  fd_jtok_str_t key;
+  fd_jtok_obj_enter( j );
+  while( fd_jtok_obj_next( j, &key ) ) {
+    if( fd_jtok_str_eq( &key, "nodes" ) ) {
+      if( seen & 1 ) return -1;
+      seen |= 1;
+      fd_jtok_arr_enter( j );
+      while( fd_jtok_arr_next( j ) ) {
+        fd_bam_registry_node_t node;
+        int rc = reg_node( j, &node );
+        if( rc<0 || ( !rc && n>=cap ) ) return -1;
+        if( !rc ) nodes[ n++ ] = node;
+      }
+    } else if( fd_jtok_str_eq( &key, "generated_at" ) ) {
+      /* jito's lenient_rfc3339 swallows any scalar, but serde_json
+         fails the document on an object or array there. */
+      int kind = fd_jtok_peek( j );
+      if( ( seen & 2 ) || kind==FD_JTOK_OBJ || kind==FD_JTOK_ARR ) return -1;
+      seen |= 2;
     }
   }
-  if( *c.p!='}' ) return -1;
-  c.p++;
-  if( reg_ws( &c ) ) return -1;
-  if( !saw_nodes ) return -1;
+  if( fd_jtok_fini( j ) || !( seen & 1 ) ) return -1;
   if( !n ) return -2;
   reg_dedupe( nodes, &n );
   *cnt = n;
-  if( generated_ns ) *generated_ns = gen_ns;
   return 0;
 }
 
@@ -916,14 +553,11 @@ reg_fetch_done( fd_bam_tile_t * ctx,
   long now = reg->fetch_start;
   reg->fetch_after = fd_bam_now()+FD_BAM_REGISTRY_POLL_NS;
   if( result==REG_FETCH_ACCEPTED ) {
-    ulong cnt    = 0UL;
-    long  gen_ns = 0L;
-    int rc = fd_bam_registry_parse( reg->body, body_len, reg->parsed, FD_BAM_REGISTRY_NODE_CAP, &cnt, &gen_ns );
+    ulong cnt = 0UL;
+    int rc = fd_bam_registry_parse( reg->body, body_len, reg->parsed, FD_BAM_REGISTRY_NODE_CAP, &cnt );
     if( !rc ) {
       fd_bam_registry_on_fetch( reg, reg->parsed, cnt, now, reg_live( ctx ), ctx->rng );
       reg->fetch_cnt[ REG_FETCH_ACCEPTED ]++;
-      long age = gen_ns ? fd_log_wallclock()-gen_ns : 0L;
-      reg->list_age_ns = age>0L ? (ulong)age : 0UL;
       FD_LOG_INFO(( "BAM registry list: %lu nodes from %s", cnt, reg->url ));
       return;
     }

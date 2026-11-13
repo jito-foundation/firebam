@@ -176,7 +176,6 @@ the link rows of every polled input link, including the bam tile's.
     <bool name="IsRegistryEnabled" summary="Whether the BAM URL is a registry URL, so the tile follows the registry node list instead of dialing the URL" />
     <counter name="RegistryListFetched" enum="BamRegistryFetchResult" summary="Registry node list fetches, by result" />
     <gauge name="RegistryNodeCount" summary="Nodes in the cached registry list, 0 if none" />
-    <gauge name="LastRegistryListAgeNanos" summary="Age of the last accepted registry list at fetch time, from its generated_at, 0 if missing, not RFC 3339, or in the future" />
     <counter name="RegistryProbeRoundEnded" enum="BamRegistryProbeRoundResult" summary="Registry probe rounds, by result" />
     <gauge name="LastRegistryProbeNodeCount" enum="BamRegistryProbeNodeResult" summary="Nodes probed in the last registry probe round, by result, 0 if none" />
     <counter name="RegistryProbeCertRejected" summary="Registry node probes whose TLS certificate failed verification" />

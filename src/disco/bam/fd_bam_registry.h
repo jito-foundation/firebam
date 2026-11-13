@@ -141,7 +141,6 @@ struct fd_bam_registry {
   ulong probe_cert_cnt;
   ulong select_cnt;
   ulong dial_rtt_us;
-  ulong list_age_ns;
 };
 
 typedef struct fd_bam_registry fd_bam_registry_t;
@@ -154,12 +153,12 @@ int
 fd_bam_registry_is_url( fd_url_t const * url );
 
 /* fd_bam_registry_parse reads a registry document into nodes with
-   serde_json's accept/reject rules.  Valid IPv6 nodes are skipped.
-   Returns 0 and sets *cnt on a non-empty IPv4 list.  Returns -2 when
-   the document lists no IPv4 node, -1 when it is malformed or over
-   cap; the caller keeps its cache either way.  On success, if
-   generated_ns is non-NULL, sets it to generated_at as UNIX
-   nanoseconds, 0 if absent or not RFC 3339 (lenient_rfc3339).
+   serde_json's accept/reject rules for jito's ServedNodes (fd_jtok is
+   stricter only inside values serde_json skips, which its own output
+   never has).  Valid IPv6 nodes are skipped.  Returns 0 and sets *cnt
+   on a non-empty IPv4 list.  Returns -2 when the document lists no
+   IPv4 node, -1 when it is malformed or over cap; the caller keeps its
+   cache either way.
 
    TODO: IPv6 nodes and registry hosts, which jito-solana supports.
    Needs IPv6 in fd_bam_client, bracketed hosts in fd_url, and IPv6
@@ -170,16 +169,7 @@ fd_bam_registry_parse( char const *             json,
                        ulong                    json_sz,
                        fd_bam_registry_node_t * nodes,
                        ulong                    cap,
-                       ulong *                  cnt,
-                       long *                   generated_ns );
-
-/* fd_bam_registry_rfc3339 converts an RFC 3339 timestamp in s[0,n) to
-   UNIX nanoseconds, as chrono's parse_from_rfc3339 accepts it.  Returns
-   0 if malformed, out of range, or not after the epoch. */
-
-long
-fd_bam_registry_rfc3339( char const * s,
-                         ulong        n );
+                       ulong *                  cnt );
 
 /* fd_bam_registry_http_body strips the response to an HTTP/1.0
    request in buf[0,*len) to its body in place.  The body is

@@ -23,7 +23,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         size ) {
   fd_bam_registry_node_t nodes[ 4 ];
   ulong cnt = 0UL;
-  fd_bam_registry_parse( (char const *)data, size, nodes, 4UL, &cnt, NULL );
+  fd_bam_registry_parse( (char const *)data, size, nodes, 4UL, &cnt );
 
   fd_url_t url[1];
   if( fd_url_parse_cstr( url, (char const *)data, size, NULL ) )
@@ -36,7 +36,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
       fd_memcpy( buf, data, size );
       if( fd_bam_registry_http_body( buf, &len, eof )==1 ) {
         FD_TEST( len<=size );
-        fd_bam_registry_parse( buf, len, nodes, 4UL, &cnt, NULL );
+        fd_bam_registry_parse( buf, len, nodes, 4UL, &cnt );
       }
     }
   }

@@ -155,7 +155,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET(       BAM, IS_REGISTRY_ENABLED,                 (ulong)reg->on );
   FD_MCNT_ENUM_COPY(   BAM, REGISTRY_LIST_FETCHED,               reg->fetch_cnt );
   FD_MGAUGE_SET(       BAM, REGISTRY_NODE_COUNT,                 reg->node_cnt );
-  FD_MGAUGE_SET(       BAM, LAST_REGISTRY_LIST_AGE_NANOS,        reg->list_age_ns );
   FD_MCNT_ENUM_COPY(   BAM, REGISTRY_PROBE_ROUND_ENDED,          reg->round_cnt );
   FD_MGAUGE_ENUM_COPY( BAM, LAST_REGISTRY_PROBE_NODE_COUNT,      reg->last_round );
   FD_MCNT_SET(         BAM, REGISTRY_PROBE_CERT_REJECTED,        reg->probe_cert_cnt );
