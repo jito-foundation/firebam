@@ -249,10 +249,13 @@ fd_bam_registry_finish_round( fd_bam_registry_t * reg ) {
 int
 fd_bam_registry_choose( fd_bam_registry_t *      reg,
                         int                      live,
+                        int                      hold,
                         long                     now,
                         fd_bam_registry_node_t * out ) {
-  if( live ) reg->stalled_since = now;
-  int stuck = !live && now-reg->stalled_since>=FD_BAM_REGISTRY_CONNECT_GRACE_NS;
+  if( live ) reg->stalled_ns = 0L;
+  else if( !hold ) reg->stalled_ns += fd_long_max( now-reg->stalled_at, 0L );
+  reg->stalled_at = now;
+  int stuck = !live && reg->stalled_ns>=FD_BAM_REGISTRY_CONNECT_GRACE_NS;
 
   int on_pick = 0;
   if( reg->have_dial && reg->cursor<reg->ranked_cnt ) {
@@ -334,7 +337,8 @@ fd_bam_registry_take_url( fd_bam_tile_t *  ctx,
     reg->resync_at  = 0L;
     reg->probe_at   = 0L;
     reg->fetch_after   = 0L;
-    reg->stalled_since = fd_bam_now();
+    reg->stalled_ns    = 0L;
+    reg->stalled_at    = fd_bam_now();
     memcpy( reg->host, url->host, url->host_len );
     reg->host[ url->host_len ] = '\0';
     reg->host_len = (ushort)url->host_len;
@@ -1230,6 +1234,22 @@ reg_drive_probe( fd_bam_tile_t * ctx ) {
   if( !reg->probe_active && reg->order_i>=reg->order_cnt ) reg_round_end( ctx, now );
 }
 
+/* reg_pause idles the follower while BAM is disabled: no fetch, probe
+   or dial.  A probe round cut short reruns as soon as BAM is enabled
+   again, and the dialed node gets a fresh CONNECT_GRACE. */
+
+static void
+reg_pause( fd_bam_registry_t * reg ) {
+  if( reg->paused ) return;
+  if( reg->phase==FD_BAM_REG_PROBE ) {
+    reg->ranked_cnt = 0UL;
+    reg->probe_at   = 0L;
+  }
+  reg_close_all( reg );
+  reg->phase  = FD_BAM_REG_IDLE;
+  reg->paused = 1;
+}
+
 static void
 reg_idle( fd_bam_tile_t * ctx,
           int *           charge_busy,
@@ -1250,9 +1270,12 @@ reg_idle( fd_bam_tile_t * ctx,
     *deadline = now;
     return;
   }
+  /* The leader-schedule wait holds the dial, which is no fault of the
+     node, so it does not count toward CONNECT_GRACE. */
+  int hold = fd_bam_tile_waiting_for_leader_slot( ctx );
   fd_bam_registry_node_t node;
-  if( fd_bam_registry_choose( reg, live, now, &node ) && fd_bam_tile_dial_node( ctx, &node ) ) {
-    reg->stalled_since = now;
+  if( fd_bam_registry_choose( reg, live, hold, now, &node ) && fd_bam_tile_dial_node( ctx, &node ) ) {
+    reg->stalled_ns = 0L;
     reg->dial_rtt_us   = reg->ranked[ reg->cursor ].rtt_us;
   }
   *deadline = fd_long_max( reg->resync_at, reg->fetch_after );
@@ -1265,7 +1288,17 @@ fd_bam_registry_step( fd_bam_tile_t * ctx,
                       int *           charge_busy,
                       long *          deadline ) {
   *deadline = LONG_MAX;
-  if( !ctx->registry.on ) return;
+  fd_bam_registry_t * reg = &ctx->registry;
+  if( !reg->on ) return;
+  if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) ) {
+    reg_pause( reg );
+    return;
+  }
+  if( FD_UNLIKELY( reg->paused ) ) {
+    reg->paused     = 0;
+    reg->stalled_ns = 0L;
+    reg->stalled_at = fd_bam_now();
+  }
   if( ctx->registry.fd<0 && ctx->registry.phase==FD_BAM_REG_IDLE ) {
     reg_idle( ctx, charge_busy, deadline );
     return;

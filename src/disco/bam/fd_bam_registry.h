@@ -81,6 +81,7 @@ struct fd_bam_registry {
   uchar  on;
   uchar  cert_verify_cfg; /* tiles.bam.tls_cert_verify; kept for direct URLs */
   uchar  have_dial;
+  uchar  paused;   /* BAM disabled */
   uchar  ssl;
   char   url[ FD_URL_MAX ];
   char   host[ FD_FQDN_BUF_MAX ];
@@ -117,7 +118,8 @@ struct fd_bam_registry {
 
   long resync_at;
   long probe_at;
-  long stalled_since;
+  long stalled_ns; /* time down, not counting leader-schedule waits */
+  long stalled_at; /* when stalled_ns was last advanced */
   long deadline;
   long round_start;
   long fetch_start;
@@ -233,9 +235,10 @@ fd_bam_registry_take_url( fd_bam_tile_t *  ctx,
 void
 fd_bam_registry_disable( fd_bam_tile_t * ctx );
 
-/* fd_bam_registry_step advances one fetch, probe, or idle action.
-   *charge_busy is set when the socket needs another poll immediately.
-   *deadline is the next wake when the follower is idle. */
+/* fd_bam_registry_step advances one fetch, probe, or idle action, or
+   pauses the follower while BAM is disabled.  *charge_busy is set when
+   the socket needs another poll immediately.  *deadline is the next
+   wake when the follower is idle. */
 
 void
 fd_bam_registry_step( fd_bam_tile_t * ctx,
@@ -261,12 +264,16 @@ void
 fd_bam_registry_finish_round( fd_bam_registry_t * reg );
 
 /* fd_bam_registry_choose returns 1 if the caller should dial *out.
-   Wrapping the cursor clears the ranking but keeps the stall clock, so
-   the next ranking publishes its best node at once. */
+   The dialed node is replaced once it has been down CONNECT_GRACE,
+   not counting time while hold is set (the leader-schedule wait keeps
+   the client from dialing).  Wrapping the cursor clears the ranking
+   but keeps the stall clock, so the next ranking publishes its best
+   node at once. */
 
 int
 fd_bam_registry_choose( fd_bam_registry_t *      reg,
                         int                      live,
+                        int                      hold,
                         long                     now,
                         fd_bam_registry_node_t * out );
 

@@ -229,38 +229,52 @@ test_rank_and_choose( void ) {
   reg->have_dial = 1;
   reg->dial_ip4 = nodes[0].ip4;
   reg->dial_port = nodes[0].grpc_port;
-  reg->stalled_since = now-FD_BAM_REGISTRY_CONNECT_GRACE_NS;
+  reg->stalled_ns = FD_BAM_REGISTRY_CONNECT_GRACE_NS;
+  reg->stalled_at = now;
   fd_bam_registry_node_t out;
-  FD_TEST( fd_bam_registry_choose( reg, 0, now, &out ) );
+  FD_TEST( fd_bam_registry_choose( reg, 0, 0, now, &out ) );
   FD_TEST( out.ip4==nodes[1].ip4 );
 
   reg->ranked_cnt = 1UL;
   reg->ranked[0].node = nodes[0];
   reg->cursor = 0UL;
-  reg->stalled_since = now-FD_BAM_REGISTRY_CONNECT_GRACE_NS;
-  FD_TEST( !fd_bam_registry_choose( reg, 0, now, &out ) );
+  reg->stalled_ns = FD_BAM_REGISTRY_CONNECT_GRACE_NS;
+  FD_TEST( !fd_bam_registry_choose( reg, 0, 0, now, &out ) );
   FD_TEST( !reg->ranked_cnt );
-  FD_TEST( reg->stalled_since==now-FD_BAM_REGISTRY_CONNECT_GRACE_NS );
+  FD_TEST( reg->stalled_ns==FD_BAM_REGISTRY_CONNECT_GRACE_NS );
 
   /* Still stuck after the re-probe: a new best publishes at once. */
   reg->ranked_cnt = 1UL;
   reg->ranked[0].node = nodes[1];
   reg->cursor = 0UL;
-  FD_TEST( fd_bam_registry_choose( reg, 0, now+1000000000L, &out ) );
+  FD_TEST( fd_bam_registry_choose( reg, 0, 0, now+1000000000L, &out ) );
   FD_TEST( out.ip4==nodes[1].ip4 );
 
   /* Healthy resets the clock; nothing to do. */
   reg->ranked[0].node = nodes[0];
-  FD_TEST( !fd_bam_registry_choose( reg, 1, now+2000000000L, &out ) );
-  FD_TEST( reg->stalled_since==now+2000000000L );
+  FD_TEST( !fd_bam_registry_choose( reg, 1, 0, now+2000000000L, &out ) );
+  FD_TEST( !reg->stalled_ns );
+
+  /* The leader-schedule wait does not count toward the grace period;
+     dialing time does. */
+  long t = now+2000000000L;
+  FD_TEST( !fd_bam_registry_choose( reg, 0, 1, t+30000000000L, &out ) );
+  FD_TEST( !reg->stalled_ns );
+  FD_TEST( !fd_bam_registry_choose( reg, 0, 0, t+30000000000L+FD_BAM_REGISTRY_CONNECT_GRACE_NS-1L, &out ) );
+  FD_TEST( !fd_bam_registry_choose( reg, 0, 1, t+90000000000L, &out ) );
+  FD_TEST( reg->stalled_ns==FD_BAM_REGISTRY_CONNECT_GRACE_NS-1L );
+  FD_TEST( !fd_bam_registry_choose( reg, 0, 0, t+90000000001L, &out ) ); /* stuck, but already on the only ranked node */
+  FD_TEST( !reg->ranked_cnt );
+  reg->ranked_cnt = 1UL;
+  FD_TEST( !fd_bam_registry_choose( reg, 1, 0, t+90000000002L, &out ) );
 
   /* Healthy but delisted: move to the best ranked node, or hold the
      live connection when nothing ranked. */
   reg->dial_ip4 = FD_IP4_ADDR( 198, 51, 100, 9 );
-  FD_TEST( fd_bam_registry_choose( reg, 1, now+3000000000L, &out ) );
+  FD_TEST( fd_bam_registry_choose( reg, 1, 0, t+93000000000L, &out ) );
   FD_TEST( out.ip4==nodes[0].ip4 && out.grpc_port==nodes[0].grpc_port );
   reg->ranked_cnt = 0UL;
-  FD_TEST( !fd_bam_registry_choose( reg, 1, now+3000000000L, &out ) );
+  FD_TEST( !fd_bam_registry_choose( reg, 1, 0, t+93000000000L, &out ) );
 }
 
 static void
@@ -301,7 +315,7 @@ test_take_url( void ) {
   FD_TEST( fd_bam_registry_take_url( ctx, reg, url, 1, 50056, err, sizeof(err) )==1 );
   FD_TEST( ctx->registry.on && ctx->registry.ssl );
   FD_TEST( ctx->registry.port==443 );
-  FD_TEST( ctx->registry.stalled_since );
+  FD_TEST( ctx->registry.stalled_at && !ctx->registry.stalled_ns );
   FD_TEST( ctx->tls->ca_store==ctx->ca_store );
 
   char const * reg_port = "https://registry.example:8443/v1/nodes";
@@ -395,6 +409,7 @@ test_fetch_loopback( char const * host,
   ctx->registry.fd = -1;
   FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 1U, 0UL ) ) );
   ctx->ca_store->cnt = 1UL;
+  ctx->enabled       = 1U;
 
   int lfd = socket( AF_INET, SOCK_STREAM, 0 );
   FD_TEST( lfd>=0 );
@@ -520,6 +535,7 @@ test_fetch_refused( void ) {
   ctx->registry.fd = -1;
   FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 2U, 0UL ) ) );
   ctx->ca_store->cnt = 1UL;
+  ctx->enabled       = 1U;
 
   /* A port that was just bound and closed refuses connections. */
   int lfd = socket( AF_INET, SOCK_STREAM, 0 );
@@ -574,6 +590,69 @@ test_probe_join( void ) {
   free( mem );
 }
 
+/* test_pause: disabling BAM idles the follower, and a probe round it
+   cut short reruns as soon as BAM is enabled again. */
+
+static void
+test_pause( void ) {
+  static fd_bam_tile_t ctx[1];
+  memset( ctx, 0, sizeof(*ctx) );
+  ctx->registry.fd = -1;
+  FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 3U, 0UL ) ) );
+  ctx->ca_store->cnt = 1UL;
+  ulong align = fd_bam_registry_probe_align();
+  ulong fp    = fd_bam_registry_probe_footprint();
+  void * mem  = aligned_alloc( align, fd_ulong_align_up( fp, align ) );
+  FD_TEST( mem );
+  ctx->registry.probe_mem = mem;
+  fd_bam_registry_join_probe( ctx, 7UL );
+
+  /* A node that accepts TCP and never answers TLS keeps a round open. */
+  int lfd = socket( AF_INET, SOCK_STREAM, 0 );
+  FD_TEST( lfd>=0 );
+  struct sockaddr_in addr = { .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
+  socklen_t addr_sz = sizeof(addr);
+  FD_TEST( !bind( lfd, fd_type_pun( &addr ), addr_sz ) );
+  FD_TEST( !listen( lfd, 4 ) );
+  FD_TEST( !getsockname( lfd, fd_type_pun( &addr ), &addr_sz ) );
+
+  char const * raw = "http://127.0.0.1:1/v1/nodes";
+  fd_url_t url[1];
+  ushort   port = 0;
+  _Bool    ssl  = 0;
+  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &port, &ssl, NULL ) );
+  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, port, NULL, 0UL )==1 );
+  fd_bam_registry_t * reg = &ctx->registry;
+  fd_bam_registry_node_t node = { .ip4 = addr.sin_addr.s_addr, .grpc_port = fd_ushort_bswap( addr.sin_port ) };
+  fd_bam_registry_on_fetch( reg, &node, 1UL, fd_bam_now(), 0, ctx->rng ); /* next fetch in 2 s */
+
+  int  busy = 0;
+  long dl   = 0L;
+  ctx->enabled = 1U;
+  fd_bam_registry_step( ctx, &busy, &dl );
+  FD_TEST( reg->phase==2 && reg->probe_active==1UL ); /* probing */
+  for( ulong i=0UL; i<64UL; i++ ) fd_bam_registry_step( ctx, &busy, &dl );
+  FD_TEST( reg->phase==2 );
+
+  ctx->enabled = 0U;
+  for( ulong i=0UL; i<64UL; i++ ) {
+    fd_bam_registry_step( ctx, &busy, &dl );
+    FD_TEST( reg->paused && !reg->phase && !reg->probe_active && reg->fd<0 && dl==LONG_MAX );
+  }
+  FD_TEST( !reg->ranked_cnt && !reg->probe_at && !reg->have_dial );
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) FD_TEST( reg->slots[ i ].fd<0 );
+
+  reg->stalled_ns = 1L;
+  ctx->enabled = 1U;
+  fd_bam_registry_step( ctx, &busy, &dl );
+  FD_TEST( !reg->paused && !reg->stalled_ns );
+  FD_TEST( reg->phase==2 && reg->probe_active==1UL );
+
+  fd_bam_registry_disable( ctx );
+  close( lfd );
+  free( mem );
+}
+
 int
 main( int     argc,
       char ** argv ) {
@@ -600,6 +679,7 @@ main( int     argc,
   test_fetch_loopback( "registry.dns",   DNS_SILENT,   "/v1/nodes", "200 OK", one, nodns );
   test_fetch_refused();
   test_probe_join();
+  test_pause();
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
   return 0;
