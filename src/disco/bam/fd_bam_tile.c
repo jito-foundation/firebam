@@ -9,7 +9,6 @@
 #include "../../tango/fseq/fd_fseq.h"
 #include "../../util/pod/fd_pod_format.h"
 #include "../../util/net/fd_ip4.h"
-#include "fd_bam_webpki_roots.h"
 
 #include <errno.h>
 #include <ctype.h> /* isspace */
@@ -1200,23 +1199,11 @@ fd_bam_tile_init_tls( fd_bam_tile_t * ctx,
   fd_memcpy( tls->alpn, alpn, sizeof(alpn) );
   tls->alpn_sz = sizeof(alpn);
 
-  /* BAM's URL may switch from HTTP to HTTPS after sandbox entry, so
-     load both stores either way (see fd_bam_registry_t ca_store). */
-  fd_x509_ca_store_t * reg_ca = ctx->registry.ca_store;
-  reg_ca->cnt = 0UL;
-  for( ulong i=0UL; i<fd_bam_webpki_roots_cnt; i++ ) {
-    char const * pem = fd_bam_webpki_roots[ i ];
-    fd_x509_ca_store_add_pem( reg_ca, pem, strlen( pem ), "webpki-roots" );
-  }
-  if( FD_UNLIKELY( !reg_ca->cnt ) ) FD_LOG_ERR(( "no usable webpki-roots %s trust anchors", fd_bam_webpki_roots_ver ));
-
-  long nanchors = fd_x509_ca_store_load_system( ctx->ca_store );
-  if( FD_UNLIKELY( nanchors<=0L ) ) {
-    FD_LOG_WARNING(( "No system CA certificate bundle found; BAM nodes are verified against webpki-roots only" ));
-  }
-  for( ulong i=0UL; i<reg_ca->cnt && ctx->ca_store->cnt<FD_X509_CA_STORE_MAX; i++ ) {
-    ctx->ca_store->entries[ ctx->ca_store->cnt++ ] = reg_ca->entries[ i ];
-  }
+  /* BAM's URL may switch to HTTPS or to a registry after sandbox
+     entry, so load the system bundle even when unverified.  A registry
+     URL needs it (see fd_bam_registry_take_url). */
+  if( FD_UNLIKELY( fd_x509_ca_store_load_system( ctx->ca_store )<0L && tile->bam.tls_cert_verify ) )
+    FD_LOG_ERR(( "No system CA certificate bundle found for BAM TLS verification" ));
   ctx->registry.cert_verify_cfg = !!tile->bam.tls_cert_verify;
   if( FD_UNLIKELY( tile->bam.tls_cert_verify ) ) tls->ca_store = ctx->ca_store;
 
@@ -1226,7 +1213,6 @@ fd_bam_tile_init_tls( fd_bam_tile_t * ctx,
   fd_chacha_rng_init( ctx->registry.rng, reg_key, FD_CHACHA_RNG_ALGO_CHACHA8 );
   fd_memzero_explicit( reg_key, sizeof(reg_key) );
   reg_tls->rng = ctx->registry.rng;
-  reg_tls->ca_store = reg_ca;
 }
 
 /* bam_topo_prop_obj returns the topology object named by the topo

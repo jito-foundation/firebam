@@ -13,7 +13,6 @@
 #include "../../waltz/tlsrec/fd_tlsrec_sock.h"
 #include "../../util/rng/fd_rng.h"
 #include "../metrics/fd_metrics.h"
-#include "../../ballet/x509/fd_x509_ca_store.h"
 
 /* jito-solana has no such limits; these sit far above any real
    registry. */
@@ -97,11 +96,6 @@ struct fd_bam_registry {
   uint   addrs[ FD_BAM_REGISTRY_ADDR_MAX ];
   ulong  addr_cnt;
   ulong  addr_i;
-
-  /* Registry fetches trust only these, as reqwest with rustls-tls does.
-     Nodes use the tile's store: system roots plus these, like tonic's
-     with_enabled_roots. */
-  fd_x509_ca_store_t ca_store[1];
 
   fd_bam_registry_node_t nodes[ FD_BAM_REGISTRY_NODE_CAP ];
   ulong                  node_cnt;
@@ -219,7 +213,8 @@ fd_bam_registry_redirect_target( fd_bam_registry_t * reg,
 
 /* fd_bam_registry_take_url returns 1 when raw is now the registry
    target, 0 when raw is a direct node (registry mode cleared), and
-   -1 when its host or path is too long. */
+   -1 when its host or path is too long or no system CA bundle was
+   loaded (registry fetches and nodes are always verified). */
 
 int
 fd_bam_registry_take_url( fd_bam_tile_t *  ctx,

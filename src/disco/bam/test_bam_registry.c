@@ -1,6 +1,5 @@
 #include "fd_bam_tile_private.h"
 #include "fd_bam_registry.h"
-#include "fd_bam_webpki_roots.h"
 #include "../../ballet/x509/fd_x509_verify.h"
 #include "../../util/fd_util.h"
 #include "../../util/net/fd_ip4.h"
@@ -301,6 +300,12 @@ test_take_url( void ) {
   FD_TEST( fd_url_parse_cstr( url, reg, strlen( reg ), NULL ) );
   char err[ 128 ];
 
+  /* Registry nodes are always verified, so no system bundle, no
+     registry. */
+  FD_TEST( fd_bam_registry_take_url( ctx, reg, url, 1, 50056, err, sizeof(err) )==-1 );
+  FD_TEST( !ctx->registry.on && strstr( err, "CA certificate bundle" ) );
+  ctx->ca_store->cnt = 1UL;
+
   char const * plain = "http://registry.example/v1/nodes";
   FD_TEST( fd_url_parse_cstr( url, plain, strlen( plain ), NULL ) );
   FD_TEST( fd_bam_registry_take_url( ctx, plain, url, 0, 50056, err, sizeof(err) )==1 );
@@ -364,19 +369,6 @@ test_redirect( void ) {
   FD_TEST( !strcmp( reg->f_host, "c.example" ) );
 }
 
-static void
-test_webpki_roots( void ) {
-  static fd_x509_ca_store_t store[1];
-  memset( store, 0, sizeof(*store) );
-  long total = 0L;
-  for( ulong i=0UL; i<fd_bam_webpki_roots_cnt; i++ ) {
-    total += fd_x509_ca_store_add_pem( store, fd_bam_webpki_roots[ i ], strlen( fd_bam_webpki_roots[ i ] ), "webpki-roots" );
-  }
-  /* e-Szigno TLS Root CA 2023 is P-521, which fd_x509 does not support. */
-  FD_TEST( fd_bam_webpki_roots_cnt==120UL );
-  FD_TEST( total==119L && store->cnt==119UL );
-}
-
 static ulong
 fetch_total( fd_bam_registry_t const * reg ) {
   ulong total = 0UL;
@@ -392,6 +384,7 @@ test_fetch_loopback( char const * status,
   memset( ctx, 0, sizeof(*ctx) );
   ctx->registry.fd = -1;
   FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 1U, 0UL ) ) );
+  ctx->ca_store->cnt = 1UL;
 
   int lfd = socket( AF_INET, SOCK_STREAM, 0 );
   FD_TEST( lfd>=0 );
@@ -461,6 +454,7 @@ test_fetch_refused( void ) {
   memset( ctx, 0, sizeof(*ctx) );
   ctx->registry.fd = -1;
   FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 2U, 0UL ) ) );
+  ctx->ca_store->cnt = 1UL;
 
   /* A port that was just bound and closed refuses connections. */
   int lfd = socket( AF_INET, SOCK_STREAM, 0 );
@@ -528,7 +522,6 @@ main( int     argc,
   test_reject_bad_cert();
   test_take_url();
   test_redirect();
-  test_webpki_roots();
   char const * one = "{\"generated_at\":\"2026-01-01T00:00:00Z\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
   test_fetch_loopback( "200 OK", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX );
   test_fetch_loopback( "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX );

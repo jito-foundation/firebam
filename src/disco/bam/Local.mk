@@ -1,6 +1,6 @@
 ifdef FD_HAS_INT128
 $(call add-hdrs,fd_bam_types.h fd_bam_tile.h fd_bam_microblock.h)
-$(call add-objs,fd_bam_client fd_bam_client_decode fd_bam_registry fd_bam_webpki_roots,fd_disco)
+$(call add-objs,fd_bam_client fd_bam_client_decode fd_bam_registry,fd_disco)
 
 ifdef FD_HAS_DOUBLE
 $(call add-objs,fd_bam_tile,fd_disco)

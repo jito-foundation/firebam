@@ -673,6 +673,10 @@ fd_bam_registry_take_url( fd_bam_tile_t *  ctx,
     reg_fail_msg( err, err_sz, "BAM registry URL path or host is too long" );
     return -1;
   }
+  if( !ctx->ca_store->cnt ) {
+    reg_fail_msg( err, err_sz, "BAM registry URL needs the system CA certificate bundle, which was not found" );
+    return -1;
+  }
 
   fd_bam_registry_t * reg = &ctx->registry;
   int same = reg->on && reg->ssl==!!is_ssl && reg->port==port &&
@@ -839,7 +843,7 @@ reg_fetch_connect( fd_bam_tile_t * ctx ) {
     if( fd<0 ) continue;
     reg->fd = fd;
     if( reg->f_ssl ) {
-      if( reg_tls_init( reg->ca_store, reg->tls, reg->conn, reg->f_host, reg->f_host_len, 1 ) ) {
+      if( reg_tls_init( ctx->ca_store, reg->tls, reg->conn, reg->f_host, reg->f_host_len, 1 ) ) {
         reg_close( reg );
         return -1;
       }
