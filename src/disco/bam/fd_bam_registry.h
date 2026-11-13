@@ -96,6 +96,12 @@ struct fd_bam_registry {
   uint   addrs[ FD_BAM_REGISTRY_ADDR_MAX ];
   ulong  addr_cnt;
   ulong  addr_i;
+  uint   dns_ns[ 3 ];    /* MAXNS */
+  ulong  dns_ns_cnt;
+  uchar  dns_query[ 280 ]; /* FD_DNS_QUERY_MTU */
+  int    dns_qlen;
+  long   dns_retry;
+  long   dns_send_at;
 
   fd_bam_registry_node_t nodes[ FD_BAM_REGISTRY_NODE_CAP ];
   ulong                  node_cnt;

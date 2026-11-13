@@ -1,8 +1,11 @@
+#define _GNU_SOURCE /* memfd_create */
 #include "fd_bam_tile_private.h"
 #include "fd_bam_registry.h"
 #include "../../ballet/x509/fd_x509_verify.h"
 #include "../../util/fd_util.h"
 #include "../../util/net/fd_ip4.h"
+#include "../../waltz/resolv/fd_adns.h"
+#include "../../waltz/resolv/fd_lookup.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -10,6 +13,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 
 static int
@@ -359,12 +363,30 @@ fetch_total( fd_bam_registry_t const * reg ) {
   return total;
 }
 
-/* test_fetch_loopback fetches path from a local server that answers
-   /old with a redirect to /v1/nodes and anything else with status and
-   body, one request per connection. */
+/* Fake nameserver answers, by the host's first label. */
+#define DNS_HOSTS  (0) /* registry.hosts: /etc/hosts, no query */
+#define DNS_ANSWER (1) /* A 127.0.0.1 */
+#define DNS_NXDOMAIN (2)
+#define DNS_SILENT (3)
+
+static int
+memfd_with( char const * data ) {
+  int fd = memfd_create( "test_bam_registry", 0 );
+  FD_TEST( fd>=0 );
+  FD_TEST( (long)strlen( data )==write( fd, data, strlen( data ) ) );
+  return fd;
+}
+
+/* test_fetch_loopback fetches http://host:port/path from a local
+   server that answers /old with a redirect to /v1/nodes and anything
+   else with status and body, one request per connection.  Names other
+   than 127.0.0.1 resolve through a fake nameserver acting as dns says.
+   No step may block. */
 
 static void
-test_fetch_loopback( char const * path,
+test_fetch_loopback( char const * host,
+                     int          dns,
+                     char const * path,
                      char const * status,
                      char const * body,
                      ulong        result ) {
@@ -384,8 +406,18 @@ test_fetch_loopback( char const * path,
   FD_TEST( fcntl( lfd, F_SETFL, O_NONBLOCK )==0 );
   ushort port = fd_ushort_bswap( addr.sin_port );
 
-  char raw[ 64 ];
-  FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "http://127.0.0.1:%hu%s", port, path ) );
+  int ufd = socket( AF_INET, SOCK_DGRAM|SOCK_NONBLOCK, 0 );
+  FD_TEST( ufd>=0 );
+  struct sockaddr_in uaddr = { .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
+  socklen_t uaddr_sz = sizeof(uaddr);
+  FD_TEST( !bind( ufd, fd_type_pun( &uaddr ), uaddr_sz ) );
+  FD_TEST( !getsockname( ufd, fd_type_pun( &uaddr ), &uaddr_sz ) );
+  fd_adns_ns_port       = fd_ushort_bswap( uaddr.sin_port );
+  fd_etc_hosts_fd       = memfd_with( "127.0.0.1 registry.hosts\n" );
+  fd_etc_resolv_conf_fd = memfd_with( "nameserver 127.0.0.1\noptions timeout:1 attempts:2\n" );
+
+  char raw[ 96 ];
+  FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "http://%s:%hu%s", host, port, path ) );
   fd_url_t url[1];
   ushort   url_port = 0;
   _Bool    ssl      = 0;
@@ -398,11 +430,12 @@ test_fetch_loopback( char const * path,
   FD_TEST( fd_cstr_printf_check( resp, sizeof(resp), &resp_len, "HTTP/1.0 %s\r\nContent-Length: %lu\r\n\r\n%s", status, strlen( body ), body ) );
   char moved[ 128 ];
   ulong moved_len = 0UL;
-  FD_TEST( fd_cstr_printf_check( moved, sizeof(moved), &moved_len, "HTTP/1.1 301 Moved\r\nLocation: http://127.0.0.1:%hu/v1/nodes\r\n\r\n", port ) );
+  FD_TEST( fd_cstr_printf_check( moved, sizeof(moved), &moved_len, "HTTP/1.1 301 Moved\r\nLocation: http://%s:%hu/v1/nodes\r\n\r\n", host, port ) );
 
-  /* Answer each request, then close. */
   int   cfd = -1;
   ulong served = 0UL;
+  ulong queries = 0UL;
+  long  step_max = 0L;
   char  req[ 1024 ];
   ulong req_len = 0UL;
   fd_bam_registry_t * reg = &ctx->registry;
@@ -410,7 +443,32 @@ test_fetch_loopback( char const * path,
   while( !fetch_total( reg ) && fd_log_wallclock()<end ) {
     int  busy = 0;
     long dl   = 0L;
+    long t0   = fd_log_wallclock();
     fd_bam_registry_step( ctx, &busy, &dl );
+    step_max = fd_long_max( step_max, fd_log_wallclock()-t0 );
+
+    uchar q[ 512 ];
+    struct sockaddr_in from;
+    socklen_t from_sz = sizeof(from);
+    long qn = recvfrom( ufd, q, sizeof(q)-16UL, 0, fd_type_pun( &from ), &from_sz );
+    if( qn>=12L ) {
+      queries++;
+      FD_TEST( q[5]==1 && !(q[2]&0x80) ); /* one question, a query */
+      /* The silent case gives up well before FETCH_TIMEOUT. */
+      if( dns==DNS_SILENT ) reg->deadline = fd_long_min( reg->deadline, fd_bam_now()+(long)300e6 );
+      if( dns==DNS_ANSWER || dns==DNS_NXDOMAIN ) {
+        q[2] = (uchar)(q[2]|0x80U);
+        q[3] = (uchar)(0x80U|( dns==DNS_NXDOMAIN ? 3U : 0U ));
+        if( dns==DNS_ANSWER ) {
+          static uchar const rr[] = { 0xC0,0x0C, 0,1, 0,1, 0,0,0,60, 0,4, 127,0,0,1 };
+          q[7] = 1; /* ANCOUNT */
+          memcpy( q+qn, rr, sizeof(rr) );
+          qn += (long)sizeof(rr);
+        }
+        FD_TEST( sendto( ufd, q, (ulong)qn, 0, fd_type_pun( &from ), from_sz )==qn );
+      }
+    }
+
     if( cfd<0 ) {
       cfd = accept( lfd, NULL, NULL );
       req_len = 0UL;
@@ -421,7 +479,9 @@ test_fetch_loopback( char const * path,
     req[ req_len ] = '\0';
     if( !strstr( req, "\r\n\r\n" ) ) continue;
     FD_TEST( !strncmp( req, "GET ", 4UL ) );
-    FD_TEST( strstr( req, " HTTP/1.0\r\nHost: 127.0.0.1:" ) );
+    char want[ 96 ];
+    FD_TEST( fd_cstr_printf_check( want, sizeof(want), NULL, " HTTP/1.0\r\nHost: %s:%hu\r\n", host, port ) );
+    FD_TEST( strstr( req, want ) );
     int old = !strncmp( req+4, "/old ", 5UL );
     FD_TEST( old || !strncmp( req+4, "/v1/nodes ", 10UL ) );
     FD_TEST( send( cfd, old ? moved : resp, old ? moved_len : resp_len, MSG_NOSIGNAL )==(long)( old ? moved_len : resp_len ) );
@@ -429,9 +489,13 @@ test_fetch_loopback( char const * path,
     cfd = -1;
     served++;
   }
-  FD_TEST( served==( strcmp( path, "/old" ) ? 1UL : 2UL ) );
+  FD_TEST( step_max<(long)50e6 );
+  int named = !!strcmp( host, "127.0.0.1" );
+  int via_dns = named && dns!=DNS_HOSTS;
+  FD_TEST( via_dns ? queries>=1UL : !queries );
   FD_TEST( fetch_total( reg )==1UL && reg->fetch_cnt[ result ]==1UL );
   if( result==FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX ) {
+    FD_TEST( served==( strcmp( path, "/old" ) ? 1UL : 2UL ) );
     FD_TEST( reg->node_cnt==1UL );
     FD_TEST( reg->nodes[0].ip4==FD_IP4_ADDR( 203, 0, 113, 1 ) && reg->nodes[0].grpc_port==50056 );
   } else {
@@ -439,6 +503,13 @@ test_fetch_loopback( char const * path,
   }
 
   fd_bam_registry_disable( ctx );
+  FD_TEST( reg->fd<0 );
+  close( fd_etc_hosts_fd );
+  close( fd_etc_resolv_conf_fd );
+  fd_etc_hosts_fd       = -1;
+  fd_etc_resolv_conf_fd = -1;
+  fd_adns_ns_port       = 53;
+  close( ufd );
   close( lfd );
 }
 
@@ -516,11 +587,17 @@ main( int     argc,
   test_take_url();
   test_redirect();
   char const * one = "{\"generated_at\":\"2026-01-01T00:00:00Z\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
-  test_fetch_loopback( "/v1/nodes", "200 OK", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX );
-  test_fetch_loopback( "/old", "200 OK", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX );
-  test_fetch_loopback( "/v1/nodes", "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX );
-  test_fetch_loopback( "/v1/nodes", "200 OK", "{\"nodes\":", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX );
-  test_fetch_loopback( "/v1/nodes", "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX );
+  ulong const ok    = FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX;
+  ulong const nodns = FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_RESOLVE_IDX;
+  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", one, ok );
+  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/old",      "200 OK", one, ok );
+  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX );
+  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX );
+  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX );
+  test_fetch_loopback( "registry.hosts", DNS_HOSTS,    "/v1/nodes", "200 OK", one, ok );
+  test_fetch_loopback( "registry.dns",   DNS_ANSWER,   "/old",      "200 OK", one, ok );
+  test_fetch_loopback( "registry.dns",   DNS_NXDOMAIN, "/v1/nodes", "200 OK", one, nodns );
+  test_fetch_loopback( "registry.dns",   DNS_SILENT,   "/v1/nodes", "200 OK", one, nodns );
   test_fetch_refused();
   test_probe_join();
   FD_LOG_NOTICE(( "pass" ));

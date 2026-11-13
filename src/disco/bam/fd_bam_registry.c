@@ -4,6 +4,8 @@
 #include "../../ballet/ed25519/fd_x25519.h"
 #include "../../util/net/fd_ip4.h"
 #include "../../ballet/json/fd_jtok.h"
+#include "../../waltz/resolv/fd_adns.h"
+#include "../../waltz/resolv/fd_lookup.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -19,11 +21,15 @@
 #define FD_BAM_REG_FETCH (1)
 #define FD_BAM_REG_PROBE (2)
 
-/* io: TCP connect, TLS handshake (not for http), then HTTP body or
-   gRPC samples. */
+/* io: DNS (fetch only), TCP connect, TLS handshake (not for http),
+   then HTTP body or gRPC samples. */
 #define FD_BAM_REG_IO_CONNECT (0)
 #define FD_BAM_REG_IO_TLS     (1)
 #define FD_BAM_REG_IO_BODY    (2)
+#define FD_BAM_REG_IO_RESOLVE (3) /* fetch only, before CONNECT */
+
+FD_STATIC_ASSERT( sizeof(((fd_bam_registry_t *)NULL)->dns_query)==FD_DNS_QUERY_MTU, dns_query );
+FD_STATIC_ASSERT( sizeof(((fd_bam_registry_t *)NULL)->dns_ns)==MAXNS*sizeof(uint),     dns_ns    );
 
 static char const FD_BAM_REG_CONFIG_PATH[] = "/bam_api.BamNodeApi/GetBuilderConfig";
 
@@ -443,28 +449,85 @@ reg_socket( fd_bam_tile_t * ctx,
   return fd;
 }
 
-/* reg_resolve fills addrs with the fetch host's IPv4 addresses.
+/* reg_dns_begin resolves the fetch host as fd_adns does, but on a UDP
+   socket that lives only while the fetch resolves (fd_adns keeps one
+   open that the sandbox would have to list).  IPv4 literals and
+   /etc/hosts entries resolve here; any other name is queried from
+   every resolv.conf nameserver at once, resent every timeout/attempts
+   until the fetch deadline.  Returns 1 with addrs set, 0 with queries
+   pending, -1 on failure.
+
    TODO: AAAA records too, as hyper does (see fd_bam_registry_parse). */
 
 static int
-reg_resolve( fd_bam_registry_t * reg ) {
-  fd_addrinfo_t hints = { .ai_family = AF_INET };
-  fd_addrinfo_t * res = NULL;
-  uchar scratch[ 4096 ];
-  void * pscratch = scratch;
-  int err = fd_getaddrinfo( reg->f_host, &hints, &res, &pscratch, sizeof(scratch) );
-  if( FD_UNLIKELY( err || !res ) ) {
-    FD_LOG_WARNING(( "BAM registry resolve `%s` failed (%d-%s)",
-                     reg->f_host, err, fd_gai_strerror( err ) ));
+reg_dns_found( fd_bam_registry_t * reg,
+               int                 cnt ) {
+  if( cnt<=0 ) {
+    FD_LOG_WARNING(( "BAM registry resolve `%s` failed (%d-%s)", reg->f_host, cnt, fd_gai_strerror( cnt ) ));
     return -1;
   }
-  reg->addr_cnt = 0UL;
+  reg->addr_cnt = (ulong)cnt;
   reg->addr_i   = 0UL;
-  for( fd_addrinfo_t * ai=res; ai && reg->addr_cnt<FD_BAM_REGISTRY_ADDR_MAX; ai=ai->ai_next ) {
-    if( ai->ai_family!=AF_INET ) continue;
-    reg->addrs[ reg->addr_cnt++ ] = ((struct sockaddr_in *)ai->ai_addr)->sin_addr.s_addr;
+  return 1;
+}
+
+static int
+reg_dns_begin( fd_bam_registry_t * reg ) {
+  int cnt = fd_dns_ip4_local( reg->f_host, reg->addrs, FD_BAM_REGISTRY_ADDR_MAX );
+  if( cnt ) return reg_dns_found( reg, cnt );
+  uint timeout  = 5U;
+  uint attempts = 2U;
+  int  ns_cnt   = fd_dns_nameservers( reg->dns_ns, MAXNS, &timeout, &attempts );
+  reg->dns_qlen = fd_dns_ip4_query( reg->f_host, reg->dns_query );
+  if( ns_cnt<=0 || reg->dns_qlen<0 ) return reg_dns_found( reg, ns_cnt<=0 ? ns_cnt : reg->dns_qlen );
+  int fd = socket( AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0 );
+  if( FD_UNLIKELY( fd<0 ) ) {
+    FD_LOG_WARNING(( "BAM registry DNS socket failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    return -1;
   }
-  return reg->addr_cnt ? 0 : -1;
+  reg->fd          = fd;
+  reg->io          = FD_BAM_REG_IO_RESOLVE;
+  reg->dns_ns_cnt  = (ulong)ns_cnt;
+  reg->dns_retry   = fd_long_max( (long)timeout*(long)1e9/(long)fd_uint_max( attempts, 1U ), (long)100e6 );
+  reg->dns_send_at = 0L;
+  return 0;
+}
+
+/* reg_dns_poll sends due queries and reads answers.  Same return
+   values as reg_dns_begin. */
+
+static int
+reg_dns_poll( fd_bam_registry_t * reg,
+              long                now ) {
+  ushort ns_port = fd_ushort_bswap( fd_adns_ns_port ); /* 53; tests override it */
+  if( now>=reg->dns_send_at ) {
+    reg->dns_send_at = now+reg->dns_retry;
+    for( ulong i=0UL; i<reg->dns_ns_cnt; i++ ) {
+      struct sockaddr_in ns = { .sin_family = AF_INET, .sin_port = ns_port, .sin_addr.s_addr = reg->dns_ns[ i ] };
+      /* A lost or refused send is retried with the next resend. */
+      (void)sendto( reg->fd, reg->dns_query, (ulong)reg->dns_qlen, MSG_NOSIGNAL, fd_type_pun_const( &ns ), sizeof(ns) );
+    }
+  }
+  for( ulong burst=0UL; burst<16UL; burst++ ) {
+    uchar ans[ 512 ];
+    struct sockaddr_in from;
+    socklen_t from_sz = sizeof(from);
+    long n = recvfrom( reg->fd, ans, sizeof(ans), MSG_NOSIGNAL|MSG_DONTWAIT, fd_type_pun( &from ), &from_sz );
+    if( n<0L ) {
+      if( errno==EAGAIN || errno==EWOULDBLOCK ) return 0;
+      continue; /* ICMP errors from one nameserver: wait for the others */
+    }
+    /* Only an answer to this query from a nameserver it went to. */
+    ulong i = 0UL;
+    while( i<reg->dns_ns_cnt && ( from.sin_addr.s_addr!=reg->dns_ns[ i ] || from.sin_port!=ns_port ) ) i++;
+    if( i==reg->dns_ns_cnt || n<(long)reg->dns_qlen || (ans[2]&0xF8U)!=0x80U ||
+        memcmp( ans, reg->dns_query, 2UL ) || memcmp( ans+4, reg->dns_query+4, 2UL ) ||
+        memcmp( ans+12, reg->dns_query+12, (ulong)reg->dns_qlen-12UL ) ) continue;
+    int cnt = fd_dns_ip4_answer( ans, (ulong)n, reg->addrs, FD_BAM_REGISTRY_ADDR_MAX );
+    if( cnt==FD_EAI_AGAIN ) continue; /* SERVFAIL: another nameserver or a resend may answer */
+    return reg_dns_found( reg, cnt );
+  }
+  return 0;
 }
 
 /* reg_fetch_connect opens the next resolved address.  As in hyper, a
@@ -491,12 +554,15 @@ reg_fetch_connect( fd_bam_tile_t * ctx ) {
   return -1;
 }
 
-/* reg_fetch_begin returns 0 once a connect is in flight, else the
-   REG_FETCH_* result to end the fetch with. */
+/* reg_fetch_begin returns 0 once a lookup or connect is in flight,
+   else the REG_FETCH_* result to end the fetch with. */
 
 static ulong
 reg_fetch_begin( fd_bam_tile_t * ctx ) {
-  if( reg_resolve( &ctx->registry ) ) return REG_FETCH_RESOLVE;
+  reg_close( &ctx->registry );
+  int rc = reg_dns_begin( &ctx->registry );
+  if( rc<0 ) return REG_FETCH_RESOLVE;
+  if( !rc  ) return 0UL;
   return reg_fetch_connect( ctx ) ? REG_FETCH_CONNECT : 0UL;
 }
 
@@ -1018,7 +1084,18 @@ static void
 reg_drive_fetch( fd_bam_tile_t * ctx ) {
   fd_bam_registry_t * reg = &ctx->registry;
   long now = fd_bam_now();
-  if( now>=reg->deadline ) { reg_fetch_done( ctx, REG_FETCH_TIMEOUT ); return; }
+  if( now>=reg->deadline ) {
+    if( reg->io==FD_BAM_REG_IO_RESOLVE ) FD_LOG_WARNING(( "BAM registry resolve `%s` timed out", reg->f_host ));
+    reg_fetch_done( ctx, reg->io==FD_BAM_REG_IO_RESOLVE ? REG_FETCH_RESOLVE : REG_FETCH_TIMEOUT );
+    return;
+  }
+
+  if( reg->io==FD_BAM_REG_IO_RESOLVE ) {
+    int rc = reg_dns_poll( reg, now );
+    if( rc<0 ) reg_fetch_done( ctx, REG_FETCH_RESOLVE );
+    else if( rc && reg_fetch_connect( ctx ) ) reg_fetch_done( ctx, REG_FETCH_CONNECT );
+    return;
+  }
 
   if( reg->io==FD_BAM_REG_IO_CONNECT ) {
     int ready = reg_tcp_ready( reg );
