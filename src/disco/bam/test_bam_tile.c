@@ -103,41 +103,6 @@ test_bam_build_legacy_or_v0_txn( uchar payload[ static FD_TXN_MTU_V0 ],
   return FD_TXN_MTU_V0;
 }
 
-/* Test-only shims implemented in fd_bam_tile.c so this unit test can
-   drive internal BAM tile paths without exposing them through production
-   headers. */
-extern void
-fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
-                                  ulong           in_idx,
-                                  ulong           sig,
-                                  ulong           chunk,
-                                  ulong           sz );
-
-extern void
-fd_bam_test_receive_ingress_frag_lapped( fd_bam_tile_t * ctx,
-                                         ulong           in_idx,
-                                         ulong           sig,
-                                         ulong           chunk,
-                                         ulong           sz,
-                                         void *          payload );
-
-extern void
-fd_bam_test_metrics_write( fd_bam_tile_t * ctx );
-
-extern void
-fd_bam_test_before_credit( fd_bam_tile_t *    ctx,
-                           fd_stem_context_t * stem,
-                           int *               charge_busy );
-
-extern void
-fd_bam_test_check_credit( fd_bam_tile_t *     ctx,
-                          fd_stem_context_t * stem,
-                          int *               charge_busy,
-                          int *               is_backpressured );
-
-extern long
-fd_bam_test_next_deadline( fd_bam_tile_t * ctx );
-
 static long g_clock = 1L;
 static ulong g_clock_read_cnt;
 

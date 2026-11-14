@@ -8,11 +8,47 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+/* Test-only shims implemented in fd_bam_tile.c so the BAM unit tests
+   and fuzzers can drive internal BAM tile paths without exposing them
+   through production headers. */
+
+extern void
+fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
+                                  ulong           in_idx,
+                                  ulong           sig,
+                                  ulong           chunk,
+                                  ulong           sz );
+
+extern void
+fd_bam_test_receive_ingress_frag_lapped( fd_bam_tile_t * ctx,
+                                         ulong           in_idx,
+                                         ulong           sig,
+                                         ulong           chunk,
+                                         ulong           sz,
+                                         void *          payload );
+
+extern void
+fd_bam_test_metrics_write( fd_bam_tile_t * ctx );
+
+extern void
+fd_bam_test_before_credit( fd_bam_tile_t *    ctx,
+                           fd_stem_context_t * stem,
+                           int *               charge_busy );
+
 extern void
 fd_bam_test_after_credit( fd_bam_tile_t *    ctx,
                           fd_stem_context_t * stem,
                           int *               opt_poll_in,
                           int *               charge_busy );
+
+extern long
+fd_bam_test_next_deadline( fd_bam_tile_t * ctx );
+
+extern void
+fd_bam_test_check_credit( fd_bam_tile_t *     ctx,
+                          fd_stem_context_t * stem,
+                          int *               charge_busy,
+                          int *               is_backpressured );
 
 FD_IMPORT_BINARY( test_bam_sample_vote, "src/disco/pack/sample_vote.bin" );
 

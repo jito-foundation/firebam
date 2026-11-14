@@ -36,13 +36,6 @@ FD_IMPORT_BINARY( bam_fuzz_pack_txn7, "src/disco/pack/fixtures/txn7.bin" );
    scheduler protobuf result encoding.  It has no model oracle, and all
    scheduler transactions are real signature-valid fixture bytes. */
 
-extern void
-fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
-                                  ulong           in_idx,
-                                  ulong           sig,
-                                  ulong           chunk,
-                                  ulong           sz );
-
 typedef enum {
   BAM_EVT_SEND_BATCH           = 0,
   BAM_EVT_REPLAY               = 1,
