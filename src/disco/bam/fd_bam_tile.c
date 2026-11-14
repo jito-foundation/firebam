@@ -750,11 +750,11 @@ before_credit( fd_bam_tile_t *    ctx,
     if( FD_LIKELY( fired ) ) fd_fseq_update( ctx->waker_fseq, 0UL );
     int busy = 0;
     fd_bam_client_step( ctx, &busy );
-    if( FD_LIKELY( fired ) ) fd_waker_client_rearm( ctx->waker_client_idx );
     long step_end = fd_bam_now();
     int reg_busy = 0;
     long reg_deadline = LONG_MAX;
-    fd_bam_registry_step( ctx, &reg_busy, &reg_deadline );
+    fd_bam_registry_step( ctx, &reg_busy, &reg_deadline ); /* its sockets share the waker set */
+    if( FD_LIKELY( fired ) ) fd_waker_client_rearm( ctx->waker_client_idx );
     busy |= reg_busy;
     *charge_busy |= busy;
     ctx->next_step_deadline = busy ? 0L : fd_long_min( fd_bam_client_next_deadline( ctx, step_end ), reg_deadline );

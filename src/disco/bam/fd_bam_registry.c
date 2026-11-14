@@ -8,6 +8,7 @@
 #include "../../waltz/http/fd_http.h"
 #include "../../waltz/resolv/fd_adns.h"
 #include "../../waltz/resolv/fd_lookup.h"
+#include "../waker/fd_waker.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -18,6 +19,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/epoll.h>
 
 /* phase: idle, fetching the document, probing nodes. */
 #define FD_BAM_REG_IDLE  (0)
@@ -43,6 +45,8 @@ reg_close( fd_bam_registry_t * reg ) {
     reg->fd = -1;
   }
   reg->io       = FD_BAM_REG_IO_CONNECT;
+  reg->ep       = 0;
+  reg->sent     = 0;
   reg->http_off = 0UL;
   reg->body_len = 0UL;
 }
@@ -55,6 +59,7 @@ slot_close( fd_bam_registry_slot_t * s ) {
   }
   fd_grpc_client_reset( s->grpc );
   s->io       = FD_BAM_REG_IO_CONNECT;
+  s->ep       = 0;
   s->inflight = 0;
   s->dead     = 0;
   s->samples  = 0U;
@@ -1015,6 +1020,12 @@ static void
 reg_drive_tls( fd_bam_tile_t * ctx,
                int *           failed ) {
   fd_bam_registry_t * reg = &ctx->registry;
+  /* fd_tlsrec_sock_rx sends only what it produces, so a handshake
+     flight parked on EAGAIN goes out here. */
+  if( fd_tlsrec_sock_tx_pending( reg->sock ) && fd_tlsrec_sock_flush( reg->sock, reg->fd )<0 ) {
+    *failed = 1;
+    return;
+  }
   ulong rx_sz = 0UL;
   int rc = fd_tlsrec_sock_rx( reg->sock, reg->conn, reg->fd, &rx_sz );
   if( rc==FD_TLSREC_SOCK_ERR_EOF && !fd_tlsrec_conn_is_ready( reg->conn ) ) *failed = 1;
@@ -1136,6 +1147,7 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
   int tx = reg_fetch_tx( reg, req, req_len );
   if( tx<0 ) { reg_fetch_done( ctx, REG_FETCH_IO ); return; }
   if( !tx ) return;
+  reg->sent = 1;
 
   int eof = reg_fetch_rx( reg );
   if( eof<0 ) { reg_fetch_done( ctx, eof==-2 ? REG_FETCH_HTTP : REG_FETCH_IO ); return; }
@@ -1165,14 +1177,15 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
 }
 
 /* slot_drive returns 1 once the slot is finished: connect timeout,
-   channel failure, or PROBE_SAMPLES calls made. */
+   channel failure, or PROBE_SAMPLES calls made.  Sets *busy when the
+   channel moved bytes. */
 
 static int
 slot_drive( fd_bam_tile_t *          ctx,
             fd_bam_registry_slot_t * s,
-            long                     now ) {
-  int busy = 0;
-  int io   = fd_grpc_client_rxtx_tls( s->grpc, s->conn, s->fd, now, &busy );
+            long                     now,
+            int *                    busy ) {
+  int io   = fd_grpc_client_rxtx_tls( s->grpc, s->conn, s->fd, now, busy );
   int tls  = reg_tls_failed( s->conn ); /* counted even when io failed */
   if( tls==2 ) ctx->registry.probe_cert_cnt++;
   if( s->dead || io || tls ) return 1;
@@ -1195,12 +1208,13 @@ slot_drive( fd_bam_tile_t *          ctx,
   s->inflight  = 1;
   s->sample_ns = started;
   /* Put the request on the wire now so the sample starts at send. */
-  if( fd_grpc_client_rxtx_tls( s->grpc, s->conn, s->fd, now, &busy ) || s->dead ) return 1;
+  if( fd_grpc_client_rxtx_tls( s->grpc, s->conn, s->fd, now, busy ) || s->dead ) return 1;
   return 0;
 }
 
 static void
-reg_drive_probe( fd_bam_tile_t * ctx ) {
+reg_drive_probe( fd_bam_tile_t * ctx,
+                 int *           busy ) {
   fd_bam_registry_t * reg = &ctx->registry;
   long now = fd_bam_now();
   if( now-reg->round_start>=FD_BAM_REGISTRY_PROBE_BUDGET_NS ) {
@@ -1237,7 +1251,7 @@ reg_drive_probe( fd_bam_tile_t * ctx ) {
   for( ulong i=0UL; i<reg->slot_cnt; i++ ) {
     fd_bam_registry_slot_t * s = &reg->slots[ i ];
     if( s->fd<0 || s->io==FD_BAM_REG_IO_CONNECT ) continue;
-    if( slot_drive( ctx, s, now ) ) slot_done( ctx, s );
+    if( slot_drive( ctx, s, now, busy ) ) slot_done( ctx, s );
   }
 
   reg_probe_fill( ctx );
@@ -1299,6 +1313,89 @@ reg_idle( fd_bam_tile_t * ctx,
   *deadline = fd_long_min( *deadline, now+FD_BAM_REGISTRY_POLL_NS );
 }
 
+/* ---- efficient layout -------------------------------------------- */
+
+/* There the follower's sockets sit in the tile's waker set, as the BAM
+   socket does: always readable, writable only while a connect or a
+   send is pending (an idle writable socket would keep the set ready).
+   Closing a socket removes it from the set. */
+
+static void
+reg_epoll( fd_bam_tile_t const * ctx,
+           int                   fd,
+           uchar *               ep,
+           int                   out ) {
+  uchar want = out ? 2 : 1;
+  if( fd<0 || *ep==want ) return;
+  struct epoll_event ev = { .events = EPOLLIN | ( out ? EPOLLOUT : 0U ), .data.fd = fd };
+  if( FD_UNLIKELY( -1==epoll_ctl( FD_WAKER_INNER_FD( ctx->waker_client_idx ), *ep ? EPOLL_CTL_MOD : EPOLL_CTL_ADD, fd, &ev ) ) )
+    FD_LOG_ERR(( "epoll_ctl(BAM registry socket) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+  *ep = want;
+}
+
+static void
+reg_epoll_sync( fd_bam_tile_t * ctx ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  int out = 0; /* a DNS socket only reads */
+  if( reg->io==FD_BAM_REG_IO_CONNECT ) out = 1;
+  else if( reg->io!=FD_BAM_REG_IO_RESOLVE ) out = reg->f_ssl ? fd_tlsrec_sock_tx_pending( reg->sock ) : !reg->sent;
+  reg_epoll( ctx, reg->fd, &reg->ep, out );
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) {
+    fd_bam_registry_slot_t * s = &reg->slots[ i ];
+    reg_epoll( ctx, s->fd, &s->ep, s->io==FD_BAM_REG_IO_CONNECT ||
+                                   fd_grpc_client_tx_pending( s->grpc ) || fd_grpc_client_tls_tx_pending( s->grpc ) );
+  }
+}
+
+/* reg_mark records what a fetch or probe step can advance besides
+   bytes on a probe channel (slot_drive reports those). */
+
+typedef struct {
+  ulong phase, io, fd, addr_i, http_off, body_len, tx_left, probe_active, order_i;
+} reg_mark_t;
+
+static void
+reg_mark( fd_bam_registry_t const * reg,
+          reg_mark_t *              m ) {
+  m->phase        = reg->phase;
+  m->io           = reg->io;
+  m->fd           = (ulong)(long)reg->fd;
+  m->addr_i       = reg->addr_i;
+  m->http_off     = reg->http_off;
+  m->body_len     = reg->body_len;
+  m->tx_left      = reg->sock->tx_sz-reg->sock->tx_off;
+  m->probe_active = reg->probe_active;
+  m->order_i      = reg->order_i;
+}
+
+/* reg_wake returns when a fetch or probe that made no progress must
+   step again without a socket event: its next timer, or now while a
+   probe sample is in flight, so samples time the reply as on the
+   performance layout rather than the waker's wake-up. */
+
+static long
+reg_wake( fd_bam_registry_t const * reg,
+          long                      now ) {
+  if( reg->phase==FD_BAM_REG_FETCH ) {
+    if( reg->io==FD_BAM_REG_IO_RESOLVE ) return fd_long_min( reg->deadline, reg->dns_send_at );
+    /* Held plaintext does not make the socket readable. */
+    if( reg->f_ssl && reg->io!=FD_BAM_REG_IO_CONNECT &&
+        fd_tlsrec_sock_rx_avail( reg->sock ) && !fd_tlsrec_sock_tx_pending( reg->sock ) ) return now;
+    return reg->deadline;
+  }
+  long dl = reg->round_start+FD_BAM_REGISTRY_PROBE_BUDGET_NS;
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) {
+    fd_bam_registry_slot_t const * s = &reg->slots[ i ];
+    if( s->fd<0 ) continue;
+    if( s->inflight ) return now;
+    /* Connected with no call in flight: a call failed to start. */
+    if( s->io!=FD_BAM_REG_IO_CONNECT && fd_grpc_client_is_connected( s->grpc ) ) return now;
+    dl = fd_long_min( dl, fd_long_min( s->deadline, fd_grpc_client_next_deadline( s->grpc ) ) );
+    if( fd_grpc_client_tls_rx_pending( s->grpc ) && !fd_grpc_client_tls_tx_pending( s->grpc ) ) return now;
+  }
+  return dl;
+}
+
 void
 fd_bam_registry_step( fd_bam_tile_t * ctx,
                       int *           charge_busy,
@@ -1315,13 +1412,33 @@ fd_bam_registry_step( fd_bam_tile_t * ctx,
     reg->stalled_ns = 0L;
     reg->stalled_at = fd_bam_now();
   }
-  if( ctx->registry.fd<0 && ctx->registry.phase==FD_BAM_REG_IDLE ) {
+  if( reg->fd<0 && reg->phase==FD_BAM_REG_IDLE ) {
     reg_idle( ctx, charge_busy, deadline );
-    return;
+  } else if( !ctx->waker_fseq ) {
+    /* Nothing reports socket readiness: poll on every step. */
+    int ignored = 0;
+    *charge_busy = 1;
+    *deadline = fd_bam_now();
+    if( reg->phase==FD_BAM_REG_FETCH ) reg_drive_fetch( ctx );
+    else if( reg->phase==FD_BAM_REG_PROBE ) reg_drive_probe( ctx, &ignored );
+    else reg_idle( ctx, charge_busy, deadline );
+  } else {
+    reg_mark_t m0, m1;
+    reg_mark( reg, &m0 );
+    int busy = 0;
+    if( reg->phase==FD_BAM_REG_FETCH ) reg_drive_fetch( ctx );
+    else if( reg->phase==FD_BAM_REG_PROBE ) reg_drive_probe( ctx, &busy );
+    reg_mark( reg, &m1 );
+    busy |= !!memcmp( &m0, &m1, sizeof(reg_mark_t) );
+    long now = fd_bam_now();
+    if( busy ) {
+      *charge_busy = 1;
+      *deadline    = now;
+    } else if( reg->phase==FD_BAM_REG_IDLE ) {
+      reg_idle( ctx, charge_busy, deadline );
+    } else {
+      *deadline = reg_wake( reg, now );
+    }
   }
-  *charge_busy = 1;
-  *deadline = fd_bam_now();
-  if( ctx->registry.phase==FD_BAM_REG_FETCH ) reg_drive_fetch( ctx );
-  else if( ctx->registry.phase==FD_BAM_REG_PROBE ) reg_drive_probe( ctx );
-  else reg_idle( ctx, charge_busy, deadline );
+  if( ctx->waker_fseq ) reg_epoll_sync( ctx );
 }

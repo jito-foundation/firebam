@@ -71,6 +71,7 @@ struct fd_bam_registry_slot {
   uchar              io;
   uchar              inflight;
   uchar              dead;
+  uchar              ep; /* waker set: 0 absent, 1 readable, 2 also writable */
   uint               samples;
   ulong              node_i;
   ulong              best_us;
@@ -151,6 +152,8 @@ struct fd_bam_registry {
 
   uchar phase; /* 0 idle, 1 fetch, 2 probe */
   uchar io;    /* 0 connect, 1 tls, 2 payload */
+  uchar ep;    /* as in fd_bam_registry_slot_t */
+  uchar sent;  /* the request is all out */
   int   fd;
   ulong http_off;
   ulong body_len;
@@ -256,8 +259,11 @@ fd_bam_registry_disable( fd_bam_tile_t * ctx );
 
 /* fd_bam_registry_step advances one fetch, probe, or idle action, or
    pauses the follower while BAM is disabled.  *charge_busy is set when
-   the socket needs another poll immediately.  *deadline is the next
-   wake when the follower is idle. */
+   the follower needs another step immediately, and *deadline is the
+   next step otherwise.  Without a waker (the performance layout) a
+   fetch or probe polls its sockets on every step.  With one, they are
+   in the tile's waker set and the step reports busy only after
+   progress, so the tile parks until a socket or timer is due. */
 
 void
 fd_bam_registry_step( fd_bam_tile_t * ctx,

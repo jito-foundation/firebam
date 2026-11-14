@@ -5,9 +5,11 @@
 #include "../../util/net/fd_ip4.h"
 #include "../../waltz/resolv/fd_adns.h"
 #include "../../waltz/resolv/fd_lookup.h"
+#include "../waker/fd_waker.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -22,15 +24,49 @@ is_registry( char const * raw ) {
   return fd_bam_registry_is_url( url );
 }
 
-/* ctx_init readies a tile with a system CA bundle and BAM enabled. */
+/* ctx_init readies a tile with a system CA bundle and BAM enabled,
+   as a waker client (the efficient layout) if waker is set. */
+
+static uchar waker_fseq_mem[ FD_FSEQ_FOOTPRINT ] __attribute__((aligned(FD_FSEQ_ALIGN)));
 
 static void
 ctx_init( fd_bam_tile_t * ctx,
-          uint            seed ) {
+          uint            seed,
+          int             waker ) {
   fd_bam_tile_ctx_defaults( ctx );
   FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, seed, 0UL ) ) );
   ctx->ca_store->cnt = 1UL;
   ctx->enabled       = 1U;
+  if( waker ) {
+    ctx->waker_fseq       = fd_fseq_join( fd_fseq_new( waker_fseq_mem, 0UL ) );
+    ctx->waker_client_idx = 0UL;
+  }
+}
+
+/* waker_ready reports whether the tile's waker set has a ready socket
+   within timeout_ms, as the waker tile would see it. */
+
+static int
+waker_ready( int timeout_ms ) {
+  struct pollfd pfd = { .fd = FD_WAKER_INNER_FD( 0UL ), .events = POLLIN };
+  int rc = poll( &pfd, 1, timeout_ms );
+  FD_TEST( rc>=0 );
+  return rc;
+}
+
+/* park waits, as a parked tile would, until one of fds or the waker
+   set is ready or deadline passes (at most 1 s). */
+
+static void
+park( int const * fds,
+      ulong       fd_cnt,
+      long        deadline ) {
+  struct pollfd pfd[ 8 ];
+  ulong cnt = 0UL;
+  pfd[ cnt++ ] = (struct pollfd){ .fd = FD_WAKER_INNER_FD( 0UL ), .events = POLLIN };
+  for( ulong i=0UL; i<fd_cnt; i++ ) if( fds[ i ]>=0 ) pfd[ cnt++ ] = (struct pollfd){ .fd = fds[ i ], .events = POLLIN };
+  long wait_ms = ( deadline-fd_bam_now()+999999L )/1000000L;
+  FD_TEST( poll( pfd, (nfds_t)cnt, (int)fd_long_max( 0L, fd_long_min( wait_ms, 1000L ) ) )>=0 );
 }
 
 static void
@@ -393,7 +429,8 @@ memfd_with( char const * data ) {
    server that answers /old with a redirect to /v1/nodes and anything
    else with status and body, one request per connection.  Names other
    than 127.0.0.1 resolve through a fake nameserver acting as dns says.
-   No step may block. */
+   No step may block.  With waker set the tile parks whenever a step
+   reports no progress, and each answer must wake its waker set. */
 
 static void
 test_fetch_loopback( char const * host,
@@ -401,9 +438,10 @@ test_fetch_loopback( char const * host,
                      char const * path,
                      char const * status,
                      char const * body,
-                     ulong        result ) {
+                     ulong        result,
+                     int          waker ) {
   static fd_bam_tile_t ctx[1];
-  ctx_init( ctx, 1U );
+  ctx_init( ctx, 1U, waker );
 
   ushort port;
   int lfd = listener( 1, &port );
@@ -437,13 +475,20 @@ test_fetch_loopback( char const * host,
   char  req[ 1024 ];
   ulong req_len = 0UL;
   fd_bam_registry_t * reg = &ctx->registry;
+  ulong steps = 0UL;
+  ulong busy_steps = 0UL;
+  int   busy = 1;
+  long  dl   = 0L;
   long  end = fd_log_wallclock()+(long)5e9;
   while( !fetch_total( reg ) && fd_log_wallclock()<end ) {
-    int  busy = 0;
-    long dl   = 0L;
+    if( waker && !busy ) park( (int const[]){ lfd, ufd, cfd }, 3UL, dl );
+    busy = 0;
     long t0   = fd_log_wallclock();
     fd_bam_registry_step( ctx, &busy, &dl );
     step_max = fd_long_max( step_max, fd_log_wallclock()-t0 );
+    steps++;
+    busy_steps += !!busy;
+    if( waker && !busy ) FD_TEST( dl>t0 );
 
     uchar q[ 512 ];
     struct sockaddr_in from;
@@ -463,7 +508,9 @@ test_fetch_loopback( char const * host,
           memcpy( q+qn, rr, sizeof(rr) );
           qn += (long)sizeof(rr);
         }
+        if( waker ) FD_TEST( !waker_ready( 0 ) );
         FD_TEST( sendto( ufd, q, (ulong)qn, 0, fd_type_pun( &from ), from_sz )==qn );
+        if( waker ) FD_TEST( waker_ready( 1000 ) );
       }
     }
 
@@ -482,12 +529,17 @@ test_fetch_loopback( char const * host,
     FD_TEST( strstr( req, want ) );
     int old = !strncmp( req+4, "/old ", 5UL );
     FD_TEST( old || !strncmp( req+4, "/v1/nodes ", 10UL ) );
+    if( waker ) FD_TEST( !waker_ready( 0 ) ); /* no writable wake once the request is out */
     FD_TEST( send( cfd, old ? moved : resp, old ? moved_len : resp_len, MSG_NOSIGNAL )==(long)( old ? moved_len : resp_len ) );
+    if( waker ) FD_TEST( waker_ready( 1000 ) );
     close( cfd );
     cfd = -1;
     served++;
   }
   FD_TEST( step_max<(long)50e6 );
+  FD_LOG_INFO(( "fetch %s%s %s: %lu steps, %lu busy", host, path, waker ? "parked" : "polled", steps, busy_steps ));
+  if( waker ) FD_TEST( busy_steps<=12UL && steps<=40UL );
+  else        FD_TEST( busy_steps==steps );
   int named = !!strcmp( host, "127.0.0.1" );
   int via_dns = named && dns!=DNS_HOSTS;
   FD_TEST( via_dns ? queries>=1UL : !queries );
@@ -514,7 +566,7 @@ test_fetch_loopback( char const * host,
 static void
 test_fetch_refused( void ) {
   static fd_bam_tile_t ctx[1];
-  ctx_init( ctx, 2U );
+  ctx_init( ctx, 2U, 0 );
 
   /* A port that was just bound and closed refuses connections. */
   ushort port;
@@ -559,12 +611,14 @@ test_fetch_refused( void ) {
 /* test_probe_round probes a refused port and one that accepts TCP but
    never answers TLS.  Disabling BAM mid-round idles the follower;
    enabling it reruns the round, which settles with no usable node,
-   warns, and dials nothing. */
+   warns, and dials nothing.  With waker set the rerun parks between
+   steps: the refusal and the connect wake the waker set, and the
+   silent node's connect deadline ends the round. */
 
 static void
-test_probe_round( void ) {
+test_probe_round( int waker ) {
   static fd_bam_tile_t ctx[1];
-  ctx_init( ctx, 3U );
+  ctx_init( ctx, 3U, waker );
   fd_bam_registry_t * reg = &ctx->registry;
   ulong align = fd_bam_registry_probe_align();
   ulong fp    = fd_bam_registry_probe_footprint();
@@ -610,9 +664,30 @@ test_probe_round( void ) {
   fd_bam_registry_step( ctx, &busy, &dl );
   FD_TEST( !reg->paused && !reg->stalled_ns );
   FD_TEST( reg->phase==2 && reg->probe_active );
+  /* A connecting slot waits to become writable; on loopback the
+     connect finishes before the tile would park, so check directly. */
+  for( ulong i=0UL; waker && i<reg->slot_cnt; i++ ) {
+    fd_bam_registry_slot_t const * s = &reg->slots[ i ];
+    if( s->fd>=0 ) FD_TEST( s->ep==( s->io ? 1 : 2 ) );
+  }
 
-  long end = fd_log_wallclock()+(long)3e9;
-  while( reg->phase==2 && fd_log_wallclock()<end ) fd_bam_registry_step( ctx, &busy, &dl );
+  ulong steps = 0UL;
+  ulong busy_steps = 0UL;
+  long  end = fd_log_wallclock()+(long)3e9;
+  while( reg->phase==2 && fd_log_wallclock()<end ) {
+    if( waker && !busy ) {
+      long t0 = fd_bam_now();
+      FD_TEST( dl>t0 );
+      park( NULL, 0UL, dl );
+    }
+    busy = 0;
+    fd_bam_registry_step( ctx, &busy, &dl );
+    steps++;
+    busy_steps += !!busy;
+  }
+  FD_LOG_INFO(( "probe round %s: %lu steps, %lu busy", waker ? "parked" : "polled", steps, busy_steps ));
+  if( waker ) FD_TEST( busy_steps<=8UL && steps<=24UL );
+  else        FD_TEST( busy_steps==steps );
   FD_TEST( !reg->phase && !reg->probe_active );
   FD_TEST( reg->round_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_ROUND_RESULT_V_SETTLED_IDX ]==1UL );
   FD_TEST( reg->last_round[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_NODE_RESULT_V_UNANSWERED_IDX ]==2UL );
@@ -642,6 +717,7 @@ int
 main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
+  fd_waker_install( 1UL );
   test_parse();
   test_http();
   test_rank_and_choose();
@@ -650,15 +726,19 @@ main( int     argc,
   char const * one = "{\"generated_at\":\"2026-01-01T00:00:00Z\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
   ulong const ok    = FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX;
   ulong const nodns = FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_RESOLVE_IDX;
-  test_fetch_loopback( "registry.hosts", DNS_HOSTS,    "/v1/nodes", "200 OK", one, ok );
-  test_fetch_loopback( "registry.dns",   DNS_ANSWER,   "/old",      "200 OK", one, ok );
-  test_fetch_loopback( "registry.dns",   DNS_NXDOMAIN, "/v1/nodes", "200 OK", one, nodns );
-  test_fetch_loopback( "registry.dns",   DNS_SILENT,   "/v1/nodes", "200 OK", one, nodns );
-  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX );
-  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX );
-  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX );
+  /* The performance layout polls; the efficient one parks. */
+  for( int waker=0; waker<2; waker++ ) {
+    test_fetch_loopback( "registry.hosts", DNS_HOSTS,    "/v1/nodes", "200 OK", one, ok, waker );
+    test_fetch_loopback( "registry.dns",   DNS_ANSWER,   "/old",      "200 OK", one, ok, waker );
+    test_fetch_loopback( "registry.dns",   DNS_NXDOMAIN, "/v1/nodes", "200 OK", one, nodns, waker );
+    test_fetch_loopback( "registry.dns",   DNS_SILENT,   "/v1/nodes", "200 OK", one, nodns, waker );
+    test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX, waker );
+    test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX, waker );
+    test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX, waker );
+  }
   test_fetch_refused();
-  test_probe_round();
+  test_probe_round( 0 );
+  test_probe_round( 1 );
   test_near_leader();
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
