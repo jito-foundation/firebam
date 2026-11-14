@@ -1263,21 +1263,11 @@ privileged_init( fd_topo_t const *      topo,
     FD_LOG_CRIT(( "BAM tile scratch overflow" )); /* unreachable */
   }
 
-  memset( ctx, 0, sizeof(fd_bam_tile_t) );
-  ctx->registry.fd = -1;
+  fd_bam_tile_ctx_defaults( ctx );
   ctx->registry.probe_mem = probe_mem;
-  ctx->ownership_gen_retired = 1U;
   ctx->grpc_client_mem = grpc_mem;
   ctx->pending_txns    = bam_pending_txn_join( bam_pending_txn_new( pending_mem, pending_max ) );
   ctx->decoded_multi   = (fd_bam_decoded_multi_batch_t *)decoded_multi_mem;
-  ctx->tcp_sock        = -1;
-  ctx->bam_leader_state.slot = ULONG_MAX;
-  ctx->motor_bam_in_idx       = ULONG_MAX;
-  ctx->pack_bam_leader_in_idx = ULONG_MAX;
-  ctx->pack_bam_result_in_idx = ULONG_MAX;
-  ctx->replay_in_idx = ULONG_MAX;
-  ctx->next_leader_slot = ULONG_MAX;
-  ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
 
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
   fd_memcpy( ctx->bam_identity_pubkey, public_key, 32UL );

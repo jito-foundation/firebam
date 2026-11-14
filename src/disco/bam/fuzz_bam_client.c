@@ -499,7 +499,7 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
 static void
 bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
-  fd_memset( ctx, 0, sizeof( fd_bam_tile_t ) );
+  fd_bam_tile_ctx_defaults( ctx );
   bam_fuzz_reset_reusable_storage();
   ctx->decoded_multi = bam_fuzz_ctx.decoded_multi_storage;
 
@@ -507,8 +507,6 @@ bam_fuzz_reset_tile( void ) {
   bam_fuzz_ctx.keyswitch->magic = FD_KEYSWITCH_MAGIC;
   bam_fuzz_ctx.keyswitch->state = FD_KEYSWITCH_STATE_COMPLETED;
   ctx->keyswitch = bam_fuzz_ctx.keyswitch;
-
-  ctx->bam_leader_state.slot  = ULONG_MAX;
 
   /* Wiring for publish paths */
   ctx->stem       = &bam_fuzz_ctx.stem;
@@ -585,9 +583,6 @@ bam_fuzz_reset_tile( void ) {
                           64UL, NULL, ULONG_MAX, ULONG_MAX );
   bam_fuzz_seed_keyguard_response( ctx, NULL );
 
-  ctx->keylog_fd             = -1;
-  ctx->tcp_sock              = -1;
-  ctx->registry.fd           = -1;
   ctx->connect_deadline      = LONG_MAX;
   ctx->bam_status_logged    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->bam_status_recent    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;

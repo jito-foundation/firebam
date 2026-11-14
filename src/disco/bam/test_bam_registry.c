@@ -27,8 +27,7 @@ is_registry( char const * raw ) {
 static void
 ctx_init( fd_bam_tile_t * ctx,
           uint            seed ) {
-  memset( ctx, 0, sizeof(*ctx) );
-  ctx->registry.fd = -1;
+  fd_bam_tile_ctx_defaults( ctx );
   FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, seed, 0UL ) ) );
   ctx->ca_store->cnt = 1UL;
   ctx->enabled       = 1U;
@@ -279,8 +278,7 @@ test_take_url( void ) {
   FD_TEST( !is_registry( "https://203.0.113.1:50056?x=1" ) );
 
   static fd_bam_tile_t ctx[1];
-  memset( ctx, 0, sizeof(*ctx) );
-  ctx->registry.fd = -1;
+  fd_bam_tile_ctx_defaults( ctx );
   fd_url_t url[1];
   char const * reg = "https://dev.testnet.registry.bam.jito.wtf/v1/nodes";
   FD_TEST( fd_url_parse_cstr( url, reg, strlen( reg ), NULL ) );

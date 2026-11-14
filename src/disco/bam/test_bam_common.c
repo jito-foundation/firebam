@@ -545,7 +545,7 @@ test_bam_env_create_with_grpc_buf_sz( test_bam_env_t * env,
   fd_bam_tile_t * state = fd_wksp_alloc_laddr( wksp, alignof(fd_bam_tile_t), sizeof(fd_bam_tile_t), 1UL );
   FD_TEST( state );
   env->state = state;
-  fd_memset( state, 0, sizeof(fd_bam_tile_t) );
+  fd_bam_tile_ctx_defaults( state );
   fd_clock_tile_init( state->clock );
   state->waker_fseq = fd_fseq_join( fd_fseq_new( env->waker_fseq_mem, 0UL ) );
   FD_TEST( state->waker_fseq );
@@ -556,7 +556,6 @@ test_bam_env_create_with_grpc_buf_sz( test_bam_env_t * env,
   fd_base58_encode_32( state->bam_identity_pubkey, NULL, state->bam_identity_pubkey_b58 );
   state->stem = env->stem;
   state->enabled = 1;
-  state->ownership_gen_retired = 1U;
   ulong const pending_max = mcache_depth;
   env->pending_txn_mem = fd_wksp_alloc_laddr( wksp, bam_pending_txn_align(), bam_pending_txn_footprint( pending_max ), 1UL );
   FD_TEST( env->pending_txn_mem );
@@ -576,16 +575,7 @@ test_bam_env_create_with_grpc_buf_sz( test_bam_env_t * env,
   };
   state->gossip_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
   state->shred_out  = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
-  state->bam_leader_state.slot = ULONG_MAX;
-  state->pack_bam_leader_in_idx = ULONG_MAX;
-  state->pack_bam_result_in_idx = ULONG_MAX;
-  state->replay_in_idx = ULONG_MAX;
-  state->next_leader_slot = ULONG_MAX;
-  state->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
   state->heap_wksp       = wksp;
-  state->tcp_sock        = -1;
-  state->keylog_fd       = -1;
-  state->registry.fd     = -1;
   state->so_rcvbuf       = (int)grpc_buf_sz;
   state->map_seed        = 1UL;
   state->connect_deadline = LONG_MAX; /* mocked connections skip the dial */

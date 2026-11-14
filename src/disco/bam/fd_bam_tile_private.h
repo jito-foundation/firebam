@@ -370,6 +370,26 @@ struct fd_bam_tile {
   fd_bam_registry_t registry;
 };
 
+/* fd_bam_tile_ctx_defaults zeroes ctx and sets the fields whose idle
+   value is not zero: closed sockets, unwired inputs, no leader slot.
+   privileged_init and the test and fuzz harnesses all start here. */
+
+static inline void
+fd_bam_tile_ctx_defaults( fd_bam_tile_t * ctx ) {
+  memset( ctx, 0, sizeof(fd_bam_tile_t) );
+  ctx->registry.fd                  = -1;
+  ctx->tcp_sock                     = -1;
+  ctx->keylog_fd                    = -1;
+  ctx->ownership_gen_retired        = 1U;
+  ctx->bam_leader_state.slot        = ULONG_MAX;
+  ctx->motor_bam_in_idx             = ULONG_MAX;
+  ctx->pack_bam_leader_in_idx       = ULONG_MAX;
+  ctx->pack_bam_result_in_idx       = ULONG_MAX;
+  ctx->replay_in_idx                = ULONG_MAX;
+  ctx->next_leader_slot             = ULONG_MAX;
+  ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
+}
+
 FD_FN_PURE static inline _Bool
 fd_bam_has_effective_contact( fd_bam_tile_t const * ctx ) {
   return !!( ctx->bam_tpu.addr     && ctx->bam_tpu.port &&
