@@ -6,6 +6,7 @@
    stem callbacks directly over synthetic links. */
 
 #include "fd_bam_tile.h"
+#include "fd_bam_types.h"
 #include "../stem/fd_stem.h"
 #include "../../flamenco/fd_flamenco_base.h"
 #include "../../flamenco/accdb/fd_accdb_base.h"
@@ -187,7 +188,8 @@ bam_fuzz_res_t bam_fuzz_pack_credit  ( bam_fuzz_pack_t *   h, long now_ns );
 
 /* Slot transitions: execle builds (or reuses) a bank for slot and
    returns it, then resolv and pack follow it.  slot==ULONG_MAX ends
-   leadership. */
+   leadership.  Pack becomes leader for leader->slot with its end time,
+   tick and CU limit (leader->slot_cu_budget_remaining). */
 
 void
 bam_fuzz_execle_prepare_slot( bam_fuzz_execle_t * h,
@@ -205,10 +207,10 @@ bam_fuzz_resolv_prepare_slot( bam_fuzz_resolv_t * h,
                               fd_bank_t *         bank );
 
 bam_fuzz_res_t
-bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
-                               ulong             slot,
-                               void const *      bank,
-                               ulong             bank_idx,
-                               long              now_ns );
+bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t *             h,
+                               fd_bam_leader_state_t const * leader,
+                               void const *                  bank,
+                               ulong                         bank_idx,
+                               long                          now_ns );
 
 #endif /* HEADER_fd_src_disco_bam_fuzz_bam_pipeline_stage_h */

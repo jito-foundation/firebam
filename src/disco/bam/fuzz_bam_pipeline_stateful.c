@@ -8,6 +8,7 @@
 #include "fd_bam_tile_private.h"
 #include "fuzz_bam_pipeline_stage.h"
 #include "../tiles.h"
+#include "../pack/fd_pack_cost.h"
 #include "test_bam_common.c"
 #include <errno.h>
 #include <limits.h>
@@ -64,6 +65,13 @@ typedef enum {
    and refills the FIFO on every event would spend tens of seconds on
    the same paths, so an input forces at most this many results. */
 #define BAM_FUZZ_FORCED_RESULT_MAX (4UL*FD_BAM_MAX_PENDING_RESULTS)
+
+/* Replay gives pack each leader slot's CU limit, at least
+   FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND, and pack reports what is left
+   of it to BAM as the slot's CU budget.  BAM_EVT_ADVANCE_SLOT picks a
+   limit up to FD_PACK_MAX_COST_PER_BLOCK_UPPER_BOUND in 255 steps. */
+#define BAM_FUZZ_SLOT_CU_LIMIT      ((uint)FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND)
+#define BAM_FUZZ_SLOT_CU_LIMIT_STEP ((uint)( ( FD_PACK_MAX_COST_PER_BLOCK_UPPER_BOUND-FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND )/255UL ))
 
 #define BAM_FUZZ_VERIFY_CNT (3UL)
 
@@ -494,23 +502,24 @@ bam_fuzz_sync_pack_leader( bam_fuzz_state_t * f ) {
   ulong        bank_idx;
   bam_fuzz_execle_prepare_slot( f->execle, slot, &banks, &accdb, &bank, &bank_idx );
   bam_fuzz_resolv_prepare_slot( f->resolv, slot, banks, accdb, (fd_bank_t *)bank );
-  bam_fuzz_res_t res = bam_fuzz_pack_set_leader_slot( f->pack, slot, bank, bank_idx, g_bam_fuzz_now );
+  bam_fuzz_res_t res = bam_fuzz_pack_set_leader_slot( f->pack, &f->leader_state, bank, bank_idx, g_bam_fuzz_now );
   bam_fuzz_ingest_pack_outputs( f, &res );
   bam_fuzz_pump_pack( f, 4UL );
 }
 
 /* bam_fuzz_set_leader makes the current slot a leader slot ending
-   slot_ns from now. */
+   slot_ns from now, with a CU limit of cu_limit, that pack enters tick
+   ticks after it began. */
 
 static void
 bam_fuzz_set_leader( bam_fuzz_state_t * f,
                      long               slot_ns,
-                     uint               cu_budget,
+                     uint               cu_limit,
                      ushort             tick ) {
   f->leader_state = (fd_bam_leader_state_t) {
     .slot                     = f->current_slot,
     .slot_end_ns              = g_bam_fuzz_now + slot_ns,
-    .slot_cu_budget_remaining = cu_budget,
+    .slot_cu_budget_remaining = cu_limit,
     .tick                     = tick,
   };
   bam_fuzz_sync_pack_leader( f );
@@ -952,7 +961,7 @@ bam_fuzz_require_outside_slot_path( bam_fuzz_state_t * f,
   bam_fuzz_ensure_scheduler_stream( f );
   bam_fuzz_drain_pending_txns( f, ULONG_MAX );
   bam_fuzz_drain_result_queue( f, ULONG_MAX );
-  bam_fuzz_set_leader( f, 1000000L, 1000000U, (ushort)c );
+  bam_fuzz_set_leader( f, 1000000L, BAM_FUZZ_SLOT_CU_LIMIT, (ushort)c );
 
   f->observed_outside_slot = 0U;
   bam_fuzz_batch_spec_t spec = {
@@ -986,7 +995,7 @@ bam_fuzz_require_txn_error_path( bam_fuzz_state_t * f,
      both before requiring a fresh execution result. */
   f->current_slot += 4UL;
   g_bam_fuzz_now += (long)4000000L;
-  bam_fuzz_set_leader( f, 1000000L, 1000000U, (ushort)c );
+  bam_fuzz_set_leader( f, 1000000L, BAM_FUZZ_SLOT_CU_LIMIT, (ushort)c );
   FD_TEST( f->state->bam_leader_state.slot==f->current_slot );
 
   f->observed_txn_error = 0U;
@@ -1017,7 +1026,7 @@ bam_fuzz_deliver_result_burst( bam_fuzz_state_t * f,
     bam_fuzz_force_result_drop( f, b, c );
   } else {
     if( FD_LIKELY( !( a & 0x20U ) && f->leader_state.slot==ULONG_MAX ) ) {
-      bam_fuzz_set_leader( f, 1000000L, 1000000U, (ushort)c );
+      bam_fuzz_set_leader( f, 1000000L, BAM_FUZZ_SLOT_CU_LIMIT, (ushort)c );
     }
 
     bam_fuzz_ensure_scheduler_stream( f );
@@ -1105,7 +1114,7 @@ bam_fuzz_apply_event( bam_fuzz_state_t * f,
       f->current_slot += delta;
       g_bam_fuzz_now += (long)( delta * 1000000UL );
       if( FD_LIKELY( !( b & 0x80U ) ) ) {
-        bam_fuzz_set_leader( f, 1000000L, 1000000U - (uint)( c * 1000U ), (ushort)( a + b ) );
+        bam_fuzz_set_leader( f, 1000000L, BAM_FUZZ_SLOT_CU_LIMIT + (uint)c*BAM_FUZZ_SLOT_CU_LIMIT_STEP, (ushort)( a + b ) );
       } else {
         f->leader_state = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
         bam_fuzz_sync_pack_leader( f );
@@ -1117,7 +1126,7 @@ bam_fuzz_apply_event( bam_fuzz_state_t * f,
       bam_fuzz_sync_pack_leader( f );
       break;
     case BAM_EVT_LEADER_ON:
-      bam_fuzz_set_leader( f, (long)( 1000000UL + (ulong)a*1000UL ), 1000000U, (ushort)b );
+      bam_fuzz_set_leader( f, (long)( 1000000UL + (ulong)a*1000UL ), BAM_FUZZ_SLOT_CU_LIMIT, (ushort)b );
       break;
     case BAM_EVT_DISCONNECT:
       bam_fuzz_reset_preserving_feedback( f );
@@ -1222,7 +1231,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   f->next_seq = ( seed << 1 ) | 1U;
   f->current_slot = 100UL + (ulong)( seed & 31U );
-  bam_fuzz_set_leader( f, 1000000L, 1000000U, 0U );
+  bam_fuzz_set_leader( f, 1000000L, BAM_FUZZ_SLOT_CU_LIMIT, 0U );
 
   bam_fuzz_ensure_scheduler_stream( f );
 

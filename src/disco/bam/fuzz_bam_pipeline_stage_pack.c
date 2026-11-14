@@ -1,6 +1,16 @@
+#include "../../util/log/fd_log.h"
+
+/* Pack reads the wallclock when it becomes leader, to place the slot's
+   start and end on its tick clock.  Bind it to the harness timeline,
+   which every adapter call passes in, so that slot timing follows the
+   input and replays the same way. */
+static long bam_fuzz_pack_now_ns;
+#define fd_log_wallclock() (bam_fuzz_pack_now_ns)
+
 #define fd_tile_pack bam_fuzz_pack_tile_unused
 #include "../pack/fd_pack_tile.c"
 #undef fd_tile_pack
+#undef fd_log_wallclock
 
 #include "fuzz_bam_pipeline_stage.h"
 #include "../../flamenco/runtime/fd_bank.h"
@@ -11,6 +21,11 @@
 #define BAM_FUZZ_PACK_MCACHE_DEPTH    (256UL)
 #define BAM_FUZZ_PACK_PENDING_TXN_MAX (64UL)
 #define BAM_FUZZ_PACK_EXECLE_CNT      (1UL)
+
+/* A tick lasts a millisecond, the step of the harness timeline, so the
+   tick pack reports does not depend on how long a call takes. */
+#define BAM_FUZZ_PACK_TICKS_PER_SLOT  (64UL)
+#define BAM_FUZZ_PACK_TICK_NS         (1000000UL)
 
 struct bam_fuzz_pack {
   fd_pack_ctx_t   ctx[1];
@@ -147,12 +162,14 @@ bam_fuzz_pack_delete( bam_fuzz_pack_t * h ) {
 }
 
 bam_fuzz_res_t
-bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
-                               ulong             slot,
-                               void const *      bank,
-                               ulong             bank_idx,
-                               long              now_ns ) {
+bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t *             h,
+                               fd_bam_leader_state_t const * leader,
+                               void const *                  bank,
+                               ulong                         bank_idx,
+                               long                          now_ns ) {
   bam_fuzz_res_t res = bam_fuzz_outs_begin( &h->outs );
+  bam_fuzz_pack_now_ns = now_ns;
+  ulong slot = leader->slot;
 
   if( FD_UNLIKELY( slot==ULONG_MAX ) ) {
     if( FD_LIKELY( h->ctx->leader_slot!=ULONG_MAX ) ) {
@@ -162,6 +179,7 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
          skip_cnt+1 callbacks; a single call here can leave Pack leader,
          and later pumps rewind the clock below slot_end_ns, so Pack would
          schedule into the execle bank the harness already tore down. */
+      bam_fuzz_pack_now_ns = h->ctx->slot_end_ns;
       fd_clock_tile_set( h->ctx->clock, h->ctx->slot_end_ns );
       ulong max_iter = (ulong)fd_long_max( h->ctx->skip_cnt, 0L ) + 1UL;
       /* With use_consumed_cus off, skip_cnt is one microblock's
@@ -180,18 +198,24 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
   fd_clock_tile_set( h->ctx->clock, now_ns );
   if( FD_LIKELY( h->ctx->leader_slot==slot ) ) return bam_fuzz_outs_end( &h->outs, res );
 
+  /* Pack enters the slot leader->tick ticks after it began. */
+  ulong tick = fd_ulong_min( (ulong)leader->tick, BAM_FUZZ_PACK_TICKS_PER_SLOT );
+  FD_TEST( leader->slot_end_ns>now_ns );
+  FD_TEST( leader->slot_cu_budget_remaining>=FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND &&
+           leader->slot_cu_budget_remaining<=FD_PACK_MAX_COST_PER_BLOCK_UPPER_BOUND );
+
   fd_became_leader_t * became = fd_chunk_to_laddr( h->leader_in->mem, h->leader_in_chunk );
   fd_memset( became, 0, sizeof(fd_became_leader_t) );
   became->slot                      = slot;
   became->block_height              = bank ? ((fd_bank_t const *)bank)->f.block_height : slot;
-  became->slot_start_ns             = now_ns;
-  became->slot_end_ns               = now_ns + 100000000L;
+  became->slot_start_ns             = now_ns - (long)( tick*BAM_FUZZ_PACK_TICK_NS );
+  became->slot_end_ns               = leader->slot_end_ns;
   became->bank_idx                  = bank_idx;
   became->max_microblocks_in_slot   = 64UL;
-  became->ticks_per_slot            = 64UL;
-  became->tick_duration_ns          = 1000000UL;
+  became->ticks_per_slot            = BAM_FUZZ_PACK_TICKS_PER_SLOT;
+  became->tick_duration_ns          = BAM_FUZZ_PACK_TICK_NS;
   became->hashcnt_per_tick          = 1UL;
-  became->limits.slot_max_cost      = FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND;
+  became->limits.slot_max_cost      = leader->slot_cu_budget_remaining;
   became->limits.slot_max_write_cost_per_acct      = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND;
   became->limits.slot_max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK;
   became->limits.slot_max_data_shreds              = FD_SLOT_PARAMS_400MS.max_shred_idx;
@@ -211,6 +235,7 @@ bam_fuzz_pack_frag( bam_fuzz_pack_t *      h,
                     ulong                  seq,
                     long                   now_ns ) {
   bam_fuzz_res_t res = bam_fuzz_outs_begin( &h->outs );
+  bam_fuzz_pack_now_ns = now_ns;
   fd_clock_tile_set( h->ctx->clock, now_ns );
   during_frag( h->ctx, BAM_FUZZ_PACK_IN_RESOLV_IDX, seq, meta->sig, meta->chunk, meta->sz, meta->ctl );
   after_frag( h->ctx, BAM_FUZZ_PACK_IN_RESOLV_IDX, seq, meta->sig, meta->sz, meta->tsorig, meta->tspub, h->outs.stem );
@@ -223,6 +248,7 @@ bam_fuzz_pack_credit( bam_fuzz_pack_t * h,
   bam_fuzz_res_t res = bam_fuzz_outs_begin( &h->outs );
   /* Keep Pack on the harness timeline even after an expensive result-queue
      check; elapsed host time must not close a simulated leader slot. */
+  bam_fuzz_pack_now_ns = now_ns;
   fd_clock_tile_set( h->ctx->clock, now_ns );
   int charge_busy = 0;
   before_credit( h->ctx, h->outs.stem, &charge_busy );
