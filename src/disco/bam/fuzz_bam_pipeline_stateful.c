@@ -59,6 +59,12 @@ typedef enum {
 #define BAM_FUZZ_PB_BUF_SZ  (64UL*1024UL)
 #define BAM_FUZZ_WKSP_FOOTPRINT (8UL<<30)
 
+/* Forcing a result drop fills the result FIFO, and every forced result
+   is later flushed through the result encoder.  An input that empties
+   and refills the FIFO on every event would spend tens of seconds on
+   the same paths, so an input forces at most this many results. */
+#define BAM_FUZZ_FORCED_RESULT_MAX (4UL*FD_BAM_MAX_PENDING_RESULTS)
+
 #define BAM_FUZZ_VERIFY_CNT (3UL)
 
 #define BAM_FUZZ_MOTOR_BAM_IN_IDX (3UL)
@@ -104,6 +110,32 @@ bam_fuzz_wksp_new_lazy( ulong footprint ) {
   return test_bam_wksp_join_anonymous( mem, footprint, "bam-pipeline-fuzz" );
 }
 
+/* bam_fuzz_result_set holds the (scheduler_gen, slot, seq_id) of every
+   result in the shadow FIFO, so a push checks for a duplicate in O(1).
+   Bit 63 is set in every key, so no key is the null key. */
+
+typedef struct { uint128 key; } bam_fuzz_result_set_t;
+
+#define BAM_FUZZ_RESULT_SET_LG_SLOT_CNT (12)
+#define MAP_NAME              bam_fuzz_result_set
+#define MAP_T                 bam_fuzz_result_set_t
+#define MAP_KEY_T             uint128
+#define MAP_LG_SLOT_CNT       BAM_FUZZ_RESULT_SET_LG_SLOT_CNT
+#define MAP_KEY_NULL          ((uint128)0)
+#define MAP_KEY_INVAL(k)      (!(k))
+#define MAP_KEY_EQUAL(k0,k1)  ((k0)==(k1))
+#define MAP_KEY_EQUAL_IS_SLOW 0
+#define MAP_KEY_HASH(k)       ((uint)fd_ulong_hash( (ulong)(k) ^ fd_ulong_hash( (ulong)((k)>>64) ) ))
+#define MAP_MEMOIZE           0
+#include "../../util/tmpl/fd_map.c"
+
+FD_STATIC_ASSERT( 2UL*FD_BAM_MAX_PENDING_RESULTS<=(1UL<<BAM_FUZZ_RESULT_SET_LG_SLOT_CNT), result_set_sz );
+
+static inline uint128
+bam_fuzz_result_key( fd_bam_bundle_result_t const * res ) {
+  return ( (uint128)res->slot<<64 ) | ( 1UL<<63 ) | ( (ulong)res->scheduler_gen<<32 ) | (ulong)res->seq_id;
+}
+
 typedef struct {
   uint  seq_id;
   ulong max_schedule_slot;
@@ -146,11 +178,13 @@ typedef struct {
   ushort durable_results_head;
   ushort durable_results_tail;
   ushort durable_results_depth;
+  bam_fuzz_result_set_t  durable_result_set[ 1UL<<BAM_FUZZ_RESULT_SET_LG_SLOT_CNT ];
 
   uint observed_outside_slot;
   uint observed_txn_error;
   uint observed_result_drop;
   ulong execle_output_cnt;
+  ulong forced_result_cnt;
 
   uint   txn_error_checkpoint_first_seq;
   ulong  txn_error_checkpoint_slot;
@@ -195,13 +229,8 @@ static void
 bam_fuzz_shadow_push_result( bam_fuzz_state_t *              f,
                              fd_bam_bundle_result_t const * res ) {
   FD_TEST( f->durable_results_depth < FD_BAM_MAX_PENDING_RESULTS );
-  for( ushort i=0U; i<f->durable_results_depth; i++ ) {
-    ushort idx = (ushort)(((uint)f->durable_results_head + (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
-    fd_bam_bundle_result_t const * pending = &f->durable_results[ idx ];
-    FD_TEST( pending->scheduler_gen!=res->scheduler_gen ||
-             pending->slot         !=res->slot          ||
-             pending->seq_id       !=res->seq_id );
-  }
+  /* No result is queued twice: fails on a key already pending */
+  FD_TEST( bam_fuzz_result_set_insert( f->durable_result_set, bam_fuzz_result_key( res ) ) );
 
   if( FD_UNLIKELY( res->scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT ) ) f->observed_outside_slot = 1U;
   if( FD_UNLIKELY( res->transaction_err_count ) ) {
@@ -221,8 +250,27 @@ bam_fuzz_shadow_push_result( bam_fuzz_state_t *              f,
   f->durable_results_depth = (ushort)( f->durable_results_depth + 1U );
 }
 
+/* bam_fuzz_shadow_pop_results removes the cnt oldest shadow results. */
+
 static void
-bam_fuzz_assert_shadow_queue( bam_fuzz_state_t const * f ) {
+bam_fuzz_shadow_pop_results( bam_fuzz_state_t * f,
+                             uint               cnt ) {
+  FD_TEST( cnt<=f->durable_results_depth );
+  for( uint i=0U; i<cnt; i++ ) {
+    fd_bam_bundle_result_t const * res = &f->durable_results[ f->durable_results_head ];
+    bam_fuzz_result_set_t * ele = bam_fuzz_result_set_query( f->durable_result_set, bam_fuzz_result_key( res ), NULL );
+    FD_TEST( ele );
+    bam_fuzz_result_set_remove( f->durable_result_set, ele );
+    f->durable_results_head  = (ushort)(( (uint)f->durable_results_head + 1U ) % FD_BAM_MAX_PENDING_RESULTS);
+    f->durable_results_depth = (ushort)( f->durable_results_depth - 1U );
+  }
+}
+
+/* bam_fuzz_assert_shadow_bounds checks the FIFO's depth and tail
+   against the shadow FIFO. */
+
+static void
+bam_fuzz_assert_shadow_bounds( bam_fuzz_state_t const * f ) {
   fd_bam_tile_t const * state = f->state;
   FD_TEST( state->feedback_queue_depth <= FD_BAM_MAX_PENDING_RESULTS );
   FD_TEST( state->bam_results_head     <  FD_BAM_MAX_PENDING_RESULTS );
@@ -232,6 +280,15 @@ bam_fuzz_assert_shadow_queue( bam_fuzz_state_t const * f ) {
                                    (uint)state->feedback_queue_depth) %
                                   FD_BAM_MAX_PENDING_RESULTS);
   FD_TEST( state->bam_results_tail==expected_tail );
+}
+
+/* bam_fuzz_assert_shadow_queue checks the whole FIFO against the
+   shadow FIFO, entry by entry. */
+
+static void
+bam_fuzz_assert_shadow_queue( bam_fuzz_state_t const * f ) {
+  fd_bam_tile_t const * state = f->state;
+  bam_fuzz_assert_shadow_bounds( f );
 
   for( ushort i=0U; i<f->durable_results_depth; i++ ) {
     ushort state_idx = (ushort)(((uint)state->bam_results_head + (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
@@ -240,6 +297,9 @@ bam_fuzz_assert_shadow_queue( bam_fuzz_state_t const * f ) {
                                        &f->durable_results[ shadow_idx ] );
   }
 }
+
+/* Mirrors the results a scheduler message appended into the shadow
+   FIFO, checking only the bounds, as bam_fuzz_check_enqueue does. */
 
 static void
 bam_fuzz_mirror_queue_growth( bam_fuzz_state_t * f,
@@ -253,12 +313,14 @@ bam_fuzz_mirror_queue_growth( bam_fuzz_state_t * f,
     ushort state_idx = (ushort)(((uint)tail_before + (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
     bam_fuzz_shadow_push_result( f, &state->bam_results[ state_idx ] );
   }
-  bam_fuzz_assert_shadow_queue( f );
+  bam_fuzz_assert_shadow_bounds( f );
 }
 
 /* Checks a single new result's enqueue against the FIFO state from
    before it: dropped when the FIFO was full, else appended verbatim and
-   mirrored into the shadow FIFO. */
+   mirrored into the shadow FIFO.  Only the new tail is checked, so
+   filling the FIFO stays linear; the entries before it are checked
+   whole at the end of every event and wherever the FIFO drains. */
 
 static void
 bam_fuzz_check_enqueue( bam_fuzz_state_t *             f,
@@ -280,7 +342,7 @@ bam_fuzz_check_enqueue( bam_fuzz_state_t *             f,
   FD_TEST( state->bam_results_tail==(ushort)(( (uint)tail_before+1U ) % FD_BAM_MAX_PENDING_RESULTS) );
   bam_fuzz_assert_result_summary_eq( &state->bam_results[ tail_before ], res );
   bam_fuzz_shadow_push_result( f, res );
-  bam_fuzz_assert_shadow_queue( f );
+  bam_fuzz_assert_shadow_bounds( f );
 }
 
 /* bam_fuzz_link_frag returns the frag published at seq on link after
@@ -840,8 +902,7 @@ bam_fuzz_drain_result_queue( bam_fuzz_state_t * f,
 
     FD_TEST( state->feedback_queue_depth==(ushort)( (uint)pending-expected_cnt ) );
     FD_TEST( state->bam_results_head==(ushort)(( (uint)head_before+expected_cnt ) % FD_BAM_MAX_PENDING_RESULTS) );
-    f->durable_results_head  = (ushort)(( (uint)f->durable_results_head + expected_cnt ) % FD_BAM_MAX_PENDING_RESULTS);
-    f->durable_results_depth = (ushort)( (uint)f->durable_results_depth - expected_cnt );
+    bam_fuzz_shadow_pop_results( f, expected_cnt );
     bam_fuzz_assert_shadow_queue( f );
   }
 }
@@ -869,6 +930,10 @@ bam_fuzz_force_result_drop( bam_fuzz_state_t * f,
   bam_fuzz_ensure_scheduler_stream( f );
 
   fd_bam_tile_t * state = f->state;
+  ulong forced_cnt = FD_BAM_MAX_PENDING_RESULTS - (ulong)state->feedback_queue_depth + 1UL;
+  if( FD_UNLIKELY( f->forced_result_cnt+forced_cnt>BAM_FUZZ_FORCED_RESULT_MAX ) ) return;
+  f->forced_result_cnt += forced_cnt;
+
   while( state->feedback_queue_depth<FD_BAM_MAX_PENDING_RESULTS ) {
     bam_fuzz_enqueue_synthetic_result( f, b, c );
   }
@@ -1122,6 +1187,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   bam_fuzz_state_t f[1];
   fd_memset( f, 0, sizeof(*f) );
+  FD_TEST( bam_fuzz_result_set_join( bam_fuzz_result_set_new( f->durable_result_set ) )==f->durable_result_set );
   /* The shared unit fixture defaults to a 4 KiB gRPC buffer.  This pipeline
      checks full outbound result batches, which need the production minimum. */
   fd_bam_tile_t * state = f->state = test_bam_env_create_with_grpc_buf_sz( f->env, g_bam_fuzz_wksp, FD_BAM_GRPC_MIN_BUF_SZ )->state;
