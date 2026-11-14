@@ -26,6 +26,7 @@ FD_IMPORT_BINARY( bam_fuzz_pack_txn4, "src/disco/pack/fixtures/txn4.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn5, "src/disco/pack/fixtures/txn5.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn6, "src/disco/pack/fixtures/txn6.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn7, "src/disco/pack/fixtures/txn7.bin" );
+FD_IMPORT_BINARY( bam_fuzz_alut_txn, "src/ballet/txn/fixtures/transaction2.bin" );
 
 /* Stateful BAM pipeline fuzzer.  Stages exercise the real BAM scheduler
    protobuf decode, pending transaction queue, bam_verif publication,
@@ -34,8 +35,10 @@ FD_IMPORT_BINARY( bam_fuzz_pack_txn7, "src/disco/pack/fixtures/txn7.bin" );
    per-input lag of frags), pack tile callbacks through
    pack_execle and pack_bam_*, execle tile callbacks through native
    Firedancer runtime execution, durable feedback queue, and outbound
-   scheduler protobuf result encoding.  It has no model oracle, and all
-   scheduler transactions are real signature-valid fixture bytes. */
+   scheduler protobuf result encoding.  It has no model oracle.
+   Scheduler transactions are real signature-valid fixture bytes,
+   except for members an input poisons (see bam_fuzz_poison_t): a batch
+   only ever delivered with one must not commit. */
 
 typedef enum {
   BAM_EVT_SEND_BATCH           = 0,
@@ -49,7 +52,8 @@ typedef enum {
   BAM_EVT_RECONNECT            = 8,
   BAM_EVT_RESULT_BURST         = 9,
   BAM_EVT_DRAIN_QUEUE          = 10,
-  BAM_EVT_PACK_CONFIG          = 11
+  BAM_EVT_PACK_CONFIG          = 11,
+  BAM_EVT_POISON_MEMBER        = 12
 } bam_evt_kind_t;
 
 /* Corpus records are fixed 4-byte events: kind, a, b, c.  The kind byte is a
@@ -59,9 +63,14 @@ typedef enum {
    config file does for a run, wherever it appears: the last one wins.
    Bit 0 of a selects the perf strategy over balanced, bit 1 turns off
    use_consumed_cus.  Without one, pack runs perf without
-   use_consumed_cus, as the corpus seeds were written for. */
+   use_consumed_cus, as the corpus seeds were written for.
 
-#define BAM_EVT_KIND_CNT 12U
+   BAM_EVT_POISON_MEMBER sets member b%txn_cnt of the last batch's
+   batch c%batch_cnt to bam_fuzz_poison_t a (a larger a is ignored) and
+   resends the last batch under new seq_ids.  The poison stays with the
+   batch for later replays. */
+
+#define BAM_EVT_KIND_CNT 13U
 #define BAM_FUZZ_MAX_EVENTS 128UL
 #define BAM_FUZZ_MAX_BATCHES FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST
 #define BAM_FUZZ_PB_BUF_SZ  (64UL*1024UL)
@@ -151,13 +160,48 @@ bam_fuzz_result_key( fd_bam_bundle_result_t const * res ) {
   return ( (uint128)res->slot<<64 ) | ( 1UL<<63 ) | ( (ulong)res->scheduler_gen<<32 ) | (ulong)res->seq_id;
 }
 
+/* A poisoned member is caught before execution, each kind at the stage
+   named, and fails its batch. */
+
+typedef enum {
+  BAM_FUZZ_POISON_NONE    = 0,
+  BAM_FUZZ_POISON_BAD_SIG = 1, /* its fixture with a signature bit flipped: verify */
+  BAM_FUZZ_POISON_DUP     = 2, /* a copy of the member before it (member 0: after it): dedup */
+  BAM_FUZZ_POISON_VOTE    = 3, /* a simple vote: BAM ingress */
+  BAM_FUZZ_POISON_JUNK    = 4, /* the first half of its fixture, which does not parse: verify */
+  BAM_FUZZ_POISON_ALUT    = 5  /* a txn loading from lookup tables that do not exist: resolv */
+} bam_fuzz_poison_t;
+
+#define BAM_FUZZ_POISON_CNT 6U
+
 typedef struct {
   uint  seq_id;
   ulong max_schedule_slot;
   uchar txn_cnt;
   uchar revert_on_error;
   uint  payload_seed[ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
+  uchar poison      [ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ]; /* bam_fuzz_poison_t */
 } bam_fuzz_batch_spec_t;
+
+/* bam_fuzz_poison_set holds, keyed by seq_id+1, every batch delivered
+   with a poisoned member, and whether its seq_id was also delivered
+   clean (BAM_EVT_DUP_SEQ reuses one).  An event poisons at most
+   BAM_FUZZ_MAX_BATCHES batches under seq_ids not seen before, so the
+   set stays at most half full. */
+
+typedef struct {
+  ulong key;
+  int   clean;
+} bam_fuzz_poison_set_t;
+
+#define BAM_FUZZ_POISON_SET_LG_SLOT_CNT (11)
+#define MAP_NAME        bam_fuzz_poison_set
+#define MAP_T           bam_fuzz_poison_set_t
+#define MAP_LG_SLOT_CNT BAM_FUZZ_POISON_SET_LG_SLOT_CNT
+#define MAP_MEMOIZE     0
+#include "../../util/tmpl/fd_map.c"
+
+FD_STATIC_ASSERT( 2UL*BAM_FUZZ_MAX_EVENTS*BAM_FUZZ_MAX_BATCHES<=(1UL<<BAM_FUZZ_POISON_SET_LG_SLOT_CNT), poison_set_sz );
 
 typedef struct {
   test_bam_env_t      env[1];
@@ -195,6 +239,7 @@ typedef struct {
   ushort durable_results_tail;
   ushort durable_results_depth;
   bam_fuzz_result_set_t  durable_result_set[ 1UL<<BAM_FUZZ_RESULT_SET_LG_SLOT_CNT ];
+  bam_fuzz_poison_set_t  poison_set        [ 1UL<<BAM_FUZZ_POISON_SET_LG_SLOT_CNT ];
 
   uint observed_outside_slot;
   uint observed_txn_error;
@@ -397,6 +442,11 @@ bam_fuzz_ingest_result_link( bam_fuzz_state_t *      f,
   fd_bam_bundle_result_t const * result =
       (fd_bam_bundle_result_t const *)fd_chunk_to_laddr_const( link->mem, meta->chunk );
 
+  if( FD_UNLIKELY( result->execution_success ) ) {
+    bam_fuzz_poison_set_t const * poisoned = bam_fuzz_poison_set_query_const( f->poison_set, (ulong)result->seq_id+1UL, NULL );
+    FD_TEST( !poisoned || poisoned->clean );
+  }
+
   fd_bam_tile_t * state = f->state;
   ushort depth_before = state->feedback_queue_depth;
   ushort tail_before  = state->bam_results_tail;
@@ -441,8 +491,9 @@ bam_fuzz_assert_bam_publish( bam_fuzz_state_t const * f,
     FD_TEST( txnm->block_engine.bundle_txn_cnt==0UL );
   }
 
+  /* A poisoned member may not parse, and BAM forwards it unparsed */
   uchar txn_buf[ FD_TXN_MAX_SZ ];
-  FD_TEST( fd_txn_parse( fd_txn_m_payload_const( txnm ), txnm->payload_sz, txn_buf, NULL ) );
+  FD_TEST( ( !fd_txn_parse( fd_txn_m_payload_const( txnm ), txnm->payload_sz, txn_buf, NULL ) )==( !txnm->txn_t_sz ) );
   return txnm;
 }
 
@@ -596,8 +647,9 @@ bam_fuzz_pump_dedup( bam_fuzz_state_t * f ) {
       took++;
       progress = 1;
 
-      fd_frag_meta_t const * bam_meta;
-      fd_txn_m_t const * bam_txnm = bam_fuzz_link_txnm( &f->bam_out, verify_meta->sig-1UL, FD_TPU_PARSED_MTU, &bam_meta );
+      /* Checked as BAM published it, maybe unparsed */
+      fd_frag_meta_t const * bam_meta = bam_fuzz_link_frag( &f->bam_out, verify_meta->sig-1UL, sizeof(fd_txn_m_t), FD_TPU_PARSED_MTU );
+      fd_txn_m_t const * bam_txnm = (fd_txn_m_t const *)fd_chunk_to_laddr_const( f->bam_out.mem, bam_meta->chunk );
       for( ulong dedup_seq=dr.lo; dedup_seq<dr.hi; dedup_seq++ ) {
         fd_frag_meta_t const * dedup_meta;
         fd_txn_m_t const * dedup_txnm = bam_fuzz_link_txnm( &f->dedup_out[ 0 ], dedup_seq, FD_TPU_PARSED_MTU, &dedup_meta );
@@ -743,8 +795,10 @@ bam_fuzz_deliver_specs( bam_fuzz_state_t *            f,
 
   FD_TEST( spec_cnt<=BAM_FUZZ_MAX_BATCHES );
   for( ulong i=0UL; i<spec_cnt; i++ ) {
-    FD_TEST( specs[ i ].txn_cnt<=FD_BAM_MAX_TXN_PER_ATOMIC_BATCH );
-    for( uchar j=0U; j<specs[ i ].txn_cnt; j++ ) {
+    uchar txn_cnt = specs[ i ].txn_cnt;
+    FD_TEST( txn_cnt<=FD_BAM_MAX_TXN_PER_ATOMIC_BATCH );
+    int poisoned = 0;
+    for( uchar j=0U; j<txn_cnt; j++ ) {
       bam_types_Packet * pkt = &packets[ i ][ j ];
       _Bool v1 = specs[ i ].payload_seed[ j ]==UINT_MAX;
       ulong         payload_sz;
@@ -762,7 +816,55 @@ bam_fuzz_deliver_specs( bam_fuzz_state_t *            f,
       pkt->meta.size = payload_sz;
       pkt->meta.has_flags = 1U;
       pkt->meta.flags.revert_on_error = specs[ i ].revert_on_error;
+
+      uchar poison = specs[ i ].poison[ j ];
+      FD_TEST( poison<BAM_FUZZ_POISON_CNT );
+      switch( poison ) {
+        case BAM_FUZZ_POISON_BAD_SIG:
+          pkt->data.bytes[ ((fd_txn_t const *)txn_buf)->signature_off ] ^= (uchar)1;
+          break;
+        case BAM_FUZZ_POISON_VOTE:
+          test_bam_init_simple_vote_packet( pkt, specs[ i ].revert_on_error );
+          break;
+        case BAM_FUZZ_POISON_JUNK:
+          pkt->data.size = (pb_size_t)( payload_sz/2UL );
+          pkt->meta.size = pkt->data.size;
+          break;
+        case BAM_FUZZ_POISON_ALUT:
+          pkt->data.size = (pb_size_t)bam_fuzz_alut_txn_sz;
+          pkt->meta.size = pkt->data.size;
+          fd_memcpy( pkt->data.bytes, bam_fuzz_alut_txn, bam_fuzz_alut_txn_sz );
+          FD_TEST( fd_txn_parse( pkt->data.bytes, pkt->data.size, txn_buf, NULL ) );
+          FD_TEST( ((fd_txn_t const *)txn_buf)->addr_table_adtl_cnt );
+          break;
+        default: /* none, or dup below */
+          break;
+      }
+      /* A member alone cannot repeat another */
+      poisoned |= poison!=BAM_FUZZ_POISON_NONE && !( poison==BAM_FUZZ_POISON_DUP && txn_cnt==1U );
     }
+    /* Once every member is built, so the copy is what BAM receives */
+    int junk[ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
+    for( uchar j=0U; j<txn_cnt; j++ ) junk[ j ] = specs[ i ].poison[ j ]==BAM_FUZZ_POISON_JUNK;
+    for( uchar j=0U; j<txn_cnt; j++ ) {
+      if( FD_LIKELY( specs[ i ].poison[ j ]!=BAM_FUZZ_POISON_DUP || txn_cnt==1U ) ) continue;
+      uchar src = j ? (uchar)( j-1U ) : 1U;
+      packets[ i ][ j ] = packets[ i ][ src ];
+      junk   [ j ]      = junk   [ src ];
+    }
+    for( uchar j=0U; j<txn_cnt; j++ ) {
+      uchar txn_buf[ FD_TXN_MAX_SZ ];
+      FD_TEST( ( !fd_txn_parse( packets[ i ][ j ].data.bytes, packets[ i ][ j ].data.size, txn_buf, NULL ) )==junk[ j ] );
+    }
+
+    ulong key = (ulong)specs[ i ].seq_id + 1UL;
+    bam_fuzz_poison_set_t * known = bam_fuzz_poison_set_query( f->poison_set, key, NULL );
+    if( FD_UNLIKELY( poisoned && !known ) ) {
+      known = bam_fuzz_poison_set_insert( f->poison_set, key );
+      FD_TEST( known );
+      known->clean = 0;
+    }
+    if( FD_UNLIKELY( !poisoned && known ) ) known->clean = 1;
 
     packet_ctx[ i ] = (test_bam_packet_encode_ctx_t) {
       .packets    = packets[ i ],
@@ -1157,6 +1259,16 @@ bam_fuzz_apply_event( bam_fuzz_state_t * f,
       break;
     case BAM_EVT_PACK_CONFIG: /* applied before the first event */
       break;
+    case BAM_EVT_POISON_MEMBER: {
+      if( FD_UNLIKELY( a>=BAM_FUZZ_POISON_CNT ) ) break;
+      bam_fuzz_ensure_scheduler_stream( f );
+      if( FD_UNLIKELY( !f->has_last_batch ) ) bam_fuzz_remember_batch( f, a, b, c );
+      bam_fuzz_batch_spec_t * spec = &f->last_batch[ c % f->last_batch_cnt ];
+      spec->poison[ b % spec->txn_cnt ] = a;
+      for( ulong i=0UL; i<f->last_batch_cnt; i++ ) f->last_batch[ i ].seq_id = f->next_seq++;
+      bam_fuzz_deliver_specs( f, f->last_batch, f->last_batch_cnt, 1UL );
+      break;
+    }
     case BAM_EVT_DRAIN_QUEUE:
       bam_fuzz_drain_pending_txns( f, 1UL + (ulong)( b & 7U ) );
       bam_fuzz_drain_result_queue( f, 1UL + (ulong)( a & 15U ) );
@@ -1217,6 +1329,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   bam_fuzz_state_t f[1];
   fd_memset( f, 0, sizeof(*f) );
   FD_TEST( bam_fuzz_result_set_join( bam_fuzz_result_set_new( f->durable_result_set ) )==f->durable_result_set );
+  FD_TEST( bam_fuzz_poison_set_join( bam_fuzz_poison_set_new( f->poison_set ) )==f->poison_set );
   /* The shared unit fixture defaults to a 4 KiB gRPC buffer.  This pipeline
      checks full outbound result batches, which need the production minimum. */
   fd_bam_tile_t * state = f->state = test_bam_env_create_with_grpc_buf_sz( f->env, g_bam_fuzz_wksp, FD_BAM_GRPC_MIN_BUF_SZ )->state;
