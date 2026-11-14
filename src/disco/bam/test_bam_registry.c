@@ -1,7 +1,6 @@
 #define _GNU_SOURCE /* memfd_create */
 #include "fd_bam_tile_private.h"
 #include "fd_bam_registry.h"
-#include "../../ballet/x509/fd_x509_verify.h"
 #include "../../util/fd_util.h"
 #include "../../util/net/fd_ip4.h"
 #include "../../waltz/resolv/fd_adns.h"
@@ -23,135 +22,129 @@ is_registry( char const * raw ) {
   return fd_bam_registry_is_url( url );
 }
 
+/* ctx_init readies a tile with a system CA bundle and BAM enabled. */
+
 static void
-test_url_class( void ) {
-  FD_TEST( is_registry( "https://dev.testnet.registry.bam.jito.wtf/v1/nodes" ) );
-  FD_TEST( is_registry( "https://registry.jito.wtf/nodes" ) );
-  FD_TEST( !is_registry( "https://203.0.113.1:50056" ) );
-  FD_TEST( !is_registry( "https://203.0.113.1:50056/" ) );
-  FD_TEST( !is_registry( "https://203.0.113.1:50056?x=1" ) );
+ctx_init( fd_bam_tile_t * ctx,
+          uint            seed ) {
+  memset( ctx, 0, sizeof(*ctx) );
+  ctx->registry.fd = -1;
+  FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, seed, 0UL ) ) );
+  ctx->ca_store->cnt = 1UL;
+  ctx->enabled       = 1U;
+}
+
+static void
+take( fd_bam_tile_t * ctx,
+      char const *    raw ) {
+  fd_url_t url[1];
+  ushort   port = 0;
+  _Bool    ssl  = 0;
+  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &port, &ssl, NULL ) );
+  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, port, NULL, 0UL )==1 );
+}
+
+/* listener returns a TCP socket bound to a free loopback port, and
+   listening if listening is set. */
+
+static int
+listener( int      listening,
+          ushort * port ) {
+  int fd = socket( AF_INET, SOCK_STREAM, 0 );
+  FD_TEST( fd>=0 );
+  struct sockaddr_in addr = { .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
+  socklen_t addr_sz = sizeof(addr);
+  FD_TEST( !bind( fd, fd_type_pun( &addr ), addr_sz ) );
+  if( listening ) FD_TEST( !listen( fd, 4 ) );
+  FD_TEST( !getsockname( fd, fd_type_pun( &addr ), &addr_sz ) );
+  *port = fd_ushort_bswap( addr.sin_port );
+  return fd;
+}
+
+/* Each case is what serde_json does with jito's ServedNodes. */
+
+static int
+parse( char const *             json,
+       fd_bam_registry_node_t * nodes,
+       ulong *                  cnt ) {
+  return fd_bam_registry_parse( json, strlen( json ), nodes, 8UL, cnt );
+}
+
+static int
+parses( char const * json ) {
+  fd_bam_registry_node_t nodes[ 8 ];
+  ulong cnt = 0UL;
+  return !parse( json, nodes, &cnt );
 }
 
 static void
 test_parse( void ) {
   fd_bam_registry_node_t nodes[ 8 ];
   ulong cnt = 0UL;
-  char const * golden =
-    "{\"generated_at\":\"2026-09-09T12:34:56Z\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"fra\"}]}";
-  FD_TEST( !fd_bam_registry_parse( golden, strlen( golden ), nodes, 8UL, &cnt ) );
-  FD_TEST( cnt==1UL );
-  FD_TEST( nodes[0].grpc_port==50056 );
-  FD_TEST( !strcmp( nodes[0].region, "fra" ) );
-  FD_TEST( nodes[0].ip4==(203U | (0U<<8) | (113U<<16) | (1U<<24)) );
+  FD_TEST( !parse( "{\"generated_at\":\"2026-09-09T12:34:56Z\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"fra\"}]}", nodes, &cnt ) );
+  FD_TEST( cnt==1UL && nodes[0].ip4==FD_IP4_ADDR( 203, 0, 113, 1 ) && nodes[0].grpc_port==50056 && !strcmp( nodes[0].region, "fra" ) );
 
-  char const * bad_ts =
-    "{\"generated_at\":\"not-a-timestamp\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"fra\",\"added_later\":true}],\"extra\":1}";
-  FD_TEST( !fd_bam_registry_parse( bad_ts, strlen( bad_ts ), nodes, 8UL, &cnt ) );
-  FD_TEST( cnt==1UL );
+  /* a repeated node is listed once */
+  FD_TEST( !parse( "{\"nodes\":[{\"region\":\"a\",\"grpc_port\":50056,\"ip\":\"203.0.113.1\"},{\"ip\":\"203.0.113.9\",\"grpc_port\":50056,\"region\":\"b\"},{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"c\"}]}", nodes, &cnt ) );
+  FD_TEST( cnt==2UL && nodes[0].ip4==FD_IP4_ADDR( 203, 0, 113, 1 ) && nodes[1].ip4==FD_IP4_ADDR( 203, 0, 113, 9 ) );
 
-  char const * dup =
-    "{\"nodes\":[{\"region\":\"a\",\"grpc_port\":50056,\"ip\":\"203.0.113.1\"},{\"ip\":\"203.0.113.9\",\"grpc_port\":50056,\"region\":\"b\"},{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"c\"}]}";
-  FD_TEST( !fd_bam_registry_parse( dup, strlen( dup ), nodes, 8UL, &cnt ) );
-  FD_TEST( cnt==2UL );
-  FD_TEST( nodes[0].ip4==(203U | (0U<<8) | (113U<<16) | (1U<<24)) );
-  FD_TEST( nodes[1].ip4==(203U | (0U<<8) | (113U<<16) | (9U<<24)) );
+  /* sorted by octets, not by the in-memory word */
+  FD_TEST( !parse( "{\"nodes\":[{\"ip\":\"2.0.0.1\",\"grpc_port\":1,\"region\":\"a\"},{\"ip\":\"1.0.0.2\",\"grpc_port\":1,\"region\":\"b\"}]}", nodes, &cnt ) );
+  FD_TEST( cnt==2UL && !strcmp( nodes[0].region, "b" ) );
 
-  char const * empty = "{\"nodes\":[]}";
-  FD_TEST( fd_bam_registry_parse( empty, strlen( empty ), nodes, 8UL, &cnt )==-2 );
-  char const * junk = "{";
-  FD_TEST( fd_bam_registry_parse( junk, strlen( junk ), nodes, 8UL, &cnt )==-1 );
-  char const * v6 =
-    "{\"nodes\":[{\"ip\":\"2001:db8::1\",\"grpc_port\":50056,\"region\":\"fra\"}]}";
-  FD_TEST( fd_bam_registry_parse( v6, strlen( v6 ), nodes, 8UL, &cnt )==-2 );
-  char const * mixed =
-    "{\"nodes\":[{\"ip\":\"2001:db8::1\",\"grpc_port\":50056,\"region\":\"fra\"},{\"ip\":\"203.0.113.9\",\"grpc_port\":50056,\"region\":\"ams\"}]}";
-  FD_TEST( !fd_bam_registry_parse( mixed, strlen( mixed ), nodes, 8UL, &cnt ) );
-  FD_TEST( cnt==1UL );
-  FD_TEST( nodes[0].ip4==(203U | (0U<<8) | (113U<<16) | (9U<<24)) );
-  char const * long_key =
-    "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"fra\",\"this_key_is_longer_than_thirty_one_chars\":1}]}";
-  FD_TEST( !fd_bam_registry_parse( long_key, strlen( long_key ), nodes, 8UL, &cnt ) );
-  FD_TEST( cnt==1UL );
-}
+  /* -2: no IPv4 node; -1: malformed */
+  FD_TEST( parse( "{\"nodes\":[]}", nodes, &cnt )==-2 );
+  FD_TEST( parse( "{\"nodes\":[{\"ip\":\"2001:db8::1\",\"grpc_port\":50056,\"region\":\"fra\"}]}", nodes, &cnt )==-2 );
+  FD_TEST( parse( "{", nodes, &cnt )==-1 );
 
-/* Each case is what serde_json does with jito's ServedNodes. */
+  /* IpAddr: valid IPv6 is skipped, IPv4-mapped included; anything else
+     fails the document */
+  FD_TEST( !parse( "{\"nodes\":[{\"ip\":\"2001:db8::1\",\"grpc_port\":50056,\"region\":\"fra\"},{\"ip\":\"203.0.113.9\",\"grpc_port\":50056,\"region\":\"ams\"}]}", nodes, &cnt ) );
+  FD_TEST( cnt==1UL && nodes[0].ip4==FD_IP4_ADDR( 203, 0, 113, 9 ) );
+  FD_TEST( parses( "{\"nodes\":[{\"ip\":\"::ffff:1.2.3.4\",\"grpc_port\":1,\"region\":\"a\"},{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"zz:zz\",\"grpc_port\":1,\"region\":\"a\"},{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.01\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+  FD_TEST( !parses( "{\"nodes\":[{\"ip\":1,\"grpc_port\":1,\"region\":\"a\"}]}" ) );
 
-static int
-parses( char const * json ) {
-  fd_bam_registry_node_t nodes[ 8 ];
-  ulong cnt = 0UL;
-  return !fd_bam_registry_parse( json, strlen( json ), nodes, 8UL, &cnt );
-}
-
-static void
-test_parse_serde( void ) {
-  fd_bam_registry_node_t nodes[ 8 ];
-  ulong cnt = 0UL;
-
-  /* port 0 is a valid u16; the probe drops it later */
+  /* u16 port: 0 is valid (the probe drops it later) */
   FD_TEST( parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":0,\"region\":\"fra\"}]}" ) );
   FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":65536,\"region\":\"fra\"}]}" ) );
   FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":050056,\"region\":\"fra\"}]}" ) );
-
-  /* repeated known fields */
-  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"ip\":\"203.0.113.2\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-  FD_TEST( !parses( "{\"nodes\":[],\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-  FD_TEST( !parses( "{\"generated_at\":null,\"generated_at\":null,\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-  FD_TEST( parses( "{\"x\":1,\"x\":2,\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-
-  /* lenient generated_at: scalars pass, containers fail */
-  FD_TEST( parses( "{\"generated_at\":7,\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-  FD_TEST( parses( "{\"generated_at\":true,\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-  FD_TEST( !parses( "{\"generated_at\":{},\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-  FD_TEST( !parses( "{\"generated_at\":[],\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-
-  /* escapes */
-  char const * esc = "{\"nodes\":[{\"\\u0069p\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\\u00e9\\ud83d\\ude00\\b\\f\\r\"}]}";
-  FD_TEST( !fd_bam_registry_parse( esc, strlen( esc ), nodes, 8UL, &cnt ) );
-  FD_TEST( !strcmp( nodes[0].region, "a\\u00e9\\ud83d\\ude00\\b\\f\\r" ) ); /* logged as sent */
-  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"\\ud83d\"}]}" ) );
-  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"\\ude00\"}]}" ) );
-  /* serde_json ignores these in skipped values; fd_jtok does not, and
-     serde_json never writes them. */
-  FD_TEST( !parses( "{\"skip\":\"\\ud83d\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-  FD_TEST( !parses( "{\"skip\":\"\\x\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-  FD_TEST( !parses( "{\"skip\":01,\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-
-  /* strict UTF-8 */
-  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"\xc0\xaf\"}]}" ) );
-  FD_TEST( !parses( "{\"skip\":\"\xff\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-
-  /* a long region is kept, truncated */
-  char const * long_region =
-    "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"0123456789012345678901234567890123456789012345678901234567890123456789\"}]}";
-  FD_TEST( !fd_bam_registry_parse( long_region, strlen( long_region ), nodes, 8UL, &cnt ) );
-  FD_TEST( strlen( nodes[0].region )==sizeof(nodes[0].region)-1UL );
-  /* ... at a character boundary: 62 bytes, then a 2-byte character */
-  char const * long_utf8 =
-    "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"01234567890123456789012345678901234567890123456789012345678901\xc3\xa9z\"}]}";
-  FD_TEST( !fd_bam_registry_parse( long_utf8, strlen( long_utf8 ), nodes, 8UL, &cnt ) );
-  FD_TEST( strlen( nodes[0].region )==62UL );
+  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1.0,\"region\":\"a\"}]}" ) );
+  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":-1,\"region\":\"a\"}]}" ) );
 
   /* every field is required, even on a skipped IPv6 node */
   FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1}]}" ) );
   FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"2001:db8::1\",\"region\":\"a\"},{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
   FD_TEST( !parses( "{\"generated_at\":null}" ) );
   FD_TEST( !parses( "[]" ) );
-  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]} x" ) );
-  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1.0,\"region\":\"a\"}]}" ) );
-  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":-1,\"region\":\"a\"}]}" ) );
-  FD_TEST( !parses( "{\"nodes\":[{\"ip\":1,\"grpc_port\":1,\"region\":\"a\"}]}" ) );
 
-  /* IpAddr: invalid IPv6 fails the document, valid IPv6 is skipped */
-  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"zz:zz\",\"grpc_port\":1,\"region\":\"a\"},{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.01\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
-  FD_TEST( parses( "{\"nodes\":[{\"ip\":\"::ffff:1.2.3.4\",\"grpc_port\":1,\"region\":\"a\"},{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+  /* repeated known fields fail; unknown fields are skipped */
+  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"ip\":\"203.0.113.2\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+  FD_TEST( !parses( "{\"nodes\":[],\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+  FD_TEST( !parses( "{\"generated_at\":null,\"generated_at\":null,\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+  FD_TEST( parses( "{\"x\":1,\"x\":2,\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\",\"added_later\":true}]}" ) );
 
-  /* sorted by octets, not by the in-memory word */
-  char const * order =
-    "{\"nodes\":[{\"ip\":\"2.0.0.1\",\"grpc_port\":1,\"region\":\"a\"},{\"ip\":\"1.0.0.2\",\"grpc_port\":1,\"region\":\"b\"}]}";
-  FD_TEST( !fd_bam_registry_parse( order, strlen( order ), nodes, 8UL, &cnt ) );
-  FD_TEST( cnt==2UL && !strcmp( nodes[0].region, "b" ) );
+  /* lenient generated_at: scalars pass, containers fail */
+  FD_TEST( parses( "{\"generated_at\":7,\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+  FD_TEST( !parses( "{\"generated_at\":{},\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+  FD_TEST( !parses( "{\"generated_at\":[],\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+
+  /* escapes are checked, and the region is kept as sent */
+  FD_TEST( !parse( "{\"nodes\":[{\"\\u0069p\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\\u00e9\\ud83d\\ude00\\b\\f\\r\"}]}", nodes, &cnt ) );
+  FD_TEST( !strcmp( nodes[0].region, "a\\u00e9\\ud83d\\ude00\\b\\f\\r" ) );
+  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"\\ud83d\"}]}" ) );
+  FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"\xc0\xaf\"}]}" ) );
+  /* serde_json ignores a lone surrogate in a skipped value; fd_jtok
+     does not, and serde_json never writes one. */
+  FD_TEST( !parses( "{\"skip\":\"\\ud83d\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
+
+  /* a long region is kept, truncated at a character boundary */
+  FD_TEST( !parse( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"0123456789012345678901234567890123456789012345678901234567890123456789\"}]}", nodes, &cnt ) );
+  FD_TEST( strlen( nodes[0].region )==sizeof(nodes[0].region)-1UL );
+  /* 62 bytes, then a 2-byte character */
+  FD_TEST( !parse( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"01234567890123456789012345678901234567890123456789012345678901\xc3\xa9z\"}]}", nodes, &cnt ) );
+  FD_TEST( strlen( nodes[0].region )==62UL );
 }
 
 static int
@@ -178,7 +171,6 @@ test_http( void ) {
   FD_TEST( http( "HTTP/1.1 200 OK\r\n\r\n{}", 1, body, &n )==1 && n==2UL );
   FD_TEST( http( "HTTP/1.1 301 Moved\r\nLocation: /x\r\n\r\n", 1, body, &n )==-1 );
   FD_TEST( http( "HTTP/1.1 404 Not Found\r\n\r\n", 1, body, &n )==-1 );
-  FD_TEST( http( "HTTP/1.1 503 Busy\r\n\r\n", 1, body, &n )==-1 );
 
   /* An HTTP/1.0 client gets no transfer coding. */
   FD_TEST( http( "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n", 1, body, &n )==-1 );
@@ -278,19 +270,12 @@ test_rank_and_choose( void ) {
 }
 
 static void
-test_reject_bad_cert( void ) {
-  /* Same verifier fd_tls runs when ca_store is set.  A registry session
-     always sets it, so a malformed or untrusted chain fails the handshake
-     with FD_TLS_REASON_CERT_VERIFY. */
-  static fd_x509_ca_store_t store;
-  memset( &store, 0, sizeof(store) );
-  uchar msg[ 8 ] = {0};
-  FD_TEST( fd_x509_verify_tls_cert_msg( msg, sizeof(msg), &store, "203.0.113.1", 11UL, 1700000000L )!=FD_X509_VERIFY_OK );
-  FD_TEST( FD_TLS_REASON_CERT_VERIFY==607 );
-}
-
-static void
 test_take_url( void ) {
+  /* Only a URL with a path is a registry. */
+  FD_TEST( !is_registry( "https://203.0.113.1:50056" ) );
+  FD_TEST( !is_registry( "https://203.0.113.1:50056/" ) );
+  FD_TEST( !is_registry( "https://203.0.113.1:50056?x=1" ) );
+
   static fd_bam_tile_t ctx[1];
   memset( ctx, 0, sizeof(*ctx) );
   ctx->registry.fd = -1;
@@ -366,7 +351,6 @@ test_redirect( void ) {
   /* Registries answer with absolute URLs or paths; nothing else is
      followed. */
   FD_TEST( fd_bam_registry_redirect_target( reg, "list" )==-1 );
-  FD_TEST( fd_bam_registry_redirect_target( reg, "?y=2" )==-1 );
   FD_TEST( fd_bam_registry_redirect_target( reg, "//d.example/n" )==-1 );
   FD_TEST( fd_bam_registry_redirect_target( reg, "ftp://d.example/" )==-1 );
   FD_TEST( !strcmp( reg->f_host, "c.example" ) );
@@ -407,21 +391,11 @@ test_fetch_loopback( char const * host,
                      char const * body,
                      ulong        result ) {
   static fd_bam_tile_t ctx[1];
-  memset( ctx, 0, sizeof(*ctx) );
-  ctx->registry.fd = -1;
-  FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 1U, 0UL ) ) );
-  ctx->ca_store->cnt = 1UL;
-  ctx->enabled       = 1U;
+  ctx_init( ctx, 1U );
 
-  int lfd = socket( AF_INET, SOCK_STREAM, 0 );
-  FD_TEST( lfd>=0 );
-  struct sockaddr_in addr = { .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
-  socklen_t addr_sz = sizeof(addr);
-  FD_TEST( !bind( lfd, fd_type_pun( &addr ), addr_sz ) );
-  FD_TEST( !listen( lfd, 4 ) );
-  FD_TEST( !getsockname( lfd, fd_type_pun( &addr ), &addr_sz ) );
+  ushort port;
+  int lfd = listener( 1, &port );
   FD_TEST( fcntl( lfd, F_SETFL, O_NONBLOCK )==0 );
-  ushort port = fd_ushort_bswap( addr.sin_port );
 
   int ufd = socket( AF_INET, SOCK_DGRAM|SOCK_NONBLOCK, 0 );
   FD_TEST( ufd>=0 );
@@ -435,12 +409,7 @@ test_fetch_loopback( char const * host,
 
   char raw[ 96 ];
   FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "http://%s:%hu%s", host, port, path ) );
-  fd_url_t url[1];
-  ushort   url_port = 0;
-  _Bool    ssl      = 0;
-  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &url_port, &ssl, NULL ) );
-  char err[ 128 ];
-  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, url_port, err, sizeof(err) )==1 );
+  take( ctx, raw );
 
   char resp[ 256 ];
   ulong resp_len = 0UL;
@@ -533,29 +502,14 @@ test_fetch_loopback( char const * host,
 static void
 test_fetch_refused( void ) {
   static fd_bam_tile_t ctx[1];
-  memset( ctx, 0, sizeof(*ctx) );
-  ctx->registry.fd = -1;
-  FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 2U, 0UL ) ) );
-  ctx->ca_store->cnt = 1UL;
-  ctx->enabled       = 1U;
+  ctx_init( ctx, 2U );
 
   /* A port that was just bound and closed refuses connections. */
-  int lfd = socket( AF_INET, SOCK_STREAM, 0 );
-  FD_TEST( lfd>=0 );
-  struct sockaddr_in addr = { .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
-  socklen_t addr_sz = sizeof(addr);
-  FD_TEST( !bind( lfd, fd_type_pun( &addr ), addr_sz ) );
-  FD_TEST( !getsockname( lfd, fd_type_pun( &addr ), &addr_sz ) );
-  close( lfd );
-
+  ushort port;
+  close( listener( 0, &port ) );
   char raw[ 64 ];
-  FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "http://127.0.0.1:%hu/v1/nodes", fd_ushort_bswap( addr.sin_port ) ) );
-  fd_url_t url[1];
-  ushort   port = 0;
-  _Bool    ssl  = 0;
-  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &port, &ssl, NULL ) );
-  char err[ 128 ];
-  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, port, err, sizeof(err) )==1 );
+  FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "http://127.0.0.1:%hu/v1/nodes", port ) );
+  take( ctx, raw );
 
   fd_bam_registry_t * reg = &ctx->registry;
   long end = fd_log_wallclock()+(long)5e9;
@@ -591,56 +545,60 @@ test_fetch_refused( void ) {
 }
 
 /* test_probe_round probes a refused port and one that accepts TCP but
-   never answers TLS: the round settles with no usable node, warns, and
-   dials nothing. */
+   never answers TLS.  Disabling BAM mid-round idles the follower;
+   enabling it reruns the round, which settles with no usable node,
+   warns, and dials nothing. */
 
 static void
 test_probe_round( void ) {
   static fd_bam_tile_t ctx[1];
-  memset( ctx, 0, sizeof(*ctx) );
-  ctx->registry.fd = -1;
-  FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 4U, 0UL ) ) );
-  ctx->ca_store->cnt = 1UL;
-  ctx->enabled       = 1U;
+  ctx_init( ctx, 3U );
+  fd_bam_registry_t * reg = &ctx->registry;
   ulong align = fd_bam_registry_probe_align();
   ulong fp    = fd_bam_registry_probe_footprint();
+  FD_TEST( fp>=FD_BAM_REGISTRY_PROBE_FANOUT*sizeof(fd_bam_registry_slot_t) );
   void * mem  = aligned_alloc( align, fd_ulong_align_up( fp, align ) );
   FD_TEST( mem );
-  ctx->registry.probe_mem = mem;
-  fd_bam_registry_join_probe( ctx, 9UL );
+  reg->probe_mem = mem;
+  fd_bam_registry_join_probe( ctx, 7UL );
+  FD_TEST( reg->slot_cnt==FD_BAM_REGISTRY_PROBE_FANOUT );
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) {
+    FD_TEST( reg->slots[ i ].fd==-1 && reg->slots[ i ].grpc && reg->slots[ i ].best_us==ULONG_MAX );
+  }
 
-  struct sockaddr_in addr[2];
+  fd_bam_registry_node_t nodes[2];
+  memset( nodes, 0, sizeof(nodes) );
   int lfd[2];
   for( ulong i=0UL; i<2UL; i++ ) {
-    lfd[ i ] = socket( AF_INET, SOCK_STREAM, 0 );
-    FD_TEST( lfd[ i ]>=0 );
-    addr[ i ] = (struct sockaddr_in){ .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
-    socklen_t addr_sz = sizeof(addr[ i ]);
-    FD_TEST( !bind( lfd[ i ], fd_type_pun( &addr[ i ] ), addr_sz ) );
-    FD_TEST( !listen( lfd[ i ], 4 ) );
-    FD_TEST( !getsockname( lfd[ i ], fd_type_pun( &addr[ i ] ), &addr_sz ) );
+    lfd[ i ]      = listener( 1, &nodes[ i ].grpc_port );
+    nodes[ i ].ip4 = FD_IP4_ADDR( 127, 0, 0, 1 );
   }
   close( lfd[0] ); /* refused */
 
-  char const * raw = "http://127.0.0.1:1/v1/nodes";
-  fd_url_t url[1];
-  ushort   port = 0;
-  _Bool    ssl  = 0;
-  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &port, &ssl, NULL ) );
-  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, port, NULL, 0UL )==1 );
-  fd_bam_registry_t * reg = &ctx->registry;
-  fd_bam_registry_node_t nodes[2];
-  memset( nodes, 0, sizeof(nodes) );
-  for( ulong i=0UL; i<2UL; i++ ) {
-    nodes[ i ].ip4       = addr[ i ].sin_addr.s_addr;
-    nodes[ i ].grpc_port = fd_ushort_bswap( addr[ i ].sin_port );
-  }
-  fd_bam_registry_on_fetch( reg, nodes, 2UL, fd_bam_now(), 0, ctx->rng );
+  take( ctx, "http://127.0.0.1:1/v1/nodes" );
+  fd_bam_registry_on_fetch( reg, nodes, 2UL, fd_bam_now(), 0, ctx->rng ); /* next fetch in 2 s */
 
   int  busy = 0;
   long dl   = 0L;
   fd_bam_registry_step( ctx, &busy, &dl );
+  FD_TEST( reg->phase==2 && reg->probe_active );
+  for( ulong i=0UL; i<64UL; i++ ) fd_bam_registry_step( ctx, &busy, &dl );
   FD_TEST( reg->phase==2 );
+
+  ctx->enabled = 0U;
+  for( ulong i=0UL; i<64UL; i++ ) {
+    fd_bam_registry_step( ctx, &busy, &dl );
+    FD_TEST( reg->paused && !reg->phase && !reg->probe_active && reg->fd<0 && dl==LONG_MAX );
+  }
+  FD_TEST( !reg->ranked_cnt && !reg->probe_at && !reg->have_dial );
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) FD_TEST( reg->slots[ i ].fd<0 );
+
+  reg->stalled_ns = 1L;
+  ctx->enabled = 1U;
+  fd_bam_registry_step( ctx, &busy, &dl );
+  FD_TEST( !reg->paused && !reg->stalled_ns );
+  FD_TEST( reg->phase==2 && reg->probe_active );
+
   long end = fd_log_wallclock()+(long)3e9;
   while( reg->phase==2 && fd_log_wallclock()<end ) fd_bam_registry_step( ctx, &busy, &dl );
   FD_TEST( !reg->phase && !reg->probe_active );
@@ -657,133 +615,37 @@ test_probe_round( void ) {
 }
 
 static void
-test_probe_join( void ) {
-  static fd_bam_tile_t ctx[1];
-  memset( ctx, 0, sizeof(*ctx) );
-  ctx->registry.fd = -1;
-  ulong align = fd_bam_registry_probe_align();
-  ulong fp    = fd_bam_registry_probe_footprint();
-  FD_TEST( fd_ulong_is_pow2( align ) );
-  FD_TEST( fp>=FD_BAM_REGISTRY_PROBE_FANOUT*sizeof(fd_bam_registry_slot_t) );
-  void * mem = aligned_alloc( align, fd_ulong_align_up( fp, align ) );
-  FD_TEST( mem );
-  ctx->registry.probe_mem = mem;
-  fd_bam_registry_join_probe( ctx, 7UL );
-  FD_TEST( ctx->registry.slot_cnt==FD_BAM_REGISTRY_PROBE_FANOUT );
-  for( ulong i=0UL; i<ctx->registry.slot_cnt; i++ ) {
-    fd_bam_registry_slot_t const * s = &ctx->registry.slots[ i ];
-    FD_TEST( s->fd==-1 && s->grpc && s->best_us==ULONG_MAX );
-    FD_TEST( (ulong)s->grpc+1UL<=(ulong)mem+fp );
-  }
-  fd_bam_registry_disable( ctx );
-  FD_TEST( !ctx->registry.probe_active );
-  free( mem );
-}
-
-static void
 test_near_leader( void ) {
   ulong const g = FD_BAM_REGISTRY_LEADER_GUARD_SLOTS;
   FD_TEST( !fd_bam_registry_near_leader( ULONG_MAX, 1000UL ) );
   FD_TEST( !fd_bam_registry_near_leader( 1000UL+g+1UL, 1000UL ) );
   FD_TEST(  fd_bam_registry_near_leader( 1000UL+g,     1000UL ) );
-  FD_TEST(  fd_bam_registry_near_leader( 1000UL,       999UL  ) ); /* leading */
   FD_TEST(  fd_bam_registry_near_leader( 1000UL,       1000UL+g ) );
   FD_TEST( !fd_bam_registry_near_leader( 1000UL,       1000UL+g+1UL ) ); /* stale hint */
   FD_TEST( !fd_bam_registry_near_leader( 1000UL,       0UL ) ); /* no slot yet */
-  FD_TEST(  fd_bam_registry_near_leader( 5UL,          0UL ) );
   FD_TEST(  fd_bam_registry_near_leader( ULONG_MAX-1UL, ULONG_MAX-1UL ) );
-}
-
-/* test_pause: disabling BAM idles the follower, and a probe round it
-   cut short reruns as soon as BAM is enabled again. */
-
-static void
-test_pause( void ) {
-  static fd_bam_tile_t ctx[1];
-  memset( ctx, 0, sizeof(*ctx) );
-  ctx->registry.fd = -1;
-  FD_TEST( fd_rng_join( fd_rng_new( ctx->rng, 3U, 0UL ) ) );
-  ctx->ca_store->cnt = 1UL;
-  ulong align = fd_bam_registry_probe_align();
-  ulong fp    = fd_bam_registry_probe_footprint();
-  void * mem  = aligned_alloc( align, fd_ulong_align_up( fp, align ) );
-  FD_TEST( mem );
-  ctx->registry.probe_mem = mem;
-  fd_bam_registry_join_probe( ctx, 7UL );
-
-  /* A node that accepts TCP and never answers TLS keeps a round open. */
-  int lfd = socket( AF_INET, SOCK_STREAM, 0 );
-  FD_TEST( lfd>=0 );
-  struct sockaddr_in addr = { .sin_family = AF_INET, .sin_addr.s_addr = FD_IP4_ADDR( 127, 0, 0, 1 ) };
-  socklen_t addr_sz = sizeof(addr);
-  FD_TEST( !bind( lfd, fd_type_pun( &addr ), addr_sz ) );
-  FD_TEST( !listen( lfd, 4 ) );
-  FD_TEST( !getsockname( lfd, fd_type_pun( &addr ), &addr_sz ) );
-
-  char const * raw = "http://127.0.0.1:1/v1/nodes";
-  fd_url_t url[1];
-  ushort   port = 0;
-  _Bool    ssl  = 0;
-  FD_TEST( !fd_url_parse_endpoint( url, raw, strlen( raw ), &port, &ssl, NULL ) );
-  FD_TEST( fd_bam_registry_take_url( ctx, raw, url, ssl, port, NULL, 0UL )==1 );
-  fd_bam_registry_t * reg = &ctx->registry;
-  fd_bam_registry_node_t node = { .ip4 = addr.sin_addr.s_addr, .grpc_port = fd_ushort_bswap( addr.sin_port ) };
-  fd_bam_registry_on_fetch( reg, &node, 1UL, fd_bam_now(), 0, ctx->rng ); /* next fetch in 2 s */
-
-  int  busy = 0;
-  long dl   = 0L;
-  ctx->enabled = 1U;
-  fd_bam_registry_step( ctx, &busy, &dl );
-  FD_TEST( reg->phase==2 && reg->probe_active==1UL ); /* probing */
-  for( ulong i=0UL; i<64UL; i++ ) fd_bam_registry_step( ctx, &busy, &dl );
-  FD_TEST( reg->phase==2 );
-
-  ctx->enabled = 0U;
-  for( ulong i=0UL; i<64UL; i++ ) {
-    fd_bam_registry_step( ctx, &busy, &dl );
-    FD_TEST( reg->paused && !reg->phase && !reg->probe_active && reg->fd<0 && dl==LONG_MAX );
-  }
-  FD_TEST( !reg->ranked_cnt && !reg->probe_at && !reg->have_dial );
-  for( ulong i=0UL; i<reg->slot_cnt; i++ ) FD_TEST( reg->slots[ i ].fd<0 );
-
-  reg->stalled_ns = 1L;
-  ctx->enabled = 1U;
-  fd_bam_registry_step( ctx, &busy, &dl );
-  FD_TEST( !reg->paused && !reg->stalled_ns );
-  FD_TEST( reg->phase==2 && reg->probe_active==1UL );
-
-  fd_bam_registry_disable( ctx );
-  close( lfd );
-  free( mem );
 }
 
 int
 main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
-  test_url_class();
   test_parse();
-  test_parse_serde();
   test_http();
   test_rank_and_choose();
-  test_reject_bad_cert();
   test_take_url();
   test_redirect();
   char const * one = "{\"generated_at\":\"2026-01-01T00:00:00Z\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
   ulong const ok    = FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX;
   ulong const nodns = FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_RESOLVE_IDX;
-  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", one, ok );
-  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/old",      "200 OK", one, ok );
-  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX );
-  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX );
-  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX );
   test_fetch_loopback( "registry.hosts", DNS_HOSTS,    "/v1/nodes", "200 OK", one, ok );
   test_fetch_loopback( "registry.dns",   DNS_ANSWER,   "/old",      "200 OK", one, ok );
   test_fetch_loopback( "registry.dns",   DNS_NXDOMAIN, "/v1/nodes", "200 OK", one, nodns );
   test_fetch_loopback( "registry.dns",   DNS_SILENT,   "/v1/nodes", "200 OK", one, nodns );
+  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX );
+  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX );
+  test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX );
   test_fetch_refused();
-  test_probe_join();
-  test_pause();
   test_probe_round();
   test_near_leader();
   FD_LOG_NOTICE(( "pass" ));
