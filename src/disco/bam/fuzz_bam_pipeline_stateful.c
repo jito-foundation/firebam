@@ -62,8 +62,10 @@ typedef enum {
    BAM_EVT_PACK_CONFIG sets pack's options for the whole input, as the
    config file does for a run, wherever it appears: the last one wins.
    Bit 0 of a selects the perf strategy over balanced, bit 1 turns off
-   use_consumed_cus.  Without one, pack runs perf without
-   use_consumed_cus, as the corpus seeds were written for.
+   use_consumed_cus, bit 2 turns on the tip crank and bit 3 leaves the
+   tip programs out of the bank (bam_fuzz_pack_cfg_t).  Without one,
+   pack runs perf without use_consumed_cus or the crank, as the corpus
+   seeds were written for.
 
    BAM_EVT_POISON_MEMBER sets member b%txn_cnt of the last batch's
    batch c%batch_cnt to bam_fuzz_poison_t a (a larger a is ignored) and
@@ -530,7 +532,9 @@ bam_fuzz_ingest_pack_outputs( bam_fuzz_state_t *     f,
   for( ulong seq=r.lo; seq<r.hi; seq++ ) {
     fd_frag_meta_t const * meta = bam_fuzz_link_frag( &f->pack_out[ BAM_FUZZ_PACK_OUT_EXECLE ], seq,
                                                       sizeof(fd_microblock_execle_trailer_t)+1UL, MAX_MICROBLOCK_SZ );
+    ulong landed_cnt = bam_fuzz_execle_ib_landed_cnt( f->execle );
     bam_fuzz_res_t execle_res = bam_fuzz_execle_frag( f->execle, meta, seq );
+    if( FD_UNLIKELY( bam_fuzz_execle_ib_landed_cnt( f->execle )!=landed_cnt ) ) bam_fuzz_pack_crank_landed( f->pack );
     bam_fuzz_range_t motor = execle_res.out[ BAM_FUZZ_EXECLE_OUT_MOTOR ];
     bam_fuzz_range_t results = execle_res.out[ BAM_FUZZ_EXECLE_OUT_MOTOR_BAM ];
     f->execle_output_cnt += motor.hi-motor.lo;
@@ -1348,16 +1352,20 @@ LLVMFuzzerTestOneInput( uchar const * data,
   }
   f->dedup_lag = 1UL + (ulong)( (seed>>5) % (2UL*BAM_FUZZ_VERIFY_CNT) );
 
-  *f->pack_cfg = (bam_fuzz_pack_cfg_t){ .balanced = 0, .use_consumed_cus = 0 };
+  *f->pack_cfg = (bam_fuzz_pack_cfg_t){ 0 };
   for( ulong i=0UL, event_cnt=0UL; i+4UL<=size && event_cnt<BAM_FUZZ_MAX_EVENTS; i+=4UL, event_cnt++ ) {
     if( FD_LIKELY( data[ i ]!=BAM_EVT_PACK_CONFIG ) ) continue;
     uchar a = data[ i+1UL ];
-    *f->pack_cfg = (bam_fuzz_pack_cfg_t){ .balanced = !( a & 1U ), .use_consumed_cus = !( a & 2U ) };
+    *f->pack_cfg = (bam_fuzz_pack_cfg_t){ .balanced             = !( a & 1U ),
+                                          .use_consumed_cus     = !( a & 2U ),
+                                          .crank                = !!( a & 4U ),
+                                          .tip_programs_missing = !!( a & 8U ) };
   }
 
   f->dedup  = bam_fuzz_dedup_new ( g_bam_fuzz_wksp, dedup_in, BAM_FUZZ_VERIFY_CNT, f->dedup_out );
   f->resolv = bam_fuzz_resolv_new( g_bam_fuzz_wksp, &f->dedup_out[0], f->resolv_out );
-  f->pack   = bam_fuzz_pack_new  ( g_bam_fuzz_wksp, &f->resolv_out[0], f->pack_out, &f->pack_execle_busy_fseq, f->pack_cfg );
+  f->pack   = bam_fuzz_pack_new  ( g_bam_fuzz_wksp, &f->resolv_out[0], f->pack_out, &f->pack_execle_busy_fseq, f->pack_cfg,
+                                   f->state->fee_cfg );
   f->execle = bam_fuzz_execle_new( g_bam_fuzz_wksp, &f->pack_out[ BAM_FUZZ_PACK_OUT_EXECLE ], f->execle_out, f->pack_execle_busy_fseq, f->pack_cfg );
   if( FD_UNLIKELY( f->pack_cfg->use_consumed_cus ) ) bam_fuzz_pack_join_rebates( f->pack, &f->execle_out[ BAM_FUZZ_EXECLE_OUT_PACK ] );
 

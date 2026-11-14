@@ -7,14 +7,20 @@
 static long bam_fuzz_pack_now_ns;
 #define fd_log_wallclock() (bam_fuzz_pack_now_ns)
 
+/* The tip crank signs its initializer bundles through the sign tile.
+   Sign them with the harness identity instead. */
+#define fd_keyguard_client_sign bam_fuzz_pack_sign
+
 #define fd_tile_pack bam_fuzz_pack_tile_unused
 #include "../pack/fd_pack_tile.c"
 #undef fd_tile_pack
+#undef fd_keyguard_client_sign
 #undef fd_log_wallclock
 
 #include "fuzz_bam_pipeline_stage.h"
 #include "../../flamenco/runtime/fd_bank.h"
 #include "../../flamenco/runtime/fd_slot_params.h"
+#include "../../flamenco/runtime/sysvar/fd_sysvar_epoch_schedule.h"
 
 #define BAM_FUZZ_PACK_IN_RESOLV_IDX   (0UL)
 #define BAM_FUZZ_PACK_IN_REPLAY_IDX   (1UL)
@@ -28,6 +34,25 @@ static long bam_fuzz_pack_now_ns;
 #define BAM_FUZZ_PACK_TICKS_PER_SLOT  (64UL)
 #define BAM_FUZZ_PACK_TICK_NS         (1000000UL)
 
+#define BAM_FUZZ_PACK_COMMISSION_BPS  (800UL)
+
+static uchar const bam_fuzz_pack_identity_private_key[ 32 ] = { 0x1d };
+static uchar       bam_fuzz_pack_identity_public_key [ 32 ];
+static fd_sha512_t bam_fuzz_pack_sha_mem[1];
+static fd_sha512_t * bam_fuzz_pack_sha;
+
+void
+bam_fuzz_pack_sign( fd_keyguard_client_t * client,
+                    uchar *                signature,
+                    uchar const *          sign_data,
+                    ulong                  sign_data_len,
+                    int                    sign_type ) {
+  (void)client;
+  FD_TEST( sign_type==FD_KEYGUARD_SIGN_TYPE_ED25519 );
+  fd_ed25519_sign( signature, sign_data, sign_data_len, bam_fuzz_pack_identity_public_key,
+                   bam_fuzz_pack_identity_private_key, bam_fuzz_pack_sha );
+}
+
 struct bam_fuzz_pack {
   fd_pack_ctx_t   ctx[1];
   void *          storage;
@@ -40,6 +65,10 @@ struct bam_fuzz_pack {
   ulong           leader_in_chunk;
   ulong           leader_seq;
   bam_fuzz_outs_t outs;
+
+  /* With the tip crank, what initializer bundles left on chain */
+  fd_bundle_crank_tip_payment_config_t chain_config[1];
+  ulong                                chain_tip_receiver_epoch; /* epoch whose tip receiver exists */
 };
 
 static fd_pack_out_ctx_t
@@ -56,7 +85,8 @@ bam_fuzz_pack_new( fd_wksp_t *                 wksp,
                    bam_fuzz_link_t const *     in,
                    bam_fuzz_link_t             out[ BAM_FUZZ_OUT_MAX ],
                    ulong **                    execle_busy_fseq,
-                   bam_fuzz_pack_cfg_t const * cfg ) {
+                   bam_fuzz_pack_cfg_t const * cfg,
+                   fd_bam_fee_cfg_t const *    fee_cfg ) {
   bam_fuzz_pack_t * h = fd_wksp_alloc_laddr( wksp, alignof(bam_fuzz_pack_t), sizeof(bam_fuzz_pack_t), 1UL );
   FD_TEST( h );
   fd_memset( h, 0, sizeof(*h) );
@@ -147,6 +177,32 @@ bam_fuzz_pack_new( fd_wksp_t *                 wksp,
   fd_histf_join( fd_metrics_histf_new_ns( ctx->complete_duration, FD_MHIST_EDGES_NS( PACK, MICROBLOCK_COMPLETE_DURATION_NANOS ) ) );
   ctx->metric_state_begin         = fd_tickcount();
   ctx->last_bam_leader_state.slot = ULONG_MAX;
+  ctx->bam_fee_cfg                = fee_cfg; /* the builder BAM's config names */
+
+  /* As unprivileged_init sets up the crank.  The keyswitch is left out:
+     only during_housekeeping reads it, which the harness does not run. */
+  ctx->crank->enabled = !!cfg->crank;
+  if( FD_UNLIKELY( cfg->crank ) ) {
+    if( FD_UNLIKELY( !bam_fuzz_pack_sha ) ) {
+      bam_fuzz_pack_sha = fd_sha512_join( fd_sha512_new( bam_fuzz_pack_sha_mem ) );
+      FD_TEST( fd_ed25519_public_from_private( bam_fuzz_pack_identity_public_key, bam_fuzz_pack_identity_private_key, bam_fuzz_pack_sha ) );
+    }
+    fd_memcpy( ctx->crank->identity_pubkey->b, bam_fuzz_pack_identity_public_key, 32UL );
+    fd_memset( ctx->crank->vote_pubkey->b, 0x7e, 32UL );
+    fd_acct_addr_t tip_distribution[1], tip_payment[1], merkle_root_authority[1];
+    FD_TEST( fd_base58_decode_32( BAM_FUZZ_TIP_DISTRIBUTION_PROGRAM, tip_distribution->b ) );
+    FD_TEST( fd_base58_decode_32( BAM_FUZZ_TIP_PAYMENT_PROGRAM,      tip_payment->b      ) );
+    fd_memset( merkle_root_authority->b, 0x3a, 32UL );
+    FD_TEST( fd_bundle_crank_gen_init( ctx->crank->gen, tip_distribution, tip_payment,
+                                       (fd_acct_addr_t const *)ctx->crank->vote_pubkey->b, merkle_root_authority,
+                                       schedule_strategy_strings[ ctx->strategy ], BAM_FUZZ_PACK_COMMISSION_BPS ) );
+    ctx->crank->prev_config->discriminator       = 0x82ccfa1ee0aa0c9bUL;
+    ctx->crank->prev_config->tip_receiver->b[1]  = 1;
+    ctx->crank->prev_config->block_builder->b[2] = 1;
+    /* The chain starts as unprivileged_init assumes it */
+    *h->chain_config            = *ctx->crank->prev_config;
+    h->chain_tip_receiver_epoch = ULONG_MAX;
+  }
 
   fd_memcpy( out, h->outs.link, sizeof(h->outs.link) );
   *execle_busy_fseq = h->execle_busy_fseq;
@@ -223,14 +279,32 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t *             h,
   became->limits.slot_max_write_cost_per_acct      = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND;
   became->limits.slot_max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK;
   became->limits.slot_max_data_shreds              = FD_SLOT_PARAMS_400MS.max_shred_idx;
+  if( FD_UNLIKELY( h->ctx->crank->enabled ) ) {
+    /* As replay reads them from the leader bank */
+    fd_bank_t const * b = (fd_bank_t const *)bank;
+    FD_TEST( b );
+    became->epoch             = fd_slot_to_epoch( &b->f.epoch_schedule, slot, NULL );
+    became->bundle->config[0] = h->chain_config[0];
+    fd_memcpy( became->bundle->last_blockhash, b->f.poh.hash, 32UL );
+    if( became->epoch==h->chain_tip_receiver_epoch ) {
+      FD_TEST( fd_base58_decode_32( BAM_FUZZ_TIP_DISTRIBUTION_PROGRAM, became->bundle->tip_receiver_owner ) );
+    }
+  }
 
   during_frag( h->ctx, BAM_FUZZ_PACK_IN_REPLAY_IDX, h->leader_seq, REPLAY_SIG_BECAME_LEADER, h->leader_in_chunk, sizeof(fd_became_leader_t), 0UL );
   after_frag( h->ctx, BAM_FUZZ_PACK_IN_REPLAY_IDX, h->leader_seq, REPLAY_SIG_BECAME_LEADER, sizeof(fd_became_leader_t), 0UL, 0UL, h->outs.stem );
-  /* The tip crank is disabled here; model an initializer found in good shape. */
+  /* Without the tip crank, model an initializer found in good shape. */
   if( !h->ctx->crank->enabled ) fd_pack_set_initializer_bundles_ready( h->ctx->pack );
   h->leader_seq++;
   h->leader_in_chunk = fd_dcache_compact_next( h->leader_in_chunk, sizeof(fd_became_leader_t), h->leader_in->chunk0, h->leader_in->wmark );
   return bam_fuzz_outs_end( &h->outs, res );
+}
+
+void
+bam_fuzz_pack_crank_landed( bam_fuzz_pack_t * h ) {
+  FD_TEST( h->ctx->crank->enabled );
+  *h->chain_config            = *h->ctx->crank->prev_config;
+  h->chain_tip_receiver_epoch = h->ctx->crank->epoch;
 }
 
 void

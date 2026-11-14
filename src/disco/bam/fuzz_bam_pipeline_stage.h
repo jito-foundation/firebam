@@ -67,12 +67,25 @@ typedef struct { bam_fuzz_range_t out[ BAM_FUZZ_OUT_MAX ]; } bam_fuzz_res_t;
 /* The [tiles.pack] options an input picks.  Pack schedules with the
    perf or the balanced strategy.  With use_consumed_cus,
    execle rebates the CUs its microblocks did not use and pack credits
-   them back to the block. */
+   them back to the block.  With crank, as a BAM validator always runs
+   (TIP_CRANK_ENABLED in topology_bam.c), pack inserts the tip crank's
+   initializer bundles, which execle runs against stand-ins for the tip
+   programs at their mainnet ids: a program that only logs.  Pack
+   learns whether one landed only from rebates.  With
+   tip_programs_missing the bank has no such programs, so every
+   initializer bundle fails.  Without crank, pack finds the initializer
+   in good shape every slot. */
 
 typedef struct {
   int balanced;
   int use_consumed_cus;
+  int crank;
+  int tip_programs_missing;
 } bam_fuzz_pack_cfg_t;
+
+#define BAM_FUZZ_TIP_PAYMENT_PROGRAM      "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
+#define BAM_FUZZ_TIP_DISTRIBUTION_PROGRAM "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
+#define BAM_FUZZ_MEMO_PROGRAM             "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 
 /* bam_fuzz_link_new creates an mcache and a compact dcache for depth
    frags of up to mtu bytes in wksp. */
@@ -172,7 +185,8 @@ bam_fuzz_verify_t * bam_fuzz_verify_new( fd_wksp_t * wksp, bam_fuzz_link_t const
 bam_fuzz_dedup_t *  bam_fuzz_dedup_new ( fd_wksp_t * wksp, bam_fuzz_link_t const * in, ulong in_cnt, bam_fuzz_link_t out[ BAM_FUZZ_OUT_MAX ] );
 bam_fuzz_resolv_t * bam_fuzz_resolv_new( fd_wksp_t * wksp, bam_fuzz_link_t const * in, bam_fuzz_link_t out[ BAM_FUZZ_OUT_MAX ] );
 bam_fuzz_pack_t *   bam_fuzz_pack_new  ( fd_wksp_t * wksp, bam_fuzz_link_t const * in, bam_fuzz_link_t out[ BAM_FUZZ_OUT_MAX ],
-                                         ulong ** execle_busy_fseq, bam_fuzz_pack_cfg_t const * cfg );
+                                         ulong ** execle_busy_fseq, bam_fuzz_pack_cfg_t const * cfg,
+                                         fd_bam_fee_cfg_t const * fee_cfg );
 bam_fuzz_execle_t * bam_fuzz_execle_new( fd_wksp_t * wksp, bam_fuzz_link_t const * in, bam_fuzz_link_t out[ BAM_FUZZ_OUT_MAX ],
                                          ulong * busy_fseq, bam_fuzz_pack_cfg_t const * cfg );
 
@@ -180,6 +194,16 @@ bam_fuzz_execle_t * bam_fuzz_execle_new( fd_wksp_t * wksp, bam_fuzz_link_t const
    in, with use_consumed_cus. */
 
 void bam_fuzz_pack_join_rebates( bam_fuzz_pack_t * h, bam_fuzz_link_t const * in );
+
+/* Pack becomes leader with the tip payment config and tip receiver
+   that an initializer bundle last left on chain.  The stand-in tip
+   programs change no state, so the harness applies what the bundle
+   would have: bam_fuzz_pack_crank_landed records pack's crank config
+   as the chain's, once execle has committed pack's initializer bundle
+   (bam_fuzz_execle_ib_landed_cnt counts those). */
+
+void  bam_fuzz_pack_crank_landed    ( bam_fuzz_pack_t * h );
+ulong bam_fuzz_execle_ib_landed_cnt( bam_fuzz_execle_t const * h );
 
 void bam_fuzz_verify_delete( bam_fuzz_verify_t * h );
 void bam_fuzz_dedup_delete ( bam_fuzz_dedup_t *  h );
