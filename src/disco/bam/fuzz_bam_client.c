@@ -587,6 +587,7 @@ bam_fuzz_reset_tile( void ) {
 
   ctx->keylog_fd             = -1;
   ctx->tcp_sock              = -1;
+  ctx->registry.fd           = -1;
   ctx->connect_deadline      = LONG_MAX;
   ctx->bam_status_logged    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->bam_status_recent    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;

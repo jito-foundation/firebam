@@ -585,6 +585,7 @@ test_bam_env_create_with_grpc_buf_sz( test_bam_env_t * env,
   state->heap_wksp       = wksp;
   state->tcp_sock        = -1;
   state->keylog_fd       = -1;
+  state->registry.fd     = -1;
   state->so_rcvbuf       = (int)grpc_buf_sz;
   state->map_seed        = 1UL;
   state->connect_deadline = LONG_MAX; /* mocked connections skip the dial */
