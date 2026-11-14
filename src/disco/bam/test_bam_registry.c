@@ -155,8 +155,9 @@ http( char const * raw,
   static char buf[ FD_BAM_REGISTRY_BODY_MAX ];
   ulong len = strlen( raw );
   memcpy( buf, raw, len );
-  int rc = fd_bam_registry_http_body( buf, &len, eof );
-  if( rc==1 ) { memcpy( out, buf, len ); out[ len ] = '\0'; *out_len = len; }
+  char loc[ 64 ];
+  int rc = fd_bam_registry_http_response( buf, &len, eof, loc, sizeof(loc) );
+  if( rc==FD_BAM_REGISTRY_HTTP_BODY ) { memcpy( out, buf, len ); out[ len ] = '\0'; *out_len = len; }
   return rc;
 }
 
@@ -166,10 +167,11 @@ test_http( void ) {
   ulong n = 0UL;
   FD_TEST( http( "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}", 0, body, &n )==1 && !strcmp( body, "{}" ) );
   FD_TEST( http( "HTTP/1.1 203 OK\r\ncontent-length:2\r\n\r\n{}", 0, body, &n )==1 );
+  FD_TEST( http( "HTTP/1.1 200 OK\nContent-Length: 2\n\n{}", 0, body, &n )==1 && !strcmp( body, "{}" ) ); /* bare LF, as httparse allows */
   FD_TEST( http( "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n{}", 0, body, &n )==0 );
   FD_TEST( http( "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n{}", 1, body, &n )==-1 );
   FD_TEST( http( "HTTP/1.1 200 OK\r\n\r\n{}", 1, body, &n )==1 && n==2UL );
-  FD_TEST( http( "HTTP/1.1 301 Moved\r\nLocation: /x\r\n\r\n", 1, body, &n )==-1 );
+  FD_TEST( http( "HTTP/1.1 301 Moved\r\nLocation: /x\r\n\r\n", 1, body, &n )==FD_BAM_REGISTRY_HTTP_REDIRECT );
   FD_TEST( http( "HTTP/1.1 404 Not Found\r\n\r\n", 1, body, &n )==-1 );
 
   /* An HTTP/1.0 client gets no transfer coding. */
@@ -321,7 +323,10 @@ static int
 redirect( char const * raw,
           char *       loc,
           ulong        loc_max ) {
-  return fd_bam_registry_http_redirect( raw, strlen( raw ), loc, loc_max );
+  char  buf[ 256 ];
+  ulong len = strlen( raw );
+  memcpy( buf, raw, len );
+  return fd_bam_registry_http_response( buf, &len, 0, loc, loc_max )==FD_BAM_REGISTRY_HTTP_REDIRECT;
 }
 
 static void

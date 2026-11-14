@@ -30,27 +30,26 @@ LLVMFuzzerTestOneInput( uchar const * data,
     fd_bam_registry_is_url( url );
 
   static char buf[ FD_BAM_REGISTRY_BODY_MAX ];
-  if( size<=sizeof(buf) ) {
-    for( int eof=0; eof<2; eof++ ) {
-      ulong len = size;
-      fd_memcpy( buf, data, size );
-      if( fd_bam_registry_http_body( buf, &len, eof )==1 ) {
-        FD_TEST( len<=size );
-        fd_bam_registry_parse( buf, len, nodes, 4UL, &cnt );
-      }
-    }
-  }
-
   static char loc[ FD_URL_MAX+FD_BAM_REGISTRY_PATH_MAX ];
-  if( fd_bam_registry_http_redirect( (char const *)data, size, loc, sizeof(loc) ) ) {
-    static fd_bam_registry_t reg[1];
-    strcpy( reg->f_host, "a.example" ); reg->f_host_len = 9;
-    strcpy( reg->f_path, "/v1/nodes?x=1" ); reg->f_path_len = 13;
-    reg->f_port = 443; reg->f_ssl = 1;
-    if( !fd_bam_registry_redirect_target( reg, loc ) ) {
-      FD_TEST( reg->f_path_len<FD_BAM_REGISTRY_PATH_MAX && reg->f_path[0]=='/' );
-      FD_TEST( strlen( reg->f_path )==reg->f_path_len );
-      FD_TEST( reg->f_host_len && strlen( reg->f_host )==reg->f_host_len );
+  if( size>sizeof(buf) ) return 0;
+  for( int eof=0; eof<2; eof++ ) {
+    ulong len = size;
+    fd_memcpy( buf, data, size );
+    int rc = fd_bam_registry_http_response( buf, &len, eof, loc, sizeof(loc) );
+    if( rc==FD_BAM_REGISTRY_HTTP_BODY ) {
+      FD_TEST( len<=size );
+      fd_bam_registry_parse( buf, len, nodes, 4UL, &cnt );
+    } else if( rc==FD_BAM_REGISTRY_HTTP_REDIRECT ) {
+      FD_TEST( loc[0] && strlen( loc )<sizeof(loc) );
+      static fd_bam_registry_t reg[1];
+      strcpy( reg->f_host, "a.example" ); reg->f_host_len = 9;
+      strcpy( reg->f_path, "/v1/nodes?x=1" ); reg->f_path_len = 13;
+      reg->f_port = 443; reg->f_ssl = 1;
+      if( !fd_bam_registry_redirect_target( reg, loc ) ) {
+        FD_TEST( reg->f_path_len<FD_BAM_REGISTRY_PATH_MAX && reg->f_path[0]=='/' );
+        FD_TEST( strlen( reg->f_path )==reg->f_path_len );
+        FD_TEST( reg->f_host_len && strlen( reg->f_host )==reg->f_host_len );
+      }
     }
   }
   return 0;

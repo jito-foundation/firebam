@@ -205,27 +205,23 @@ fd_bam_registry_parse( char const *             json,
                        ulong                    cap,
                        ulong *                  cnt );
 
-/* fd_bam_registry_http_body strips the response to an HTTP/1.0
-   request in buf[0,*len) to its body in place.  The body is
-   Content-Length bytes, or runs to EOF.  Returns 1 with *len set, 0 if
-   more bytes are needed, -1 on a non-2xx status, a transfer coding, or
-   malformed framing. */
+/* fd_bam_registry_http_response reads the response to an HTTP/1.0
+   request in buf[0,*len).  Returns FD_BAM_REGISTRY_HTTP_BODY with
+   buf[0,*len) stripped in place to the body (Content-Length bytes, or
+   up to eof), FD_BAM_REGISTRY_HTTP_REDIRECT with the Location of a
+   301/302/303/307/308 in loc, 0 if more bytes are needed, and -1 for
+   any other status, a transfer coding, malformed framing, or a
+   Location over loc_max. */
+
+#define FD_BAM_REGISTRY_HTTP_BODY     (1)
+#define FD_BAM_REGISTRY_HTTP_REDIRECT (2)
 
 int
-fd_bam_registry_http_body( char *  buf,
-                           ulong * len,
-                           int     eof );
-
-/* fd_bam_registry_http_redirect returns 1 once the headers in
-   buf[0,len) are complete and carry a 301/302/303/307/308 with a
-   Location that fits in loc, which receives it NUL-terminated.
-   Returns 0 otherwise; fd_bam_registry_http_body then fails any 3xx. */
-
-int
-fd_bam_registry_http_redirect( char const * buf,
-                               ulong        len,
-                               char *       loc,
-                               ulong        loc_max );
+fd_bam_registry_http_response( char *  buf,
+                               ulong * len,
+                               int     eof,
+                               char *  loc,
+                               ulong   loc_max );
 
 /* fd_bam_registry_redirect_target points the fetch at loc: an
    absolute http(s) URL, or a path on the current host, without the

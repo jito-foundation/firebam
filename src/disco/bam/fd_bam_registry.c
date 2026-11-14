@@ -4,6 +4,8 @@
 #include "../../ballet/ed25519/fd_x25519.h"
 #include "../../util/net/fd_ip4.h"
 #include "../../ballet/json/fd_jtok.h"
+#include "../../third_party/picohttpparser/picohttpparser.h"
+#include "../../waltz/http/fd_http.h"
 #include "../../waltz/resolv/fd_adns.h"
 #include "../../waltz/resolv/fd_lookup.h"
 
@@ -11,6 +13,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -679,115 +682,57 @@ reg_fetch_done( fd_bam_tile_t * ctx,
   reg_log( reg->fetch_warn, result, now, msg );
 }
 
-static int
-reg_lower_eq( char const * p,
-              char const * lit,
-              ulong        n ) {
-  for( ulong k=0UL; k<n; k++ ) {
-    char a = p[ k ];
-    if( a>='A' && a<='Z' ) a = (char)(a-'A'+'a');
-    if( a!=lit[ k ] ) return 0;
-  }
-  return 1;
-}
-
-/* reg_hdr returns the trimmed value of header name (lowercase, with
-   ':') on line [p,nl), or NULL. */
-
-static char const *
-reg_hdr( char const *   p,
-         char const *   nl,
-         char const *   name,
-         char const * * val_end ) {
-  ulong n = strlen( name );
-  if( (ulong)(nl-p)<n || !reg_lower_eq( p, name, n ) ) return NULL;
-  char const * v = p+n;
-  char const * e = nl;
-  while( v<e && (*v==' ' || *v=='\t') ) v++;
-  while( e>v && (e[-1]==' ' || e[-1]=='\t' || e[-1]=='\r') ) e--;
-  *val_end = e;
-  return v;
-}
-
-static char const *
-reg_hdr_end( char const * buf,
-             ulong        len ) {
-  for( ulong i=0UL; i+3UL<len; i++ ) {
-    if( buf[ i ]=='\r' && buf[ i+1 ]=='\n' && buf[ i+2 ]=='\r' && buf[ i+3 ]=='\n' ) return buf+i;
-  }
-  return NULL;
-}
-
-/* Any 2xx passes, as with reqwest's error_for_status. */
+/* Parsed with picohttpparser, as fd_sshttp does.  Any 2xx passes, as
+   with reqwest's error_for_status. */
 
 int
-fd_bam_registry_http_body( char *  buf,
-                           ulong * len,
-                           int     eof ) {
-  char const * hdr_end = reg_hdr_end( buf, *len );
-  if( !hdr_end ) return eof ? -1 : 0;
-  if( *len<12UL || memcmp( buf, "HTTP/1.", 7 ) || buf[8]!=' ' ||
-      buf[9]!='2' || buf[10]<'0' || buf[10]>'9' ||
-      buf[11]<'0' || buf[11]>'9' ) {
+fd_bam_registry_http_response( char *  buf,
+                               ulong * len,
+                               int     eof,
+                               char *  loc,
+                               ulong   loc_max ) {
+  int               minor_version;
+  int               status;
+  char const *      msg;
+  ulong             msg_len;
+  struct phr_header hdrs[ 100 ]; /* hyper's default limit */
+  ulong             hdr_cnt = 100UL;
+  int hdr_len = phr_parse_response( buf, *len, &minor_version, &status, &msg, &msg_len, hdrs, &hdr_cnt, 0UL );
+  if( hdr_len==-2 ) return eof ? -1 : 0;
+  if( hdr_len<0 ) return -1;
+
+  if( status==301 || status==302 || status==303 || status==307 || status==308 ) {
+    for( ulong i=0UL; i<hdr_cnt; i++ ) {
+      if( hdrs[ i ].name_len!=8UL || strncasecmp( hdrs[ i ].name, "location", 8UL ) ) continue;
+      if( !hdrs[ i ].value_len || hdrs[ i ].value_len>=loc_max ) return -1;
+      memcpy( loc, hdrs[ i ].value, hdrs[ i ].value_len );
+      loc[ hdrs[ i ].value_len ] = '\0';
+      return FD_BAM_REGISTRY_HTTP_REDIRECT;
+    }
     return -1;
   }
-  long content_len = -1L;
-  for( char const * p=buf; p<hdr_end; ) {
-    char const * nl = memchr( p, '\n', (ulong)(hdr_end-p) );
-    if( !nl ) nl = hdr_end;
-    char const * ve = NULL;
-    char const * v  = reg_hdr( p, nl, "content-length:", &ve );
-    if( v ) {
-      content_len = 0L;
-      if( v>=ve ) return -1;
-      for( ; v<ve; v++ ) {
-        if( *v<'0' || *v>'9' ) return -1;
-        content_len = content_len*10L+(*v-'0');
-        if( content_len>(long)FD_BAM_REGISTRY_BODY_MAX ) return -1;
-      }
-    }
+  if( status<200 || status>299 ) return -1;
+
+  int   have_len    = 0;
+  ulong content_len = 0UL;
+  for( ulong i=0UL; i<hdr_cnt; i++ ) {
     /* Servers must not send a transfer coding to HTTP/1.0 clients. */
-    if( reg_hdr( p, nl, "transfer-encoding:", &ve ) ) return -1;
-    p = nl+1;
+    if( hdrs[ i ].name_len==17UL && !strncasecmp( hdrs[ i ].name, "transfer-encoding", 17UL ) ) return -1;
+    if( hdrs[ i ].name_len!=14UL || strncasecmp( hdrs[ i ].name, "content-length", 14UL ) ) continue;
+    if( fd_http_parse_content_len( hdrs[ i ].value, hdrs[ i ].value_len, &content_len ) ||
+        content_len>FD_BAM_REGISTRY_BODY_MAX ) return -1;
+    have_len = 1;
   }
-  ulong body_at = (ulong)(hdr_end-buf)+4UL;
-  ulong n       = *len-body_at;
-  if( content_len>=0L ) {
-    if( n<(ulong)content_len ) return eof ? -1 : 0;
-    n = (ulong)content_len;
+  ulong n = *len-(ulong)hdr_len;
+  if( have_len ) {
+    if( n<content_len ) return eof ? -1 : 0;
+    n = content_len;
   } else if( !eof ) {
     return 0;
   }
-  memmove( buf, buf+body_at, n );
+  memmove( buf, buf+hdr_len, n );
   *len = n;
-  return 1;
-}
-
-int
-fd_bam_registry_http_redirect( char const * buf,
-                               ulong        len,
-                               char *       loc,
-                               ulong        loc_max ) {
-  char const * hdr_end = reg_hdr_end( buf, len );
-  if( !hdr_end || len<12UL || memcmp( buf, "HTTP/1.", 7 ) || buf[8]!=' ' ) return 0;
-  for( ulong i=9UL; i<12UL; i++ ) if( buf[ i ]<'0' || buf[ i ]>'9' ) return 0;
-  int code = (buf[9]-'0')*100 + (buf[10]-'0')*10 + (buf[11]-'0');
-  if( code!=301 && code!=302 && code!=303 && code!=307 && code!=308 ) return 0;
-  for( char const * p=buf; p<hdr_end; ) {
-    char const * nl = memchr( p, '\n', (ulong)(hdr_end-p) );
-    if( !nl ) nl = hdr_end;
-    char const * ve = NULL;
-    char const * v  = reg_hdr( p, nl, "location:", &ve );
-    if( v ) {
-      ulong n = (ulong)(ve-v);
-      if( !n || n>=loc_max ) return 0;
-      memcpy( loc, v, n );
-      loc[ n ] = '\0';
-      return 1;
-    }
-    p = nl+1;
-  }
-  return 0;
+  return FD_BAM_REGISTRY_HTTP_BODY;
 }
 
 /* reg_set_path sets the fetch path to p[0,n) without its fragment,
@@ -1186,7 +1131,10 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
   if( eof<0 ) { reg_fetch_done( ctx, eof==-2 ? REG_FETCH_HTTP : REG_FETCH_IO ); return; }
 
   char loc[ FD_URL_MAX+FD_BAM_REGISTRY_PATH_MAX ];
-  if( fd_bam_registry_http_redirect( reg->body, reg->body_len, loc, sizeof(loc) ) ) {
+  int done = fd_bam_registry_http_response( reg->body, &reg->body_len, eof, loc, sizeof(loc) );
+  if( !done && reg->body_len>=FD_BAM_REGISTRY_BODY_MAX ) done = -1;
+  if( !done ) return;
+  if( done==FD_BAM_REGISTRY_HTTP_REDIRECT ) {
     if( ++reg->redirects>FD_BAM_REGISTRY_REDIRECT_MAX || fd_bam_registry_redirect_target( reg, loc ) ) {
       fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "redirect to `%.64s` not followed", loc );
       reg_fetch_done( ctx, REG_FETCH_REDIRECT );
@@ -1196,9 +1144,6 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
     if( rc ) reg_fetch_done( ctx, rc );
     return;
   }
-  int done = fd_bam_registry_http_body( reg->body, &reg->body_len, eof );
-  if( !done && reg->body_len>=FD_BAM_REGISTRY_BODY_MAX ) done = -1;
-  if( !done ) return;
   if( done<0 ) {
     ulong line = 0UL;
     while( line<reg->body_len && line<64UL && reg->body[ line ]!='\r' && reg->body[ line ]!='\n' ) line++;
