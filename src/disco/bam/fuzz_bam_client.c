@@ -95,6 +95,8 @@ static struct {
   void *           key_req_dcache_mem;
   void *           key_resp_dcache_mem;
 
+  uchar identity_pubkey[ 32 ]; /* Derived once from bam_fuzz_identity_private_key */
+
   fd_bam_decoded_multi_batch_t decoded_multi_storage[1];
   fd_bam_tile_t tile_storage[1]; /* Backing storage for tile pointer */
 } bam_fuzz_ctx;
@@ -225,6 +227,13 @@ bam_fuzz_env_init( int *    pargc,
   if( FD_LIKELY( initialized ) ) return;
 
   fd_memset( &bam_fuzz_ctx, 0, sizeof( bam_fuzz_ctx ) );
+
+  fd_sha512_t _sha[1];
+  fd_sha512_t * sha = fd_sha512_join( fd_sha512_new( _sha ) );
+  FD_TEST( sha );
+  FD_TEST( fd_ed25519_public_from_private( bam_fuzz_ctx.identity_pubkey,
+                                           bam_fuzz_identity_private_key,
+                                           sha ) );
 
   ulong cpu_idx = fd_tile_cpu_id( fd_tile_idx() );
   if( cpu_idx>fd_shmem_cpu_cnt() ) cpu_idx = 0UL;
@@ -565,12 +574,7 @@ bam_fuzz_reset_tile( void ) {
   bam_fuzz_prepare_connected_grpc( ctx );
 
   /* Identity for auth */
-  fd_sha512_t _sha[1];
-  fd_sha512_t * sha = fd_sha512_join( fd_sha512_new( _sha ) );
-  FD_TEST( sha );
-  FD_TEST( fd_ed25519_public_from_private( ctx->bam_identity_pubkey,
-                                           bam_fuzz_identity_private_key,
-                                           sha ) );
+  fd_memcpy( ctx->bam_identity_pubkey, bam_fuzz_ctx.identity_pubkey, 32UL );
   fd_base58_encode_32( ctx->bam_identity_pubkey, NULL, ctx->bam_identity_pubkey_b58 );
 
   /* Keyguard client stubbed with in-memory request/response rings */
@@ -755,6 +759,7 @@ LLVMFuzzerInitialize( int *argc,
   fd_log_wallclock_set( bam_fuzz_wallclock, NULL );
   fd_boot( argc, argv );
   fd_log_level_core_set( 4 ); /* fail fast on errors */
+  fd_log_level_stderr_set( 4 ); /* only errors to stderr, FD_TEST failures still print */
   bam_fuzz_env_init( argc, argv );
   atexit( fd_halt );
   return 0;
