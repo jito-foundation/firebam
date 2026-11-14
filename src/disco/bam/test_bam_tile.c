@@ -5095,6 +5095,55 @@ test_bam_ctrl_defaults_bam_ports( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* A registry URL needs the system CA bundle, reports itself and the
+   node it picked, and refuses --sni.  A direct URL that fails
+   validation leaves registry mode on. */
+static void
+test_bam_ctrl_registry( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  fd_bam_tile_t * ctx = test_bam_env_create( env, wksp );
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_defaults( ctx, &ctrl );
+  uchar const  ok      = FD_BAM_CTRL_STATE_SUCCESS;
+  uchar const  err     = FD_BAM_CTRL_STATE_ERROR;
+  char const * direct  = "http://testnet.bam.jito.wtf:50055";
+  char const * reg_url = "https://registry.example/v1/nodes";
+
+  ctx->ca_store->cnt = 0UL;
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_URL, 1U, reg_url )==err );
+  FD_TEST( strstr( ctrl.error, "CA certificate bundle" ) && !ctx->registry.on && !strcmp( ctrl.url, direct ) );
+  ctx->ca_store->cnt = 1UL;
+
+  fd_cstr_ncpy( ctrl.sni, "x.example", sizeof(ctrl.sni) );
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_URL|FD_BAM_CTRL_CMD_SNI, 1U, reg_url )==err );
+  FD_TEST( strstr( ctrl.error, "--sni" ) && !ctx->registry.on && !strcmp( ctrl.url, direct ) );
+
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_URL, 1U, reg_url )==ok );
+  FD_TEST( ctx->registry.on && !ctx->server_fqdn_len );
+  FD_TEST( !strcmp( ctrl.url, reg_url ) && !ctrl.sni[0] && !strcmp( ctrl.node, "(none)" ) );
+
+  /* A pick shows as the node; the URL stays the registry's. */
+  fd_bam_registry_node_t node = { .ip4 = FD_IP4_ADDR( 203, 0, 113, 7 ), .grpc_port = 50056 };
+  FD_TEST( fd_bam_tile_dial_node( ctx, &node ) );
+  FD_TEST( !strcmp( ctrl.url, reg_url ) && !ctrl.sni[0] && !strcmp( ctrl.node, "203.0.113.7:50056" ) );
+
+  fd_cstr_ncpy( ctrl.sni, "x.example", sizeof(ctrl.sni) );
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_SNI, 1U, NULL )==err );
+  FD_TEST( ctx->registry.on && !strcmp( ctx->server_sni, "203.0.113.7" ) && !strcmp( ctrl.node, "203.0.113.7:50056" ) );
+
+  /* A TLS name over fd_tls's 253 bytes fails after the URL parsed. */
+  memset( ctrl.sni, 'a', 254UL );
+  ctrl.sni[ 254 ] = '\0';
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_URL|FD_BAM_CTRL_CMD_SNI, 1U, "https://bam.example.com:9443" )==err );
+  FD_TEST( ctx->registry.on && !strcmp( ctrl.url, reg_url ) && !strcmp( ctrl.node, "203.0.113.7:50056" ) );
+
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_URL, 1U, "https://bam.example.com:9443" )==ok );
+  FD_TEST( !ctx->registry.on && !ctrl.node[0] && !strcmp( ctrl.url, "https://bam.example.com:9443" ) );
+  test_bam_check_endpoint( ctx, "bam.example.com", "bam.example.com", 9443U, 1U );
+
+  test_bam_env_destroy( env );
+}
+
 static void
 test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   /* Validate that toggling enable pauses connectivity and clears the status latch. */
@@ -6676,6 +6725,7 @@ main( int     argc,
   /* Control surface */
   test_bam_ctrl_updates_url_and_sni( wksp );
   test_bam_ctrl_defaults_bam_ports( wksp );
+  test_bam_ctrl_registry( wksp );
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_enable_from_dormant_then_set_url( wksp );
 

@@ -9,7 +9,6 @@
 #include "../../tango/fseq/fd_fseq.h"
 #include "../../util/pod/fd_pod_format.h"
 #include "../../util/net/fd_ip4.h"
-#include "fd_bam_webpki_roots.h"
 
 #include <errno.h>
 #include <ctype.h> /* isspace */
@@ -156,7 +155,6 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET(       BAM, IS_REGISTRY_ENABLED,                 (ulong)reg->on );
   FD_MCNT_ENUM_COPY(   BAM, REGISTRY_LIST_FETCHED,               reg->fetch_cnt );
   FD_MGAUGE_SET(       BAM, REGISTRY_NODE_COUNT,                 reg->node_cnt );
-  FD_MGAUGE_SET(       BAM, LAST_REGISTRY_LIST_AGE_NANOS,        reg->list_age_ns );
   FD_MCNT_ENUM_COPY(   BAM, REGISTRY_PROBE_ROUND_ENDED,          reg->round_cnt );
   FD_MGAUGE_ENUM_COPY( BAM, LAST_REGISTRY_PROBE_NODE_COUNT,      reg->last_round );
   FD_MCNT_SET(         BAM, REGISTRY_PROBE_CERT_REJECTED,        reg->probe_cert_cnt );
@@ -413,6 +411,8 @@ fd_bam_note_replay_schedule_slot( fd_bam_tile_t * ctx,
                                   ulong           slots_per_epoch ) {
   ulong const old_recheck_slot = ctx->leader_schedule_recheck_slot;
   ulong       new_recheck_slot = old_recheck_slot;
+
+  if( FD_LIKELY( slot!=ULONG_MAX ) ) ctx->registry.replay_slot = fd_ulong_max( ctx->registry.replay_slot, slot );
 
   if( FD_LIKELY( fd_bam_tile_leader_slot_known( ctx ) ) ) {
     new_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
@@ -901,14 +901,22 @@ fd_bam_test_check_credit( fd_bam_tile_t *     ctx,
 
 static void
 fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
-  ctx->ctrl->url[0] = '\0';
-  ctx->ctrl->sni[0] = '\0';
+  ctx->ctrl->url[0]  = '\0';
+  ctx->ctrl->sni[0]  = '\0';
+  ctx->ctrl->node[0] = '\0';
   ctx->ctrl->enable = ctx->enabled;
   FD_VOLATILE( ctx->ctrl->applied_enable ) = ctx->enabled;
-  if( FD_UNLIKELY( !ctx->server_fqdn_len || !ctx->server_tcp_port ) ) {
-    if( ctx->registry.on ) fd_cstr_ncpy( ctx->ctrl->url, ctx->registry.url, sizeof(ctx->ctrl->url) );
+  /* Registry mode reports the registry URL and the node it picked; the
+     node's IP is its TLS name, so there is no SNI. */
+  if( ctx->registry.on ) {
+    fd_bam_registry_t const * reg = &ctx->registry;
+    fd_cstr_ncpy( ctx->ctrl->url, reg->url, sizeof(ctx->ctrl->url) );
+    if( reg->have_dial ) fd_cstr_printf( ctx->ctrl->node, sizeof(ctx->ctrl->node), NULL, FD_IP4_ADDR_FMT ":%hu",
+                                         FD_IP4_ADDR_FMT_ARGS( reg->dial_ip4 ), reg->dial_port );
+    else                 fd_cstr_ncpy( ctx->ctrl->node, "(none)", sizeof(ctx->ctrl->node) );
     return;
   }
+  if( FD_UNLIKELY( !ctx->server_fqdn_len || !ctx->server_tcp_port ) ) return;
   snprintf( ctx->ctrl->url, sizeof(ctx->ctrl->url), "%s://%.*s:%u",
             ctx->is_ssl ? "https" : "http", ctx->server_fqdn_len, ctx->server_fqdn, ctx->server_tcp_port );
   fd_cstr_ncpy( ctx->ctrl->sni, ctx->server_sni, sizeof( ctx->ctrl->sni ) );
@@ -953,8 +961,6 @@ fd_bam_tile_dial_node( fd_bam_tile_t *                ctx,
   ctx->backoff_until = 0L;
   ctx->next_step_deadline = 0L;
   if( ctx->ctrl ) fd_bam_tile_ctrl_update_current( ctx );
-  FD_LOG_INFO(( "BAM registry selected " FD_IP4_ADDR_FMT ":%hu (%s)",
-                FD_IP4_ADDR_FMT_ARGS( node->ip4 ), node->grpc_port, node->region ));
   return 1;
 }
 
@@ -1007,6 +1013,10 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     }
     if( FD_UNLIKELY( !runtime_url.port_len ) ) new_port = new_ssl ? FD_BAM_HTTPS_PORT : FD_BAM_HTTP_PORT;
 
+    if( FD_UNLIKELY( ( command & FD_BAM_CTRL_CMD_SNI ) && fd_bam_registry_is_url( &runtime_url ) ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "--sni does not apply to a BAM registry URL; nodes are verified by IP" );
+      return -1;
+    }
     int reg_rc = fd_bam_registry_take_url( ctx, ctx->ctrl->url, &runtime_url, new_ssl, new_port, err, err_sz );
     if( reg_rc<0 ) return -1;
     if( reg_rc>0 ) {
@@ -1025,6 +1035,10 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
                                  new_ssl != !!ctx->is_ssl );
     }
   } else {
+    if( FD_UNLIKELY( ( command & FD_BAM_CTRL_CMD_SNI ) && ctx->registry.on ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "--sni does not apply to a BAM registry URL; nodes are verified by IP" );
+      return -1;
+    }
     fd_cstr_ncpy( new_host, ctx->server_fqdn, sizeof( new_host ) );
   }
 
@@ -1043,6 +1057,8 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
       return -1;
     }
     if( command & FD_BAM_CTRL_CMD_URL ) {
+      /* Leave registry mode only once the direct URL is known good. */
+      if( ctx->registry.on ) fd_bam_registry_disable( ctx );
       fd_cstr_ncpy( ctx->server_fqdn, new_host, sizeof( ctx->server_fqdn ) );
       ctx->server_fqdn_len = (ushort)fd_cstr_nlen( ctx->server_fqdn, sizeof( ctx->server_fqdn ) );
       ctx->server_tcp_port = new_port;
@@ -1117,6 +1133,7 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *        ctx,
   int reg_rc = fd_bam_registry_take_url( ctx, tile->bam.url, url, is_ssl, ctx->server_tcp_port, NULL, 0UL );
   if( FD_UNLIKELY( reg_rc<0 ) ) FD_LOG_ERR(( "Rejected BAM registry URL `%s`", tile->bam.url ));
   if( reg_rc>0 ) {
+    if( FD_UNLIKELY( tile->bam.sni[0] ) ) FD_LOG_WARNING(( "[tiles.bam.tls_domain_name] is ignored with a registry URL; nodes are verified by IP" ));
     fd_bam_tile_clear_dial( ctx );
     fd_bam_tile_ctrl_update_current( ctx );
     return;
@@ -1200,23 +1217,11 @@ fd_bam_tile_init_tls( fd_bam_tile_t * ctx,
   fd_memcpy( tls->alpn, alpn, sizeof(alpn) );
   tls->alpn_sz = sizeof(alpn);
 
-  /* BAM's URL may switch from HTTP to HTTPS after sandbox entry, so
-     load both stores either way (see fd_bam_registry_t ca_store). */
-  fd_x509_ca_store_t * reg_ca = ctx->registry.ca_store;
-  reg_ca->cnt = 0UL;
-  for( ulong i=0UL; i<fd_bam_webpki_roots_cnt; i++ ) {
-    char const * pem = fd_bam_webpki_roots[ i ];
-    fd_x509_ca_store_add_pem( reg_ca, pem, strlen( pem ), "webpki-roots" );
-  }
-  if( FD_UNLIKELY( !reg_ca->cnt ) ) FD_LOG_ERR(( "no usable webpki-roots %s trust anchors", fd_bam_webpki_roots_ver ));
-
-  long nanchors = fd_x509_ca_store_load_system( ctx->ca_store );
-  if( FD_UNLIKELY( nanchors<=0L ) ) {
-    FD_LOG_WARNING(( "No system CA certificate bundle found; BAM nodes are verified against webpki-roots only" ));
-  }
-  for( ulong i=0UL; i<reg_ca->cnt && ctx->ca_store->cnt<FD_X509_CA_STORE_MAX; i++ ) {
-    ctx->ca_store->entries[ ctx->ca_store->cnt++ ] = reg_ca->entries[ i ];
-  }
+  /* BAM's URL may switch to HTTPS or to a registry after sandbox
+     entry, so load the system bundle even when unverified.  A registry
+     URL needs it (see fd_bam_registry_take_url). */
+  if( FD_UNLIKELY( fd_x509_ca_store_load_system( ctx->ca_store )<0L && tile->bam.tls_cert_verify ) )
+    FD_LOG_ERR(( "No system CA certificate bundle found for BAM TLS verification" ));
   ctx->registry.cert_verify_cfg = !!tile->bam.tls_cert_verify;
   if( FD_UNLIKELY( tile->bam.tls_cert_verify ) ) tls->ca_store = ctx->ca_store;
 
@@ -1226,7 +1231,6 @@ fd_bam_tile_init_tls( fd_bam_tile_t * ctx,
   fd_chacha_rng_init( ctx->registry.rng, reg_key, FD_CHACHA_RNG_ALGO_CHACHA8 );
   fd_memzero_explicit( reg_key, sizeof(reg_key) );
   reg_tls->rng = ctx->registry.rng;
-  reg_tls->ca_store = reg_ca;
 }
 
 /* bam_topo_prop_obj returns the topology object named by the topo

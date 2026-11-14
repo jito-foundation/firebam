@@ -54,12 +54,36 @@ pem_b64_decode( uchar * out,      ulong out_max,
 }
 
 long
-fd_x509_ca_store_add_pem( fd_x509_ca_store_t * store,
-                          char const *         pem,
-                          ulong                pem_sz,
-                          char const *         label ) {
-  char const * p   = pem;
-  char const * end = p + pem_sz;
+fd_x509_ca_store_load( fd_x509_ca_store_t * store,
+                       char const *         pem_path ) {
+  store->cnt = 0;
+
+  int fd = open( pem_path, O_RDONLY|O_CLOEXEC );
+  if( FD_UNLIKELY( fd<0 ) ) return -1;
+
+  struct stat st;
+  if( FD_UNLIKELY( fstat( fd, &st )<0 ) ) { close( fd ); return -1; }
+  ulong file_sz = (ulong)st.st_size;
+  if( FD_UNLIKELY( !file_sz ) ) { close( fd ); return -1; }
+  if( FD_UNLIKELY( file_sz>CA_BUNDLE_SZ_MAX ) ) {
+    FD_LOG_WARNING(( "CA bundle %s is %lu bytes, larger than the %lu byte limit",
+                     pem_path, file_sz, CA_BUNDLE_SZ_MAX ));
+    close( fd ); return -1;
+  }
+
+  uchar * file_buf = malloc( file_sz );
+  if( FD_UNLIKELY( !file_buf ) ) { close( fd ); return -1; }
+
+  ulong read_sz;
+  int err = fd_io_read( fd, file_buf, file_sz, file_sz, &read_sz );
+  (void)close( fd );
+  if( FD_UNLIKELY( err ) ) {
+    FD_LOG_WARNING(( "read(%s) failed (%i-%s)", pem_path, err, fd_io_strerror( err ) ));
+    free( file_buf ); return -1;
+  }
+
+  char const * p   = (char const *)file_buf;
+  char const * end = p + file_sz;
   ulong loaded          = 0;
   ulong unsupported_key = 0;
 
@@ -99,13 +123,13 @@ fd_x509_ca_store_add_pem( fd_x509_ca_store_t * store,
              FD_X509_CA_NAME_CONSTRAINTS_MAX )                    reason = "name constraints too long";
     if( reason ) {
       FD_LOG_INFO(( "ignoring CA cert at %s offset %ld: %s",
-                    label, (long)(begin-pem), reason ));
+                    pem_path, (long)(begin-(char const *)file_buf), reason ));
       continue;
     }
 
     if( FD_UNLIKELY( store->cnt >= FD_X509_CA_STORE_MAX ) ) {
       FD_LOG_WARNING(( "CA bundle %s holds more than %lu trust anchors; the rest were dropped",
-                       label, FD_X509_CA_STORE_MAX ));
+                       pem_path, FD_X509_CA_STORE_MAX ));
       break;
     }
 
@@ -127,45 +151,13 @@ fd_x509_ca_store_add_pem( fd_x509_ca_store_t * store,
     loaded++;
   }
 
+  free( file_buf );
+
   if( unsupported_key )
     FD_LOG_INFO(( "ignored %lu CA certificates in %s with unsupported public key types",
-                  unsupported_key, label ));
+                  unsupported_key, pem_path ));
 
   return (long)loaded;
-}
-
-long
-fd_x509_ca_store_load( fd_x509_ca_store_t * store,
-                       char const *         pem_path ) {
-  store->cnt = 0;
-
-  int fd = open( pem_path, O_RDONLY|O_CLOEXEC );
-  if( FD_UNLIKELY( fd<0 ) ) return -1;
-
-  struct stat st;
-  if( FD_UNLIKELY( fstat( fd, &st )<0 ) ) { close( fd ); return -1; }
-  ulong file_sz = (ulong)st.st_size;
-  if( FD_UNLIKELY( !file_sz ) ) { close( fd ); return -1; }
-  if( FD_UNLIKELY( file_sz>CA_BUNDLE_SZ_MAX ) ) {
-    FD_LOG_WARNING(( "CA bundle %s is %lu bytes, larger than the %lu byte limit",
-                     pem_path, file_sz, CA_BUNDLE_SZ_MAX ));
-    close( fd ); return -1;
-  }
-
-  uchar * file_buf = malloc( file_sz );
-  if( FD_UNLIKELY( !file_buf ) ) { close( fd ); return -1; }
-
-  ulong read_sz;
-  int err = fd_io_read( fd, file_buf, file_sz, file_sz, &read_sz );
-  (void)close( fd );
-  if( FD_UNLIKELY( err ) ) {
-    FD_LOG_WARNING(( "read(%s) failed (%i-%s)", pem_path, err, fd_io_strerror( err ) ));
-    free( file_buf ); return -1;
-  }
-
-  long loaded = fd_x509_ca_store_add_pem( store, (char const *)file_buf, file_sz, pem_path );
-  free( file_buf );
-  return loaded;
 }
 
 long
