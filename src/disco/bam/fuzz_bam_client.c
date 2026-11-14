@@ -17,6 +17,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 char const fdctl_version_string[] = "fuzz";
 
@@ -31,9 +33,10 @@ char const fdctl_version_string[] = "fuzz";
 /* Simple BAM gRPC fuzzer.  The fuzzer drives ConfigResponse, SchedulerResponse,
    and AuthChallengeResponse decode paths while also exercising the runtime
    enable/disable control block, and decodes the heartbeats, leader states
-   and results the client sends back.  When the tile is considered healthy and
-   enabled, we assert that gossip publishes the TPU sockets learned from
-   the BamConfig protobuf. */
+   and results the client sends back.  Script inputs step the client
+   while advancing the clock (bam_fuzz_run_script).  When the tile is
+   considered healthy and enabled, we assert that gossip publishes the
+   TPU sockets learned from the BamConfig protobuf. */
 
 static fd_wksp_t * g_wksp;
 static long        bam_fuzz_now = BAM_FUZZ_NOW;
@@ -100,6 +103,9 @@ static struct {
   void *           key_resp_dcache_mem;
 
   uchar identity_pubkey[ 32 ]; /* Derived once from bam_fuzz_identity_private_key */
+
+  int sock_client; /* Client end of the socket a script step attached, or -1 */
+  int sock_peer;   /* Node end of that socket, or -1 */
 
   fd_bam_decoded_multi_batch_t decoded_multi_storage[1];
   fd_bam_tile_t tile_storage[1]; /* Backing storage for tile pointer */
@@ -231,6 +237,8 @@ bam_fuzz_env_init( int *    pargc,
   if( FD_LIKELY( initialized ) ) return;
 
   fd_memset( &bam_fuzz_ctx, 0, sizeof( bam_fuzz_ctx ) );
+  bam_fuzz_ctx.sock_client = -1;
+  bam_fuzz_ctx.sock_peer   = -1;
 
   fd_sha512_t _sha[1];
   fd_sha512_t * sha = fd_sha512_join( fd_sha512_new( _sha ) );
@@ -613,6 +621,10 @@ bam_fuzz_open_scheduler_stream( fd_bam_tile_t * ctx,
   }
 
   if( FD_LIKELY( ctx->bam_stream && !ctx->bam_stream_live ) ) {
+    /* The node answers with response headers, which disarm the header
+       deadline, as in fd_grpc_client */
+    ctx->bam_stream->hdrs_received       = 1;
+    ctx->bam_stream->has_header_deadline = 0;
     fd_bam_client_grpc_callbacks.rx_start( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   }
 }
@@ -648,6 +660,122 @@ bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
 
   /* Then the leader state and the results go out, one per step */
   for( ulong i=0UL; i<BAM_FUZZ_OUTBOUND_STEP_MAX && bam_fuzz_step_outbound( ctx, now ); i++ ) {}
+}
+
+/* bam_fuzz_close_sockets closes the socket a script step attached.  The
+   client closes its end itself when it resets. */
+static void
+bam_fuzz_close_sockets( fd_bam_tile_t const * ctx ) {
+  if( bam_fuzz_ctx.sock_client>=0 && ctx->tcp_sock==bam_fuzz_ctx.sock_client ) {
+    FD_TEST( !close( bam_fuzz_ctx.sock_client ) );
+  }
+  if( bam_fuzz_ctx.sock_peer>=0 ) FD_TEST( !close( bam_fuzz_ctx.sock_peer ) );
+  bam_fuzz_ctx.sock_client = -1;
+  bam_fuzz_ctx.sock_peer   = -1;
+}
+
+/* bam_fuzz_script_step runs fd_bam_client_step as the tile does, then
+   checks the deadline the tile would park until.  The harness has no
+   network: the mock connection gets a socket pair whose node end reads
+   and discards what the client sends, and a step that would dial is
+   skipped. */
+static void
+bam_fuzz_script_step( fd_bam_tile_t * ctx ) {
+  long now = fd_bam_now();
+  int  run = 1;
+  if( ctx->tcp_sock<0 ) {
+    if( ctx->tcp_sock_connected ) {
+      bam_fuzz_close_sockets( ctx );
+      int sv[ 2 ];
+      FD_TEST( !socketpair( AF_UNIX, SOCK_STREAM|SOCK_NONBLOCK|SOCK_CLOEXEC, 0, sv ) );
+      bam_fuzz_ctx.sock_client = ctx->tcp_sock = sv[ 0 ];
+      bam_fuzz_ctx.sock_peer   = sv[ 1 ];
+      ctx->is_ssl = 0; /* cleartext HTTP/2, there is no TLS session */
+    } else {
+      run = fd_bam_tile_should_stall( ctx, now ); /* else it may dial */
+    }
+  }
+
+  if( run ) {
+    int charge_busy = 0;
+    fd_bam_client_step( ctx, &charge_busy );
+  }
+  if( bam_fuzz_ctx.sock_peer>=0 ) {
+    uchar buf[ 4096 ];
+    while( recv( bam_fuzz_ctx.sock_peer, buf, sizeof(buf), MSG_DONTWAIT )>0 ) {}
+  }
+
+  /* The tile parks until this deadline (LONG_MAX if there is nothing
+     to wait for), so it cannot be in the past */
+  FD_TEST( fd_bam_client_next_deadline( ctx, now )>=now );
+}
+
+/* bam_fuzz_script_leader stages a leader state from pack, as
+   bam_after_frag does.  slot 255 is no leader slot, end_ms 0 an unknown
+   slot end. */
+static void
+bam_fuzz_script_leader( fd_bam_tile_t * ctx,
+                        uchar           slot,
+                        uchar           end_ms ) {
+  fd_bam_leader_state_t state = {
+    .slot        = slot==UCHAR_MAX ? ULONG_MAX : (ulong)slot,
+    .slot_end_ns = end_ms ? fd_bam_now() + (long)end_ms*(long)1e6 : 0L,
+  };
+  ulong prev_slot = ctx->bam_leader_state.slot;
+  fd_bam_stage_leader_state( ctx, &state );
+  if( prev_slot!=state.slot &&
+      ctx->bam_stream &&
+      ctx->bam_stream_live &&
+      fd_bam_send_leader_state( ctx, &ctx->bam_leader_state ) ) {
+    ctx->bam_leader_pending = 0U;
+  }
+}
+
+/* bam_fuzz_run_script runs the payload of a script input (msg_kind 3
+   with bit5 set) as ops that drive the client over time:
+
+     'c' <ms:u16>              advance the clock
+     's'                       step the client (bam_fuzz_script_step)
+     'l' <slot:u8> <end_ms:u8> stage a leader state (bam_fuzz_script_leader)
+     'r' <len:u16> <len bytes> receive a SchedulerResponse on the stream
+
+   Integers are little endian.  Other bytes are no-ops, and an op cut
+   short by the end of the input is dropped. */
+static void
+bam_fuzz_run_script( fd_bam_tile_t * ctx,
+                     uchar const *   p,
+                     ulong           sz ) {
+  for( ulong off=0UL; off<sz; ) {
+    uchar op  = p[ off++ ];
+    ulong rem = sz-off;
+    switch( op ) {
+    case 'c':
+      if( rem<2UL ) return;
+      bam_fuzz_now += (long)fd_ushort_load_2( p+off )*(long)1e6;
+      off += 2UL;
+      break;
+    case 's':
+      bam_fuzz_script_step( ctx );
+      break;
+    case 'l':
+      if( rem<2UL ) return;
+      bam_fuzz_script_leader( ctx, p[ off ], p[ off+1UL ] );
+      off += 2UL;
+      break;
+    case 'r': {
+      if( rem<2UL ) return;
+      ulong len = fd_ulong_min( (ulong)fd_ushort_load_2( p+off ), rem-2UL );
+      off += 2UL;
+      if( ctx->bam_stream && ctx->bam_stream_live ) {
+        fd_bam_client_grpc_callbacks.rx_msg( ctx, p+off, len, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+      }
+      off += len;
+      break;
+    }
+    default:
+      break;
+    }
+  }
 }
 
 /* Synthesize an AuthChallengeResponse payload. selector drives length and
@@ -733,6 +861,7 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
 static void
 bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
+  bam_fuzz_close_sockets( ctx );
   fd_bam_tile_ctx_defaults( ctx );
   bam_fuzz_reset_reusable_storage();
   ctx->decoded_multi = bam_fuzz_ctx.decoded_multi_storage;
@@ -1004,7 +1133,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   uchar apply_ctrl   = (uchar)( ( selector>>2 ) & 1U );   /* bit2: drive runtime control */
   uchar enable_ok    = (uchar)( ( selector>>3 ) & 1U );   /* bit3: desired enable state */
   uchar stream_ok    = (uchar)( ( selector>>4 ) & 1U );   /* bit4: open scheduler stream */
-  uchar drive_end    = (uchar)( ( selector>>5 ) & 1U );   /* bit5: drive rx_end */
+  uchar drive_end    = (uchar)( ( selector>>5 ) & 1U );   /* bit5: drive rx_end, or run a script with kind 3 */
   uchar drive_to     = (uchar)( ( selector>>6 ) & 1U );   /* bit6: drive timeout */
   uchar structured   = (uchar)( ( selector>>7 ) & 1U );   /* bit7: build structured auth */
   uchar status_selector = size>1 ? data[1] : (uchar)( selector ^ 0x5a ); /* Second byte chooses status; fallback mixes bits for small inputs */
@@ -1109,6 +1238,8 @@ LLVMFuzzerTestOneInput( uchar const * data,
       bam_fuzz_assert_auth_cleared( ctx );
     }
   }
+
+  if( msg_kind==3U && drive_end ) bam_fuzz_run_script( ctx, payload, payload_sz );
 
   bam_fuzz_exercise_outbound( ctx, data, size );
   if( msg_kind==0U && stream_ok && ctx->enabled &&
