@@ -62,6 +62,17 @@ typedef struct { bam_fuzz_range_t out[ BAM_FUZZ_OUT_MAX ]; } bam_fuzz_res_t;
 #define BAM_FUZZ_PACK_OUT_BAM_RESULT (3UL)
 #define BAM_FUZZ_EXECLE_OUT_MOTOR    (0UL)
 #define BAM_FUZZ_EXECLE_OUT_MOTOR_BAM (1UL) /* results motor forwards, see bam_fuzz_execle_frag */
+#define BAM_FUZZ_EXECLE_OUT_PACK     (2UL) /* CU rebates, with use_consumed_cus */
+
+/* The [tiles.pack] options an input picks.  Pack schedules with the
+   perf or the balanced strategy.  With use_consumed_cus,
+   execle rebates the CUs its microblocks did not use and pack credits
+   them back to the block. */
+
+typedef struct {
+  int balanced;
+  int use_consumed_cus;
+} bam_fuzz_pack_cfg_t;
 
 /* bam_fuzz_link_new creates an mcache and a compact dcache for depth
    frags of up to mtu bytes in wksp. */
@@ -161,9 +172,14 @@ bam_fuzz_verify_t * bam_fuzz_verify_new( fd_wksp_t * wksp, bam_fuzz_link_t const
 bam_fuzz_dedup_t *  bam_fuzz_dedup_new ( fd_wksp_t * wksp, bam_fuzz_link_t const * in, ulong in_cnt, bam_fuzz_link_t out[ BAM_FUZZ_OUT_MAX ] );
 bam_fuzz_resolv_t * bam_fuzz_resolv_new( fd_wksp_t * wksp, bam_fuzz_link_t const * in, bam_fuzz_link_t out[ BAM_FUZZ_OUT_MAX ] );
 bam_fuzz_pack_t *   bam_fuzz_pack_new  ( fd_wksp_t * wksp, bam_fuzz_link_t const * in, bam_fuzz_link_t out[ BAM_FUZZ_OUT_MAX ],
-                                         ulong ** execle_busy_fseq );
+                                         ulong ** execle_busy_fseq, bam_fuzz_pack_cfg_t const * cfg );
 bam_fuzz_execle_t * bam_fuzz_execle_new( fd_wksp_t * wksp, bam_fuzz_link_t const * in, bam_fuzz_link_t out[ BAM_FUZZ_OUT_MAX ],
-                                         ulong * busy_fseq );
+                                         ulong * busy_fseq, bam_fuzz_pack_cfg_t const * cfg );
+
+/* bam_fuzz_pack_join_rebates makes pack consume the execle rebate link
+   in, with use_consumed_cus. */
+
+void bam_fuzz_pack_join_rebates( bam_fuzz_pack_t * h, bam_fuzz_link_t const * in );
 
 void bam_fuzz_verify_delete( bam_fuzz_verify_t * h );
 void bam_fuzz_dedup_delete ( bam_fuzz_dedup_t *  h );
@@ -182,9 +198,16 @@ bam_fuzz_res_t bam_fuzz_dedup_frag ( bam_fuzz_dedup_t *  h, ulong in_idx, fd_fra
 bam_fuzz_res_t bam_fuzz_resolv_frag( bam_fuzz_resolv_t * h, fd_frag_meta_t const * meta, ulong seq );
 bam_fuzz_res_t bam_fuzz_pack_frag  ( bam_fuzz_pack_t *   h, fd_frag_meta_t const * meta, ulong seq, long now_ns );
 bam_fuzz_res_t bam_fuzz_execle_frag( bam_fuzz_execle_t * h, fd_frag_meta_t const * meta, ulong seq );
+bam_fuzz_res_t bam_fuzz_pack_rebate_frag( bam_fuzz_pack_t * h, fd_frag_meta_t const * meta, ulong seq, long now_ns );
 
 bam_fuzz_res_t bam_fuzz_resolv_credit( bam_fuzz_resolv_t * h );
 bam_fuzz_res_t bam_fuzz_pack_credit  ( bam_fuzz_pack_t *   h, long now_ns );
+
+/* bam_fuzz_execle_credit runs execle's housekeeping loop until it has
+   published the rebates of every microblock it executed, as its idle
+   stem loop does between microblocks. */
+
+bam_fuzz_res_t bam_fuzz_execle_credit( bam_fuzz_execle_t * h );
 
 /* Slot transitions: execle builds (or reuses) a bank for slot and
    returns it, then resolv and pack follow it.  slot==ULONG_MAX ends

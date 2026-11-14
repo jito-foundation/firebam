@@ -57,10 +57,11 @@ bam_fuzz_execle_out( bam_fuzz_execle_t * h,
 }
 
 bam_fuzz_execle_t *
-bam_fuzz_execle_new( fd_wksp_t *             wksp,
-                     bam_fuzz_link_t const * in,
-                     bam_fuzz_link_t         out[ BAM_FUZZ_OUT_MAX ],
-                     ulong *                 busy_fseq ) {
+bam_fuzz_execle_new( fd_wksp_t *                 wksp,
+                     bam_fuzz_link_t const *     in,
+                     bam_fuzz_link_t             out[ BAM_FUZZ_OUT_MAX ],
+                     ulong *                     busy_fseq,
+                     bam_fuzz_pack_cfg_t const * cfg ) {
   bam_fuzz_execle_t * h = fd_wksp_alloc_laddr( wksp, alignof(bam_fuzz_execle_t), sizeof(bam_fuzz_execle_t), 1UL );
   FD_TEST( h );
   fd_memset( h, 0, sizeof(*h) );
@@ -106,6 +107,8 @@ bam_fuzz_execle_new( fd_wksp_t *             wksp,
   h->mini = fd_svm_mini_create( wksp, limits );
   FD_TEST( h->mini );
 
+  /* The standalone harness has no replay tile to gate startup on. */
+  ctx->startup_gate->started = 1;
   ctx->busy_fseq        = busy_fseq;
   ctx->pack_in_mem      = in->mem;
   ctx->pack_in_chunk0   = in->chunk0;
@@ -120,8 +123,11 @@ bam_fuzz_execle_new( fd_wksp_t *             wksp,
   }
 
   *ctx->out_poh  = bam_fuzz_execle_out( h, BAM_FUZZ_EXECLE_OUT_MOTOR, wksp, MAX_MICROBLOCK_SZ );
-  *ctx->out_pack = (fd_execle_out_t){ .idx = ULONG_MAX };
   h->motor_bam_chunk = bam_fuzz_execle_out( h, BAM_FUZZ_EXECLE_OUT_MOTOR_BAM, wksp, sizeof(fd_bam_bundle_result_t) ).chunk0;
+  /* As the topology links execle to pack only with use_consumed_cus */
+  *ctx->out_pack = cfg->use_consumed_cus ? bam_fuzz_execle_out( h, BAM_FUZZ_EXECLE_OUT_PACK, wksp, FD_PACK_REBATE_MAX_SZ )
+                                         : (fd_execle_out_t){ .idx = ULONG_MAX };
+  ctx->enable_rebates = ctx->out_pack->idx!=ULONG_MAX;
 
   bam_fuzz_execle_runtime_bind( h );
   fd_memcpy( out, h->outs.link, sizeof(h->outs.link) );
@@ -261,6 +267,20 @@ bam_fuzz_execle_seed_microblock( bam_fuzz_execle_t *    h,
   fd_txn_e_t const * txne = (fd_txn_e_t const *)fd_chunk_to_laddr_const( h->ctx->pack_in_mem, meta->chunk );
   ulong txn_cnt = (meta->sz-sizeof(fd_microblock_execle_trailer_t))/sizeof(fd_txn_e_t);
   for( ulong i=0UL; i<txn_cnt; i++ ) bam_fuzz_execle_seed_txn( h, &txne[ i ] );
+}
+
+bam_fuzz_res_t
+bam_fuzz_execle_credit( bam_fuzz_execle_t * h ) {
+  bam_fuzz_res_t res = bam_fuzz_outs_begin( &h->outs );
+  /* A batch waits REBATE_BATCH_IDLE_LOOPS idle loops, then drains one
+     frag per loop */
+  for( ulong i=0UL; i<REBATE_BATCH_IDLE_LOOPS+FD_PACK_REBATE_SUM_CAPACITY+2UL && h->ctx->rebate_microblock_cnt; i++ ) {
+    int opt_poll_in = 1;
+    int charge_busy = 0;
+    after_credit( h->ctx, h->outs.stem, &opt_poll_in, &charge_busy );
+  }
+  FD_TEST( !h->ctx->rebate_microblock_cnt );
+  return bam_fuzz_outs_end( &h->outs, res );
 }
 
 bam_fuzz_res_t

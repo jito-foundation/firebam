@@ -48,13 +48,20 @@ typedef enum {
   BAM_EVT_DISCONNECT           = 7,
   BAM_EVT_RECONNECT            = 8,
   BAM_EVT_RESULT_BURST         = 9,
-  BAM_EVT_DRAIN_QUEUE          = 10
+  BAM_EVT_DRAIN_QUEUE          = 10,
+  BAM_EVT_PACK_CONFIG          = 11
 } bam_evt_kind_t;
 
 /* Corpus records are fixed 4-byte events: kind, a, b, c.  The kind byte is a
-   literal bam_evt_kind_t; invalid kinds are ignored instead of remapped. */
+   literal bam_evt_kind_t; invalid kinds are ignored instead of remapped.
 
-#define BAM_EVT_KIND_CNT 11U
+   BAM_EVT_PACK_CONFIG sets pack's options for the whole input, as the
+   config file does for a run, wherever it appears: the last one wins.
+   Bit 0 of a selects the perf strategy over balanced, bit 1 turns off
+   use_consumed_cus.  Without one, pack runs perf without
+   use_consumed_cus, as the corpus seeds were written for. */
+
+#define BAM_EVT_KIND_CNT 12U
 #define BAM_FUZZ_MAX_EVENTS 128UL
 #define BAM_FUZZ_MAX_BATCHES FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST
 #define BAM_FUZZ_PB_BUF_SZ  (64UL*1024UL)
@@ -162,6 +169,7 @@ typedef struct {
   bam_fuzz_resolv_t * resolv;
   bam_fuzz_pack_t *   pack;
   bam_fuzz_execle_t * execle;
+  bam_fuzz_pack_cfg_t pack_cfg[1];
   bam_fuzz_link_t     verify_out[ BAM_FUZZ_VERIFY_CNT ][ BAM_FUZZ_OUT_MAX ];
   bam_fuzz_link_t     dedup_out [ BAM_FUZZ_OUT_MAX ];
   bam_fuzz_link_t     resolv_out[ BAM_FUZZ_OUT_MAX ];
@@ -477,6 +485,16 @@ bam_fuzz_ingest_pack_outputs( bam_fuzz_state_t *     f,
     f->execle_output_cnt += motor.hi-motor.lo;
     for( ulong result_seq=results.lo; result_seq<results.hi; result_seq++ ) {
       bam_fuzz_ingest_result_link( f, state->motor_bam_in_idx, &f->execle_out[ BAM_FUZZ_EXECLE_OUT_MOTOR_BAM ], result_seq );
+    }
+
+    if( FD_UNLIKELY( f->pack_cfg->use_consumed_cus ) ) {
+      bam_fuzz_range_t rebates = bam_fuzz_execle_credit( f->execle ).out[ BAM_FUZZ_EXECLE_OUT_PACK ];
+      for( ulong rebate_seq=rebates.lo; rebate_seq<rebates.hi; rebate_seq++ ) {
+        fd_frag_meta_t const * rebate = bam_fuzz_link_frag( &f->execle_out[ BAM_FUZZ_EXECLE_OUT_PACK ], rebate_seq,
+                                                            FD_PACK_REBATE_MIN_SZ, FD_PACK_REBATE_MAX_SZ );
+        bam_fuzz_res_t pack_res = bam_fuzz_pack_rebate_frag( f->pack, rebate, rebate_seq, g_bam_fuzz_now );
+        bam_fuzz_ingest_pack_outputs( f, &pack_res );
+      }
     }
   }
 }
@@ -1137,6 +1155,8 @@ bam_fuzz_apply_event( bam_fuzz_state_t * f,
     case BAM_EVT_RESULT_BURST:
       bam_fuzz_deliver_result_burst( f, a, b, c );
       break;
+    case BAM_EVT_PACK_CONFIG: /* applied before the first event */
+      break;
     case BAM_EVT_DRAIN_QUEUE:
       bam_fuzz_drain_pending_txns( f, 1UL + (ulong)( b & 7U ) );
       bam_fuzz_drain_result_queue( f, 1UL + (ulong)( a & 15U ) );
@@ -1214,10 +1234,19 @@ LLVMFuzzerTestOneInput( uchar const * data,
     dedup_in[ v ] = f->verify_out[ v ][ 0 ];
   }
   f->dedup_lag = 1UL + (ulong)( (seed>>5) % (2UL*BAM_FUZZ_VERIFY_CNT) );
+
+  *f->pack_cfg = (bam_fuzz_pack_cfg_t){ .balanced = 0, .use_consumed_cus = 0 };
+  for( ulong i=0UL, event_cnt=0UL; i+4UL<=size && event_cnt<BAM_FUZZ_MAX_EVENTS; i+=4UL, event_cnt++ ) {
+    if( FD_LIKELY( data[ i ]!=BAM_EVT_PACK_CONFIG ) ) continue;
+    uchar a = data[ i+1UL ];
+    *f->pack_cfg = (bam_fuzz_pack_cfg_t){ .balanced = !( a & 1U ), .use_consumed_cus = !( a & 2U ) };
+  }
+
   f->dedup  = bam_fuzz_dedup_new ( g_bam_fuzz_wksp, dedup_in, BAM_FUZZ_VERIFY_CNT, f->dedup_out );
   f->resolv = bam_fuzz_resolv_new( g_bam_fuzz_wksp, &f->dedup_out[0], f->resolv_out );
-  f->pack   = bam_fuzz_pack_new  ( g_bam_fuzz_wksp, &f->resolv_out[0], f->pack_out, &f->pack_execle_busy_fseq );
-  f->execle = bam_fuzz_execle_new( g_bam_fuzz_wksp, &f->pack_out[ BAM_FUZZ_PACK_OUT_EXECLE ], f->execle_out, f->pack_execle_busy_fseq );
+  f->pack   = bam_fuzz_pack_new  ( g_bam_fuzz_wksp, &f->resolv_out[0], f->pack_out, &f->pack_execle_busy_fseq, f->pack_cfg );
+  f->execle = bam_fuzz_execle_new( g_bam_fuzz_wksp, &f->pack_out[ BAM_FUZZ_PACK_OUT_EXECLE ], f->execle_out, f->pack_execle_busy_fseq, f->pack_cfg );
+  if( FD_UNLIKELY( f->pack_cfg->use_consumed_cus ) ) bam_fuzz_pack_join_rebates( f->pack, &f->execle_out[ BAM_FUZZ_EXECLE_OUT_PACK ] );
 
   bam_fuzz_link_t const * motor_bam  = &f->execle_out[ BAM_FUZZ_EXECLE_OUT_MOTOR_BAM ];
   bam_fuzz_link_t const * bam_leader = &f->pack_out  [ BAM_FUZZ_PACK_OUT_BAM_LEADER   ];

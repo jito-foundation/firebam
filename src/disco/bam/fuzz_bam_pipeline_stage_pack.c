@@ -18,6 +18,7 @@ static long bam_fuzz_pack_now_ns;
 
 #define BAM_FUZZ_PACK_IN_RESOLV_IDX   (0UL)
 #define BAM_FUZZ_PACK_IN_REPLAY_IDX   (1UL)
+#define BAM_FUZZ_PACK_IN_EXECLE_IDX   (2UL)
 #define BAM_FUZZ_PACK_MCACHE_DEPTH    (256UL)
 #define BAM_FUZZ_PACK_PENDING_TXN_MAX (64UL)
 #define BAM_FUZZ_PACK_EXECLE_CNT      (1UL)
@@ -51,10 +52,11 @@ bam_fuzz_pack_out( bam_fuzz_pack_t * h,
 }
 
 bam_fuzz_pack_t *
-bam_fuzz_pack_new( fd_wksp_t *             wksp,
-                   bam_fuzz_link_t const * in,
-                   bam_fuzz_link_t         out[ BAM_FUZZ_OUT_MAX ],
-                   ulong **                execle_busy_fseq ) {
+bam_fuzz_pack_new( fd_wksp_t *                 wksp,
+                   bam_fuzz_link_t const *     in,
+                   bam_fuzz_link_t             out[ BAM_FUZZ_OUT_MAX ],
+                   ulong **                    execle_busy_fseq,
+                   bam_fuzz_pack_cfg_t const * cfg ) {
   bam_fuzz_pack_t * h = fd_wksp_alloc_laddr( wksp, alignof(bam_fuzz_pack_t), sizeof(bam_fuzz_pack_t), 1UL );
   FD_TEST( h );
   fd_memset( h, 0, sizeof(*h) );
@@ -120,9 +122,11 @@ bam_fuzz_pack_new( fd_wksp_t *             wksp,
   ctx->in     [ BAM_FUZZ_PACK_IN_REPLAY_IDX ] = (fd_pack_in_ctx_t){ .mem = h->leader_in->mem, .chunk0 = h->leader_in->chunk0,
                                                                     .wmark = h->leader_in->wmark };
 
-  /* Fields not set here are zero-initialized. */
-  ctx->strategy                           = FD_PACK_STRATEGY_PERF;
-  ctx->use_consumed_cus                   = 0;
+  /* Fields not set here are zero-initialized.  The auction strategy is
+     left out: its auctions run on the host tick counter, so the same
+     input would schedule differently from run to run. */
+  ctx->strategy                           = cfg->balanced ? FD_PACK_STRATEGY_BALANCED : FD_PACK_STRATEGY_PERF;
+  ctx->use_consumed_cus                   = !!cfg->use_consumed_cus;
   ctx->max_pending_transactions           = BAM_FUZZ_PACK_PENDING_TXN_MAX;
   ctx->leader_slot                        = ULONG_MAX;
   ctx->leader_bank_idx                    = ULONG_MAX;
@@ -182,8 +186,8 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t *             h,
       bam_fuzz_pack_now_ns = h->ctx->slot_end_ns;
       fd_clock_tile_set( h->ctx->clock, h->ctx->slot_end_ns );
       ulong max_iter = (ulong)fd_long_max( h->ctx->skip_cnt, 0L ) + 1UL;
-      /* With use_consumed_cus off, skip_cnt is one microblock's
-         schedule_cnt, so a larger value means runaway state. */
+      /* skip_cnt is one microblock's schedule_cnt, or execle_cnt+1
+         with use_consumed_cus, so a larger value means runaway state. */
       FD_TEST( max_iter<=MAX_TXN_PER_MICROBLOCK+1UL );
       for( ulong i=0UL; i<max_iter && h->ctx->leader_slot!=ULONG_MAX; i++ ) {
         int opt_poll_in = 1;
@@ -226,6 +230,27 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t *             h,
   if( !h->ctx->crank->enabled ) fd_pack_set_initializer_bundles_ready( h->ctx->pack );
   h->leader_seq++;
   h->leader_in_chunk = fd_dcache_compact_next( h->leader_in_chunk, sizeof(fd_became_leader_t), h->leader_in->chunk0, h->leader_in->wmark );
+  return bam_fuzz_outs_end( &h->outs, res );
+}
+
+void
+bam_fuzz_pack_join_rebates( bam_fuzz_pack_t *       h,
+                            bam_fuzz_link_t const * in ) {
+  FD_TEST( h->ctx->use_consumed_cus );
+  h->ctx->in_kind[ BAM_FUZZ_PACK_IN_EXECLE_IDX ] = IN_KIND_EXECLE;
+  h->ctx->in     [ BAM_FUZZ_PACK_IN_EXECLE_IDX ] = (fd_pack_in_ctx_t){ .mem = in->mem, .chunk0 = in->chunk0, .wmark = in->wmark };
+}
+
+bam_fuzz_res_t
+bam_fuzz_pack_rebate_frag( bam_fuzz_pack_t *      h,
+                           fd_frag_meta_t const * meta,
+                           ulong                  seq,
+                           long                   now_ns ) {
+  bam_fuzz_res_t res = bam_fuzz_outs_begin( &h->outs );
+  bam_fuzz_pack_now_ns = now_ns;
+  fd_clock_tile_set( h->ctx->clock, now_ns );
+  during_frag( h->ctx, BAM_FUZZ_PACK_IN_EXECLE_IDX, seq, meta->sig, meta->chunk, meta->sz, meta->ctl );
+  after_frag( h->ctx, BAM_FUZZ_PACK_IN_EXECLE_IDX, seq, meta->sig, meta->sz, meta->tsorig, meta->tspub, h->outs.stem );
   return bam_fuzz_outs_end( &h->outs, res );
 }
 
