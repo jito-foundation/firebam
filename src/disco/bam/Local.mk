@@ -58,6 +58,8 @@ $(call make-unit-test,test_keyguard_bam,test_keyguard_bam,fd_disco fd_flamenco f
 $(call run-unit-test,test_keyguard_bam)
 $(call make-unit-test,test_config_parse_bam,test_config_parse_bam,fd_firedancer fdctl_shared fdctl_platform fd_disco fd_waltz fd_ballet fd_tango fd_util)
 $(call run-unit-test,test_config_parse_bam)
+$(call make-unit-test,test_firedancer_topology_bam,test_topology_bam,fd_firedancer fdctl_shared fdctl_platform fd_discof fd_disco fd_choreo fd_flamenco fd_quic fd_tls fd_reedsol fd_waltz fd_tango fd_ballet fd_util)
+$(call run-unit-test,test_firedancer_topology_bam)
 endif
 endif
 endif
