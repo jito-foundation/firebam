@@ -208,7 +208,7 @@ explicit manifest and run each profile sequentially. The budgets below
 cover the workspace; static and heap allocations add to process memory.
 
 ```bash
-make -j4 test_bam_tile test_bam_replay_tile
+make -j4 test_bam_tile test_replay_tile_bam
 (
   set -e
   bam_test_dir="$(make --silent objdir)/unit-test"
@@ -219,7 +219,7 @@ make -j4 test_bam_tile test_bam_replay_tile
   contrib/test/run_unit_tests.sh --tests "$bam_test_manifest" \
     --page-sz normal --job-mem 67108864 -j 1
 
-  printf '%s\n' "$bam_test_dir/test_bam_replay_tile" > "$bam_test_manifest"
+  printf '%s\n' "$bam_test_dir/test_replay_tile_bam" > "$bam_test_manifest"
   contrib/test/run_unit_tests.sh --tests "$bam_test_manifest" \
     --page-sz normal --job-mem 268435456 -j 1
 )

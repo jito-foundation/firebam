@@ -1,4 +1,4 @@
-/* test_bam_event_tile checks that the event tile skips BAM transactions
+/* test_event_tile_bam checks that the event tile skips BAM transactions
    on dedup_resolv (development.event.report_transactions) instead of
    aborting on their source_tpu, while other transactions, including
    block engine bundles, are still reported. */

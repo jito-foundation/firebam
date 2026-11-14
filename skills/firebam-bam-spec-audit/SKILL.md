@@ -81,7 +81,7 @@ Classify tests by the layer they exercise:
 - `src/disco/bam/test_pack_bam.c`: fd_pack scheduling semantics. BAM `seq_id` ordering tests are spec-relevant when they exercise BAM conflict order or bypass behavior. Generic bundle or initializer-pack tests are pack regressions, not BAM spec proof.
 - `src/disco/bam/test_pack_tile_bam.c`: pack tile BAM helper and result-mapping coverage. Use this for stale `max_schedule_slot`, insert rejection mapping, tracking rejection mapping, and pack-to-BAM result publication paths.
 - `src/disco/bam/test_bam_tile.c`: BAM tile integration, decode, ingress, and feedback-link contracts.
-- `src/disco/bam/test_bam_verify_tile.c`: verify behavior for BAM parse/signature failures.
+- `src/disco/bam/test_verify_tile_bam.c`: verify behavior for BAM parse/signature failures.
 - `src/disco/bam/test_dedup_tile_bam.c`: dedup behavior across BAM, bundle, and ordinary TPU sources.
 - `src/disco/bam/fuzz_bam_pipeline_stateful.c`: stateful real-path pipeline coverage through synthetic links. It uses a shadow result FIFO, not a separate scheduler model oracle.
 

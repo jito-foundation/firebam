@@ -3991,7 +3991,7 @@ test_pack_tile_bam_disabled_zero_capacity( void ) {
 
 /* Under BAM, pack has only upstream's inputs: execution feedback comes
    from replay, as without BAM.  A malloc-backed topology, as in
-   test_bam_verify_tile, maps them with unprivileged_init (which would
+   test_verify_tile_bam, maps them with unprivileged_init (which would
    FD_LOG_ERR on any other input), and an executed signature sent on
    the replay in reaches pack through the mapped in. */
 

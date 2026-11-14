@@ -5,7 +5,7 @@
    registered here.  The upstream helpers that only read execle_poh
    assume no BAM result is attached, so cases with one use the
    test_*bam* versions.
-   test_bam_latency_bench.c includes this file with main already
+   bench_bam_latency.c includes this file with main already
    renamed, hence push/pop_macro. */
 
 #pragma push_macro("main")

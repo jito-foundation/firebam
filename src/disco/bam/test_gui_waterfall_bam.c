@@ -1,4 +1,4 @@
-/* test_bam_gui_waterfall checks that BAM-published transactions reach
+/* test_gui_waterfall_bam checks that BAM-published transactions reach
    the GUI waterfall, the verify tile stats and the live waterfall JSON.
    The snapshot helpers are static, so this includes fd_gui.c.  The GUI
    is built without its history store, so history appends are mocked. */
