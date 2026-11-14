@@ -35,8 +35,6 @@ $(call make-unit-test,test_motor_tile_bam,test_motor_tile_bam,fd_discof fd_disco
 $(call run-unit-test,test_motor_tile_bam)
 $(call make-unit-test,test_bam_replay_tile,test_bam_replay_tile,fd_discof fd_choreo fd_disco fd_flamenco fd_vinyl fd_tango fd_ballet fd_util_extra fd_util)
 $(call run-unit-test,test_bam_replay_tile)
-$(call make-unit-test,test_bam_gossip_glue,test_bam_gossip_glue,fd_discof fd_choreo fd_disco fd_flamenco fd_waltz fd_tango fd_ballet fd_util)
-$(call run-unit-test,test_bam_gossip_glue)
 $(call make-unit-test,test_shred_tile_bam,test_shred_tile_bam,fd_disco fd_flamenco fd_reedsol fd_waltz fd_tango fd_ballet fd_util)
 $(call run-unit-test,test_shred_tile_bam)
 $(call make-fuzz-test,fuzz_bam_pipeline_stateful,fuzz_bam_pipeline_stateful fuzz_bam_pipeline_stage_verify fuzz_bam_pipeline_stage_dedup fuzz_bam_pipeline_stage_resolv fuzz_bam_pipeline_stage_pack fuzz_bam_pipeline_stage_execle,fd_discof fd_disco fd_flamenco_test fd_waltz fd_tls fd_flamenco fd_funk fd_tango fd_ballet fd_util)

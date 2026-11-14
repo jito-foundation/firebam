@@ -5640,6 +5640,61 @@ test_bam_gossip_stale_contact_case( fd_wksp_t * wksp,
   test_bam_env_destroy( env );
 }
 
+/* The gossip tile's sign in, through its frag callbacks: a sign
+   response acknowledges a pending BAM contact update once the local
+   CRDS table holds our contact advertising it.  The cases above cover
+   the acknowledgement rules. */
+static void
+test_bam_gossip_tile_sign_in( fd_wksp_t * wksp ) {
+  static fd_gossip_tile_ctx_t ctx; /* too large for the stack */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  ulong sign_cnt = 0UL;
+  ulong signed_ack[1] = { 0UL };
+  long test_now;
+  void * gossip_mem = test_bam_gossip_ctx_init( &ctx, env, signed_ack, NULL, test_bam_gossip_sign_stub, &sign_cnt, &test_now );
+
+  uchar sign_frag[ 64 ];
+  ctx.in[ 0 ] = (fd_gossip_in_ctx_t){ .kind = IN_KIND_SIGN, .mem = (fd_wksp_t *)sign_frag, .mtu = sizeof(sign_frag) };
+
+  fd_bam_contact_update_t const update = {
+      .tpu               = test_bam_ip4_port( "10.0.0.1", 5000U ),
+      .tpu_fwd           = test_bam_ip4_port( "10.0.0.1", 5001U ),
+      .version_client_id = FD_GOSSIP_CONTACT_INFO_CLIENT_FIRE_BAM,
+  };
+  FD_TEST( fd_gossip_tile_apply_bam_contact( &ctx, &update, 4UL, fd_clock_tile_now( ctx.clock ), env->stem ) );
+  FD_TEST( ctx.bam_contact.ack_pending && ctx.bam_contact.ack_target==5UL );
+  FD_TEST( fd_fseq_query( ctx.bam_contact.signed_fseq )==0UL );
+  FD_TEST( sign_cnt && fd_gossip_sign_pend_cnt( ctx.gossip ) );
+
+  ulong sig_k = 0UL;
+  while( fd_gossip_sign_pend_cnt( ctx.gossip ) ) {
+    test_bam_gossip_fake_signature( sign_frag, ++sig_k );
+    FD_TEST( before_frag( &ctx, 0UL, 0UL, 0UL )==0 );
+    during_frag( &ctx, 0UL, 0UL, 0UL, 0UL, sizeof(sign_frag), 0UL );
+    after_frag( &ctx, 0UL, 0UL, 0UL, sizeof(sign_frag), 0UL, 0UL, env->stem );
+  }
+  fd_gossip_contact_info_t const * ci = fd_gossip_my_crds_contact_info( ctx.gossip );
+  FD_TEST( ci && ci->outset==ctx.my_contact_info->outset );
+  test_bam_check_ci_sock( ci, FD_GOSSIP_CONTACT_INFO_SOCKET_TPU,                update.tpu.addr,     5000U );
+  test_bam_check_ci_sock( ci, FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC,  update.tpu_fwd.addr, 5007U );
+  FD_TEST( ci->version.client==FD_GOSSIP_CONTACT_INFO_CLIENT_FIRE_BAM );
+  FD_TEST( fd_fseq_query( ctx.bam_contact.signed_fseq )==5UL );
+  FD_TEST( !ctx.bam_contact.ack_pending );
+
+  /* BAM contact updates wait out an identity switch like other inputs;
+     only sign responses pass while signing is halted. */
+  ctx.in[ 1 ].kind = IN_KIND_BAM_GOSSIP;
+  FD_TEST( ctx.my_contact_info->shred_version );
+  FD_TEST( before_frag( &ctx, 1UL, 0UL, 0UL )==0 );
+  ctx.is_halting_signing = 1;
+  FD_TEST( before_frag( &ctx, 1UL, 0UL, 0UL )==-1 );
+  FD_TEST( before_frag( &ctx, 0UL, 0UL, 0UL )==0 );
+
+  free( gossip_mem );
+  test_bam_env_destroy( env );
+}
+
 /* Efficient layout: an idle pack and bundle are parked and read bam_gen
    and bam_status only when woken.  BAM rings pack until it acknowledges
    a generation, and both on each override change. */
@@ -6697,6 +6752,7 @@ main( int     argc,
   /* Gossip advertisement */
   test_bam_gossip_tile_applies_contact_update( wksp );
   for( int tie=0; tie<2; tie++ ) test_bam_gossip_stale_contact_case( wksp, tie );
+  test_bam_gossip_tile_sign_in( wksp );
   test_bam_handoff_rings_parked_readers( wksp );
   test_bam_handoff_keeps_housekeeping_cadence( wksp );
   test_bam_activation_ignores_stale_gossip_ack_after_reenable( wksp );
