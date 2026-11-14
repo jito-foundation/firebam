@@ -759,16 +759,26 @@ fd_bam_registry_redirect_target( fd_bam_registry_t * reg,
   ulong n = strlen( loc );
   if( loc[0]=='/' && loc[1]!='/' ) return reg_set_path( reg, loc, n );
   fd_url_t url[1];
-  ushort   port = 0;
-  _Bool    ssl  = 0;
-  /* Parse quietly first: the failed fetch's warning names loc. */
-  if( !fd_url_parse_cstr( url, loc, n, NULL ) ||
-      fd_url_parse_endpoint( url, loc, n, &port, &ssl, "BAM registry redirect" ) ) return -1;
+  if( !fd_url_parse_cstr( url, loc, n, NULL ) ) return -1;
+  /* The port as fd_url_parse_endpoint reads it, but quietly: the
+     failed fetch's rate-limited warning names loc. */
+  _Bool ssl  = url->scheme_len==8UL;
+  ulong port = ssl ? 443UL : 80UL;
+  if( url->port ) {
+    if( !url->port_len || url->port_len>5UL ) return -1;
+    port = 0UL;
+    for( ulong i=0UL; i<url->port_len; i++ ) {
+      uchar c = (uchar)url->port[ i ];
+      if( c<(uchar)'0' || c>(uchar)'9' ) return -1;
+      port = 10UL*port+(ulong)( c-(uchar)'0' );
+    }
+    if( !port || port>USHORT_MAX ) return -1;
+  }
   if( !url->host_len || url->host_len>=sizeof(reg->f_host) || reg_set_path( reg, url->tail, url->tail_len ) ) return -1;
   memcpy( reg->f_host, url->host, url->host_len );
   reg->f_host[ url->host_len ] = '\0';
   reg->f_host_len = (ushort)url->host_len;
-  reg->f_port     = port;
+  reg->f_port     = (ushort)port;
   reg->f_ssl      = (uchar)ssl;
   return 0;
 }

@@ -356,7 +356,16 @@ test_redirect( void ) {
   FD_TEST( fd_bam_registry_redirect_target( reg, "list" )==-1 );
   FD_TEST( fd_bam_registry_redirect_target( reg, "//d.example/n" )==-1 );
   FD_TEST( fd_bam_registry_redirect_target( reg, "ftp://d.example/" )==-1 );
-  FD_TEST( !strcmp( reg->f_host, "c.example" ) );
+  /* Nor a bad port, which must not log: the failed fetch's warning
+     already names the target. */
+  FD_TEST( fd_bam_registry_redirect_target( reg, "https://d.example:99999/n" )==-1 );
+  FD_TEST( fd_bam_registry_redirect_target( reg, "https://d.example:123456/n" )==-1 );
+  FD_TEST( fd_bam_registry_redirect_target( reg, "https://d.example:0/n" )==-1 );
+  FD_TEST( fd_bam_registry_redirect_target( reg, "https://d.example:/n" )==-1 );
+  FD_TEST( fd_bam_registry_redirect_target( reg, "https://d.example:8x/n" )==-1 );
+  FD_TEST( !strcmp( reg->f_host, "c.example" ) && reg->f_port==80 );
+  FD_TEST( !fd_bam_registry_redirect_target( reg, "http://d.example:65535/n" ) );
+  FD_TEST( !strcmp( reg->f_host, "d.example" ) && reg->f_port==65535 && !reg->f_ssl );
 }
 
 static ulong
