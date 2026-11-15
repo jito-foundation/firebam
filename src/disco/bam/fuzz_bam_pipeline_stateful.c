@@ -38,7 +38,21 @@ FD_IMPORT_BINARY( bam_fuzz_alut_txn, "src/ballet/txn/fixtures/transaction2.bin" 
    scheduler protobuf result encoding.  It has no model oracle.
    Scheduler transactions are real signature-valid fixture bytes,
    except for members an input poisons (see bam_fuzz_poison_t): a batch
-   only ever delivered with one must not commit. */
+   only ever delivered with one must not commit.
+
+   An input is a sequence of 4 byte events of which only the first
+   BAM_FUZZ_MAX_EVENTS count, so run it with -max_len=512:
+
+     make -j BUILDDIR=clang-fuzz-asan CC=clang EXTRAS="fuzz asan" fuzz_bam_pipeline_stateful
+     build/clang-fuzz-asan/fuzz-test/fuzz_bam_pipeline_stateful -max_len=512 corpus/fuzz_bam_pipeline_stateful
+
+   With EXTRAS="fuzz deepasan" (BUILDDIR=clang-fuzz-deepasan) ASan also
+   flags workspace memory that is not allocated, but an input takes
+   about 0.6 s instead of 30 ms: a workspace free poisons the whole
+   free region it merges into, gigabytes once svm-mini's account cache
+   is freed.  The workspace is demand-paged anonymous memory and needs
+   no huge pages.  --page-sz and --page-cnt pin pages instead, which
+   must hold its peak (see BAM_FUZZ_WKSP_FOOTPRINT). */
 
 typedef enum {
   BAM_EVT_SEND_BATCH           = 0,
@@ -76,6 +90,9 @@ typedef enum {
 #define BAM_FUZZ_MAX_EVENTS 128UL
 #define BAM_FUZZ_MAX_BATCHES FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST
 #define BAM_FUZZ_PB_BUF_SZ  (64UL*1024UL)
+
+/* Every input peaks at 5.34 GB of workspace, 4.9 GiB of it svm-mini's
+   (its account cache alone takes 4 GiB), and touches about 120 MB. */
 #define BAM_FUZZ_WKSP_FOOTPRINT (8UL<<30)
 
 /* Forcing a result drop fills the result FIFO, and every forced result
