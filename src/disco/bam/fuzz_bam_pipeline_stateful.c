@@ -50,9 +50,8 @@ FD_IMPORT_BINARY( bam_fuzz_alut_txn, "src/ballet/txn/fixtures/transaction2.bin" 
    flags workspace memory that is not allocated, but an input takes
    about 0.2 s instead of 30 ms: a workspace free poisons the whole
    free region it merges into, gigabytes once svm-mini's account cache
-   is freed, so execle is freed last.  The workspace is demand-paged anonymous memory and needs
-   no huge pages.  --page-sz and --page-cnt pin pages instead, which
-   must hold its peak (see BAM_FUZZ_WKSP_FOOTPRINT). */
+   is freed, so execle is freed last.  The workspace is demand-paged
+   anonymous memory and needs no huge pages. */
 
 typedef enum {
   BAM_EVT_SEND_BATCH           = 0,
@@ -1316,22 +1315,7 @@ LLVMFuzzerInitialize( int *    argc,
   fd_log_level_flush_set( 4 );
   fd_log_level_core_set( 4 ); /* fail fast on errors */
   fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
-
-  ulong cpu_idx = fd_tile_cpu_id( fd_tile_idx() );
-  if( cpu_idx >= fd_shmem_cpu_cnt() ) cpu_idx = 0UL;
-
-  char const * _page_sz = fd_env_strip_cmdline_cstr ( argc, argv, "--page-sz", NULL, NULL                         );
-  ulong        page_cnt = fd_env_strip_cmdline_ulong( argc, argv, "--page-cnt", NULL, 1048576UL                    );
-  ulong        numa_idx = fd_env_strip_cmdline_ulong( argc, argv, "--numa-idx", NULL, fd_shmem_numa_idx( cpu_idx ) );
-
-  g_bam_fuzz_wksp = _page_sz
-      ? fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ),
-                               page_cnt,
-                               fd_shmem_cpu_idx( numa_idx ),
-                               "bam-pipeline-fuzz",
-                               512UL )
-      : bam_fuzz_wksp_new_lazy( BAM_FUZZ_WKSP_FOOTPRINT );
-  FD_TEST( g_bam_fuzz_wksp );
+  g_bam_fuzz_wksp = bam_fuzz_wksp_new_lazy( BAM_FUZZ_WKSP_FOOTPRINT );
   return 0;
 }
 
