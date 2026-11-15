@@ -536,7 +536,10 @@ test_fetch_loopback( char const * host,
     cfd = -1;
     served++;
   }
-  FD_TEST( step_max<(long)50e6 );
+  /* A resolver that blocked would wait out its 1 s timeout (resolv.conf
+     above).  Logging inside a step can stall on the log file for
+     100+ ms under write load. */
+  FD_TEST( step_max<(long)500e6 );
   FD_LOG_INFO(( "fetch %s%s %s: %lu steps, %lu busy", host, path, waker ? "parked" : "polled", steps, busy_steps ));
   if( waker ) FD_TEST( busy_steps<=12UL && steps<=40UL );
   else        FD_TEST( busy_steps==steps );
@@ -717,6 +720,9 @@ int
 main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
+  /* test_fetch_loopback bounds how long a registry step takes.  Do not
+     also fsync the log file on every warning a step logs. */
+  fd_log_level_flush_set( 4 );
   fd_waker_install( 1UL );
   test_parse();
   test_http();
