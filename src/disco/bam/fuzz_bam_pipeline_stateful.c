@@ -48,9 +48,9 @@ FD_IMPORT_BINARY( bam_fuzz_alut_txn, "src/ballet/txn/fixtures/transaction2.bin" 
 
    With EXTRAS="fuzz deepasan" (BUILDDIR=clang-fuzz-deepasan) ASan also
    flags workspace memory that is not allocated, but an input takes
-   about 0.6 s instead of 30 ms: a workspace free poisons the whole
+   about 0.2 s instead of 30 ms: a workspace free poisons the whole
    free region it merges into, gigabytes once svm-mini's account cache
-   is freed.  The workspace is demand-paged anonymous memory and needs
+   is freed, so execle is freed last.  The workspace is demand-paged anonymous memory and needs
    no huge pages.  --page-sz and --page-cnt pin pages instead, which
    must hold its peak (see BAM_FUZZ_WKSP_FOOTPRINT). */
 
@@ -1419,11 +1419,14 @@ LLVMFuzzerTestOneInput( uchar const * data,
   bam_fuzz_drain_result_queue( f, ULONG_MAX );
   bam_fuzz_assert_invariants( f );
 
-  bam_fuzz_execle_delete( f->execle );
+  /* Execle goes last: freeing svm-mini's account cache leaves a free
+     region of gigabytes, which deepasan poisons whole on every later
+     free that merges into it. */
   bam_fuzz_pack_delete  ( f->pack   );
   bam_fuzz_resolv_delete( f->resolv );
   bam_fuzz_dedup_delete ( f->dedup  );
   for( ulong v=0UL; v<BAM_FUZZ_VERIFY_CNT; v++ ) bam_fuzz_verify_delete( f->verify[ v ] );
+  bam_fuzz_execle_delete( f->execle );
   test_bam_env_destroy( f->env );
 
   fd_wksp_usage_t usage;
