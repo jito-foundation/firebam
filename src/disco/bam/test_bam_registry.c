@@ -933,7 +933,7 @@ test_fetch_tls( char const * host,
 /* test_probe_tls probes one TLS node: it answers each sample, after
    delay_ms, answers none, or presents a certificate the store does not
    trust.  With waker set the tile parks whenever a step reports no
-   progress. */
+   progress, so a sample in flight waits for its reply or deadline. */
 
 static void
 test_probe_tls( int  mode,
@@ -1143,10 +1143,12 @@ main( int     argc,
   }
   test_fetch_tls( "127.0.0.1",   1, 0 ); /* the IP SAN, as probes check */
   test_fetch_tls( "other.hosts", 1, 0 ); /* a name the leaf lacks */
-  test_probe_tls( NODE_H2_ANSWER, 1, 0,  0L );
-  test_probe_tls( NODE_H2_ANSWER, 1, 0, 10L );
-  test_probe_tls( NODE_H2_SILENT, 1, 0,  0L );
-  test_probe_tls( NODE_H2_ANSWER, 0, 0,  0L );
+  for( int waker=0; waker<2; waker++ ) {
+    test_probe_tls( NODE_H2_ANSWER, 1, waker,  0L );
+    test_probe_tls( NODE_H2_ANSWER, 1, waker, 10L );
+    test_probe_tls( NODE_H2_SILENT, 1, waker,  0L );
+    test_probe_tls( NODE_H2_ANSWER, 0, waker,  0L );
+  }
   test_probe_round( 0 );
   test_probe_round( 1 );
   test_near_leader();

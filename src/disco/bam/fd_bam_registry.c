@@ -1369,9 +1369,9 @@ reg_mark( fd_bam_registry_t const * reg,
 }
 
 /* reg_wake returns when a fetch or probe that made no progress must
-   step again without a socket event: its next timer, or now while a
-   probe sample is in flight, so samples time the reply as on the
-   performance layout rather than the waker's wake-up. */
+   step again without a socket event: its next timer.  On the efficient
+   layout a probe sample's reply wakes the tile, so the sample includes
+   that wake-up, as jito's includes its async runtime's. */
 
 static long
 reg_wake( fd_bam_registry_t const * reg,
@@ -1387,11 +1387,15 @@ reg_wake( fd_bam_registry_t const * reg,
   for( ulong i=0UL; i<reg->slot_cnt; i++ ) {
     fd_bam_registry_slot_t const * s = &reg->slots[ i ];
     if( s->fd<0 ) continue;
-    if( s->inflight ) return now;
-    /* Connected with no call in flight: a call failed to start. */
-    if( s->io!=FD_BAM_REG_IO_CONNECT && fd_grpc_client_is_connected( s->grpc ) ) return now;
-    dl = fd_long_min( dl, fd_long_min( s->deadline, fd_grpc_client_next_deadline( s->grpc ) ) );
     if( fd_grpc_client_tls_rx_pending( s->grpc ) && !fd_grpc_client_tls_tx_pending( s->grpc ) ) return now;
+    if( s->io!=FD_BAM_REG_IO_CONNECT && fd_grpc_client_is_connected( s->grpc ) ) {
+      /* Connected with no call in flight: a call failed to start. */
+      if( !s->inflight ) return now;
+      dl = fd_long_min( dl, s->sample_ns+FD_BAM_REGISTRY_PROBE_REQUEST_NS );
+    } else {
+      dl = fd_long_min( dl, s->deadline );
+    }
+    dl = fd_long_min( dl, fd_grpc_client_next_deadline( s->grpc ) );
   }
   return dl;
 }
