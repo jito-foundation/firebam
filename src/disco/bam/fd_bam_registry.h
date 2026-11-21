@@ -50,7 +50,7 @@
 struct fd_bam_registry_node {
   uint   ip4;       /* IPv4, FD_IP4_ADDR_FMT order */
   ushort grpc_port;
-  char   region[ 64 ]; /* longer names are truncated */
+  char   region[ 64 ]; /* decoded; see reg_node for what does not fit */
 };
 
 typedef struct fd_bam_registry_node fd_bam_registry_node_t;

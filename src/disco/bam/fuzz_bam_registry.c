@@ -39,6 +39,12 @@ check_parse( char const * json,
     uint b = fd_uint_bswap( nodes[ i     ].ip4 );
     FD_TEST( a<b || ( a==b && nodes[ i-1UL ].grpc_port<nodes[ i ].grpc_port ) );
   }
+  for( ulong i=0UL; i<cnt; i++ ) { /* a region is a string that logs on one line */
+    char const * r = nodes[ i ].region;
+    ulong        n = 0UL;
+    while( n<sizeof(nodes[ i ].region) && r[ n ] ) FD_TEST( (uchar)r[ n++ ]>=0x20U );
+    FD_TEST( n<sizeof(nodes[ i ].region) );
+  }
 }
 
 static char buf [ FD_BAM_REGISTRY_BODY_MAX ];

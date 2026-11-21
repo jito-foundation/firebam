@@ -169,16 +169,19 @@ test_parse( void ) {
   FD_TEST( !parses( "{\"generated_at\":{},\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
   FD_TEST( !parses( "{\"generated_at\":[],\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
 
-  /* escapes are checked, and the region is kept as sent */
+  /* escapes are checked and decoded; a control character logs as '?' */
   FD_TEST( !parse( "{\"nodes\":[{\"\\u0069p\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\\u00e9\\ud83d\\ude00\\b\\f\\r\"}]}", nodes, &cnt ) );
-  FD_TEST( !strcmp( nodes[0].region, "a\\u00e9\\ud83d\\ude00\\b\\f\\r" ) );
+  FD_TEST( !strcmp( nodes[0].region, "a\xc3\xa9\xf0\x9f\x98\x80???" ) );
+  /* a String may hold NUL; the region then keeps its raw form */
+  FD_TEST( !parse( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\\u0000b\"}]}", nodes, &cnt ) );
+  FD_TEST( !strcmp( nodes[0].region, "a\\u0000b" ) );
   FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"\\ud83d\"}]}" ) );
   FD_TEST( !parses( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"\xc0\xaf\"}]}" ) );
   /* serde_json ignores a lone surrogate in a skipped value; fd_jtok
      does not, and serde_json never writes one. */
   FD_TEST( !parses( "{\"skip\":\"\\ud83d\",\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"a\"}]}" ) );
 
-  /* a long region is kept, truncated at a character boundary */
+  /* a long region keeps its raw prefix, cut at a character boundary */
   FD_TEST( !parse( "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":1,\"region\":\"0123456789012345678901234567890123456789012345678901234567890123456789\"}]}", nodes, &cnt ) );
   FD_TEST( strlen( nodes[0].region )==sizeof(nodes[0].region)-1UL );
   /* 62 bytes, then a 2-byte character */
@@ -239,6 +242,15 @@ test_rank_and_choose( void ) {
   FD_TEST( reg->probe_at==now ); /* unchanged list keeps the ranking clock */
   FD_TEST( reg->resync_at>=now+3000000000L+FD_BAM_REGISTRY_RESYNC_LIVE_NS/2 );
   FD_TEST( reg->resync_at<=now+3000000000L+FD_BAM_REGISTRY_RESYNC_LIVE_NS );
+
+  /* "\u0061" is "a" to serde too, so the list is unchanged */
+  fd_bam_registry_node_t parsed[ 2 ];
+  ulong parsed_cnt = 0UL;
+  FD_TEST( !parse( "{\"nodes\":[{\"ip\":\"2.0.0.0\",\"grpc_port\":50056,\"region\":\"\\u0062\"},"
+                               "{\"ip\":\"1.0.0.0\",\"grpc_port\":50056,\"region\":\"\\u0061\"}]}", parsed, &parsed_cnt ) );
+  FD_TEST( parsed_cnt==2UL );
+  FD_TEST( !fd_bam_registry_on_fetch( reg, parsed, parsed_cnt, now+3000000000L, 1, rng ) );
+  FD_TEST( reg->probe_at==now );
 
   /* jito compares whole ServedNodes, so a region change re-probes */
   reg->ranked_cnt = 1UL;

@@ -148,13 +148,21 @@ reg_node( fd_jtok_t *              j,
     if( bit==1 ) fd_jtok_cstr( j, ip, sizeof(ip) );
     if( bit==2 ) fd_jtok_ulong( j, &port );
     if( bit==4 ) {
-      /* Only logged, so kept undecoded and cut at a character. */
+      /* Decoded, so names serde finds equal compare equal.  Only an
+         escape can carry a control character, which becomes '?' so the
+         name logs on one line.  A name that does not decode into region
+         (too long, or an escaped NUL) keeps its raw prefix, cut at a
+         character. */
       fd_jtok_str_t r = {0};
       fd_jtok_str( j, &r );
-      ulong k = fd_ulong_min( r.sz, sizeof(node->region)-1UL );
-      while( k<r.sz && k && ((uchar)r.ptr[ k ]&0xC0U)==0x80U ) k--;
-      if( k ) memcpy( node->region, r.ptr, k );
-      node->region[ k ] = '\0';
+      long n = fd_jtok_err( j ) ? 0L : fd_jtok_str_decode( &r, node->region, sizeof(node->region) );
+      if( n<0L ) {
+        ulong k = fd_ulong_min( r.sz, sizeof(node->region)-1UL );
+        while( k<r.sz && k && ((uchar)r.ptr[ k ]&0xC0U)==0x80U ) k--;
+        if( k ) memcpy( node->region, r.ptr, k );
+        node->region[ k ] = '\0';
+      }
+      for( long i=0L; i<n; i++ ) if( (uchar)node->region[ i ]<0x20U ) node->region[ i ] = '?';
     }
   }
   if( fd_jtok_err( j ) || seen!=7 || port>USHORT_MAX ) return -1;
