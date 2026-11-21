@@ -15,7 +15,8 @@
 #include "../metrics/fd_metrics.h"
 
 /* jito-solana has no such limits; these sit far above any real
-   registry (BODY_MAX fits NODE_CAP nodes of 256 bytes each). */
+   registry.  BODY_MAX caps the whole response, headers included, and
+   holds about NODE_CAP nodes of 256 bytes each. */
 #define FD_BAM_REGISTRY_NODE_CAP   (1024UL)
 #define FD_BAM_REGISTRY_BODY_MAX   (1UL<<18)
 #define FD_BAM_REGISTRY_PATH_MAX   (1024UL)
@@ -157,7 +158,7 @@ struct fd_bam_registry {
   int   fd;
   ulong http_off;
   ulong body_len;
-  char  body[ FD_BAM_REGISTRY_BODY_MAX ];
+  char  body[ FD_BAM_REGISTRY_BODY_MAX+1UL ]; /* a spare byte shows a response over the cap */
   fd_bam_registry_node_t parsed[ FD_BAM_REGISTRY_NODE_CAP ];
 
   fd_tls_t           tls[1];
@@ -209,15 +210,19 @@ fd_bam_registry_parse( char const *             json,
                        ulong *                  cnt );
 
 /* fd_bam_registry_http_response reads the response to an HTTP/1.0
-   request in buf[0,*len).  Returns FD_BAM_REGISTRY_HTTP_BODY with
-   buf[0,*len) stripped in place to the body (Content-Length bytes, or
-   up to eof), FD_BAM_REGISTRY_HTTP_REDIRECT with the Location of a
-   301/302/303/307/308 in loc, 0 if more bytes are needed, and -1 for
-   any other status, a transfer coding, malformed framing, or a
-   Location over loc_max. */
+   request in buf[0,*len), *len at most FD_BAM_REGISTRY_BODY_MAX+1.
+   Returns FD_BAM_REGISTRY_HTTP_BODY with buf[0,*len) stripped in place
+   to the body (Content-Length bytes, or up to eof),
+   FD_BAM_REGISTRY_HTTP_REDIRECT with the Location of a 301/302/303/307/
+   308 in loc, FD_BAM_REGISTRY_HTTP_TOO_BIG once the response, headers
+   included, must exceed FD_BAM_REGISTRY_BODY_MAX bytes, 0 if more bytes
+   are needed, and -1 for any other status, a transfer coding, malformed
+   framing, or a Location over loc_max.  With *len over the cap it never
+   returns 0. */
 
 #define FD_BAM_REGISTRY_HTTP_BODY     (1)
 #define FD_BAM_REGISTRY_HTTP_REDIRECT (2)
+#define FD_BAM_REGISTRY_HTTP_TOO_BIG  (-2)
 
 int
 fd_bam_registry_http_response( char *  buf,

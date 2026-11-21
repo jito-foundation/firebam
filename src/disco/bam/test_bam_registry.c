@@ -203,6 +203,27 @@ http( char const * raw,
   return rc;
 }
 
+/* http_big reads head, then pad up to len bytes ending in tail. */
+
+static int
+http_big( char const * head,
+          char         pad,
+          char const * tail,
+          ulong        len,
+          int          eof,
+          ulong *      out_len ) {
+  static char buf[ FD_BAM_REGISTRY_BODY_MAX+1UL ];
+  ulong head_len = strlen( head );
+  ulong tail_len = strlen( tail );
+  FD_TEST( head_len+tail_len<=len && len<=sizeof(buf) );
+  memcpy( buf, head, head_len );
+  memset( buf+head_len, pad, len-head_len-tail_len );
+  memcpy( buf+len-tail_len, tail, tail_len );
+  char loc[ 64 ];
+  *out_len = len;
+  return fd_bam_registry_http_response( buf, out_len, eof, loc, sizeof(loc) );
+}
+
 static void
 test_http( void ) {
   char  body[ 256 ];
@@ -219,6 +240,30 @@ test_http( void ) {
   /* An HTTP/1.0 client gets no transfer coding. */
   FD_TEST( http( "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n", 1, body, &n )==-1 );
   FD_TEST( http( "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\n{}junk", 0, body, &n )==1 && !strcmp( body, "{}" ) );
+
+  /* The cap counts the headers.  fit has as many digits as max. */
+  ulong const max = FD_BAM_REGISTRY_BODY_MAX;
+  int   const big = FD_BAM_REGISTRY_HTTP_TOO_BIG;
+  char  head[ 64 ];
+  ulong head_len = 0UL;
+  ulong len      = 0UL;
+  FD_TEST( fd_cstr_printf_check( head, sizeof(head), &head_len, "HTTP/1.1 200 OK\r\nContent-Length: %lu\r\n\r\n", max ) );
+  ulong fit = max-head_len;
+  FD_TEST( fd_cstr_printf_check( head, sizeof(head), &len, "HTTP/1.1 200 OK\r\nContent-Length: %lu\r\n\r\n", fit ) && len==head_len );
+  FD_TEST( http_big( head, ' ', "", max,     0, &n )==1 && n==fit );
+  FD_TEST( http_big( head, ' ', "", max+1UL, 0, &n )==1 && n==fit ); /* a byte past the body */
+  FD_TEST( http_big( head, ' ', "", max-1UL, 1, &n )==-1 );
+  FD_TEST( fd_cstr_printf_check( head, sizeof(head), &len, "HTTP/1.1 200 OK\r\nContent-Length: %lu\r\n\r\n", fit+1UL ) && len==head_len );
+  FD_TEST( http_big( head, ' ', "", head_len, 0, &n )==big );
+  /* Without Content-Length the close ends the body. */
+  FD_TEST( http_big( "HTTP/1.1 200 OK\r\n\r\n", ' ', "", max,     0, &n )==0 );
+  FD_TEST( http_big( "HTTP/1.1 200 OK\r\n\r\n", ' ', "", max,     1, &n )==1 && n==max-19UL );
+  FD_TEST( http_big( "HTTP/1.1 200 OK\r\n\r\n", ' ', "", max+1UL, 0, &n )==big );
+  FD_TEST( http_big( "HTTP/1.1 200 OK\r\n\r\n", ' ', "", max+1UL, 1, &n )==big );
+  /* Nor may the headers alone pass it. */
+  FD_TEST( http_big( "HTTP/1.1 200 OK\r\nX: ", 'a', "",         max+1UL, 0, &n )==big );
+  FD_TEST( http_big( "HTTP/1.1 200 OK\r\nX: ", 'a', "\r\n\r\n", max+1UL, 1, &n )==big );
+  FD_TEST( http_big( "HTTP/1.1 200 OK\r\nX: ", 'a', "\r\n\r\n", max,     1, &n )==1 && !n );
 }
 
 static void
@@ -563,6 +608,9 @@ test_fetch_loopback( char const * host,
   int via_dns = named && dns!=DNS_HOSTS;
   FD_TEST( via_dns ? queries>=1UL : !queries );
   FD_TEST( fetch_total( reg )==1UL && reg->fetch_cnt[ result ]==1UL );
+  /* A non-2xx status line is the cause; a 2xx failed on its framing. */
+  if( result==FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX )
+    FD_TEST( status[0]=='2' ? !reg->why[0] : !strncmp( reg->why, "HTTP/1.0 ", 9UL ) && !strncmp( reg->why+9, status, 3UL ) );
   if( result==FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX ) {
     FD_TEST( served==( strcmp( path, "/old" ) ? 1UL : 2UL ) );
     FD_TEST( reg->node_cnt==1UL );
@@ -698,10 +746,11 @@ tls_init( fd_bam_tile_t * ctx,
 }
 
 /* test_node_t serves TLS with the test leaf, one connection at a time:
-   HTTP/1.0 answers the first request with resp and closes, H2_SILENT
-   settles HTTP/2 settings and never answers a call, H2_ANSWER answers
-   each call with an empty message and grpc-status 0, delay_ns after
-   it.  calls counts the requests it received. */
+   HTTP/1.0 answers the first request with resp, as fast as the socket
+   takes it, and closes, H2_SILENT settles HTTP/2 settings and never
+   answers a call, H2_ANSWER answers each call with an empty message and
+   grpc-status 0, delay_ns after it.  plain serves HTTP/1.0 without TLS.
+   calls counts the requests it received. */
 
 #define NODE_HTTP      (0)
 #define NODE_H2_SILENT (1)
@@ -712,7 +761,11 @@ typedef struct {
   int                    fd;
   int                    mode;
   int                    preface;
+  int                    plain;
   char const *           resp;
+  ulong                  resp_len;
+  ulong                  resp_off;
+  int                    replying;    /* HTTP: 1 while sending resp, 2 once done */
   long                   delay_ns;    /* H2_ANSWER: answer this long after a call */
   uint                   pending_sid; /* call to answer at due, 0 if none */
   long                   due;
@@ -841,6 +894,31 @@ node_h2( test_node_t * n ) {
   n->rx_len -= off;
 }
 
+/* node_pump sends what of resp the socket takes, then closes. */
+
+static void
+node_pump( test_node_t * n ) {
+  for(;;) {
+    if( !n->plain && fd_tlsrec_sock_tx_pending( n->sock ) ) {
+      int rc = fd_tlsrec_sock_flush( n->sock, n->fd );
+      if( rc ) { if( rc<0 ) node_drop( n ); return; }
+    }
+    if( n->resp_off==n->resp_len ) break;
+    ulong done = 0UL;
+    if( n->plain ) {
+      long sz = send( n->fd, n->resp+n->resp_off, n->resp_len-n->resp_off, MSG_NOSIGNAL|MSG_DONTWAIT );
+      if( sz<0 ) { if( errno!=EAGAIN ) node_drop( n ); return; }
+      done = (ulong)sz;
+    } else if( fd_tlsrec_sock_tx( n->sock, n->conn, n->fd, n->resp+n->resp_off, n->resp_len-n->resp_off, &done ) ) {
+      node_drop( n );
+      return;
+    }
+    n->resp_off += done;
+  }
+  n->replying = 2;
+  if( n->plain || fd_tlsrec_sock_close( n->sock, n->conn, n->fd )<0 ) node_drop( n );
+}
+
 /* node_step accepts, handshakes and answers without blocking. */
 
 static void
@@ -855,29 +933,42 @@ node_step( test_node_t * n ) {
     n->preface = 0;
     n->rx_len  = 0UL;
     n->pending_sid = 0U;
+    n->resp_off    = 0UL;
+    n->replying    = 0;
     fd_tlsrec_sock_init( n->sock );
     FD_TEST( fd_tlsrec_conn_init( n->conn, n->tls, 1 )==n->conn );
   }
-  if( fd_tlsrec_sock_tx_pending( n->sock ) && fd_tlsrec_sock_flush( n->sock, n->fd )<0 ) {
-    node_drop( n );
-    return;
+  if( n->plain ) {
+    long sz = recv( n->fd, n->rx+n->rx_len, sizeof(n->rx)-n->rx_len, MSG_DONTWAIT );
+    if( !sz || ( sz<0 && errno!=EAGAIN ) ) {
+      node_drop( n );
+      return;
+    }
+    if( sz>0 ) n->rx_len += (ulong)sz;
+  } else {
+    if( fd_tlsrec_sock_tx_pending( n->sock ) && fd_tlsrec_sock_flush( n->sock, n->fd )<0 ) {
+      node_drop( n );
+      return;
+    }
+    if( fd_tlsrec_sock_rx( n->sock, n->conn, n->fd, NULL ) ) {
+      node_drop( n );
+      return;
+    }
+    n->rx_len += fd_tlsrec_sock_rx_pop( n->sock, n->rx+n->rx_len, sizeof(n->rx)-n->rx_len );
+    if( !fd_tlsrec_conn_is_ready( n->conn ) ) return;
   }
-  if( fd_tlsrec_sock_rx( n->sock, n->conn, n->fd, NULL ) ) {
-    node_drop( n );
-    return;
-  }
-  n->rx_len += fd_tlsrec_sock_rx_pop( n->sock, n->rx+n->rx_len, sizeof(n->rx)-n->rx_len );
-  if( !fd_tlsrec_conn_is_ready( n->conn ) ) return;
   if( n->mode!=NODE_HTTP ) {
     node_h2( n );
     if( n->pending_sid && fd_bam_now()>=n->due ) {
       node_answer( n, n->pending_sid );
       n->pending_sid = 0U;
     }
-  } else if( !n->calls && memmem( n->rx, n->rx_len, "\r\n\r\n", 4UL ) ) {
-    n->calls++;
-    node_send( n, n->resp, strlen( n->resp ) );
-    FD_TEST( fd_tlsrec_sock_close( n->sock, n->conn, n->fd )>=0 );
+  } else {
+    if( !n->replying && memmem( n->rx, n->rx_len, "\r\n\r\n", 4UL ) ) {
+      n->calls++;
+      n->replying = 1;
+    }
+    if( n->replying==1 ) node_pump( n );
   }
 }
 
@@ -899,7 +990,8 @@ test_fetch_tls( char const * host,
   char const * body = "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
   char resp[ 256 ];
   FD_TEST( fd_cstr_printf_check( resp, sizeof(resp), NULL, "HTTP/1.0 200 OK\r\nContent-Length: %lu\r\n\r\n%s", strlen( body ), body ) );
-  node->resp = resp;
+  node->resp     = resp;
+  node->resp_len = strlen( resp );
   char raw[ 64 ];
   FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "https://%s:%hu/v1/nodes", host, port ) );
   take( ctx, raw );
@@ -940,6 +1032,61 @@ test_fetch_tls( char const * host,
   node_fini( node );
   close( fd_etc_hosts_fd );
   fd_etc_hosts_fd = -1;
+}
+
+/* test_fetch_cap fetches a response of total bytes, headers included,
+   that Content-Length or the close ends. */
+
+static void
+test_fetch_cap( int   tls,
+                int   with_len,
+                ulong total ) {
+  static fd_bam_tile_t ctx[1];
+  ctx_init( ctx, 6U, 0 );
+  tls_init( ctx, 1 );
+  static test_node_t node[1];
+  ushort port;
+  node_init( node, NODE_HTTP, &port );
+  node->plain = !tls;
+
+  static char resp[ FD_BAM_REGISTRY_BODY_MAX+1UL ];
+  ulong hdr_len = 0UL;
+  if( with_len ) { /* total-hdr_len has as many digits as total */
+    FD_TEST( fd_cstr_printf_check( resp, 64UL, &hdr_len, "HTTP/1.0 200 OK\r\nContent-Length: %lu\r\n\r\n", total ) );
+    ulong len = 0UL;
+    FD_TEST( fd_cstr_printf_check( resp, 64UL, &len, "HTTP/1.0 200 OK\r\nContent-Length: %lu\r\n\r\n", total-hdr_len ) );
+    FD_TEST( len==hdr_len );
+  } else {
+    FD_TEST( fd_cstr_printf_check( resp, 64UL, &hdr_len, "HTTP/1.0 200 OK\r\n\r\n" ) );
+  }
+  char const * one = "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
+  ulong one_len = strlen( one );
+  FD_TEST( total<=sizeof(resp) && hdr_len+one_len<=total );
+  memcpy( resp+hdr_len, one, one_len );
+  memset( resp+hdr_len+one_len, ' ', total-hdr_len-one_len ); /* trailing space is valid JSON */
+  node->resp     = resp;
+  node->resp_len = total;
+  char raw[ 64 ];
+  FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "%s://127.0.0.1:%hu/v1/nodes", tls ? "https" : "http", port ) );
+  take( ctx, raw );
+
+  fd_bam_registry_t * reg = &ctx->registry;
+  int  busy = 0;
+  long dl   = 0L;
+  long end  = fd_log_wallclock()+(long)5e9;
+  while( !fetch_total( reg ) && fd_log_wallclock()<end ) {
+    fd_bam_registry_step( ctx, &busy, &dl );
+    node_step( node );
+  }
+  FD_TEST( fetch_total( reg )==1UL && node->calls==1UL );
+  if( total<=FD_BAM_REGISTRY_BODY_MAX ) {
+    FD_TEST( reg->fetch_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX ]==1UL && reg->node_cnt==1UL );
+  } else {
+    FD_TEST( reg->fetch_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX ]==1UL );
+    FD_TEST( !strcmp( reg->why, "response over 256 KiB" ) );
+  }
+  fd_bam_registry_disable( ctx );
+  node_fini( node );
 }
 
 /* test_probe_tls probes one TLS node: it answers each sample, after
@@ -1147,6 +1294,7 @@ main( int     argc,
     test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":[]}", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX, waker );
     test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK", "{\"nodes\":", FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX, waker );
     test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX, waker );
+    test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "200 OK\r\nTransfer-Encoding: chunked", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX, waker );
   }
   test_fetch_refused();
   for( int waker=0; waker<2; waker++ ) {
@@ -1155,6 +1303,12 @@ main( int     argc,
   }
   test_fetch_tls( "127.0.0.1",   1, 0 ); /* the IP SAN, as probes check */
   test_fetch_tls( "other.hosts", 1, 0 ); /* a name the leaf lacks */
+  for( int tls=0; tls<2; tls++ ) {
+    for( int with_len=0; with_len<2; with_len++ ) {
+      test_fetch_cap( tls, with_len, FD_BAM_REGISTRY_BODY_MAX     );
+      test_fetch_cap( tls, with_len, FD_BAM_REGISTRY_BODY_MAX+1UL );
+    }
+  }
   for( int waker=0; waker<2; waker++ ) {
     test_probe_tls( NODE_H2_ANSWER, 1, waker,  0L );
     test_probe_tls( NODE_H2_ANSWER, 1, waker, 10L );

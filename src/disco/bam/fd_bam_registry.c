@@ -684,7 +684,7 @@ reg_fetch_done( fd_bam_tile_t * ctx,
     [ REG_FETCH_IO            ] = "connection failed",
     [ REG_FETCH_CERT_REJECTED ] = "TLS certificate rejected",
     [ REG_FETCH_TIMEOUT       ] = "no response within 5 s",
-    [ REG_FETCH_HTTP          ] = "bad HTTP response or over 256 KiB",
+    [ REG_FETCH_HTTP          ] = "bad HTTP response",
     [ REG_FETCH_REDIRECT      ] = "more than 10 redirects",
     [ REG_FETCH_JSON          ] = "malformed node list",
     [ REG_FETCH_EMPTY_LIST    ] = "no IPv4 node listed",
@@ -711,8 +711,9 @@ fd_bam_registry_http_response( char *  buf,
   struct phr_header hdrs[ 100 ]; /* hyper's default limit */
   ulong             hdr_cnt = 100UL;
   int hdr_len = phr_parse_response( buf, *len, &minor_version, &status, &msg, &msg_len, hdrs, &hdr_cnt, 0UL );
-  if( hdr_len==-2 ) return eof ? -1 : 0;
+  if( hdr_len==-2 ) return *len>FD_BAM_REGISTRY_BODY_MAX ? FD_BAM_REGISTRY_HTTP_TOO_BIG : eof ? -1 : 0;
   if( hdr_len<0 ) return -1;
+  if( (ulong)hdr_len>FD_BAM_REGISTRY_BODY_MAX ) return FD_BAM_REGISTRY_HTTP_TOO_BIG;
 
   if( status==301 || status==302 || status==303 || status==307 || status==308 ) {
     for( ulong i=0UL; i<hdr_cnt; i++ ) {
@@ -732,14 +733,16 @@ fd_bam_registry_http_response( char *  buf,
     /* Servers must not send a transfer coding to HTTP/1.0 clients. */
     if( hdrs[ i ].name_len==17UL && !strncasecmp( hdrs[ i ].name, "transfer-encoding", 17UL ) ) return -1;
     if( hdrs[ i ].name_len!=14UL || strncasecmp( hdrs[ i ].name, "content-length", 14UL ) ) continue;
-    if( fd_http_parse_content_len( hdrs[ i ].value, hdrs[ i ].value_len, &content_len ) ||
-        content_len>FD_BAM_REGISTRY_BODY_MAX ) return -1;
+    if( fd_http_parse_content_len( hdrs[ i ].value, hdrs[ i ].value_len, &content_len ) ) return -1;
+    if( content_len>FD_BAM_REGISTRY_BODY_MAX-(ulong)hdr_len ) return FD_BAM_REGISTRY_HTTP_TOO_BIG;
     have_len = 1;
   }
   ulong n = *len-(ulong)hdr_len;
   if( have_len ) {
     if( n<content_len ) return eof ? -1 : 0;
     n = content_len;
+  } else if( *len>FD_BAM_REGISTRY_BODY_MAX ) {
+    return FD_BAM_REGISTRY_HTTP_TOO_BIG;
   } else if( !eof ) {
     return 0;
   }
@@ -1046,38 +1049,28 @@ reg_drive_tls( fd_bam_tile_t * ctx,
   }
 }
 
-/* reg_fetch_rx appends received plaintext to body.  Returns 1 on EOF,
-   0 otherwise, -1 on a socket or TLS error, -2 once the body would
-   exceed FD_BAM_REGISTRY_BODY_MAX. */
+/* reg_fetch_rx appends received plaintext to body, up to one byte past
+   FD_BAM_REGISTRY_BODY_MAX, which fd_bam_registry_http_response always
+   decides on.  Returns 1 on EOF, 0 otherwise, and -1 on a socket or TLS
+   error. */
 
 static int
 reg_fetch_rx( fd_bam_registry_t * reg ) {
+  ulong room = FD_BAM_REGISTRY_BODY_MAX+1UL-reg->body_len;
   if( !reg->f_ssl ) {
-    ulong room = FD_BAM_REGISTRY_BODY_MAX-reg->body_len;
-    if( !room ) return -2;
     long sz = recv( reg->fd, reg->body+reg->body_len, room, MSG_NOSIGNAL|MSG_DONTWAIT );
     if( !sz ) return 1;
     if( sz<0 ) return ( errno==EAGAIN || errno==EWOULDBLOCK ) ? 0 : -1;
     reg->body_len += (ulong)sz;
     return 0;
   }
-  ulong avail = fd_tlsrec_sock_rx_avail( reg->sock );
-  if( reg->body_len+avail>FD_BAM_REGISTRY_BODY_MAX ) return -2;
-  if( avail ) {
-    fd_tlsrec_sock_rx_pop( reg->sock, reg->body+reg->body_len, avail );
-    reg->body_len += avail;
-  }
+  reg->body_len += fd_tlsrec_sock_rx_pop( reg->sock, reg->body+reg->body_len, room );
   int eof = 0;
   ulong ignored = 0UL;
   int rx = fd_tlsrec_sock_rx( reg->sock, reg->conn, reg->fd, &ignored );
   if( rx==FD_TLSREC_SOCK_ERR_EOF ) eof = 1;
   else if( rx ) return -1;
-  avail = fd_tlsrec_sock_rx_avail( reg->sock );
-  if( reg->body_len+avail>FD_BAM_REGISTRY_BODY_MAX ) return -2;
-  if( avail ) {
-    fd_tlsrec_sock_rx_pop( reg->sock, reg->body+reg->body_len, avail );
-    reg->body_len += avail;
-  }
+  reg->body_len += fd_tlsrec_sock_rx_pop( reg->sock, reg->body+reg->body_len, FD_BAM_REGISTRY_BODY_MAX+1UL-reg->body_len );
   return eof;
 }
 
@@ -1158,12 +1151,16 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
   reg->sent = 1;
 
   int eof = reg_fetch_rx( reg );
-  if( eof<0 ) { reg_fetch_done( ctx, eof==-2 ? REG_FETCH_HTTP : REG_FETCH_IO ); return; }
+  if( eof<0 ) { reg_fetch_done( ctx, REG_FETCH_IO ); return; }
 
   char loc[ FD_URL_MAX+FD_BAM_REGISTRY_PATH_MAX ];
   int done = fd_bam_registry_http_response( reg->body, &reg->body_len, eof, loc, sizeof(loc) );
-  if( !done && reg->body_len>=FD_BAM_REGISTRY_BODY_MAX ) done = -1;
   if( !done ) return;
+  if( done==FD_BAM_REGISTRY_HTTP_TOO_BIG ) {
+    fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "response over %lu KiB", FD_BAM_REGISTRY_BODY_MAX>>10 );
+    reg_fetch_done( ctx, REG_FETCH_HTTP );
+    return;
+  }
   if( done==FD_BAM_REGISTRY_HTTP_REDIRECT ) {
     if( ++reg->redirects>FD_BAM_REGISTRY_REDIRECT_MAX || fd_bam_registry_redirect_target( reg, loc ) ) {
       fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "redirect to `%.64s` not followed", loc );
@@ -1175,9 +1172,11 @@ reg_drive_fetch( fd_bam_tile_t * ctx ) {
     return;
   }
   if( done<0 ) {
+    /* A non-2xx status line names the failure.  A 2xx failed on its
+       framing, which "HTTP/1.0 200 OK" would misreport. */
     ulong line = 0UL;
     while( line<reg->body_len && line<64UL && reg->body[ line ]!='\r' && reg->body[ line ]!='\n' ) line++;
-    if( line>=12UL && !memcmp( reg->body, "HTTP/", 5UL ) ) fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "%.*s", (int)line, reg->body );
+    if( line>=12UL && !memcmp( reg->body, "HTTP/", 5UL ) && reg->body[ 9 ]!='2' ) fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "%.*s", (int)line, reg->body );
     reg_fetch_done( ctx, REG_FETCH_HTTP );
     return;
   }

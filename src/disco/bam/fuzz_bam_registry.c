@@ -47,8 +47,8 @@ check_parse( char const * json,
   }
 }
 
-static char buf [ FD_BAM_REGISTRY_BODY_MAX ];
-static char buf2[ FD_BAM_REGISTRY_BODY_MAX ];
+static char buf [ FD_BAM_REGISTRY_BODY_MAX+1UL ]; /* as the fetch reads */
+static char buf2[ FD_BAM_REGISTRY_BODY_MAX+1UL ];
 static char loc [ FD_URL_MAX+FD_BAM_REGISTRY_PATH_MAX ];
 static char loc2[ FD_URL_MAX+FD_BAM_REGISTRY_PATH_MAX ];
 
@@ -88,7 +88,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   }
 
   if( r1==FD_BAM_REGISTRY_HTTP_BODY ) {
-    FD_TEST( len1<=size );
+    FD_TEST( len1<=size && len1<FD_BAM_REGISTRY_BODY_MAX );
     check_parse( buf2, len1 );
   } else if( r1==FD_BAM_REGISTRY_HTTP_REDIRECT ) {
     FD_TEST( loc2[0] && strlen( loc2 )<sizeof(loc2) );
