@@ -6,6 +6,9 @@
 #include "../../waltz/resolv/fd_adns.h"
 #include "../../waltz/resolv/fd_lookup.h"
 #include "../waker/fd_waker.h"
+#include "../../ballet/ed25519/fd_x25519.h"
+#include "../../waltz/tls/test_tls_helper.h"
+#include "../../waltz/tlsrec/fd_tlsrec_sock.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -14,6 +17,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 
@@ -611,6 +615,396 @@ test_fetch_refused( void ) {
   fd_bam_registry_disable( ctx );
 }
 
+/* --- TLS node ------------------------------------------------------- */
+
+/* An Ed25519 test CA, and a leaf it signed for 127.0.0.1 and
+   registry.hosts with the private key test_leaf_key, both valid from
+   2025 to 2125.  Made with openssl genpkey -algorithm ed25519, then
+   req -x509 (basicConstraints critical CA:TRUE, keyUsage critical
+   keyCertSign) and x509 -req (keyUsage critical digitalSignature,
+   extendedKeyUsage serverAuth, subjectAltName IP:127.0.0.1,
+   DNS:registry.hosts). */
+
+static char const test_ca_pem[] =
+  "-----BEGIN CERTIFICATE-----\n"
+  "MIIBODCB66ADAgECAgEBMAUGAytlcDAjMSEwHwYDVQQDDBhGaXJlQkFNIHJlZ2lz\n"
+  "dHJ5IHRlc3QgQ0EwIBcNMjUwMTAxMDAwMDAwWhgPMjEyNTAxMDEwMDAwMDBaMCMx\n"
+  "ITAfBgNVBAMMGEZpcmVCQU0gcmVnaXN0cnkgdGVzdCBDQTAqMAUGAytlcAMhALub\n"
+  "LmujA2bfikQ5GtUsHtjOd0Dg2pY5TD4h4UO+qCggo0IwQDAPBgNVHRMBAf8EBTAD\n"
+  "AQH/MA4GA1UdDwEB/wQEAwICBDAdBgNVHQ4EFgQUyGllqhbCYJekqEyKdZ8mzJdc\n"
+  "B3gwBQYDK2VwA0EAXPE/T4imodSocdZCCNFirVeiz2sHYdgFbTcYS8gz208KfLh3\n"
+  "2BnMxyprO9RxwhPT95Htf8JvkDP0dQewk0m4BA==\n"
+  "-----END CERTIFICATE-----\n";
+
+static uchar const test_leaf_der[ 326 ] = {
+  0x30,0x82,0x01,0x42,0x30,0x81,0xf5,0xa0,0x03,0x02,0x01,0x02,0x02,0x01,0x02,0x30,
+  0x05,0x06,0x03,0x2b,0x65,0x70,0x30,0x23,0x31,0x21,0x30,0x1f,0x06,0x03,0x55,0x04,
+  0x03,0x0c,0x18,0x46,0x69,0x72,0x65,0x42,0x41,0x4d,0x20,0x72,0x65,0x67,0x69,0x73,
+  0x74,0x72,0x79,0x20,0x74,0x65,0x73,0x74,0x20,0x43,0x41,0x30,0x20,0x17,0x0d,0x32,
+  0x35,0x30,0x31,0x30,0x31,0x30,0x30,0x30,0x30,0x30,0x30,0x5a,0x18,0x0f,0x32,0x31,
+  0x32,0x35,0x30,0x31,0x30,0x31,0x30,0x30,0x30,0x30,0x30,0x30,0x5a,0x30,0x19,0x31,
+  0x17,0x30,0x15,0x06,0x03,0x55,0x04,0x03,0x0c,0x0e,0x72,0x65,0x67,0x69,0x73,0x74,
+  0x72,0x79,0x2e,0x68,0x6f,0x73,0x74,0x73,0x30,0x2a,0x30,0x05,0x06,0x03,0x2b,0x65,
+  0x70,0x03,0x21,0x00,0x82,0xce,0x1c,0x2a,0xb5,0xaa,0x87,0x30,0xec,0xf9,0xe4,0xe5,
+  0x3c,0x3c,0xdb,0xc4,0x6e,0x37,0x2b,0x87,0xcc,0x96,0xaf,0xda,0x83,0xb4,0x78,0x63,
+  0x32,0xbe,0x79,0x43,0xa3,0x56,0x30,0x54,0x30,0x0c,0x06,0x03,0x55,0x1d,0x13,0x01,
+  0x01,0xff,0x04,0x02,0x30,0x00,0x30,0x0e,0x06,0x03,0x55,0x1d,0x0f,0x01,0x01,0xff,
+  0x04,0x04,0x03,0x02,0x07,0x80,0x30,0x13,0x06,0x03,0x55,0x1d,0x25,0x04,0x0c,0x30,
+  0x0a,0x06,0x08,0x2b,0x06,0x01,0x05,0x05,0x07,0x03,0x01,0x30,0x1f,0x06,0x03,0x55,
+  0x1d,0x11,0x04,0x18,0x30,0x16,0x87,0x04,0x7f,0x00,0x00,0x01,0x82,0x0e,0x72,0x65,
+  0x67,0x69,0x73,0x74,0x72,0x79,0x2e,0x68,0x6f,0x73,0x74,0x73,0x30,0x05,0x06,0x03,
+  0x2b,0x65,0x70,0x03,0x41,0x00,0x92,0x43,0x7c,0x17,0xd2,0xcb,0x94,0x18,0xaf,0x35,
+  0x79,0xbf,0xe8,0x0e,0x88,0x69,0x15,0xed,0xa7,0x02,0x5b,0xa7,0x47,0x62,0x57,0x74,
+  0x9d,0xaf,0xe2,0x39,0x5d,0xf8,0xd0,0x61,0x7d,0xef,0x18,0xaa,0x2d,0x12,0x2f,0x01,
+  0x70,0x8f,0xf7,0xda,0x8a,0xeb,0xdd,0xd9,0x4f,0xcc,0x9c,0xb2,0x7c,0xa5,0x9c,0x6f,
+  0x4e,0x76,0x03,0x59,0x10,0x03,
+};
+
+static uchar const test_leaf_key[ 32 ] = {
+  0x1f,0x84,0x07,0xd6,0x8d,0xdb,0xff,0x0e,0xab,0x37,0x05,0xec,0xe1,0x72,0x1e,0x02,
+  0x66,0xe0,0x41,0xdb,0xdb,0x23,0x1b,0xf0,0x67,0x76,0xc9,0x0b,0xc9,0xeb,0xb2,0xc1,
+};
+
+/* tls_init sets up the registry's TLS client as the tile's init does.
+   With trusted set, ctx->ca_store holds just the test CA; without it
+   the store ctx_init fills trusts nothing. */
+
+static void
+tls_init( fd_bam_tile_t * ctx,
+          int             trusted ) {
+  fd_tls_t * tls = fd_tls_join( fd_tls_new( ctx->registry.tls ) );
+  FD_TEST( tls );
+  uchar key[ FD_CHACHA_KEY_SZ ] = {1};
+  fd_chacha_rng_init( ctx->registry.rng, key, FD_CHACHA_RNG_ALGO_CHACHA8 );
+  tls->rng = ctx->registry.rng;
+  if( !trusted ) return;
+  int  fd = memfd_with( test_ca_pem );
+  char path[ 32 ];
+  FD_TEST( fd_cstr_printf_check( path, sizeof(path), NULL, "/proc/self/fd/%d", fd ) );
+  FD_TEST( fd_x509_ca_store_load( ctx->ca_store, path )==1L );
+  close( fd );
+}
+
+/* test_node_t serves TLS with the test leaf, one connection at a time:
+   HTTP/1.0 answers the first request with resp and closes, H2_SILENT
+   settles HTTP/2 settings and never answers a call, H2_ANSWER answers
+   each call with an empty message and grpc-status 0, delay_ns after
+   it.  calls counts the requests it received. */
+
+#define NODE_HTTP      (0)
+#define NODE_H2_SILENT (1)
+#define NODE_H2_ANSWER (2)
+
+typedef struct {
+  int                    lfd;
+  int                    fd;
+  int                    mode;
+  int                    preface;
+  char const *           resp;
+  long                   delay_ns;    /* H2_ANSWER: answer this long after a call */
+  uint                   pending_sid; /* call to answer at due, 0 if none */
+  long                   due;
+  ulong                  calls;
+  ulong                  rx_len;
+  uchar                  rx[ 4096 ];
+  fd_tls_t               tls[1];
+  fd_tls_test_sign_ctx_t sign[1];
+  fd_chacha_rng_t        chacha[1];
+  fd_tlsrec_conn_t       conn[1];
+  fd_tlsrec_sock_t       sock[1];
+} test_node_t;
+
+static void
+node_init( test_node_t * n,
+           int           mode,
+           ushort *      port ) {
+  static fd_rng_t _rng[1];
+  fd_rng_t * rng = fd_rng_join( fd_rng_new( _rng, 17U, 0UL ) );
+  memset( n, 0, sizeof(*n) );
+  n->lfd  = listener( 1, port );
+  n->fd   = -1;
+  n->mode = mode;
+  FD_TEST( fcntl( n->lfd, F_SETFL, O_NONBLOCK )==0 );
+  FD_TEST( fd_sha512_join( fd_sha512_new( n->sign->sha512 ) ) );
+  memcpy( n->sign->private_key, test_leaf_key, 32UL );
+  fd_ed25519_public_from_private( n->sign->public_key, n->sign->private_key, n->sign->sha512 );
+  n->tls->rng  = fd_tls_test_rand( n->chacha, rng );
+  n->tls->sign = fd_tls_test_sign( n->sign );
+  for( ulong i=0UL; i<32UL; i++ ) n->tls->kex_private_key[ i ] = fd_rng_uchar( rng );
+  fd_x25519_public( n->tls->kex_public_key, n->tls->kex_private_key );
+  memcpy( n->tls->cert_public_key, n->sign->public_key, 32UL );
+  memcpy( n->tls->cert_x509, test_leaf_der, sizeof(test_leaf_der) );
+  n->tls->cert_x509_sz = sizeof(test_leaf_der);
+  char const * alpn = mode==NODE_HTTP ? "\x08http/1.1" : "\x02h2";
+  n->tls->alpn_sz = strlen( alpn );
+  memcpy( n->tls->alpn, alpn, n->tls->alpn_sz );
+  fd_rng_delete( fd_rng_leave( rng ) );
+}
+
+static void
+node_drop( test_node_t * n ) {
+  if( n->fd>=0 ) close( n->fd );
+  n->fd = -1;
+}
+
+static void
+node_fini( test_node_t * n ) {
+  node_drop( n );
+  close( n->lfd );
+}
+
+static void
+node_send( test_node_t * n,
+           void const *  data,
+           ulong         sz ) {
+  uchar const * p = data;
+  while( sz ) {
+    if( fd_tlsrec_sock_tx_pending( n->sock ) ) {
+      FD_TEST( fd_tlsrec_sock_flush( n->sock, n->fd )>=0 );
+      continue;
+    }
+    ulong done = 0UL;
+    FD_TEST( !fd_tlsrec_sock_tx( n->sock, n->conn, n->fd, p, sz, &done ) );
+    p  += done;
+    sz -= done;
+  }
+}
+
+static void
+node_frame( test_node_t * n,
+            uint          type,
+            uint          flags,
+            uint          stream_id,
+            void const *  payload,
+            ulong         payload_sz ) {
+  uchar f[ 9+64 ];
+  FD_TEST( payload_sz<=64UL );
+  f[0] = (uchar)(payload_sz>>16); f[1] = (uchar)(payload_sz>>8); f[2] = (uchar)payload_sz;
+  f[3] = (uchar)type;
+  f[4] = (uchar)flags;
+  FD_STORE( uint, f+5, fd_uint_bswap( stream_id ) );
+  if( payload_sz ) memcpy( f+9, payload, payload_sz );
+  node_send( n, f, 9UL+payload_sz );
+}
+
+static void
+node_answer( test_node_t * n,
+             uint          sid ) {
+  static uchar const hdrs[] = { 0x88, 0x00, 12, 'c','o','n','t','e','n','t','-','t','y','p','e',
+                                16, 'a','p','p','l','i','c','a','t','i','o','n','/','g','r','p','c' };
+  static uchar const msg[5] = {0};
+  static uchar const trailers[] = { 0x00, 11, 'g','r','p','c','-','s','t','a','t','u','s', 1, '0' };
+  node_frame( n, 1U, 4U, sid, hdrs, sizeof(hdrs) );         /* HEADERS, END_HEADERS */
+  node_frame( n, 0U, 0U, sid, msg, sizeof(msg) );           /* DATA: one empty message */
+  node_frame( n, 1U, 5U, sid, trailers, sizeof(trailers) ); /* HEADERS, END_HEADERS|END_STREAM */
+}
+
+static void
+node_h2( test_node_t * n ) {
+  ulong off = 0UL;
+  if( !n->preface ) {
+    if( n->rx_len<24UL ) return;
+    FD_TEST( !memcmp( n->rx, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24UL ) );
+    n->preface = 1;
+    off = 24UL;
+    node_frame( n, 4U, 0U, 0U, NULL, 0UL ); /* SETTINGS */
+  }
+  while( n->rx_len-off>=9UL ) {
+    uchar const * f   = n->rx+off;
+    ulong         len = (ulong)f[0]<<16 | (ulong)f[1]<<8 | (ulong)f[2];
+    if( n->rx_len-off<9UL+len ) break;
+    uint sid = fd_uint_bswap( FD_LOAD( uint, f+5 ) ) & 0x7fffffffU;
+    if( f[3]==4U && !( f[4]&1U ) ) node_frame( n, 4U, 1U, 0U, NULL, 0UL ); /* SETTINGS ACK */
+    if( f[3]<=1U && ( f[4]&1U ) && sid ) { /* DATA or HEADERS ending a request */
+      n->calls++;
+      if( n->mode==NODE_H2_ANSWER ) {
+        FD_TEST( !n->pending_sid ); /* a probe sends one call at a time */
+        n->pending_sid = sid;
+        n->due         = fd_bam_now()+n->delay_ns;
+      }
+    }
+    off += 9UL+len;
+  }
+  memmove( n->rx, n->rx+off, n->rx_len-off );
+  n->rx_len -= off;
+}
+
+/* node_step accepts, handshakes and answers without blocking. */
+
+static void
+node_step( test_node_t * n ) {
+  if( n->fd<0 ) {
+    int fd = accept( n->lfd, NULL, NULL );
+    if( fd<0 ) return;
+    FD_TEST( fcntl( fd, F_SETFL, O_NONBLOCK )==0 );
+    int nodelay = 1; /* as gRPC servers do; else Nagle holds each reply for an ACK */
+    FD_TEST( !setsockopt( fd, SOL_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay) ) );
+    n->fd      = fd;
+    n->preface = 0;
+    n->rx_len  = 0UL;
+    n->pending_sid = 0U;
+    fd_tlsrec_sock_init( n->sock );
+    FD_TEST( fd_tlsrec_conn_init( n->conn, n->tls, 1 )==n->conn );
+  }
+  if( fd_tlsrec_sock_tx_pending( n->sock ) && fd_tlsrec_sock_flush( n->sock, n->fd )<0 ) {
+    node_drop( n );
+    return;
+  }
+  if( fd_tlsrec_sock_rx( n->sock, n->conn, n->fd, NULL ) ) {
+    node_drop( n );
+    return;
+  }
+  n->rx_len += fd_tlsrec_sock_rx_pop( n->sock, n->rx+n->rx_len, sizeof(n->rx)-n->rx_len );
+  if( !fd_tlsrec_conn_is_ready( n->conn ) ) return;
+  if( n->mode!=NODE_HTTP ) {
+    node_h2( n );
+    if( n->pending_sid && fd_bam_now()>=n->due ) {
+      node_answer( n, n->pending_sid );
+      n->pending_sid = 0U;
+    }
+  } else if( !n->calls && memmem( n->rx, n->rx_len, "\r\n\r\n", 4UL ) ) {
+    n->calls++;
+    node_send( n, n->resp, strlen( n->resp ) );
+    FD_TEST( fd_tlsrec_sock_close( n->sock, n->conn, n->fd )>=0 );
+  }
+}
+
+/* test_fetch_tls fetches https://host:port/v1/nodes from a TLS node.
+   The fetch is rejected unless the store trusts the test CA and host
+   is a name the leaf carries; /etc/hosts maps other.hosts there too. */
+
+static void
+test_fetch_tls( char const * host,
+                int          trusted,
+                int          waker ) {
+  static fd_bam_tile_t ctx[1];
+  ctx_init( ctx, 4U, waker );
+  tls_init( ctx, trusted );
+  fd_etc_hosts_fd = memfd_with( "127.0.0.1 registry.hosts other.hosts\n" );
+  static test_node_t node[1];
+  ushort port;
+  node_init( node, NODE_HTTP, &port );
+  char const * body = "{\"nodes\":[{\"ip\":\"203.0.113.1\",\"grpc_port\":50056,\"region\":\"a\"}]}";
+  char resp[ 256 ];
+  FD_TEST( fd_cstr_printf_check( resp, sizeof(resp), NULL, "HTTP/1.0 200 OK\r\nContent-Length: %lu\r\n\r\n%s", strlen( body ), body ) );
+  node->resp = resp;
+  char raw[ 64 ];
+  FD_TEST( fd_cstr_printf_check( raw, sizeof(raw), NULL, "https://%s:%hu/v1/nodes", host, port ) );
+  take( ctx, raw );
+
+  fd_bam_registry_t * reg = &ctx->registry;
+  ulong steps = 0UL;
+  ulong busy_steps = 0UL;
+  int   busy = 1;
+  long  dl   = 0L;
+  long  end  = fd_log_wallclock()+(long)5e9;
+  while( !fetch_total( reg ) && fd_log_wallclock()<end ) {
+    if( waker && !busy ) park( (int const[]){ node->lfd, node->fd }, 2UL, dl );
+    busy = 0;
+    long t1 = fd_bam_now();
+    fd_bam_registry_step( ctx, &busy, &dl );
+    if( waker && !busy ) FD_TEST( dl>t1 );
+    steps++;
+    busy_steps += !!busy;
+    node_step( node );
+  }
+  FD_LOG_INFO(( "fetch over TLS from %s %s %s: %lu steps, %lu busy", host, trusted ? "trusted" : "untrusted",
+                waker ? "parked" : "polled", steps, busy_steps ));
+  if( waker ) FD_TEST( busy_steps<=12UL && steps<=40UL );
+  else        FD_TEST( busy_steps==steps );
+  FD_TEST( fetch_total( reg )==1UL );
+  if( trusted && strcmp( host, "other.hosts" ) ) {
+    FD_TEST( reg->fetch_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX ]==1UL );
+    FD_TEST( node->calls==1UL && reg->node_cnt==1UL );
+    FD_TEST( reg->nodes[0].ip4==FD_IP4_ADDR( 203, 0, 113, 1 ) && reg->nodes[0].grpc_port==50056 );
+  } else {
+    char why[ 64 ];
+    FD_TEST( fd_cstr_printf_check( why, sizeof(why), NULL, "TLS handshake with %s failed", host ) );
+    FD_TEST( reg->fetch_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_CERT_REJECTED_IDX ]==1UL );
+    FD_TEST( !node->calls && !reg->node_cnt );
+    FD_TEST( strstr( reg->why, why ) );
+  }
+  fd_bam_registry_disable( ctx );
+  node_fini( node );
+  close( fd_etc_hosts_fd );
+  fd_etc_hosts_fd = -1;
+}
+
+/* test_probe_tls probes one TLS node: it answers each sample, after
+   delay_ms, answers none, or presents a certificate the store does not
+   trust.  With waker set the tile parks whenever a step reports no
+   progress. */
+
+static void
+test_probe_tls( int  mode,
+                int  trusted,
+                int  waker,
+                long delay_ms ) {
+  static fd_bam_tile_t ctx[1];
+  ctx_init( ctx, 5U, waker );
+  tls_init( ctx, trusted );
+  fd_bam_registry_t * reg = &ctx->registry;
+  ulong align = fd_bam_registry_probe_align();
+  void * mem  = aligned_alloc( align, fd_ulong_align_up( fd_bam_registry_probe_footprint(), align ) );
+  FD_TEST( mem );
+  reg->probe_mem = mem;
+  fd_bam_registry_join_probe( ctx, 7UL );
+
+  static test_node_t node[1];
+  fd_bam_registry_node_t nodes[1];
+  memset( nodes, 0, sizeof(nodes) );
+  node_init( node, mode, &nodes[0].grpc_port );
+  node->delay_ns = delay_ms*(long)1e6;
+  nodes[0].ip4 = FD_IP4_ADDR( 127, 0, 0, 1 );
+  take( ctx, "http://127.0.0.1:1/v1/nodes" );
+  fd_bam_registry_on_fetch( reg, nodes, 1UL, fd_bam_now(), 0, ctx->rng ); /* next fetch in 2 s */
+
+  int  busy = 0;
+  long dl   = 0L;
+  long t0   = fd_bam_now();
+  fd_bam_registry_step( ctx, &busy, &dl );
+  FD_TEST( reg->phase==2 && reg->probe_active );
+  ulong steps = 0UL;
+  ulong busy_steps = 0UL;
+  long  end = fd_log_wallclock()+(long)3e9;
+  while( reg->phase==2 && fd_log_wallclock()<end ) {
+    if( waker && !busy ) park( (int const[]){ node->lfd, node->fd }, 2UL, node->pending_sid ? fd_long_min( dl, node->due ) : dl );
+    busy = 0;
+    long t1 = fd_bam_now();
+    fd_bam_registry_step( ctx, &busy, &dl );
+    if( waker && !busy ) FD_TEST( dl>t1 );
+    steps++;
+    busy_steps += !!busy;
+    node_step( node );
+  }
+  long took = fd_bam_now()-t0;
+  ulong rtt_us = reg->ranked_cnt ? reg->ranked[0].rtt_us : 0UL;
+  FD_LOG_INFO(( "probe over TLS mode %d %s %s, %ld ms delay: %lu steps, %lu busy, %ld us, rtt %lu us", mode,
+                trusted ? "trusted" : "untrusted", waker ? "parked" : "polled", delay_ms, steps, busy_steps, took/1000L, rtt_us ));
+  FD_TEST( !reg->phase && !reg->probe_active );
+  if( waker ) FD_TEST( busy_steps<=8UL && steps<=24UL );
+  else        FD_TEST( busy_steps==steps );
+  ulong const usable = FD_METRICS_ENUM_BAM_REGISTRY_PROBE_NODE_RESULT_V_USABLE_IDX;
+  ulong const silent = FD_METRICS_ENUM_BAM_REGISTRY_PROBE_NODE_RESULT_V_UNANSWERED_IDX;
+  if( !trusted ) {
+    FD_TEST( reg->probe_cert_cnt==1UL && !node->calls );
+    FD_TEST( !reg->ranked_cnt && reg->last_round[ silent ]==1UL );
+  } else if( mode==NODE_H2_ANSWER ) {
+    FD_TEST( !reg->probe_cert_cnt && node->calls==FD_BAM_REGISTRY_PROBE_SAMPLES );
+    FD_TEST( reg->ranked_cnt==1UL && reg->last_round[ usable ]==1UL );
+    FD_TEST( reg->ranked[0].node.grpc_port==nodes[0].grpc_port && rtt_us<=FD_BAM_REGISTRY_MAX_RTT_US );
+    FD_TEST( rtt_us>=(ulong)delay_ms*1000UL );
+  } else {
+    /* Each sample waits out its request deadline. */
+    FD_TEST( !reg->probe_cert_cnt && node->calls==FD_BAM_REGISTRY_PROBE_SAMPLES );
+    FD_TEST( !reg->ranked_cnt && reg->last_round[ silent ]==1UL );
+    FD_TEST( took>=(long)FD_BAM_REGISTRY_PROBE_SAMPLES*FD_BAM_REGISTRY_PROBE_REQUEST_NS );
+  }
+  fd_bam_registry_disable( ctx );
+  node_fini( node );
+  free( mem );
+}
+
 /* test_probe_round probes a refused port and one that accepts TCP but
    never answers TLS.  Disabling BAM mid-round idles the follower;
    enabling it reruns the round, which settles with no usable node,
@@ -743,6 +1137,16 @@ main( int     argc,
     test_fetch_loopback( "127.0.0.1",      DNS_HOSTS,    "/v1/nodes", "503 Service Unavailable", one, FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX, waker );
   }
   test_fetch_refused();
+  for( int waker=0; waker<2; waker++ ) {
+    test_fetch_tls( "registry.hosts", 1, waker );
+    test_fetch_tls( "registry.hosts", 0, waker );
+  }
+  test_fetch_tls( "127.0.0.1",   1, 0 ); /* the IP SAN, as probes check */
+  test_fetch_tls( "other.hosts", 1, 0 ); /* a name the leaf lacks */
+  test_probe_tls( NODE_H2_ANSWER, 1, 0,  0L );
+  test_probe_tls( NODE_H2_ANSWER, 1, 0, 10L );
+  test_probe_tls( NODE_H2_SILENT, 1, 0,  0L );
+  test_probe_tls( NODE_H2_ANSWER, 0, 0,  0L );
   test_probe_round( 0 );
   test_probe_round( 1 );
   test_near_leader();
