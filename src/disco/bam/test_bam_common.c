@@ -8,11 +8,47 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+/* Test-only shims implemented in fd_bam_tile.c so the BAM unit tests
+   and fuzzers can drive internal BAM tile paths without exposing them
+   through production headers. */
+
+extern void
+fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
+                                  ulong           in_idx,
+                                  ulong           sig,
+                                  ulong           chunk,
+                                  ulong           sz );
+
+extern void
+fd_bam_test_receive_ingress_frag_lapped( fd_bam_tile_t * ctx,
+                                         ulong           in_idx,
+                                         ulong           sig,
+                                         ulong           chunk,
+                                         ulong           sz,
+                                         void *          payload );
+
+extern void
+fd_bam_test_metrics_write( fd_bam_tile_t * ctx );
+
+extern void
+fd_bam_test_before_credit( fd_bam_tile_t *    ctx,
+                           fd_stem_context_t * stem,
+                           int *               charge_busy );
+
 extern void
 fd_bam_test_after_credit( fd_bam_tile_t *    ctx,
                           fd_stem_context_t * stem,
                           int *               opt_poll_in,
                           int *               charge_busy );
+
+extern long
+fd_bam_test_next_deadline( fd_bam_tile_t * ctx );
+
+extern void
+fd_bam_test_check_credit( fd_bam_tile_t *     ctx,
+                          fd_stem_context_t * stem,
+                          int *               charge_busy,
+                          int *               is_backpressured );
 
 FD_IMPORT_BINARY( test_bam_sample_vote, "src/disco/pack/sample_vote.bin" );
 
@@ -545,7 +581,7 @@ test_bam_env_create_with_grpc_buf_sz( test_bam_env_t * env,
   fd_bam_tile_t * state = fd_wksp_alloc_laddr( wksp, alignof(fd_bam_tile_t), sizeof(fd_bam_tile_t), 1UL );
   FD_TEST( state );
   env->state = state;
-  fd_memset( state, 0, sizeof(fd_bam_tile_t) );
+  fd_bam_tile_ctx_defaults( state );
   fd_clock_tile_init( state->clock );
   state->waker_fseq = fd_fseq_join( fd_fseq_new( env->waker_fseq_mem, 0UL ) );
   FD_TEST( state->waker_fseq );
@@ -556,7 +592,6 @@ test_bam_env_create_with_grpc_buf_sz( test_bam_env_t * env,
   fd_base58_encode_32( state->bam_identity_pubkey, NULL, state->bam_identity_pubkey_b58 );
   state->stem = env->stem;
   state->enabled = 1;
-  state->ownership_gen_retired = 1U;
   ulong const pending_max = mcache_depth;
   env->pending_txn_mem = fd_wksp_alloc_laddr( wksp, bam_pending_txn_align(), bam_pending_txn_footprint( pending_max ), 1UL );
   FD_TEST( env->pending_txn_mem );
@@ -576,15 +611,7 @@ test_bam_env_create_with_grpc_buf_sz( test_bam_env_t * env,
   };
   state->gossip_out = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
   state->shred_out  = (fd_bam_out_ctx_t){ .idx    = ULONG_MAX };
-  state->bam_leader_state.slot = ULONG_MAX;
-  state->pack_bam_leader_in_idx = ULONG_MAX;
-  state->pack_bam_result_in_idx = ULONG_MAX;
-  state->replay_in_idx = ULONG_MAX;
-  state->next_leader_slot = ULONG_MAX;
-  state->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
   state->heap_wksp       = wksp;
-  state->tcp_sock        = -1;
-  state->keylog_fd       = -1;
   state->so_rcvbuf       = (int)grpc_buf_sz;
   state->map_seed        = 1UL;
   state->connect_deadline = LONG_MAX; /* mocked connections skip the dial */

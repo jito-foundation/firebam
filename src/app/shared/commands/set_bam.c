@@ -102,10 +102,11 @@ set_bam_apply_request( args_t *   args,
   }
 
   /* Report the applied fields before releasing them to the next writer */
-  FD_LOG_NOTICE(( "BAM runtime configuration updated (enabled=%s, url=%s, sni=%s)",
+  FD_LOG_NOTICE(( "BAM runtime configuration updated (enabled=%s, url=%s, sni=%s%s%s)",
                   FD_VOLATILE_CONST( ctrl->enable ) ? "true" : "false",
                   ctrl->url[ 0 ] ? ctrl->url : "(unset)",
-                  ctrl->sni[ 0 ] ? ctrl->sni : "(default)" ));
+                  ctrl->sni[ 0 ] ? ctrl->sni : "(default)",
+                  ctrl->node[ 0 ] ? ", node=" : "", ctrl->node ));
   (void)FD_ATOMIC_CAS( &ctrl->state, FD_BAM_CTRL_STATE_SUCCESS, FD_BAM_CTRL_STATE_IDLE );
 }
 

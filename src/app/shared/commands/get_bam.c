@@ -41,6 +41,7 @@ get_bam_cmd_fn( args_t *   args FD_PARAM_UNUSED,
                   FD_VOLATILE_CONST( ctrl->enable ) ? "true" : "false",
                   ctrl->url[ 0 ] ? ctrl->url : "(unset)",
                   ctrl->sni[ 0 ] ? ctrl->sni : "(default)" ));
+  if( ctrl->node[ 0 ] ) FD_LOG_STDOUT(( "node=%s\n", ctrl->node ));
   fd_topo_leave_workspaces( topo );
 }
 

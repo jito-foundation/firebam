@@ -32,8 +32,9 @@
 
 static ulong
 scratch_align( void ) {
-  return fd_ulong_max( fd_ulong_max( fd_ulong_max( alignof(fd_bam_tile_t),
-                                                     fd_grpc_client_align() ),
+  return fd_ulong_max( fd_ulong_max( fd_ulong_max( fd_ulong_max( alignof(fd_bam_tile_t),
+                                                                   fd_grpc_client_align() ),
+                                                    fd_bam_registry_probe_align() ),
                                       bam_pending_txn_align() ),
                        alignof(fd_bam_decoded_multi_batch_t) );
 }
@@ -44,6 +45,7 @@ scratch_footprint( fd_topo_tile_t const * tile ) {
   ulong l = FD_LAYOUT_INIT;
   l = FD_LAYOUT_APPEND( l, alignof(fd_bam_tile_t), sizeof(fd_bam_tile_t)                        );
   l = FD_LAYOUT_APPEND( l, fd_grpc_client_align(),    fd_grpc_client_footprint( tile->bam.buf_sz ) );
+  l = FD_LAYOUT_APPEND( l, fd_bam_registry_probe_align(), fd_bam_registry_probe_footprint()         );
   l = FD_LAYOUT_APPEND( l, bam_pending_txn_align(),   bam_pending_txn_footprint( pending_max )        );
   l = FD_LAYOUT_APPEND( l, alignof(fd_bam_decoded_multi_batch_t), sizeof(fd_bam_decoded_multi_batch_t)       );
   return FD_LAYOUT_FINI( l, scratch_align() );
@@ -147,6 +149,19 @@ metrics_write( fd_bam_tile_t * ctx ) {
   FD_MGAUGE_SET(     BAM, LEADER_SLOT_FIRST_INGRESS_STATE,       current_slot_first_ingress_state_idx );
   FD_MHIST_COPY(     BAM, BUILDER_HEARTBEAT_ARRIVAL_DELAY_NANOS, ctx->metrics.builder_heartbeat_arrival_delta_nanos );
   FD_MHIST_COPY(     BAM, SCHEDULER_PONG_SEND_DURATION_NANOS,    ctx->metrics.scheduler_pong_send_nanos );
+
+  fd_bam_registry_t const * reg = &ctx->registry;
+  int dialed = reg->on && reg->have_dial;
+  FD_MGAUGE_SET(       BAM, IS_REGISTRY_ENABLED,                 (ulong)reg->on );
+  FD_MCNT_ENUM_COPY(   BAM, REGISTRY_LIST_FETCHED,               reg->fetch_cnt );
+  FD_MGAUGE_SET(       BAM, REGISTRY_NODE_COUNT,                 reg->node_cnt );
+  FD_MCNT_ENUM_COPY(   BAM, REGISTRY_PROBE_ROUND_ENDED,          reg->round_cnt );
+  FD_MGAUGE_ENUM_COPY( BAM, LAST_REGISTRY_PROBE_NODE_COUNT,      reg->last_round );
+  FD_MCNT_SET(         BAM, REGISTRY_PROBE_CERT_REJECTED,        reg->probe_cert_cnt );
+  FD_MCNT_SET(         BAM, REGISTRY_NODE_SELECTED,              reg->select_cnt );
+  FD_MGAUGE_SET(       BAM, REGISTRY_SELECTED_IP,                dialed ? (ulong)fd_uint_bswap( reg->dial_ip4 ) : 0UL );
+  FD_MGAUGE_SET(       BAM, REGISTRY_SELECTED_PORT,              dialed ? (ulong)reg->dial_port : 0UL );
+  FD_MGAUGE_SET(       BAM, REGISTRY_SELECTED_RTT_NANOS,         dialed ? reg->dial_rtt_us*1000UL : 0UL );
 
   /* Gauges keep their value, so the workspace scan runs at most once per refresh interval. */
   if( FD_UNLIKELY( !ctx->heap_usage_last_update_ns ||
@@ -396,6 +411,8 @@ fd_bam_note_replay_schedule_slot( fd_bam_tile_t * ctx,
                                   ulong           slots_per_epoch ) {
   ulong const old_recheck_slot = ctx->leader_schedule_recheck_slot;
   ulong       new_recheck_slot = old_recheck_slot;
+
+  if( FD_LIKELY( slot!=ULONG_MAX ) ) ctx->registry.replay_slot = fd_ulong_max( ctx->registry.replay_slot, slot );
 
   if( FD_LIKELY( fd_bam_tile_leader_slot_known( ctx ) ) ) {
     new_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
@@ -733,10 +750,14 @@ before_credit( fd_bam_tile_t *    ctx,
     if( FD_LIKELY( fired ) ) fd_fseq_update( ctx->waker_fseq, 0UL );
     int busy = 0;
     fd_bam_client_step( ctx, &busy );
-    if( FD_LIKELY( fired ) ) fd_waker_client_rearm( ctx->waker_client_idx );
-    *charge_busy |= busy;
     long step_end = fd_bam_now();
-    ctx->next_step_deadline = busy ? 0L : fd_bam_client_next_deadline( ctx, step_end );
+    int reg_busy = 0;
+    long reg_deadline = LONG_MAX;
+    fd_bam_registry_step( ctx, &reg_busy, &reg_deadline ); /* its sockets share the waker set */
+    if( FD_LIKELY( fired ) ) fd_waker_client_rearm( ctx->waker_client_idx );
+    busy |= reg_busy;
+    *charge_busy |= busy;
+    ctx->next_step_deadline = busy ? 0L : fd_long_min( fd_bam_client_next_deadline( ctx, step_end ), reg_deadline );
     /* Without a waker (performance layout) nothing reports socket
        readiness, so poll an open socket again shortly after an idle step. */
     if( FD_LIKELY( !ctx->waker_fseq && ctx->tcp_sock>=0 ) )
@@ -880,10 +901,21 @@ fd_bam_test_check_credit( fd_bam_tile_t *     ctx,
 
 static void
 fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
-  ctx->ctrl->url[0] = '\0';
-  ctx->ctrl->sni[0] = '\0';
+  ctx->ctrl->url[0]  = '\0';
+  ctx->ctrl->sni[0]  = '\0';
+  ctx->ctrl->node[0] = '\0';
   ctx->ctrl->enable = ctx->enabled;
   FD_VOLATILE( ctx->ctrl->applied_enable ) = ctx->enabled;
+  /* Registry mode reports the registry URL and the node it picked; the
+     node's IP is its TLS name, so there is no SNI. */
+  if( ctx->registry.on ) {
+    fd_bam_registry_t const * reg = &ctx->registry;
+    fd_cstr_ncpy( ctx->ctrl->url, reg->url, sizeof(ctx->ctrl->url) );
+    if( reg->have_dial ) fd_cstr_printf( ctx->ctrl->node, sizeof(ctx->ctrl->node), NULL, FD_IP4_ADDR_FMT ":%hu",
+                                         FD_IP4_ADDR_FMT_ARGS( reg->dial_ip4 ), reg->dial_port );
+    else                 fd_cstr_ncpy( ctx->ctrl->node, "(none)", sizeof(ctx->ctrl->node) );
+    return;
+  }
   if( FD_UNLIKELY( !ctx->server_fqdn_len || !ctx->server_tcp_port ) ) return;
   snprintf( ctx->ctrl->url, sizeof(ctx->ctrl->url), "%s://%.*s:%u",
             ctx->is_ssl ? "https" : "http", ctx->server_fqdn_len, ctx->server_fqdn, ctx->server_tcp_port );
@@ -891,14 +923,51 @@ fd_bam_tile_ctrl_update_current( fd_bam_tile_t * ctx ) {
 }
 
 static void
-fd_bam_tile_clear_endpoint( fd_bam_tile_t * ctx ) {
+fd_bam_tile_clear_dial( fd_bam_tile_t * ctx ) {
   ctx->server_fqdn[0]  = '\0';
   ctx->server_fqdn_len = 0U;
   ctx->server_sni[0]   = '\0';
   ctx->server_sni_len  = 0U;
   ctx->server_tcp_port = 0U;
   ctx->is_ssl          = 0U;
-  ctx->enabled         = 0U;
+}
+
+int
+fd_bam_tile_dial_node( fd_bam_tile_t *                ctx,
+                       fd_bam_registry_node_t const * node ) {
+  if( ctx->registry.have_dial && ctx->registry.dial_ip4==node->ip4 &&
+      ctx->registry.dial_port==node->grpc_port && ctx->is_ssl &&
+      ctx->server_tcp_port==node->grpc_port ) return 0;
+
+  char host[ 16 ];
+  ulong host_len = 0UL;
+  fd_cstr_printf( host, sizeof(host), &host_len, FD_IP4_ADDR_FMT, FD_IP4_ADDR_FMT_ARGS( node->ip4 ) );
+  fd_cstr_ncpy( ctx->server_fqdn, host, sizeof(ctx->server_fqdn) );
+  ctx->server_fqdn_len = (ushort)host_len;
+  fd_cstr_ncpy( ctx->server_sni, host, sizeof(ctx->server_sni) );
+  ctx->server_sni_len = (ushort)host_len;
+  ctx->server_tcp_port = node->grpc_port;
+  ctx->is_ssl = 1;
+  ctx->registry.have_dial = 1;
+  ctx->registry.dial_ip4  = node->ip4;
+  ctx->registry.dial_port = node->grpc_port;
+  ctx->registry.select_cnt++;
+  if( ctx->grpc_client ) {
+    fd_grpc_client_set_authority( ctx->grpc_client, host, host_len, node->grpc_port );
+    fd_grpc_client_set_https( ctx->grpc_client, 1 );
+  }
+  fd_bam_tile_begin_scheduler_generation( ctx );
+  fd_bam_client_reset( ctx );
+  ctx->backoff_until = 0L;
+  ctx->next_step_deadline = 0L;
+  if( ctx->ctrl ) fd_bam_tile_ctrl_update_current( ctx );
+  return 1;
+}
+
+static void
+fd_bam_tile_clear_endpoint( fd_bam_tile_t * ctx ) {
+  fd_bam_tile_clear_dial( ctx );
+  ctx->enabled = 0U;
 }
 
 static char
@@ -913,9 +982,10 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
 
   ushort new_port = ctx->server_tcp_port;
   _Bool  new_ssl  = ctx->is_ssl;
-  char   new_host[ FD_FQDN_BUF_MAX ];
+  char   new_host[ FD_FQDN_BUF_MAX ] = {0};
   _Bool  need_reset = 0;
   _Bool  scheduler_work_stale = 0;
+  int    registry_url = 0;
 
   if( command & FD_BAM_CTRL_CMD_URL ) {
     char const * p = ctx->ctrl->url;
@@ -923,6 +993,7 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
 
     if( FD_UNLIKELY( !*p ) ) {
       /* Runtime blank URL means "clear BAM URL" and disable the client. */
+      fd_bam_registry_disable( ctx );
       need_reset = !!ctx->server_fqdn_len || !!ctx->server_sni_len || !!ctx->server_tcp_port || !!ctx->is_ssl || !!ctx->enabled;
       scheduler_work_stale = 1;
       fd_bam_tile_clear_endpoint( ctx );
@@ -942,46 +1013,68 @@ fd_bam_tile_apply_ctrl_request( fd_bam_tile_t * ctx,
     }
     if( FD_UNLIKELY( !runtime_url.port_len ) ) new_port = new_ssl ? FD_BAM_HTTPS_PORT : FD_BAM_HTTP_PORT;
 
-    fd_memcpy( new_host, runtime_url.host, runtime_url.host_len );
-    new_host[ runtime_url.host_len ] = '\0';
-    scheduler_work_stale = !!( strcmp( new_host, ctx->server_fqdn ) ||
-                               new_port != ctx->server_tcp_port ||
-                               new_ssl != !!ctx->is_ssl );
+    if( FD_UNLIKELY( ( command & FD_BAM_CTRL_CMD_SNI ) && fd_bam_registry_is_url( &runtime_url ) ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "--sni does not apply to a BAM registry URL; nodes are verified by IP" );
+      return -1;
+    }
+    int reg_rc = fd_bam_registry_take_url( ctx, ctx->ctrl->url, &runtime_url, new_ssl, new_port, err, err_sz );
+    if( reg_rc<0 ) return -1;
+    if( reg_rc>0 ) {
+      registry_url = 1;
+      if( !ctx->registry.have_dial ) {
+        fd_bam_tile_clear_dial( ctx );
+        if( ctx->grpc_client ) fd_grpc_client_set_authority( ctx->grpc_client, "", 0UL, 0 );
+        need_reset = 1;
+        scheduler_work_stale = 1;
+      }
+    } else {
+      fd_memcpy( new_host, runtime_url.host, runtime_url.host_len );
+      new_host[ runtime_url.host_len ] = '\0';
+      scheduler_work_stale = !!( strcmp( new_host, ctx->server_fqdn ) ||
+                                 new_port != ctx->server_tcp_port ||
+                                 new_ssl != !!ctx->is_ssl );
+    }
   } else {
+    if( FD_UNLIKELY( ( command & FD_BAM_CTRL_CMD_SNI ) && ctx->registry.on ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "--sni does not apply to a BAM registry URL; nodes are verified by IP" );
+      return -1;
+    }
     fd_cstr_ncpy( new_host, ctx->server_fqdn, sizeof( new_host ) );
   }
 
-  char new_sni[ FD_SNI_BUF_MAX ];
-  if( command & FD_BAM_CTRL_CMD_SNI ) {
-    fd_cstr_ncpy( new_sni, ctx->ctrl->sni, sizeof( new_sni ) );
-    if( FD_UNLIKELY( !new_sni[0] ) ) fd_cstr_ncpy( new_sni, new_host, sizeof( new_sni ) );
-  } else if( command & FD_BAM_CTRL_CMD_URL ) {
-    fd_cstr_ncpy( new_sni, new_host, sizeof( new_sni ) );
-  } else {
-    fd_cstr_ncpy( new_sni, ctx->server_sni, sizeof( new_sni ) );
-  }
-  if( FD_UNLIKELY( fd_cstr_nlen( new_sni, sizeof(new_sni) )>=sizeof(ctx->tls->server_name) ) ) {
-    fd_cstr_printf( err, err_sz, NULL, "BAM TLS server name exceeds %lu bytes", sizeof(ctx->tls->server_name)-1UL );
-    return -1;
+  if( !registry_url ) {
+    char new_sni[ FD_SNI_BUF_MAX ] = {0};
+    if( command & FD_BAM_CTRL_CMD_SNI ) {
+      fd_cstr_ncpy( new_sni, ctx->ctrl->sni, sizeof( new_sni ) );
+      if( FD_UNLIKELY( !new_sni[0] ) ) fd_cstr_ncpy( new_sni, new_host, sizeof( new_sni ) );
+    } else if( command & FD_BAM_CTRL_CMD_URL ) {
+      fd_cstr_ncpy( new_sni, new_host, sizeof( new_sni ) );
+    } else {
+      fd_cstr_ncpy( new_sni, ctx->server_sni, sizeof( new_sni ) );
+    }
+    if( FD_UNLIKELY( fd_cstr_nlen( new_sni, sizeof(new_sni) )>=sizeof(ctx->tls->server_name) ) ) {
+      fd_cstr_printf( err, err_sz, NULL, "BAM TLS server name exceeds %lu bytes", sizeof(ctx->tls->server_name)-1UL );
+      return -1;
+    }
+    if( command & FD_BAM_CTRL_CMD_URL ) {
+      /* Leave registry mode only once the direct URL is known good. */
+      if( ctx->registry.on ) fd_bam_registry_disable( ctx );
+      fd_cstr_ncpy( ctx->server_fqdn, new_host, sizeof( ctx->server_fqdn ) );
+      ctx->server_fqdn_len = (ushort)fd_cstr_nlen( ctx->server_fqdn, sizeof( ctx->server_fqdn ) );
+      ctx->server_tcp_port = new_port;
+      ctx->is_ssl          = new_ssl;
+    }
+    if( command & (FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI) ) {
+      scheduler_work_stale |= !!strcmp( new_sni, ctx->server_sni );
+      fd_cstr_ncpy( ctx->server_sni, new_sni, sizeof( ctx->server_sni ) );
+      ctx->server_sni_len = (ushort)fd_cstr_nlen( ctx->server_sni, sizeof( ctx->server_sni ) );
+      fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
+      fd_grpc_client_set_https( ctx->grpc_client, ctx->is_ssl );
+      need_reset = 1;
+    }
   }
 
   uchar new_enable = (uchar)( ( command & FD_BAM_CTRL_CMD_ENABLE ) ? !!ctx->ctrl->enable : ctx->enabled );
-  if( command & FD_BAM_CTRL_CMD_URL ) {
-    fd_cstr_ncpy( ctx->server_fqdn, new_host, sizeof( ctx->server_fqdn ) );
-    ctx->server_fqdn_len = (ushort)fd_cstr_nlen( ctx->server_fqdn, sizeof( ctx->server_fqdn ) );
-    ctx->server_tcp_port = new_port;
-    ctx->is_ssl          = new_ssl;
-  }
-
-  if( command & (FD_BAM_CTRL_CMD_URL | FD_BAM_CTRL_CMD_SNI) ) {
-    scheduler_work_stale |= !!strcmp( new_sni, ctx->server_sni );
-    fd_cstr_ncpy( ctx->server_sni, new_sni, sizeof( ctx->server_sni ) );
-    ctx->server_sni_len = (ushort)fd_cstr_nlen( ctx->server_sni, sizeof( ctx->server_sni ) );
-    fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );
-    fd_grpc_client_set_https( ctx->grpc_client, ctx->is_ssl );
-    need_reset = 1;
-  }
-
   if( ( command & FD_BAM_CTRL_CMD_ENABLE ) && ( new_enable != ctx->enabled ) ) {
     scheduler_work_stale |= !new_enable;
     ctx->enabled = new_enable;
@@ -1037,6 +1130,14 @@ fd_bam_tile_parse_endpoint( fd_bam_tile_t *        ctx,
                    url->host_len>=sizeof(ctx->tls->server_name) ) )
     FD_LOG_ERR(( "[tiles.bam.url] hostname exceeds BAM TLS name capacity" ));
   if( FD_UNLIKELY( !url->port_len ) ) ctx->server_tcp_port = is_ssl ? FD_BAM_HTTPS_PORT : FD_BAM_HTTP_PORT;
+  int reg_rc = fd_bam_registry_take_url( ctx, tile->bam.url, url, is_ssl, ctx->server_tcp_port, NULL, 0UL );
+  if( FD_UNLIKELY( reg_rc<0 ) ) FD_LOG_ERR(( "Rejected BAM registry URL `%s`", tile->bam.url ));
+  if( reg_rc>0 ) {
+    if( FD_UNLIKELY( tile->bam.sni[0] ) ) FD_LOG_WARNING(( "[tiles.bam.tls_domain_name] is ignored with a registry URL; nodes are verified by IP" ));
+    fd_bam_tile_clear_dial( ctx );
+    fd_bam_tile_ctrl_update_current( ctx );
+    return;
+  }
   fd_cstr_fini( fd_cstr_append_text( fd_cstr_init( ctx->server_fqdn ), url->host, url->host_len ) );
   ctx->server_fqdn_len = (ushort)url->host_len;
 
@@ -1116,11 +1217,20 @@ fd_bam_tile_init_tls( fd_bam_tile_t * ctx,
   fd_memcpy( tls->alpn, alpn, sizeof(alpn) );
   tls->alpn_sz = sizeof(alpn);
 
-  /* BAM's URL may switch from HTTP to HTTPS after sandbox entry. */
-  if( FD_UNLIKELY( !tile->bam.tls_cert_verify ) ) return;
-  if( FD_UNLIKELY( fd_x509_ca_store_load_system( ctx->ca_store )<0L ) )
+  /* BAM's URL may switch to HTTPS or to a registry after sandbox
+     entry, so load the system bundle even when unverified.  A registry
+     URL needs it (see fd_bam_registry_take_url). */
+  if( FD_UNLIKELY( fd_x509_ca_store_load_system( ctx->ca_store )<0L && tile->bam.tls_cert_verify ) )
     FD_LOG_ERR(( "No system CA certificate bundle found for BAM TLS verification" ));
-  tls->ca_store = ctx->ca_store;
+  ctx->registry.cert_verify_cfg = !!tile->bam.tls_cert_verify;
+  if( FD_UNLIKELY( tile->bam.tls_cert_verify ) ) tls->ca_store = ctx->ca_store;
+
+  fd_tls_t * reg_tls = fd_tls_join( fd_tls_new( ctx->registry.tls ) );
+  uchar reg_key[ FD_CHACHA_KEY_SZ ];
+  if( FD_UNLIKELY( !fd_rng_secure( reg_key, sizeof(reg_key) ) ) ) FD_LOG_CRIT(( "fd_rng_secure failed" ));
+  fd_chacha_rng_init( ctx->registry.rng, reg_key, FD_CHACHA_RNG_ALGO_CHACHA8 );
+  fd_memzero_explicit( reg_key, sizeof(reg_key) );
+  reg_tls->rng = ctx->registry.rng;
 }
 
 /* bam_topo_prop_obj returns the topology object named by the topo
@@ -1142,6 +1252,7 @@ privileged_init( fd_topo_t const *      topo,
   FD_SCRATCH_ALLOC_INIT( l, scratch );
   fd_bam_tile_t * ctx         = FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_bam_tile_t), sizeof(fd_bam_tile_t)                        );
   void *             grpc_mem    = FD_SCRATCH_ALLOC_APPEND( l, fd_grpc_client_align(),    fd_grpc_client_footprint( tile->bam.buf_sz ) );
+  void *             probe_mem   = FD_SCRATCH_ALLOC_APPEND( l, fd_bam_registry_probe_align(), fd_bam_registry_probe_footprint() );
   ulong              pending_max = FD_BAM_VERIFY_OUT_DEPTH;
   void *             pending_mem = FD_SCRATCH_ALLOC_APPEND( l, bam_pending_txn_align(),    bam_pending_txn_footprint( pending_max )        );
   void *             decoded_multi_mem =
@@ -1152,19 +1263,11 @@ privileged_init( fd_topo_t const *      topo,
     FD_LOG_CRIT(( "BAM tile scratch overflow" )); /* unreachable */
   }
 
-  memset( ctx, 0, sizeof(fd_bam_tile_t) );
-  ctx->ownership_gen_retired = 1U;
+  fd_bam_tile_ctx_defaults( ctx );
+  ctx->registry.probe_mem = probe_mem;
   ctx->grpc_client_mem = grpc_mem;
   ctx->pending_txns    = bam_pending_txn_join( bam_pending_txn_new( pending_mem, pending_max ) );
   ctx->decoded_multi   = (fd_bam_decoded_multi_batch_t *)decoded_multi_mem;
-  ctx->tcp_sock        = -1;
-  ctx->bam_leader_state.slot = ULONG_MAX;
-  ctx->motor_bam_in_idx       = ULONG_MAX;
-  ctx->pack_bam_leader_in_idx = ULONG_MAX;
-  ctx->pack_bam_result_in_idx = ULONG_MAX;
-  ctx->replay_in_idx = ULONG_MAX;
-  ctx->next_leader_slot = ULONG_MAX;
-  ctx->leader_schedule_recheck_slot = FD_BAM_LEADER_SCHEDULE_RECHECK_NONE_SLOT;
 
   uchar const * public_key = fd_keyload_load( tile->bam.identity_key_path, 1 /* public key only */ );
   fd_memcpy( ctx->bam_identity_pubkey, public_key, 32UL );
@@ -1339,6 +1442,7 @@ unprivileged_init( fd_topo_t const *      topo,
   if( FD_UNLIKELY( !ctx->grpc_client ) ) {
     FD_LOG_CRIT(( "fd_grpc_client_new failed" )); /* unreachable */
   }
+  fd_bam_registry_join_probe( ctx, ctx->map_seed+1UL );
   ctx->heap_wksp = fd_wksp_containing( ctx );
   fd_grpc_client_set_version( ctx->grpc_client, fd_version_cstr, strlen( fd_version_cstr ) );
   fd_grpc_client_set_authority( ctx->grpc_client, ctx->server_sni, ctx->server_sni_len, ctx->server_tcp_port );

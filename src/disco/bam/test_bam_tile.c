@@ -103,41 +103,6 @@ test_bam_build_legacy_or_v0_txn( uchar payload[ static FD_TXN_MTU_V0 ],
   return FD_TXN_MTU_V0;
 }
 
-/* Test-only shims implemented in fd_bam_tile.c so this unit test can
-   drive internal BAM tile paths without exposing them through production
-   headers. */
-extern void
-fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
-                                  ulong           in_idx,
-                                  ulong           sig,
-                                  ulong           chunk,
-                                  ulong           sz );
-
-extern void
-fd_bam_test_receive_ingress_frag_lapped( fd_bam_tile_t * ctx,
-                                         ulong           in_idx,
-                                         ulong           sig,
-                                         ulong           chunk,
-                                         ulong           sz,
-                                         void *          payload );
-
-extern void
-fd_bam_test_metrics_write( fd_bam_tile_t * ctx );
-
-extern void
-fd_bam_test_before_credit( fd_bam_tile_t *    ctx,
-                           fd_stem_context_t * stem,
-                           int *               charge_busy );
-
-extern void
-fd_bam_test_check_credit( fd_bam_tile_t *     ctx,
-                          fd_stem_context_t * stem,
-                          int *               charge_busy,
-                          int *               is_backpressured );
-
-extern long
-fd_bam_test_next_deadline( fd_bam_tile_t * ctx );
-
 static long g_clock = 1L;
 static ulong g_clock_read_cnt;
 
@@ -5095,6 +5060,55 @@ test_bam_ctrl_defaults_bam_ports( fd_wksp_t * wksp ) {
   test_bam_env_destroy( env );
 }
 
+/* A registry URL needs the system CA bundle, reports itself and the
+   node it picked, and refuses --sni.  A direct URL that fails
+   validation leaves registry mode on. */
+static void
+test_bam_ctrl_registry( fd_wksp_t * wksp ) {
+  test_bam_env_t env[1];
+  fd_bam_tile_t * ctx = test_bam_env_create( env, wksp );
+  fd_bam_ctrl_t ctrl;
+  setup_ctrl_defaults( ctx, &ctrl );
+  uchar const  ok      = FD_BAM_CTRL_STATE_SUCCESS;
+  uchar const  err     = FD_BAM_CTRL_STATE_ERROR;
+  char const * direct  = "http://testnet.bam.jito.wtf:50055";
+  char const * reg_url = "https://registry.example/v1/nodes";
+
+  ctx->ca_store->cnt = 0UL;
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_URL, 1U, reg_url )==err );
+  FD_TEST( strstr( ctrl.error, "CA certificate bundle" ) && !ctx->registry.on && !strcmp( ctrl.url, direct ) );
+  ctx->ca_store->cnt = 1UL;
+
+  fd_cstr_ncpy( ctrl.sni, "x.example", sizeof(ctrl.sni) );
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_URL|FD_BAM_CTRL_CMD_SNI, 1U, reg_url )==err );
+  FD_TEST( strstr( ctrl.error, "--sni" ) && !ctx->registry.on && !strcmp( ctrl.url, direct ) );
+
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_URL, 1U, reg_url )==ok );
+  FD_TEST( ctx->registry.on && !ctx->server_fqdn_len );
+  FD_TEST( !strcmp( ctrl.url, reg_url ) && !ctrl.sni[0] && !strcmp( ctrl.node, "(none)" ) );
+
+  /* A pick shows as the node; the URL stays the registry's. */
+  fd_bam_registry_node_t node = { .ip4 = FD_IP4_ADDR( 203, 0, 113, 7 ), .grpc_port = 50056 };
+  FD_TEST( fd_bam_tile_dial_node( ctx, &node ) );
+  FD_TEST( !strcmp( ctrl.url, reg_url ) && !ctrl.sni[0] && !strcmp( ctrl.node, "203.0.113.7:50056" ) );
+
+  fd_cstr_ncpy( ctrl.sni, "x.example", sizeof(ctrl.sni) );
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_SNI, 1U, NULL )==err );
+  FD_TEST( ctx->registry.on && !strcmp( ctx->server_sni, "203.0.113.7" ) && !strcmp( ctrl.node, "203.0.113.7:50056" ) );
+
+  /* A TLS name over fd_tls's 253 bytes fails after the URL parsed. */
+  memset( ctrl.sni, 'a', 254UL );
+  ctrl.sni[ 254 ] = '\0';
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_URL|FD_BAM_CTRL_CMD_SNI, 1U, "https://bam.example.com:9443" )==err );
+  FD_TEST( ctx->registry.on && !strcmp( ctrl.url, reg_url ) && !strcmp( ctrl.node, "203.0.113.7:50056" ) );
+
+  FD_TEST( test_bam_ctrl_request( ctx, FD_BAM_CTRL_CMD_URL, 1U, "https://bam.example.com:9443" )==ok );
+  FD_TEST( !ctx->registry.on && !ctrl.node[0] && !strcmp( ctrl.url, "https://bam.example.com:9443" ) );
+  test_bam_check_endpoint( ctx, "bam.example.com", "bam.example.com", 9443U, 1U );
+
+  test_bam_env_destroy( env );
+}
+
 static void
 test_bam_ctrl_toggle_enable_updates_runtime_state( fd_wksp_t * wksp ) {
   /* Validate that toggling enable pauses connectivity and clears the status latch. */
@@ -5621,6 +5635,61 @@ test_bam_gossip_stale_contact_case( fd_wksp_t * wksp,
   FD_TEST( !test_bam_gossip_own_contact_cnt( env, &ctx, seq0, &published ) );
   FD_TEST( fd_fseq_query( ctx.bam_contact.signed_fseq )==4UL );
   FD_TEST( !ctx.bam_contact.ack_pending );
+
+  free( gossip_mem );
+  test_bam_env_destroy( env );
+}
+
+/* The gossip tile's sign in, through its frag callbacks: a sign
+   response acknowledges a pending BAM contact update once the local
+   CRDS table holds our contact advertising it.  The cases above cover
+   the acknowledgement rules. */
+static void
+test_bam_gossip_tile_sign_in( fd_wksp_t * wksp ) {
+  static fd_gossip_tile_ctx_t ctx; /* too large for the stack */
+  test_bam_env_t env[1];
+  test_bam_env_create( env, wksp );
+  ulong sign_cnt = 0UL;
+  ulong signed_ack[1] = { 0UL };
+  long test_now;
+  void * gossip_mem = test_bam_gossip_ctx_init( &ctx, env, signed_ack, NULL, test_bam_gossip_sign_stub, &sign_cnt, &test_now );
+
+  uchar sign_frag[ 64 ];
+  ctx.in[ 0 ] = (fd_gossip_in_ctx_t){ .kind = IN_KIND_SIGN, .mem = (fd_wksp_t *)sign_frag, .mtu = sizeof(sign_frag) };
+
+  fd_bam_contact_update_t const update = {
+      .tpu               = test_bam_ip4_port( "10.0.0.1", 5000U ),
+      .tpu_fwd           = test_bam_ip4_port( "10.0.0.1", 5001U ),
+      .version_client_id = FD_GOSSIP_CONTACT_INFO_CLIENT_FIRE_BAM,
+  };
+  FD_TEST( fd_gossip_tile_apply_bam_contact( &ctx, &update, 4UL, fd_clock_tile_now( ctx.clock ), env->stem ) );
+  FD_TEST( ctx.bam_contact.ack_pending && ctx.bam_contact.ack_target==5UL );
+  FD_TEST( fd_fseq_query( ctx.bam_contact.signed_fseq )==0UL );
+  FD_TEST( sign_cnt && fd_gossip_sign_pend_cnt( ctx.gossip ) );
+
+  ulong sig_k = 0UL;
+  while( fd_gossip_sign_pend_cnt( ctx.gossip ) ) {
+    test_bam_gossip_fake_signature( sign_frag, ++sig_k );
+    FD_TEST( before_frag( &ctx, 0UL, 0UL, 0UL )==0 );
+    during_frag( &ctx, 0UL, 0UL, 0UL, 0UL, sizeof(sign_frag), 0UL );
+    after_frag( &ctx, 0UL, 0UL, 0UL, sizeof(sign_frag), 0UL, 0UL, env->stem );
+  }
+  fd_gossip_contact_info_t const * ci = fd_gossip_my_crds_contact_info( ctx.gossip );
+  FD_TEST( ci && ci->outset==ctx.my_contact_info->outset );
+  test_bam_check_ci_sock( ci, FD_GOSSIP_CONTACT_INFO_SOCKET_TPU,                update.tpu.addr,     5000U );
+  test_bam_check_ci_sock( ci, FD_GOSSIP_CONTACT_INFO_SOCKET_TPU_FORWARDS_QUIC,  update.tpu_fwd.addr, 5007U );
+  FD_TEST( ci->version.client==FD_GOSSIP_CONTACT_INFO_CLIENT_FIRE_BAM );
+  FD_TEST( fd_fseq_query( ctx.bam_contact.signed_fseq )==5UL );
+  FD_TEST( !ctx.bam_contact.ack_pending );
+
+  /* BAM contact updates wait out an identity switch like other inputs;
+     only sign responses pass while signing is halted. */
+  ctx.in[ 1 ].kind = IN_KIND_BAM_GOSSIP;
+  FD_TEST( ctx.my_contact_info->shred_version );
+  FD_TEST( before_frag( &ctx, 1UL, 0UL, 0UL )==0 );
+  ctx.is_halting_signing = 1;
+  FD_TEST( before_frag( &ctx, 1UL, 0UL, 0UL )==-1 );
+  FD_TEST( before_frag( &ctx, 0UL, 0UL, 0UL )==0 );
 
   free( gossip_mem );
   test_bam_env_destroy( env );
@@ -6676,12 +6745,14 @@ main( int     argc,
   /* Control surface */
   test_bam_ctrl_updates_url_and_sni( wksp );
   test_bam_ctrl_defaults_bam_ports( wksp );
+  test_bam_ctrl_registry( wksp );
   test_bam_ctrl_toggle_enable_updates_runtime_state( wksp );
   test_bam_ctrl_enable_from_dormant_then_set_url( wksp );
 
   /* Gossip advertisement */
   test_bam_gossip_tile_applies_contact_update( wksp );
   for( int tie=0; tie<2; tie++ ) test_bam_gossip_stale_contact_case( wksp, tie );
+  test_bam_gossip_tile_sign_in( wksp );
   test_bam_handoff_rings_parked_readers( wksp );
   test_bam_handoff_keeps_housekeeping_cadence( wksp );
   test_bam_activation_ignores_stale_gossip_ack_after_reenable( wksp );

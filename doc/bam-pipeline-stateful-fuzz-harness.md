@@ -16,12 +16,16 @@ adapters. Live code is authoritative.
 ## Coverage boundary
 
 The adapters call real verify, dedup, resolver, pack, and native Firedancer
-execle/runtime code with signature-valid fixtures, seeded account/blockhash
-state, and miniature banks. Links and tile clocks are synthetic; pack's BAM
+execle/runtime code with signature-valid fixtures (except members a
+`POISON_MEMBER` event corrupts), seeded account/blockhash state, and miniature
+banks. Links and tile clocks are synthetic; pack's BAM
 ownership is fixed active and output credits are effectively unlimited. Three
 verify adapters take `bam_verif` round robin, and dedup polls their outputs
 last tile first after a per-input lag of 1-6 frags, so it must hold BAM frags
-and restore `bam_verif` order. This target does not exercise concurrent stem
+and restore `bam_verif` order. With the tip crank on, pack signs its
+initializer bundles with a harness identity, execle runs them against a stand-in
+program deployed at the tip program ids, and the harness models what a landed
+initializer leaves on chain. This target does not exercise concurrent stem
 operation, real link backpressure, ownership handoffs, or transport
 authentication/TLS.
 
@@ -37,7 +41,7 @@ of scheduling, execution correctness, or CU accounting.
 
 Each event is four bytes: `kind, a, b, c`. The harness processes at most
 `BAM_FUZZ_MAX_EVENTS` (currently 128) records. Incomplete trailing bytes and
-records beyond that limit are ignored. Invalid kinds (`kind >= 11`) are ignored
+records beyond that limit are ignored. Invalid kinds (`kind >= 13`) are ignored
 but still consume a record within the limit.
 
 | Kind | Event | Main coverage |
@@ -46,10 +50,12 @@ but still consume a record within the limit.
 | `1` | `REPLAY` | Replay the remembered batches with the same `seq_id`; create remembered batches first if absent. |
 | `2` | `DUP_SEQ` | Replay with changed fixture selectors (which may still select identical bytes). With `c & 0x80`, submit a 2–5-transaction atomic batch, perform one BAM publication callback, then submit a new-`seq_id` fixture selection; publication remains whole-batch. |
 | `3` | `NEW_SEQ_SAME_PAYLOAD` | Replay remembered payloads under new sequence IDs. |
-| `4` | `ADVANCE_SLOT` | Slot rollover and stale-slot behavior. Pack gets fixed block limits in each leader slot; `c` sets no budget. |
+| `4` | `ADVANCE_SLOT` | Slot rollover and stale-slot behavior. `c` picks the slot's CU limit, from `FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND` to the upper bound in 255 steps; with `b & 0x80` the new slot is not a leader slot. |
 | `5`, `6` | `LEADER_OFF`, `LEADER_ON` | Non-leader/null execution-bank state and resumed-leader state with a valid bank. |
 | `7`, `8` | `DISCONNECT`, `RECONNECT` | Queued result retention across synthetic scheduler stream resets. |
 | `9`, `10` | `RESULT_BURST`, `DRAIN_QUEUE` | Result queue fill, intentional drops, and wire/shadow-FIFO comparison. |
+| `11` | `PACK_CONFIG` | Pack options for the whole input, wherever the event appears (the last one wins): `a` bit 0 selects perf over balanced, bit 1 turns off `use_consumed_cus`, bit 2 turns on the tip crank, bit 3 leaves the tip programs out. Without one, pack runs perf without `use_consumed_cus` or the crank. |
+| `12` | `POISON_MEMBER` | Sets member `b` of the last batch's batch `c` to poison `a` (bad signature, duplicate, simple vote, unparsable, missing lookup tables) and resends the batch under new `seq_id`s. A batch only ever delivered poisoned must not commit. |
 
 High-signal extensions:
 
@@ -62,7 +68,7 @@ High-signal extensions:
 - Committed wire results are compared with synthetic successful shadow-FIFO entries per transaction, including consumed CUs and committed transaction status. This does not verify Motor acceptance of native execle output.
 - Generated scheduler `seq_id` values use wrapping `uint` arithmetic; every `uint` value, including `UINT_MAX`, is valid under the BAM type contract.
 
-The checked-in corpus should stay compact: one broad mixed trace plus targeted production-ingress rejection, valid-ingress, multi-batch, leader/bank-state, and forced-drop seeds.
+The checked-in corpus should stay compact: one broad mixed trace plus targeted production-ingress rejection, valid-ingress, multi-batch, leader/bank-state, forced-drop, pack-config, poison and tip-crank seeds.
 
 ## Commands
 
@@ -73,13 +79,16 @@ make -j fuzz_bam_pipeline_stateful
 
 # libFuzzer
 make -j CC=clang EXTRAS="fuzz asan" fuzz_bam_pipeline_stateful
-"$(make --silent CC=clang EXTRAS="fuzz asan" objdir)/fuzz-test/fuzz_bam_pipeline_stateful" corpus/fuzz_bam_pipeline_stateful
+"$(make --silent CC=clang EXTRAS="fuzz asan" objdir)/fuzz-test/fuzz_bam_pipeline_stateful" -max_len=512 corpus/fuzz_bam_pipeline_stateful
 
 # AFL++ (AFL_LIB holds afl-compiler-rt.o and libAFLDriver.a)
 make -j CC=clang EXTRAS=afl++ AFL_LIB=/usr/lib/afl fuzz_bam_pipeline_stateful
 AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_SKIP_CPUFREQ=1 afl-fuzz -i corpus/fuzz_bam_pipeline_stateful -o findings -- "$(make --silent CC=clang EXTRAS=afl++ AFL_LIB=/usr/lib/afl objdir)/fuzz-test/fuzz_bam_pipeline_stateful"
 ```
 
-The harness reserves an 8 GiB demand-paged anonymous workspace; it does not
-require preallocated huge pages. Reproduce a failure by passing the artifact to
-the matching binary.
+Only the first 128 events of an input count, hence `-max_len=512`. The harness
+reserves an 8 GiB demand-paged anonymous workspace; it does not require
+preallocated huge pages. Every input peaks at 5.34 GB of it, almost all
+svm-mini's account cache. `EXTRAS="fuzz deepasan"` also flags unallocated
+workspace memory, at about 0.2 s an input instead of 30 ms. Reproduce a failure
+by passing the artifact to the matching binary.

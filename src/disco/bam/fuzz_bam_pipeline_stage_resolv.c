@@ -3,6 +3,7 @@
 #undef fd_tile_resolv
 
 #include "fuzz_bam_pipeline_stage.h"
+#include <sys/mman.h>
 
 #define BAM_FUZZ_RESOLV_IN_DEDUP_IDX  (0UL)
 #define BAM_FUZZ_RESOLV_IN_REPLAY_IDX (1UL)
@@ -21,9 +22,10 @@ bam_fuzz_resolv_t *
 bam_fuzz_resolv_new( fd_wksp_t *             wksp,
                      bam_fuzz_link_t const * in,
                      bam_fuzz_link_t         out[ BAM_FUZZ_OUT_MAX ] ) {
-  bam_fuzz_resolv_t * h = fd_wksp_alloc_laddr( wksp, alignof(bam_fuzz_resolv_t), sizeof(bam_fuzz_resolv_t), 1UL );
-  FD_TEST( h );
-  fd_memset( h, 0, sizeof(*h) );
+  /* Fresh anonymous pages: the ~480 MB tile context, mostly its two
+     blockhash rings, starts zeroed without being touched. */
+  bam_fuzz_resolv_t * h = mmap( NULL, sizeof(bam_fuzz_resolv_t), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0 );
+  FD_TEST( h!=MAP_FAILED );
   fd_resolv_ctx_t * ctx = h->ctx;
 
   ulong map_cnt = 2UL*map_chain_cnt_est( BLOCKHASH_RING_LEN );
@@ -71,7 +73,7 @@ void
 bam_fuzz_resolv_delete( bam_fuzz_resolv_t * h ) {
   bam_fuzz_outs_delete( &h->outs );
   fd_wksp_free_laddr( h->storage );
-  fd_wksp_free_laddr( h );
+  FD_TEST( !munmap( h, sizeof(bam_fuzz_resolv_t) ) );
 }
 
 void

@@ -1,16 +1,57 @@
+#include "../../util/log/fd_log.h"
+
+/* Pack reads the wallclock when it becomes leader, to place the slot's
+   start and end on its tick clock.  Bind it to the harness timeline,
+   which every adapter call passes in, so that slot timing follows the
+   input and replays the same way. */
+static long bam_fuzz_pack_now_ns;
+#define fd_log_wallclock() (bam_fuzz_pack_now_ns)
+
+/* The tip crank signs its initializer bundles through the sign tile.
+   Sign them with the harness identity instead. */
+#define fd_keyguard_client_sign bam_fuzz_pack_sign
+
 #define fd_tile_pack bam_fuzz_pack_tile_unused
 #include "../pack/fd_pack_tile.c"
 #undef fd_tile_pack
+#undef fd_keyguard_client_sign
+#undef fd_log_wallclock
 
 #include "fuzz_bam_pipeline_stage.h"
 #include "../../flamenco/runtime/fd_bank.h"
 #include "../../flamenco/runtime/fd_slot_params.h"
+#include "../../flamenco/runtime/sysvar/fd_sysvar_epoch_schedule.h"
 
 #define BAM_FUZZ_PACK_IN_RESOLV_IDX   (0UL)
 #define BAM_FUZZ_PACK_IN_REPLAY_IDX   (1UL)
+#define BAM_FUZZ_PACK_IN_EXECLE_IDX   (2UL)
 #define BAM_FUZZ_PACK_MCACHE_DEPTH    (256UL)
 #define BAM_FUZZ_PACK_PENDING_TXN_MAX (64UL)
 #define BAM_FUZZ_PACK_EXECLE_CNT      (1UL)
+
+/* A tick lasts a millisecond, the step of the harness timeline, so the
+   tick pack reports does not depend on how long a call takes. */
+#define BAM_FUZZ_PACK_TICKS_PER_SLOT  (64UL)
+#define BAM_FUZZ_PACK_TICK_NS         (1000000UL)
+
+#define BAM_FUZZ_PACK_COMMISSION_BPS  (800UL)
+
+static uchar const bam_fuzz_pack_identity_private_key[ 32 ] = { 0x1d };
+static uchar       bam_fuzz_pack_identity_public_key [ 32 ];
+static fd_sha512_t bam_fuzz_pack_sha_mem[1];
+static fd_sha512_t * bam_fuzz_pack_sha;
+
+void
+bam_fuzz_pack_sign( fd_keyguard_client_t * client,
+                    uchar *                signature,
+                    uchar const *          sign_data,
+                    ulong                  sign_data_len,
+                    int                    sign_type ) {
+  (void)client;
+  FD_TEST( sign_type==FD_KEYGUARD_SIGN_TYPE_ED25519 );
+  fd_ed25519_sign( signature, sign_data, sign_data_len, bam_fuzz_pack_identity_public_key,
+                   bam_fuzz_pack_identity_private_key, bam_fuzz_pack_sha );
+}
 
 struct bam_fuzz_pack {
   fd_pack_ctx_t   ctx[1];
@@ -24,6 +65,10 @@ struct bam_fuzz_pack {
   ulong           leader_in_chunk;
   ulong           leader_seq;
   bam_fuzz_outs_t outs;
+
+  /* With the tip crank, what initializer bundles left on chain */
+  fd_bundle_crank_tip_payment_config_t chain_config[1];
+  ulong                                chain_tip_receiver_epoch; /* epoch whose tip receiver exists */
 };
 
 static fd_pack_out_ctx_t
@@ -36,10 +81,12 @@ bam_fuzz_pack_out( bam_fuzz_pack_t * h,
 }
 
 bam_fuzz_pack_t *
-bam_fuzz_pack_new( fd_wksp_t *             wksp,
-                   bam_fuzz_link_t const * in,
-                   bam_fuzz_link_t         out[ BAM_FUZZ_OUT_MAX ],
-                   ulong **                execle_busy_fseq ) {
+bam_fuzz_pack_new( fd_wksp_t *                 wksp,
+                   bam_fuzz_link_t const *     in,
+                   bam_fuzz_link_t             out[ BAM_FUZZ_OUT_MAX ],
+                   ulong **                    execle_busy_fseq,
+                   bam_fuzz_pack_cfg_t const * cfg,
+                   fd_bam_fee_cfg_t const *    fee_cfg ) {
   bam_fuzz_pack_t * h = fd_wksp_alloc_laddr( wksp, alignof(bam_fuzz_pack_t), sizeof(bam_fuzz_pack_t), 1UL );
   FD_TEST( h );
   fd_memset( h, 0, sizeof(*h) );
@@ -105,9 +152,11 @@ bam_fuzz_pack_new( fd_wksp_t *             wksp,
   ctx->in     [ BAM_FUZZ_PACK_IN_REPLAY_IDX ] = (fd_pack_in_ctx_t){ .mem = h->leader_in->mem, .chunk0 = h->leader_in->chunk0,
                                                                     .wmark = h->leader_in->wmark };
 
-  /* Fields not set here are zero-initialized. */
-  ctx->strategy                           = FD_PACK_STRATEGY_PERF;
-  ctx->use_consumed_cus                   = 0;
+  /* Fields not set here are zero-initialized.  The auction strategy is
+     left out: its auctions run on the host tick counter, so the same
+     input would schedule differently from run to run. */
+  ctx->strategy                           = cfg->balanced ? FD_PACK_STRATEGY_BALANCED : FD_PACK_STRATEGY_PERF;
+  ctx->use_consumed_cus                   = !!cfg->use_consumed_cus;
   ctx->max_pending_transactions           = BAM_FUZZ_PACK_PENDING_TXN_MAX;
   ctx->leader_slot                        = ULONG_MAX;
   ctx->leader_bank_idx                    = ULONG_MAX;
@@ -128,6 +177,32 @@ bam_fuzz_pack_new( fd_wksp_t *             wksp,
   fd_histf_join( fd_metrics_histf_new_ns( ctx->complete_duration, FD_MHIST_EDGES_NS( PACK, MICROBLOCK_COMPLETE_DURATION_NANOS ) ) );
   ctx->metric_state_begin         = fd_tickcount();
   ctx->last_bam_leader_state.slot = ULONG_MAX;
+  ctx->bam_fee_cfg                = fee_cfg; /* the builder BAM's config names */
+
+  /* As unprivileged_init sets up the crank.  The keyswitch is left out:
+     only during_housekeeping reads it, which the harness does not run. */
+  ctx->crank->enabled = !!cfg->crank;
+  if( FD_UNLIKELY( cfg->crank ) ) {
+    if( FD_UNLIKELY( !bam_fuzz_pack_sha ) ) {
+      bam_fuzz_pack_sha = fd_sha512_join( fd_sha512_new( bam_fuzz_pack_sha_mem ) );
+      FD_TEST( fd_ed25519_public_from_private( bam_fuzz_pack_identity_public_key, bam_fuzz_pack_identity_private_key, bam_fuzz_pack_sha ) );
+    }
+    fd_memcpy( ctx->crank->identity_pubkey->b, bam_fuzz_pack_identity_public_key, 32UL );
+    fd_memset( ctx->crank->vote_pubkey->b, 0x7e, 32UL );
+    fd_acct_addr_t tip_distribution[1], tip_payment[1], merkle_root_authority[1];
+    FD_TEST( fd_base58_decode_32( BAM_FUZZ_TIP_DISTRIBUTION_PROGRAM, tip_distribution->b ) );
+    FD_TEST( fd_base58_decode_32( BAM_FUZZ_TIP_PAYMENT_PROGRAM,      tip_payment->b      ) );
+    fd_memset( merkle_root_authority->b, 0x3a, 32UL );
+    FD_TEST( fd_bundle_crank_gen_init( ctx->crank->gen, tip_distribution, tip_payment,
+                                       (fd_acct_addr_t const *)ctx->crank->vote_pubkey->b, merkle_root_authority,
+                                       schedule_strategy_strings[ ctx->strategy ], BAM_FUZZ_PACK_COMMISSION_BPS ) );
+    ctx->crank->prev_config->discriminator       = 0x82ccfa1ee0aa0c9bUL;
+    ctx->crank->prev_config->tip_receiver->b[1]  = 1;
+    ctx->crank->prev_config->block_builder->b[2] = 1;
+    /* The chain starts as unprivileged_init assumes it */
+    *h->chain_config            = *ctx->crank->prev_config;
+    h->chain_tip_receiver_epoch = ULONG_MAX;
+  }
 
   fd_memcpy( out, h->outs.link, sizeof(h->outs.link) );
   *execle_busy_fseq = h->execle_busy_fseq;
@@ -147,12 +222,14 @@ bam_fuzz_pack_delete( bam_fuzz_pack_t * h ) {
 }
 
 bam_fuzz_res_t
-bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
-                               ulong             slot,
-                               void const *      bank,
-                               ulong             bank_idx,
-                               long              now_ns ) {
+bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t *             h,
+                               fd_bam_leader_state_t const * leader,
+                               void const *                  bank,
+                               ulong                         bank_idx,
+                               long                          now_ns ) {
   bam_fuzz_res_t res = bam_fuzz_outs_begin( &h->outs );
+  bam_fuzz_pack_now_ns = now_ns;
+  ulong slot = leader->slot;
 
   if( FD_UNLIKELY( slot==ULONG_MAX ) ) {
     if( FD_LIKELY( h->ctx->leader_slot!=ULONG_MAX ) ) {
@@ -162,10 +239,11 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
          skip_cnt+1 callbacks; a single call here can leave Pack leader,
          and later pumps rewind the clock below slot_end_ns, so Pack would
          schedule into the execle bank the harness already tore down. */
+      bam_fuzz_pack_now_ns = h->ctx->slot_end_ns;
       fd_clock_tile_set( h->ctx->clock, h->ctx->slot_end_ns );
       ulong max_iter = (ulong)fd_long_max( h->ctx->skip_cnt, 0L ) + 1UL;
-      /* With use_consumed_cus off, skip_cnt is one microblock's
-         schedule_cnt, so a larger value means runaway state. */
+      /* skip_cnt is one microblock's schedule_cnt, or execle_cnt+1
+         with use_consumed_cus, so a larger value means runaway state. */
       FD_TEST( max_iter<=MAX_TXN_PER_MICROBLOCK+1UL );
       for( ulong i=0UL; i<max_iter && h->ctx->leader_slot!=ULONG_MAX; i++ ) {
         int opt_poll_in = 1;
@@ -180,28 +258,73 @@ bam_fuzz_pack_set_leader_slot( bam_fuzz_pack_t * h,
   fd_clock_tile_set( h->ctx->clock, now_ns );
   if( FD_LIKELY( h->ctx->leader_slot==slot ) ) return bam_fuzz_outs_end( &h->outs, res );
 
+  /* Pack enters the slot leader->tick ticks after it began. */
+  ulong tick = fd_ulong_min( (ulong)leader->tick, BAM_FUZZ_PACK_TICKS_PER_SLOT );
+  FD_TEST( leader->slot_end_ns>now_ns );
+  FD_TEST( leader->slot_cu_budget_remaining>=FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND &&
+           leader->slot_cu_budget_remaining<=FD_PACK_MAX_COST_PER_BLOCK_UPPER_BOUND );
+
   fd_became_leader_t * became = fd_chunk_to_laddr( h->leader_in->mem, h->leader_in_chunk );
   fd_memset( became, 0, sizeof(fd_became_leader_t) );
   became->slot                      = slot;
   became->block_height              = bank ? ((fd_bank_t const *)bank)->f.block_height : slot;
-  became->slot_start_ns             = now_ns;
-  became->slot_end_ns               = now_ns + 100000000L;
+  became->slot_start_ns             = now_ns - (long)( tick*BAM_FUZZ_PACK_TICK_NS );
+  became->slot_end_ns               = leader->slot_end_ns;
   became->bank_idx                  = bank_idx;
   became->max_microblocks_in_slot   = 64UL;
-  became->ticks_per_slot            = 64UL;
-  became->tick_duration_ns          = 1000000UL;
+  became->ticks_per_slot            = BAM_FUZZ_PACK_TICKS_PER_SLOT;
+  became->tick_duration_ns          = BAM_FUZZ_PACK_TICK_NS;
   became->hashcnt_per_tick          = 1UL;
-  became->limits.slot_max_cost      = FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND;
+  became->limits.slot_max_cost      = leader->slot_cu_budget_remaining;
   became->limits.slot_max_write_cost_per_acct      = FD_PACK_MAX_WRITE_COST_PER_ACCT_LOWER_BOUND;
   became->limits.slot_max_allocated_data_per_block = FD_PACK_MAX_ALLOCATED_DATA_PER_BLOCK;
   became->limits.slot_max_data_shreds              = FD_SLOT_PARAMS_400MS.max_shred_idx;
+  if( FD_UNLIKELY( h->ctx->crank->enabled ) ) {
+    /* As replay reads them from the leader bank */
+    fd_bank_t const * b = (fd_bank_t const *)bank;
+    FD_TEST( b );
+    became->epoch             = fd_slot_to_epoch( &b->f.epoch_schedule, slot, NULL );
+    became->bundle->config[0] = h->chain_config[0];
+    fd_memcpy( became->bundle->last_blockhash, b->f.poh.hash, 32UL );
+    if( became->epoch==h->chain_tip_receiver_epoch ) {
+      FD_TEST( fd_base58_decode_32( BAM_FUZZ_TIP_DISTRIBUTION_PROGRAM, became->bundle->tip_receiver_owner ) );
+    }
+  }
 
   during_frag( h->ctx, BAM_FUZZ_PACK_IN_REPLAY_IDX, h->leader_seq, REPLAY_SIG_BECAME_LEADER, h->leader_in_chunk, sizeof(fd_became_leader_t), 0UL );
   after_frag( h->ctx, BAM_FUZZ_PACK_IN_REPLAY_IDX, h->leader_seq, REPLAY_SIG_BECAME_LEADER, sizeof(fd_became_leader_t), 0UL, 0UL, h->outs.stem );
-  /* The tip crank is disabled here; model an initializer found in good shape. */
+  /* Without the tip crank, model an initializer found in good shape. */
   if( !h->ctx->crank->enabled ) fd_pack_set_initializer_bundles_ready( h->ctx->pack );
   h->leader_seq++;
   h->leader_in_chunk = fd_dcache_compact_next( h->leader_in_chunk, sizeof(fd_became_leader_t), h->leader_in->chunk0, h->leader_in->wmark );
+  return bam_fuzz_outs_end( &h->outs, res );
+}
+
+void
+bam_fuzz_pack_crank_landed( bam_fuzz_pack_t * h ) {
+  FD_TEST( h->ctx->crank->enabled );
+  *h->chain_config            = *h->ctx->crank->prev_config;
+  h->chain_tip_receiver_epoch = h->ctx->crank->epoch;
+}
+
+void
+bam_fuzz_pack_join_rebates( bam_fuzz_pack_t *       h,
+                            bam_fuzz_link_t const * in ) {
+  FD_TEST( h->ctx->use_consumed_cus );
+  h->ctx->in_kind[ BAM_FUZZ_PACK_IN_EXECLE_IDX ] = IN_KIND_EXECLE;
+  h->ctx->in     [ BAM_FUZZ_PACK_IN_EXECLE_IDX ] = (fd_pack_in_ctx_t){ .mem = in->mem, .chunk0 = in->chunk0, .wmark = in->wmark };
+}
+
+bam_fuzz_res_t
+bam_fuzz_pack_rebate_frag( bam_fuzz_pack_t *      h,
+                           fd_frag_meta_t const * meta,
+                           ulong                  seq,
+                           long                   now_ns ) {
+  bam_fuzz_res_t res = bam_fuzz_outs_begin( &h->outs );
+  bam_fuzz_pack_now_ns = now_ns;
+  fd_clock_tile_set( h->ctx->clock, now_ns );
+  during_frag( h->ctx, BAM_FUZZ_PACK_IN_EXECLE_IDX, seq, meta->sig, meta->chunk, meta->sz, meta->ctl );
+  after_frag( h->ctx, BAM_FUZZ_PACK_IN_EXECLE_IDX, seq, meta->sig, meta->sz, meta->tsorig, meta->tspub, h->outs.stem );
   return bam_fuzz_outs_end( &h->outs, res );
 }
 
@@ -211,6 +334,7 @@ bam_fuzz_pack_frag( bam_fuzz_pack_t *      h,
                     ulong                  seq,
                     long                   now_ns ) {
   bam_fuzz_res_t res = bam_fuzz_outs_begin( &h->outs );
+  bam_fuzz_pack_now_ns = now_ns;
   fd_clock_tile_set( h->ctx->clock, now_ns );
   during_frag( h->ctx, BAM_FUZZ_PACK_IN_RESOLV_IDX, seq, meta->sig, meta->chunk, meta->sz, meta->ctl );
   after_frag( h->ctx, BAM_FUZZ_PACK_IN_RESOLV_IDX, seq, meta->sig, meta->sz, meta->tsorig, meta->tspub, h->outs.stem );
@@ -223,6 +347,7 @@ bam_fuzz_pack_credit( bam_fuzz_pack_t * h,
   bam_fuzz_res_t res = bam_fuzz_outs_begin( &h->outs );
   /* Keep Pack on the harness timeline even after an expensive result-queue
      check; elapsed host time must not close a simulated leader slot. */
+  bam_fuzz_pack_now_ns = now_ns;
   fd_clock_tile_set( h->ctx->clock, now_ns );
   int charge_busy = 0;
   before_credit( h->ctx, h->outs.stem, &charge_busy );

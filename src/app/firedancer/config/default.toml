@@ -1719,11 +1719,25 @@ telemetry = true
         # their results back to it.
         enabled = false
 
-        # The URL of the BAM node to connect to.
+        # The URL of the BAM node to connect to, or of a BAM registry.
+        #
+        # A URL with a path, such as "https://registry.example/v1/nodes",
+        # is a registry: a list of BAM nodes in the format jito-solana
+        # reads.  The list is fetched every 30 to 60 seconds, or every 2
+        # seconds while BAM is not connected.  Each listed node is timed
+        # with three GetBuilderConfig calls, and the fastest one that
+        # answers within 30 ms is dialed.  If it has no healthy session
+        # after 20 seconds, the next fastest is dialed.  A healthy
+        # session is not switched within 10 slots of a leader slot of
+        # this validator.  Nodes are dialed over TLS by IP address and
+        # their certificates are always verified, so a registry URL
+        # requires the system CA bundle (see tls_cert_verify).
+        # `get-bam` shows the node in use.
         url = ""
 
         # Optional override for the TLS domain name presented by the
-        # BAM node.  If empty, the host portion of the URL is used.
+        # BAM node.  If empty, the host portion of the URL is used.  Not
+        # used with a registry URL.
         tls_domain_name = ""
 
         # Roughly the time between HTTP/2 PING keepalives to the BAM
@@ -1732,7 +1746,8 @@ telemetry = true
         keepalive_interval_millis = 5000
 
         # Set to 'true' to verify the BAM node's TLS certificate against
-        # the CA certs in /etc/ssl/certs for HTTPS URLs.
+        # the CA certs in /etc/ssl/certs for HTTPS URLs.  The registry
+        # and the nodes it lists are verified either way.
         tls_cert_verify = false
 
     # The pack tile takes incoming transactions that have been verified

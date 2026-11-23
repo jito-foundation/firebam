@@ -1,0 +1,1455 @@
+#define _GNU_SOURCE
+#include "fd_bam_tile_private.h"
+
+#include "../../ballet/ed25519/fd_x25519.h"
+#include "../../util/net/fd_ip4.h"
+#include "../../ballet/json/fd_jtok.h"
+#include "../../third_party/picohttpparser/picohttpparser.h"
+#include "../../waltz/http/fd_http.h"
+#include "../../waltz/resolv/fd_adns.h"
+#include "../../waltz/resolv/fd_lookup.h"
+#include "../waker/fd_waker.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <string.h>
+#include <strings.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/epoll.h>
+
+/* phase: idle, fetching the document, probing nodes. */
+#define FD_BAM_REG_IDLE  (0)
+#define FD_BAM_REG_FETCH (1)
+#define FD_BAM_REG_PROBE (2)
+
+/* io: DNS (fetch only), TCP connect, TLS handshake (not for http),
+   then HTTP body or gRPC samples. */
+#define FD_BAM_REG_IO_CONNECT (0)
+#define FD_BAM_REG_IO_TLS     (1)
+#define FD_BAM_REG_IO_BODY    (2)
+#define FD_BAM_REG_IO_RESOLVE (3) /* fetch only, before CONNECT */
+
+FD_STATIC_ASSERT( sizeof(((fd_bam_registry_t *)NULL)->dns_query)==FD_DNS_QUERY_MTU, dns_query );
+FD_STATIC_ASSERT( sizeof(((fd_bam_registry_t *)NULL)->dns_ns)==MAXNS*sizeof(uint),     dns_ns    );
+
+static char const FD_BAM_REG_CONFIG_PATH[] = "/bam_api.BamNodeApi/GetBuilderConfig";
+
+static void
+reg_close( fd_bam_registry_t * reg ) {
+  if( reg->fd>=0 ) {
+    close( reg->fd );
+    reg->fd = -1;
+  }
+  reg->io       = FD_BAM_REG_IO_CONNECT;
+  reg->ep       = 0;
+  reg->sent     = 0;
+  reg->http_off = 0UL;
+  reg->body_len = 0UL;
+}
+
+static void
+slot_close( fd_bam_registry_slot_t * s ) {
+  if( s->fd>=0 ) {
+    close( s->fd );
+    s->fd = -1;
+  }
+  fd_grpc_client_reset( s->grpc );
+  s->io       = FD_BAM_REG_IO_CONNECT;
+  s->ep       = 0;
+  s->inflight = 0;
+  s->dead     = 0;
+  s->samples  = 0U;
+  s->best_us  = ULONG_MAX;
+}
+
+static void
+reg_close_all( fd_bam_registry_t * reg ) {
+  reg_close( reg );
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) slot_close( &reg->slots[ i ] );
+  reg->probe_active = 0UL;
+}
+
+static void
+reg_fail_msg( char *       err,
+              ulong        err_sz,
+              char const * msg ) {
+  if( err && err_sz ) fd_cstr_printf( err, err_sz, NULL, "%s", msg );
+  FD_LOG_WARNING(( "%s", msg ));
+}
+
+/* reg_log logs msg at WARNING for the first failure, a new reason, or
+   a minute after the last warning, and at INFO otherwise.  reason 0
+   records a success. */
+
+static void
+reg_log( fd_bam_registry_warn_t * w,
+         ulong                    reason,
+         long                     now,
+         char const *             msg ) {
+  if( !reason ) {
+    w->reason = 0UL;
+  } else if( w->reason!=reason || now-w->at>=FD_BAM_REGISTRY_WARN_INTERVAL_NS ) {
+    w->reason = reason;
+    w->at     = now;
+    FD_LOG_WARNING(( "%s", msg ));
+  } else {
+    FD_LOG_INFO(( "%s", msg ));
+  }
+}
+
+static void
+reg_schedule( fd_bam_registry_t * reg,
+              long                now,
+              int                 live,
+              fd_rng_t *          rng ) {
+  long const half = FD_BAM_REGISTRY_RESYNC_LIVE_NS/2;
+  long jitter = half;
+  if( rng ) jitter += (long)fd_rng_ulong_roll( rng, (ulong)half+1UL );
+  reg->resync_at = now+jitter;
+  if( !live ) {
+    long stalled = now+FD_BAM_REGISTRY_RESYNC_STALLED_NS;
+    if( stalled<reg->resync_at ) reg->resync_at = stalled;
+  }
+}
+
+int
+fd_bam_registry_is_url( fd_url_t const * url ) {
+  if( !url || !url->tail_len || url->tail[0]!='/' ) return 0;
+  ulong n = 0UL;
+  while( n<url->tail_len && url->tail[ n ]!='?' && url->tail[ n ]!='#' ) n++;
+  return n>1UL;
+}
+
+/* ---- JSON ---------------------------------------------------------- */
+
+/* reg_node reads one node as jito's serde derive does: each field
+   exactly once, unknown fields ignored.  Returns 0 for an IPv4 node,
+   1 for a valid IPv6 node (skipped), -1 if the document must fail. */
+
+static int
+reg_node( fd_jtok_t *              j,
+          fd_bam_registry_node_t * node ) {
+  memset( node, 0, sizeof(*node) );
+  char  ip[ 64 ];
+  ulong port = 0UL;
+  int   seen = 0;
+  fd_jtok_str_t key;
+  fd_jtok_obj_enter( j );
+  while( fd_jtok_obj_next( j, &key ) ) {
+    int bit = fd_jtok_str_eq( &key, "ip"        ) ? 1 :
+              fd_jtok_str_eq( &key, "grpc_port" ) ? 2 :
+              fd_jtok_str_eq( &key, "region"    ) ? 4 : 0;
+    if( seen & bit ) return -1;
+    seen |= bit;
+    if( bit==1 ) fd_jtok_cstr( j, ip, sizeof(ip) );
+    if( bit==2 ) fd_jtok_ulong( j, &port );
+    if( bit==4 ) {
+      /* Decoded, so names serde finds equal compare equal.  Only an
+         escape can carry a control character, which becomes '?' so the
+         name logs on one line.  A name that does not decode into region
+         (too long, or an escaped NUL) keeps its raw prefix, cut at a
+         character. */
+      fd_jtok_str_t r = {0};
+      fd_jtok_str( j, &r );
+      long n = fd_jtok_err( j ) ? 0L : fd_jtok_str_decode( &r, node->region, sizeof(node->region) );
+      if( n<0L ) {
+        ulong k = fd_ulong_min( r.sz, sizeof(node->region)-1UL );
+        while( k<r.sz && k && ((uchar)r.ptr[ k ]&0xC0U)==0x80U ) k--;
+        if( k ) memcpy( node->region, r.ptr, k );
+        node->region[ k ] = '\0';
+      }
+      for( long i=0L; i<n; i++ ) if( (uchar)node->region[ i ]<0x20U ) node->region[ i ] = '?';
+    }
+  }
+  if( fd_jtok_err( j ) || seen!=7 || port>USHORT_MAX ) return -1;
+  node->grpc_port = (ushort)port;
+  if( inet_pton( AF_INET, ip, &node->ip4 )==1 ) return 0;
+  uchar ip6[ 16 ];
+  return inet_pton( AF_INET6, ip, ip6 )==1 ? 1 : -1;
+}
+
+static void
+reg_dedupe( fd_bam_registry_node_t * nodes,
+            ulong *                  cnt ) {
+  /* Stable sort by (octets, port) like Rust's IpAddr ordering, so the
+     first listed duplicate keeps its region. */
+  for( ulong i=1UL; i<*cnt; i++ ) {
+    fd_bam_registry_node_t key = nodes[ i ];
+    uint  key_be = fd_uint_bswap( key.ip4 );
+    ulong j = i;
+    while( j && ( fd_uint_bswap( nodes[ j-1UL ].ip4 )>key_be ||
+                  (nodes[ j-1UL ].ip4==key.ip4 && nodes[ j-1UL ].grpc_port>key.grpc_port) ) ) {
+      nodes[ j ] = nodes[ j-1UL ];
+      j--;
+    }
+    nodes[ j ] = key;
+  }
+  ulong w = 0UL;
+  for( ulong i=0UL; i<*cnt; i++ ) {
+    if( w && nodes[ w-1UL ].ip4==nodes[ i ].ip4 && nodes[ w-1UL ].grpc_port==nodes[ i ].grpc_port ) continue;
+    nodes[ w++ ] = nodes[ i ];
+  }
+  *cnt = w;
+}
+
+int
+fd_bam_registry_parse( char const *             json,
+                       ulong                    json_sz,
+                       fd_bam_registry_node_t * nodes,
+                       ulong                    cap,
+                       ulong *                  cnt ) {
+  fd_jtok_t j[1];
+  fd_jtok_init( j, json, json_sz );
+  int   seen = 0;
+  ulong n    = 0UL;
+  fd_jtok_str_t key;
+  fd_jtok_obj_enter( j );
+  while( fd_jtok_obj_next( j, &key ) ) {
+    if( fd_jtok_str_eq( &key, "nodes" ) ) {
+      if( seen & 1 ) return -1;
+      seen |= 1;
+      fd_jtok_arr_enter( j );
+      while( fd_jtok_arr_next( j ) ) {
+        fd_bam_registry_node_t node;
+        int rc = reg_node( j, &node );
+        if( rc<0 || ( !rc && n>=cap ) ) return -1;
+        if( !rc ) nodes[ n++ ] = node;
+      }
+    } else if( fd_jtok_str_eq( &key, "generated_at" ) ) {
+      /* jito's lenient_rfc3339 swallows any scalar, but serde_json
+         fails the document on an object or array there. */
+      int kind = fd_jtok_peek( j );
+      if( ( seen & 2 ) || kind==FD_JTOK_OBJ || kind==FD_JTOK_ARR ) return -1;
+      seen |= 2;
+    }
+  }
+  if( fd_jtok_fini( j ) || !( seen & 1 ) ) return -1;
+  if( !n ) return -2;
+  reg_dedupe( nodes, &n );
+  *cnt = n;
+  return 0;
+}
+
+/* ---- follower ------------------------------------------------------ */
+
+static int
+reg_nodes_match( fd_bam_registry_t const *      reg,
+                 fd_bam_registry_node_t const * nodes,
+                 ulong                          cnt ) {
+  if( cnt!=reg->node_cnt || !cnt ) return 0;
+  for( ulong i=0UL; i<cnt; i++ ) {
+    if( reg->nodes[ i ].ip4!=nodes[ i ].ip4 || reg->nodes[ i ].grpc_port!=nodes[ i ].grpc_port ||
+        strcmp( reg->nodes[ i ].region, nodes[ i ].region ) ) return 0;
+  }
+  return 1;
+}
+
+int
+fd_bam_registry_on_fetch( fd_bam_registry_t *            reg,
+                          fd_bam_registry_node_t const * nodes,
+                          ulong                          cnt,
+                          long                           now,
+                          int                            live,
+                          fd_rng_t *                     rng ) {
+  int changed = !reg_nodes_match( reg, nodes, cnt );
+  if( changed ) {
+    memcpy( reg->nodes, nodes, cnt*sizeof(*nodes) );
+    reg->node_cnt   = cnt;
+    reg->ranked_cnt = 0UL;
+    reg->cursor     = 0UL;
+    reg->probe_at   = now;
+  }
+  reg_schedule( reg, now, live, rng );
+  return changed;
+}
+
+void
+fd_bam_registry_finish_round( fd_bam_registry_t * reg ) {
+  for( ulong i=1UL; i<reg->ranked_cnt; i++ ) {
+    fd_bam_registry_rank_t key = reg->ranked[ i ];
+    ulong j = i;
+    while( j && reg->ranked[ j-1UL ].rtt_us>key.rtt_us ) {
+      reg->ranked[ j ] = reg->ranked[ j-1UL ];
+      j--;
+    }
+    reg->ranked[ j ] = key;
+  }
+  ulong keep = 0UL;
+  while( keep<reg->ranked_cnt && reg->ranked[ keep ].rtt_us<=FD_BAM_REGISTRY_MAX_RTT_US ) keep++;
+  reg->ranked_cnt = keep;
+  reg->cursor     = 0UL;
+}
+
+int
+fd_bam_registry_choose( fd_bam_registry_t *      reg,
+                        int                      live,
+                        int                      hold,
+                        long                     now,
+                        fd_bam_registry_node_t * out ) {
+  if( live ) reg->stalled_ns = 0L;
+  else if( !hold ) reg->stalled_ns += fd_long_max( now-reg->stalled_at, 0L );
+  reg->stalled_at = now;
+  int stuck = !live && reg->stalled_ns>=FD_BAM_REGISTRY_CONNECT_GRACE_NS;
+
+  int on_pick = 0;
+  if( reg->have_dial && reg->cursor<reg->ranked_cnt ) {
+    fd_bam_registry_node_t const * n = &reg->ranked[ reg->cursor ].node;
+    on_pick = n->ip4==reg->dial_ip4 && n->grpc_port==reg->dial_port;
+  }
+  if( stuck && on_pick && reg->ranked_cnt ) {
+    reg->cursor = (reg->cursor+1UL)%reg->ranked_cnt;
+    if( !reg->cursor ) {
+      reg->ranked_cnt = 0UL;
+      return 0;
+    }
+  }
+
+  int in_list = 0;
+  if( reg->have_dial ) {
+    for( ulong i=0UL; i<reg->node_cnt; i++ ) {
+      if( reg->nodes[ i ].ip4==reg->dial_ip4 && reg->nodes[ i ].grpc_port==reg->dial_port ) {
+        in_list = 1;
+        break;
+      }
+    }
+  }
+  if( (stuck || !reg->have_dial || !in_list) && reg->cursor<reg->ranked_cnt ) {
+    *out = reg->ranked[ reg->cursor ].node;
+    return 1;
+  }
+  return 0;
+}
+
+void
+fd_bam_registry_disable( fd_bam_tile_t * ctx ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  reg_close_all( reg );
+  reg->on         = 0;
+  reg->phase      = FD_BAM_REG_IDLE;
+  reg->node_cnt   = 0UL;
+  reg->ranked_cnt = 0UL;
+  reg->have_dial  = 0;
+  if( !reg->cert_verify_cfg ) ctx->tls->ca_store = NULL;
+}
+
+int
+fd_bam_registry_take_url( fd_bam_tile_t *  ctx,
+                          char const *     raw,
+                          fd_url_t const * url,
+                          int              is_ssl,
+                          ushort           port,
+                          char *           err,
+                          ulong            err_sz ) {
+  if( !fd_bam_registry_is_url( url ) ) return 0;
+  /* reqwest's default ports, not the BAM node ports the caller
+     filled in. */
+  if( !url->port_len ) port = is_ssl ? (ushort)443 : (ushort)80;
+  ulong path_len = 0UL;
+  while( path_len<url->tail_len && url->tail[ path_len ]!='#' ) path_len++;
+  if( !path_len || path_len>=FD_BAM_REGISTRY_PATH_MAX || url->host_len>=sizeof(ctx->registry.host) ) {
+    reg_fail_msg( err, err_sz, "BAM registry URL path or host is too long" );
+    return -1;
+  }
+  if( !ctx->ca_store->cnt ) {
+    reg_fail_msg( err, err_sz, "BAM registry URL needs the system CA certificate bundle, which was not found" );
+    return -1;
+  }
+
+  fd_bam_registry_t * reg = &ctx->registry;
+  int same = reg->on && reg->ssl==!!is_ssl && reg->port==port &&
+             reg->host_len==(ushort)url->host_len && reg->path_len==(ushort)path_len &&
+             !memcmp( reg->host, url->host, url->host_len ) && !memcmp( reg->path, url->tail, path_len );
+  if( !same ) {
+    reg_close_all( reg );
+    reg->phase      = FD_BAM_REG_IDLE;
+    reg->node_cnt   = 0UL;
+    reg->ranked_cnt = 0UL;
+    reg->have_dial  = 0;
+    reg->resync_at  = 0L;
+    reg->probe_at   = 0L;
+    reg->fetch_after   = 0L;
+    reg->stalled_ns    = 0L;
+    reg->stalled_at    = fd_bam_now();
+    memcpy( reg->host, url->host, url->host_len );
+    reg->host[ url->host_len ] = '\0';
+    reg->host_len = (ushort)url->host_len;
+    memcpy( reg->path, url->tail, path_len );
+    reg->path[ path_len ] = '\0';
+    reg->path_len = (ushort)path_len;
+    reg->port = port;
+    reg->ssl  = (uchar)!!is_ssl;
+  }
+  fd_cstr_ncpy( reg->url, raw, sizeof(reg->url) );
+  reg->on = 1;
+  ctx->tls->ca_store = ctx->ca_store;
+  return 1;
+}
+
+/* ---- TLS sessions -------------------------------------------------- */
+
+#define REG_FETCH_ACCEPTED      FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_ACCEPTED_IDX
+#define REG_FETCH_RESOLVE       FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_RESOLVE_IDX
+#define REG_FETCH_CONNECT       FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_CONNECT_IDX
+#define REG_FETCH_IO            FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_IO_IDX
+#define REG_FETCH_CERT_REJECTED FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_CERT_REJECTED_IDX
+#define REG_FETCH_TIMEOUT       FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_TIMEOUT_IDX
+#define REG_FETCH_HTTP          FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_HTTP_IDX
+#define REG_FETCH_REDIRECT      FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_REDIRECT_IDX
+#define REG_FETCH_JSON          FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_JSON_IDX
+#define REG_FETCH_EMPTY_LIST    FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_V_EMPTY_LIST_IDX
+
+/* reg_tls_failed returns 0 while conn is healthy, 2 if its handshake
+   failed certificate verification, 1 for any other TLS failure. */
+
+static int
+reg_tls_failed( fd_tlsrec_conn_t const * conn ) {
+  if( !fd_tlsrec_conn_is_failed( conn ) ) return 0;
+  return conn->hs.base.reason==FD_TLS_REASON_CERT_VERIFY ? 2 : 1;
+}
+
+/* reg_tls_init starts a client handshake verified against ca. */
+
+static int
+reg_tls_init( fd_x509_ca_store_t const * ca,
+              fd_tls_t *         tls,
+              fd_tlsrec_conn_t * conn,
+              char const *       sni,
+              ulong              sni_len,
+              int                http1 ) {
+  if( http1 ) {
+    static uchar const alpn[] = { 8, 'h','t','t','p','/','1','.','1' };
+    memcpy( tls->alpn, alpn, sizeof(alpn) );
+    tls->alpn_sz = sizeof(alpn);
+  } else {
+    static uchar const alpn[] = { 2, 'h', '2' };
+    memcpy( tls->alpn, alpn, sizeof(alpn) );
+    tls->alpn_sz = sizeof(alpn);
+  }
+  if( sni_len>=sizeof(tls->server_name) ) return -1;
+  memcpy( tls->server_name, sni, sni_len );
+  tls->server_name[ sni_len ] = '\0';
+  tls->server_name_len = (ushort)sni_len;
+  tls->ca_store = ca;
+  if( FD_UNLIKELY( !fd_rng_secure( tls->kex_private_key, 32UL ) ) ) return -1;
+  fd_x25519_public( tls->kex_public_key, tls->kex_private_key );
+  fd_tlsrec_conn_init( conn, tls, 0 );
+  return 0;
+}
+
+static void
+reg_connect_failed( fd_bam_registry_t * reg,
+                    uint                ip4,
+                    ushort              port,
+                    int                 err ) {
+  fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "connect to " FD_IP4_ADDR_FMT ":%hu failed (%s)",
+                  FD_IP4_ADDR_FMT_ARGS( ip4 ), port, fd_io_strerror( err ) );
+}
+
+/* reg_socket returns a nonblocking socket with connect in flight, or
+   -1.  fetch records a refused connect as the fetch's failure. */
+
+static int
+reg_socket( fd_bam_tile_t * ctx,
+            uint            ip4,
+            ushort          port,
+            int             fetch ) {
+  int fd = socket( AF_INET, SOCK_STREAM|SOCK_CLOEXEC, 0 );
+  if( FD_UNLIKELY( fd<0 ) ) {
+    FD_LOG_WARNING(( "BAM registry socket failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    return -1;
+  }
+  int rcv = ctx->so_rcvbuf>0 ? ctx->so_rcvbuf : 65536;
+  if( FD_UNLIKELY( setsockopt( fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv) ) ) ) {
+    close( fd );
+    FD_LOG_WARNING(( "BAM registry setsockopt(SO_RCVBUF) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    return -1;
+  }
+  int nodelay = 1;
+  if( FD_UNLIKELY( setsockopt( fd, SOL_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay) ) ) ) {
+    close( fd );
+    FD_LOG_WARNING(( "BAM registry setsockopt(TCP_NODELAY) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    return -1;
+  }
+  if( FD_UNLIKELY( fcntl( fd, F_SETFL, O_NONBLOCK )==-1 ) ) {
+    close( fd );
+    FD_LOG_WARNING(( "BAM registry fcntl(O_NONBLOCK) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    return -1;
+  }
+  struct sockaddr_in addr = {
+    .sin_family      = AF_INET,
+    .sin_addr.s_addr = ip4,
+    .sin_port        = fd_ushort_bswap( port )
+  };
+  int connect_err = connect( fd, fd_type_pun_const( &addr ), sizeof(addr) );
+  if( connect_err==-1 ) connect_err = errno;
+  if( FD_UNLIKELY( connect_err && connect_err!=EINPROGRESS ) ) {
+    close( fd );
+    if( fetch ) reg_connect_failed( &ctx->registry, ip4, port, connect_err );
+    return -1;
+  }
+  return fd;
+}
+
+/* reg_dns_begin resolves the fetch host as fd_adns does, but on a UDP
+   socket that lives only while the fetch resolves (fd_adns keeps one
+   open that the sandbox would have to list).  IPv4 literals and
+   /etc/hosts entries resolve here; any other name is queried from
+   every resolv.conf nameserver at once, resent every timeout/attempts
+   until the fetch deadline.  Returns 1 with addrs set, 0 with queries
+   pending, -1 on failure.
+
+   TODO: AAAA records too, as hyper does (see fd_bam_registry_parse). */
+
+static int
+reg_dns_found( fd_bam_registry_t * reg,
+               int                 cnt ) {
+  if( cnt<=0 ) {
+    fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "resolve `%s` failed (%s)", reg->f_host, fd_gai_strerror( cnt ) );
+    return -1;
+  }
+  reg->addr_cnt = (ulong)cnt;
+  reg->addr_i   = 0UL;
+  return 1;
+}
+
+static int
+reg_dns_begin( fd_bam_registry_t * reg ) {
+  int cnt = fd_dns_ip4_local( reg->f_host, reg->addrs, FD_BAM_REGISTRY_ADDR_MAX );
+  if( cnt ) return reg_dns_found( reg, cnt );
+  uint timeout  = 5U;
+  uint attempts = 2U;
+  int  ns_cnt   = fd_dns_nameservers( reg->dns_ns, MAXNS, &timeout, &attempts );
+  reg->dns_qlen = fd_dns_ip4_query( reg->f_host, reg->dns_query );
+  if( ns_cnt<=0 || reg->dns_qlen<0 ) return reg_dns_found( reg, ns_cnt<=0 ? ns_cnt : reg->dns_qlen );
+  int fd = socket( AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0 );
+  if( FD_UNLIKELY( fd<0 ) ) {
+    FD_LOG_WARNING(( "BAM registry DNS socket failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    return -1;
+  }
+  reg->fd          = fd;
+  reg->io          = FD_BAM_REG_IO_RESOLVE;
+  reg->dns_ns_cnt  = (ulong)ns_cnt;
+  reg->dns_retry   = fd_long_max( (long)timeout*(long)1e9/(long)fd_uint_max( attempts, 1U ), (long)100e6 );
+  reg->dns_send_at = 0L;
+  return 0;
+}
+
+/* reg_dns_poll sends due queries and reads answers.  Same return
+   values as reg_dns_begin. */
+
+static int
+reg_dns_poll( fd_bam_registry_t * reg,
+              long                now ) {
+  ushort ns_port = fd_ushort_bswap( fd_adns_ns_port ); /* 53; tests override it */
+  if( now>=reg->dns_send_at ) {
+    reg->dns_send_at = now+reg->dns_retry;
+    for( ulong i=0UL; i<reg->dns_ns_cnt; i++ ) {
+      struct sockaddr_in ns = { .sin_family = AF_INET, .sin_port = ns_port, .sin_addr.s_addr = reg->dns_ns[ i ] };
+      /* A lost or refused send is retried with the next resend. */
+      (void)sendto( reg->fd, reg->dns_query, (ulong)reg->dns_qlen, MSG_NOSIGNAL, fd_type_pun_const( &ns ), sizeof(ns) );
+    }
+  }
+  for( ulong burst=0UL; burst<16UL; burst++ ) {
+    uchar ans[ 512 ];
+    struct sockaddr_in from;
+    socklen_t from_sz = sizeof(from);
+    long n = recvfrom( reg->fd, ans, sizeof(ans), MSG_NOSIGNAL|MSG_DONTWAIT, fd_type_pun( &from ), &from_sz );
+    if( n<0L ) {
+      if( errno==EAGAIN || errno==EWOULDBLOCK ) return 0;
+      continue; /* ICMP errors from one nameserver: wait for the others */
+    }
+    /* Only an answer to this query from a nameserver it went to. */
+    ulong i = 0UL;
+    while( i<reg->dns_ns_cnt && ( from.sin_addr.s_addr!=reg->dns_ns[ i ] || from.sin_port!=ns_port ) ) i++;
+    if( i==reg->dns_ns_cnt || n<(long)reg->dns_qlen || (ans[2]&0xF8U)!=0x80U ||
+        memcmp( ans, reg->dns_query, 2UL ) || memcmp( ans+4, reg->dns_query+4, 2UL ) ||
+        memcmp( ans+12, reg->dns_query+12, (ulong)reg->dns_qlen-12UL ) ) continue;
+    int cnt = fd_dns_ip4_answer( ans, (ulong)n, reg->addrs, FD_BAM_REGISTRY_ADDR_MAX );
+    if( cnt==FD_EAI_AGAIN ) continue; /* SERVFAIL: another nameserver or a resend may answer */
+    return reg_dns_found( reg, cnt );
+  }
+  return 0;
+}
+
+/* reg_fetch_connect opens the next resolved address.  As in hyper, a
+   failed TCP connect moves to the next address, and a TLS failure
+   does not.  All attempts share FETCH_TIMEOUT. */
+
+static int
+reg_fetch_connect( fd_bam_tile_t * ctx ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  reg_close( reg );
+  while( reg->addr_i<reg->addr_cnt ) {
+    int fd = reg_socket( ctx, reg->addrs[ reg->addr_i++ ], reg->f_port, 1 );
+    if( fd<0 ) continue;
+    reg->fd = fd;
+    if( reg->f_ssl ) {
+      if( reg_tls_init( ctx->ca_store, reg->tls, reg->conn, reg->f_host, reg->f_host_len, 1 ) ) {
+        reg_close( reg );
+        return -1;
+      }
+      fd_tlsrec_sock_init( reg->sock );
+    }
+    return 0;
+  }
+  return -1;
+}
+
+/* reg_fetch_begin returns 0 once a lookup or connect is in flight,
+   else the REG_FETCH_* result to end the fetch with. */
+
+static ulong
+reg_fetch_begin( fd_bam_tile_t * ctx ) {
+  reg_close( &ctx->registry );
+  int rc = reg_dns_begin( &ctx->registry );
+  if( rc<0 ) return REG_FETCH_RESOLVE;
+  if( !rc  ) return 0UL;
+  return reg_fetch_connect( ctx ) ? REG_FETCH_CONNECT : 0UL;
+}
+
+/* reg_tcp_err returns 0 when a polled connect finished cleanly, else
+   why it failed as an errno. */
+
+static int
+reg_tcp_err( int   fd,
+             short revents ) {
+  int so_err = 0;
+  socklen_t sz = sizeof(so_err);
+  if( FD_UNLIKELY( getsockopt( fd, SOL_SOCKET, SO_ERROR, &so_err, &sz ) || so_err ||
+                   (revents & (POLLERR|POLLHUP|POLLNVAL)) ) ) {
+    return so_err ? so_err : ECONNABORTED;
+  }
+  return 0;
+}
+
+static int
+reg_tcp_ready( fd_bam_registry_t * reg ) {
+  struct pollfd pfd = { .fd = reg->fd, .events = POLLOUT };
+  int pr = fd_syscall_poll( &pfd, 1, 0 );
+  if( FD_UNLIKELY( pr<0 ) ) {
+    FD_LOG_WARNING(( "BAM registry poll failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    return -1;
+  }
+  if( !pr ) return 0;
+  int err = reg_tcp_err( reg->fd, pfd.revents );
+  if( !err ) return 1;
+  reg_connect_failed( reg, reg->addrs[ reg->addr_i-1UL ], reg->f_port, err );
+  return -1;
+}
+
+/* jito counts a session live only after wait_until_healthy_and_config_received
+   and drops it to Disconnected once unhealthy.  CONNECTED_UNHEALTHY is
+   neither, so it must age toward CONNECT_GRACE. */
+
+static int
+reg_live( fd_bam_tile_t * ctx ) {
+  return fd_bam_client_status( ctx )==FD_PLUGIN_MSG_BAM_UPDATE_STATUS_CONNECTED_HEALTHY;
+}
+
+/* reg_fetch_done ends a fetch.  result is REG_FETCH_ACCEPTED when a
+   2xx body arrived, which parsing may still demote. */
+
+static void
+reg_fetch_done( fd_bam_tile_t * ctx,
+                ulong           result ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  ulong body_len = reg->body_len; /* reg_close clears it */
+  reg_close( reg );
+  reg->phase = FD_BAM_REG_IDLE;
+  /* jito schedules from the start of the step that fetched. */
+  long now = reg->fetch_start;
+  reg->fetch_after = fd_bam_now()+FD_BAM_REGISTRY_POLL_NS;
+  if( result==REG_FETCH_ACCEPTED ) {
+    ulong cnt = 0UL;
+    int rc = fd_bam_registry_parse( reg->body, body_len, reg->parsed, FD_BAM_REGISTRY_NODE_CAP, &cnt );
+    if( !rc ) {
+      if( fd_bam_registry_on_fetch( reg, reg->parsed, cnt, now, reg_live( ctx ), ctx->rng ) ) {
+        FD_LOG_NOTICE(( "BAM registry %s lists %lu nodes", reg->url, cnt ));
+      }
+      reg->fetch_cnt[ REG_FETCH_ACCEPTED ]++;
+      reg_log( reg->fetch_warn, 0UL, now, NULL );
+      return;
+    }
+    result = rc==-2 ? REG_FETCH_EMPTY_LIST : REG_FETCH_JSON;
+  }
+  reg->fetch_cnt[ result ]++;
+  reg_schedule( reg, now, reg_live( ctx ), ctx->rng );
+  static char const * const why[ FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_CNT ] = {
+    [ REG_FETCH_RESOLVE       ] = "DNS lookup failed",
+    [ REG_FETCH_CONNECT       ] = "TCP connect failed",
+    [ REG_FETCH_IO            ] = "connection failed",
+    [ REG_FETCH_CERT_REJECTED ] = "TLS certificate rejected",
+    [ REG_FETCH_TIMEOUT       ] = "no response within 5 s",
+    [ REG_FETCH_HTTP          ] = "bad HTTP response",
+    [ REG_FETCH_REDIRECT      ] = "more than 10 redirects",
+    [ REG_FETCH_JSON          ] = "malformed node list",
+    [ REG_FETCH_EMPTY_LIST    ] = "no IPv4 node listed",
+  };
+  char msg[ 512 ];
+  fd_cstr_printf( msg, sizeof(msg), NULL, "BAM registry fetch from %s failed: %s; keeping %lu cached nodes",
+                  reg->url, reg->why[0] ? reg->why : why[ result ], reg->node_cnt );
+  reg_log( reg->fetch_warn, result, now, msg );
+}
+
+/* Parsed with picohttpparser, as fd_sshttp does.  Any 2xx passes, as
+   with reqwest's error_for_status. */
+
+int
+fd_bam_registry_http_response( char *  buf,
+                               ulong * len,
+                               int     eof,
+                               char *  loc,
+                               ulong   loc_max ) {
+  int               minor_version;
+  int               status;
+  char const *      msg;
+  ulong             msg_len;
+  struct phr_header hdrs[ 100 ]; /* hyper's default limit */
+  ulong             hdr_cnt = 100UL;
+  int hdr_len = phr_parse_response( buf, *len, &minor_version, &status, &msg, &msg_len, hdrs, &hdr_cnt, 0UL );
+  if( hdr_len==-2 ) return *len>FD_BAM_REGISTRY_BODY_MAX ? FD_BAM_REGISTRY_HTTP_TOO_BIG : eof ? -1 : 0;
+  if( hdr_len<0 ) return -1;
+  if( (ulong)hdr_len>FD_BAM_REGISTRY_BODY_MAX ) return FD_BAM_REGISTRY_HTTP_TOO_BIG;
+
+  if( status==301 || status==302 || status==303 || status==307 || status==308 ) {
+    for( ulong i=0UL; i<hdr_cnt; i++ ) {
+      if( hdrs[ i ].name_len!=8UL || strncasecmp( hdrs[ i ].name, "location", 8UL ) ) continue;
+      if( !hdrs[ i ].value_len || hdrs[ i ].value_len>=loc_max ) return -1;
+      memcpy( loc, hdrs[ i ].value, hdrs[ i ].value_len );
+      loc[ hdrs[ i ].value_len ] = '\0';
+      return FD_BAM_REGISTRY_HTTP_REDIRECT;
+    }
+    return -1;
+  }
+  if( status<200 || status>299 ) return -1;
+
+  int   have_len    = 0;
+  ulong content_len = 0UL;
+  for( ulong i=0UL; i<hdr_cnt; i++ ) {
+    /* Servers must not send a transfer coding to HTTP/1.0 clients. */
+    if( hdrs[ i ].name_len==17UL && !strncasecmp( hdrs[ i ].name, "transfer-encoding", 17UL ) ) return -1;
+    if( hdrs[ i ].name_len!=14UL || strncasecmp( hdrs[ i ].name, "content-length", 14UL ) ) continue;
+    if( fd_http_parse_content_len( hdrs[ i ].value, hdrs[ i ].value_len, &content_len ) ) return -1;
+    if( content_len>FD_BAM_REGISTRY_BODY_MAX-(ulong)hdr_len ) return FD_BAM_REGISTRY_HTTP_TOO_BIG;
+    have_len = 1;
+  }
+  ulong n = *len-(ulong)hdr_len;
+  if( have_len ) {
+    if( n<content_len ) return eof ? -1 : 0;
+    n = content_len;
+  } else if( *len>FD_BAM_REGISTRY_BODY_MAX ) {
+    return FD_BAM_REGISTRY_HTTP_TOO_BIG;
+  } else if( !eof ) {
+    return 0;
+  }
+  memmove( buf, buf+hdr_len, n );
+  *len = n;
+  return FD_BAM_REGISTRY_HTTP_BODY;
+}
+
+/* reg_set_path sets the fetch path to p[0,n) without its fragment,
+   adding the leading '/' an absolute URL may omit. */
+
+static int
+reg_set_path( fd_bam_registry_t * reg,
+              char const *        p,
+              ulong               n ) {
+  ulong k = 0UL;
+  while( k<n && p[ k ]!='#' ) k++;
+  ulong slash = ( !k || p[0]!='/' ) ? 1UL : 0UL;
+  if( k+slash>=FD_BAM_REGISTRY_PATH_MAX ) return -1;
+  reg->f_path[0] = '/';
+  memcpy( reg->f_path+slash, p, k );
+  reg->f_path_len = (ushort)(k+slash);
+  reg->f_path[ reg->f_path_len ] = '\0';
+  return 0;
+}
+
+int
+fd_bam_registry_redirect_target( fd_bam_registry_t * reg,
+                                 char const *        loc ) {
+  ulong n = strlen( loc );
+  if( loc[0]=='/' && loc[1]!='/' ) return reg_set_path( reg, loc, n );
+  fd_url_t url[1];
+  if( !fd_url_parse_cstr( url, loc, n, NULL ) ) return -1;
+  /* The port as fd_url_parse_endpoint reads it, but quietly: the
+     failed fetch's rate-limited warning names loc. */
+  _Bool ssl  = url->scheme_len==8UL;
+  ulong port = ssl ? 443UL : 80UL;
+  if( url->port ) {
+    if( !url->port_len || url->port_len>5UL ) return -1;
+    port = 0UL;
+    for( ulong i=0UL; i<url->port_len; i++ ) {
+      uchar c = (uchar)url->port[ i ];
+      if( c<(uchar)'0' || c>(uchar)'9' ) return -1;
+      port = 10UL*port+(ulong)( c-(uchar)'0' );
+    }
+    if( !port || port>USHORT_MAX ) return -1;
+  }
+  if( !url->host_len || url->host_len>=sizeof(reg->f_host) || reg_set_path( reg, url->tail, url->tail_len ) ) return -1;
+  memcpy( reg->f_host, url->host, url->host_len );
+  reg->f_host[ url->host_len ] = '\0';
+  reg->f_host_len = (ushort)url->host_len;
+  reg->f_port     = (ushort)port;
+  reg->f_ssl      = (uchar)ssl;
+  return 0;
+}
+
+/* ---- probe ------------------------------------------------------- */
+
+/* Mirrors jito probe_and_rank: a shuffled pool, at most PROBE_FANOUT
+   channels at once, PROBE_SAMPLES sequential GetBuilderConfig calls
+   per channel, and a round budget that drops whatever is in flight. */
+
+static void
+reg_round_end( fd_bam_tile_t * ctx,
+               long            now ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) slot_close( &reg->slots[ i ] );
+  reg->probe_active = 0UL;
+  int over = now-reg->round_start>=FD_BAM_REGISTRY_PROBE_BUDGET_NS;
+  reg->round_cnt[ over ? FD_METRICS_ENUM_BAM_REGISTRY_PROBE_ROUND_RESULT_V_BUDGET_EXCEEDED_IDX
+                       : FD_METRICS_ENUM_BAM_REGISTRY_PROBE_ROUND_RESULT_V_SETTLED_IDX ]++;
+  fd_bam_registry_finish_round( reg );
+  reg->last_round[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_NODE_RESULT_V_USABLE_IDX     ] = reg->ranked_cnt;
+  reg->last_round[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_NODE_RESULT_V_SLOW_IDX       ] = reg->probe_answered-reg->ranked_cnt;
+  reg->last_round[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_NODE_RESULT_V_UNANSWERED_IDX ] = reg->order_cnt-reg->probe_answered;
+  reg->phase       = FD_BAM_REG_IDLE;
+  reg->fetch_after = now+FD_BAM_REGISTRY_POLL_NS;
+  FD_LOG_INFO(( "BAM probe round: %lu/%lu nodes answered, %lu usable%s",
+                reg->probe_answered, reg->order_cnt, reg->ranked_cnt, over ? ", budget exceeded" : "" ));
+  char msg[ 192 ];
+  fd_cstr_printf( msg, sizeof(msg), NULL, "BAM probe round found no usable node: %lu of %lu answered, none within %lu ms; probing again in %ld s",
+                  reg->probe_answered, reg->order_cnt, FD_BAM_REGISTRY_MAX_RTT_US/1000UL, FD_BAM_REGISTRY_PROBE_COOLDOWN_NS/(long)1e9 );
+  reg_log( reg->probe_warn, !reg->ranked_cnt, now, msg );
+}
+
+static void
+slot_done( fd_bam_tile_t *          ctx,
+           fd_bam_registry_slot_t * s ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  if( s->best_us!=ULONG_MAX && reg->ranked_cnt<FD_BAM_REGISTRY_NODE_CAP ) {
+    fd_bam_registry_rank_t * rank = &reg->ranked[ reg->ranked_cnt++ ];
+    rank->node   = reg->nodes[ s->node_i ];
+    rank->rtt_us = s->best_us;
+    reg->probe_answered++;
+  }
+  slot_close( s );
+  reg->probe_active--;
+}
+
+static int
+slot_open( fd_bam_tile_t *          ctx,
+           fd_bam_registry_slot_t * s,
+           ulong                    node_i ) {
+  fd_bam_registry_node_t const * node = &ctx->registry.nodes[ node_i ];
+  char ip[ 16 ];
+  ulong ip_len = 0UL;
+  fd_cstr_printf( ip, sizeof(ip), &ip_len, FD_IP4_ADDR_FMT, FD_IP4_ADDR_FMT_ARGS( node->ip4 ) );
+  int fd = reg_socket( ctx, node->ip4, node->grpc_port, 0 );
+  if( fd<0 ) return -1;
+  s->fd = fd;
+  if( reg_tls_init( ctx->ca_store, s->tls, s->conn, ip, ip_len, 0 ) ) {
+    slot_close( s );
+    return -1;
+  }
+  fd_grpc_client_set_authority( s->grpc, ip, ip_len, node->grpc_port );
+  s->node_i   = node_i;
+  s->deadline = fd_bam_now()+FD_BAM_REGISTRY_PROBE_CONNECT_NS;
+  return 0;
+}
+
+/* A node that cannot be opened scores nothing and its slot takes the
+   next node, as one failed future does under buffer_unordered. */
+
+static void
+reg_probe_fill( fd_bam_tile_t * ctx ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  for( ulong i=0UL; i<reg->slot_cnt && reg->order_i<reg->order_cnt; i++ ) {
+    fd_bam_registry_slot_t * s = &reg->slots[ i ];
+    while( s->fd<0 && reg->order_i<reg->order_cnt ) {
+      if( !slot_open( ctx, s, reg->order[ reg->order_i++ ] ) ) reg->probe_active++;
+    }
+  }
+}
+
+static void
+slot_sample_done( fd_bam_registry_slot_t * s,
+                  int                      ok ) {
+  if( !s->inflight ) return;
+  if( ok ) {
+    long dt = fd_bam_now()-s->sample_ns;
+    ulong us = dt>0L ? (ulong)(dt/1000L) : 0UL;
+    if( us<s->best_us ) s->best_us = us;
+  }
+  s->inflight = 0;
+  s->samples++;
+}
+
+static void
+probe_rx_end( void *                app,
+              ulong                 request_ctx,
+              fd_grpc_resp_hdrs_t * resp ) {
+  (void)request_ctx;
+  slot_sample_done( app, resp && resp->grpc_status==FD_GRPC_STATUS_OK );
+}
+
+static void
+probe_rx_timeout( void * app,
+                  ulong  request_ctx,
+                  int    deadline_kind ) {
+  (void)request_ctx; (void)deadline_kind;
+  slot_sample_done( app, 0 );
+}
+
+static void
+probe_dead( void * app,
+            uint   h2_err,
+            int    closed_by ) {
+  (void)h2_err; (void)closed_by;
+  ((fd_bam_registry_slot_t *)app)->dead = 1;
+}
+
+static void
+probe_nop( void * app ) {
+  (void)app;
+}
+
+static void
+probe_nop_u( void * app,
+             ulong  request_ctx ) {
+  (void)app; (void)request_ctx;
+}
+
+static void
+probe_nop_msg( void *       app,
+               void const * protobuf,
+               ulong        protobuf_sz,
+               ulong        request_ctx ) {
+  (void)app; (void)protobuf; (void)protobuf_sz; (void)request_ctx;
+}
+
+static fd_grpc_client_callbacks_t const probe_cbs = {
+  .conn_established = probe_nop,
+  .conn_dead        = probe_dead,
+  .tx_complete      = probe_nop_u,
+  .rx_start         = probe_nop_u,
+  .rx_msg           = probe_nop_msg,
+  .rx_end           = probe_rx_end,
+  .rx_timeout       = probe_rx_timeout,
+  .ping_ack         = probe_nop,
+};
+
+ulong
+fd_bam_registry_probe_align( void ) {
+  return fd_ulong_max( alignof(fd_bam_registry_slot_t), fd_grpc_client_align() );
+}
+
+ulong
+fd_bam_registry_probe_footprint( void ) {
+  ulong l = FD_LAYOUT_INIT;
+  l = FD_LAYOUT_APPEND( l, alignof(fd_bam_registry_slot_t), FD_BAM_REGISTRY_PROBE_FANOUT*sizeof(fd_bam_registry_slot_t) );
+  for( ulong i=0UL; i<FD_BAM_REGISTRY_PROBE_FANOUT; i++ ) {
+    l = FD_LAYOUT_APPEND( l, fd_grpc_client_align(), fd_grpc_client_footprint( FD_BAM_REGISTRY_PROBE_BUF ) );
+  }
+  return FD_LAYOUT_FINI( l, fd_bam_registry_probe_align() );
+}
+
+void
+fd_bam_registry_join_probe( fd_bam_tile_t * ctx,
+                            ulong           seed ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  if( !reg->probe_mem ) return;
+  FD_SCRATCH_ALLOC_INIT( l, reg->probe_mem );
+  reg->slots = FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_bam_registry_slot_t),
+                                        FD_BAM_REGISTRY_PROBE_FANOUT*sizeof(fd_bam_registry_slot_t) );
+  for( ulong i=0UL; i<FD_BAM_REGISTRY_PROBE_FANOUT; i++ ) {
+    fd_bam_registry_slot_t * s = &reg->slots[ i ];
+    void * grpc_mem = FD_SCRATCH_ALLOC_APPEND( l, fd_grpc_client_align(), fd_grpc_client_footprint( FD_BAM_REGISTRY_PROBE_BUF ) );
+    memset( s, 0, sizeof(*s) );
+    s->fd      = -1;
+    s->best_us = ULONG_MAX;
+    fd_tls_t * tls = fd_tls_join( fd_tls_new( s->tls ) );
+    if( FD_UNLIKELY( !tls ) ) FD_LOG_CRIT(( "BAM registry probe tls failed" ));
+    tls->rng = reg->rng;
+    s->grpc = fd_grpc_client_new( grpc_mem, &probe_cbs, s->metrics, s, FD_BAM_REGISTRY_PROBE_BUF, seed+i );
+    if( FD_UNLIKELY( !s->grpc ) ) FD_LOG_CRIT(( "BAM registry probe client failed" ));
+  }
+  reg->slot_cnt = FD_BAM_REGISTRY_PROBE_FANOUT;
+}
+
+static void
+reg_start_fetch( fd_bam_tile_t * ctx ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  reg->fetch_start = fd_bam_now();
+  reg->deadline    = reg->fetch_start+FD_BAM_REGISTRY_FETCH_TIMEOUT_NS;
+  reg->phase       = FD_BAM_REG_FETCH;
+  memcpy( reg->f_host, reg->host, reg->host_len+1UL );
+  reg->f_host_len = reg->host_len;
+  memcpy( reg->f_path, reg->path, reg->path_len+1UL );
+  reg->f_path_len = reg->path_len;
+  reg->f_port     = reg->port;
+  reg->f_ssl      = reg->ssl;
+  reg->redirects  = 0U;
+  reg->why[0]     = '\0';
+  ulong rc = reg_fetch_begin( ctx );
+  if( rc ) reg_fetch_done( ctx, rc );
+}
+
+static void
+reg_start_round( fd_bam_tile_t * ctx ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  long now = fd_bam_now();
+  if( !reg->slot_cnt ) {
+    reg->probe_at = now+FD_BAM_REGISTRY_PROBE_COOLDOWN_NS;
+    return;
+  }
+  reg->order_cnt      = reg->node_cnt;
+  reg->order_i        = 0UL;
+  reg->ranked_cnt     = 0UL;
+  reg->probe_active   = 0UL;
+  reg->probe_answered = 0UL;
+  reg->round_start    = now;
+  reg->probe_at       = now+FD_BAM_REGISTRY_PROBE_COOLDOWN_NS;
+  for( ulong i=0UL; i<reg->order_cnt; i++ ) reg->order[ i ] = i;
+  for( ulong i=reg->order_cnt; i>1UL; i-- ) {
+    ulong j = fd_rng_ulong_roll( ctx->rng, i );
+    ulong tmp = reg->order[ j ];
+    reg->order[ j ] = reg->order[ i-1UL ];
+    reg->order[ i-1UL ] = tmp;
+  }
+  reg->phase = FD_BAM_REG_PROBE;
+  reg_probe_fill( ctx );
+  if( !reg->probe_active ) reg_round_end( ctx, now );
+}
+
+static void
+reg_drive_tls( fd_bam_tile_t * ctx,
+               int *           failed ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  /* fd_tlsrec_sock_rx sends only what it produces, so a handshake
+     flight parked on EAGAIN goes out here. */
+  if( fd_tlsrec_sock_tx_pending( reg->sock ) && fd_tlsrec_sock_flush( reg->sock, reg->fd )<0 ) {
+    *failed = 1;
+    return;
+  }
+  ulong rx_sz = 0UL;
+  int rc = fd_tlsrec_sock_rx( reg->sock, reg->conn, reg->fd, &rx_sz );
+  if( rc==FD_TLSREC_SOCK_ERR_EOF && !fd_tlsrec_conn_is_ready( reg->conn ) ) *failed = 1;
+  else if( rc && rc!=FD_TLSREC_SOCK_ERR_EOF ) *failed = 1;
+  int tls = reg_tls_failed( reg->conn );
+  if( tls ) {
+    *failed = tls;
+    fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "TLS handshake with %s failed (%s)",
+                    reg->f_host, fd_tls_reason_cstr( reg->conn->hs.base.reason ) );
+  }
+}
+
+/* reg_fetch_rx appends received plaintext to body, up to one byte past
+   FD_BAM_REGISTRY_BODY_MAX, which fd_bam_registry_http_response always
+   decides on.  Returns 1 on EOF, 0 otherwise, and -1 on a socket or TLS
+   error. */
+
+static int
+reg_fetch_rx( fd_bam_registry_t * reg ) {
+  ulong room = FD_BAM_REGISTRY_BODY_MAX+1UL-reg->body_len;
+  if( !reg->f_ssl ) {
+    long sz = recv( reg->fd, reg->body+reg->body_len, room, MSG_NOSIGNAL|MSG_DONTWAIT );
+    if( !sz ) return 1;
+    if( sz<0 ) return ( errno==EAGAIN || errno==EWOULDBLOCK ) ? 0 : -1;
+    reg->body_len += (ulong)sz;
+    return 0;
+  }
+  reg->body_len += fd_tlsrec_sock_rx_pop( reg->sock, reg->body+reg->body_len, room );
+  int eof = 0;
+  ulong ignored = 0UL;
+  int rx = fd_tlsrec_sock_rx( reg->sock, reg->conn, reg->fd, &ignored );
+  if( rx==FD_TLSREC_SOCK_ERR_EOF ) eof = 1;
+  else if( rx ) return -1;
+  reg->body_len += fd_tlsrec_sock_rx_pop( reg->sock, reg->body+reg->body_len, FD_BAM_REGISTRY_BODY_MAX+1UL-reg->body_len );
+  return eof;
+}
+
+/* reg_fetch_tx sends the rest of req.  Returns 1 once all of it is
+   out, 0 to retry, -1 on error. */
+
+static int
+reg_fetch_tx( fd_bam_registry_t * reg,
+              char const *        req,
+              ulong               req_len ) {
+  if( !reg->f_ssl ) {
+    if( reg->http_off>=req_len ) return 1;
+    long sz = send( reg->fd, req+reg->http_off, req_len-reg->http_off, MSG_NOSIGNAL|MSG_DONTWAIT );
+    if( sz<0 ) return ( errno==EAGAIN || errno==EWOULDBLOCK ) ? 0 : -1;
+    reg->http_off += (ulong)sz;
+    return reg->http_off>=req_len;
+  }
+  if( fd_tlsrec_sock_tx_pending( reg->sock ) ) {
+    int fl = fd_tlsrec_sock_flush( reg->sock, reg->fd );
+    if( fl<0 ) return -1;
+    if( fl==1 ) return 0;
+  }
+  if( reg->http_off>=req_len ) return 1;
+  ulong consumed = 0UL;
+  if( fd_tlsrec_sock_tx( reg->sock, reg->conn, reg->fd, req+reg->http_off, req_len-reg->http_off, &consumed ) ) return -1;
+  reg->http_off += consumed;
+  return 0;
+}
+
+static void
+reg_drive_fetch( fd_bam_tile_t * ctx ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  long now = fd_bam_now();
+  if( now>=reg->deadline ) {
+    if( reg->io==FD_BAM_REG_IO_RESOLVE ) fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "resolve `%s` timed out", reg->f_host );
+    reg_fetch_done( ctx, reg->io==FD_BAM_REG_IO_RESOLVE ? REG_FETCH_RESOLVE : REG_FETCH_TIMEOUT );
+    return;
+  }
+
+  if( reg->io==FD_BAM_REG_IO_RESOLVE ) {
+    int rc = reg_dns_poll( reg, now );
+    if( rc<0 ) reg_fetch_done( ctx, REG_FETCH_RESOLVE );
+    else if( rc && reg_fetch_connect( ctx ) ) reg_fetch_done( ctx, REG_FETCH_CONNECT );
+    return;
+  }
+
+  if( reg->io==FD_BAM_REG_IO_CONNECT ) {
+    int ready = reg_tcp_ready( reg );
+    if( ready<0 ) {
+      if( reg_fetch_connect( ctx ) ) reg_fetch_done( ctx, REG_FETCH_CONNECT );
+      return;
+    }
+    if( !ready ) return;
+    reg->io = reg->f_ssl ? FD_BAM_REG_IO_TLS : FD_BAM_REG_IO_BODY;
+  }
+
+  if( reg->f_ssl ) {
+    int failed = 0;
+    reg_drive_tls( ctx, &failed );
+    if( failed ) { reg_fetch_done( ctx, failed==2 ? REG_FETCH_CERT_REJECTED : REG_FETCH_IO ); return; }
+    if( !fd_tlsrec_conn_is_ready( reg->conn ) ) return;
+    if( reg->io==FD_BAM_REG_IO_TLS ) reg->io = FD_BAM_REG_IO_BODY;
+  }
+
+  char port[ 8 ] = {0};
+  if( reg->f_port!=( reg->f_ssl ? 443 : 80 ) ) fd_cstr_printf( port, sizeof(port), NULL, ":%hu", reg->f_port );
+  char req[ FD_BAM_REGISTRY_PATH_MAX+FD_FQDN_BUF_MAX+128UL ];
+  ulong req_len = 0UL;
+  if( !fd_cstr_printf_check( req, sizeof(req), &req_len,
+                             "GET %s HTTP/1.0\r\nHost: %s%s\r\nAccept: */*\r\n\r\n",
+                             reg->f_path, reg->f_host, port ) ) {
+    reg_fetch_done( ctx, REG_FETCH_HTTP );
+    return;
+  }
+  int tx = reg_fetch_tx( reg, req, req_len );
+  if( tx<0 ) { reg_fetch_done( ctx, REG_FETCH_IO ); return; }
+  if( !tx ) return;
+  reg->sent = 1;
+
+  int eof = reg_fetch_rx( reg );
+  if( eof<0 ) { reg_fetch_done( ctx, REG_FETCH_IO ); return; }
+
+  char loc[ FD_URL_MAX+FD_BAM_REGISTRY_PATH_MAX ];
+  int done = fd_bam_registry_http_response( reg->body, &reg->body_len, eof, loc, sizeof(loc) );
+  if( !done ) return;
+  if( done==FD_BAM_REGISTRY_HTTP_TOO_BIG ) {
+    fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "response over %lu KiB", FD_BAM_REGISTRY_BODY_MAX>>10 );
+    reg_fetch_done( ctx, REG_FETCH_HTTP );
+    return;
+  }
+  if( done==FD_BAM_REGISTRY_HTTP_REDIRECT ) {
+    if( ++reg->redirects>FD_BAM_REGISTRY_REDIRECT_MAX || fd_bam_registry_redirect_target( reg, loc ) ) {
+      fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "redirect to `%.64s` not followed", loc );
+      reg_fetch_done( ctx, REG_FETCH_REDIRECT );
+      return;
+    }
+    ulong rc = reg_fetch_begin( ctx );
+    if( rc ) reg_fetch_done( ctx, rc );
+    return;
+  }
+  if( done<0 ) {
+    /* A non-2xx status line names the failure.  A 2xx failed on its
+       framing, which "HTTP/1.0 200 OK" would misreport. */
+    ulong line = 0UL;
+    while( line<reg->body_len && line<64UL && reg->body[ line ]!='\r' && reg->body[ line ]!='\n' ) line++;
+    if( line>=12UL && !memcmp( reg->body, "HTTP/", 5UL ) && reg->body[ 9 ]!='2' ) fd_cstr_printf( reg->why, sizeof(reg->why), NULL, "%.*s", (int)line, reg->body );
+    reg_fetch_done( ctx, REG_FETCH_HTTP );
+    return;
+  }
+  reg_fetch_done( ctx, REG_FETCH_ACCEPTED );
+}
+
+/* slot_drive returns 1 once the slot is finished: connect timeout,
+   channel failure, or PROBE_SAMPLES calls made.  Sets *busy when the
+   channel moved bytes. */
+
+static int
+slot_drive( fd_bam_tile_t *          ctx,
+            fd_bam_registry_slot_t * s,
+            long                     now,
+            int *                    busy ) {
+  int io   = fd_grpc_client_rxtx_tls( s->grpc, s->conn, s->fd, now, busy );
+  int tls  = reg_tls_failed( s->conn ); /* counted even when io failed */
+  if( tls==2 ) ctx->registry.probe_cert_cnt++;
+  if( s->dead || io || tls ) return 1;
+  if( !fd_grpc_client_is_connected( s->grpc ) ) return now>=s->deadline;
+
+  if( s->inflight && now-s->sample_ns>=FD_BAM_REGISTRY_PROBE_REQUEST_NS ) slot_sample_done( s, 0 );
+  if( s->inflight ) return 0;
+  if( s->samples>=FD_BAM_REGISTRY_PROBE_SAMPLES ) return 1;
+
+  bam_api_ConfigRequest req = bam_api_ConfigRequest_init_default;
+  long started = fd_bam_now();
+  fd_grpc_h2_stream_t * stream = fd_grpc_client_request_start( s->grpc, FD_BAM_REG_CONFIG_PATH,
+                                                              sizeof(FD_BAM_REG_CONFIG_PATH)-1UL, 1UL,
+                                                              &bam_api_ConfigRequest_msg, &req, NULL, 0UL, 0 );
+  if( FD_UNLIKELY( !stream ) ) {
+    s->samples++;
+    return s->samples>=FD_BAM_REGISTRY_PROBE_SAMPLES;
+  }
+  fd_grpc_client_deadline_set( stream, FD_GRPC_DEADLINE_RX_END, now+FD_BAM_REGISTRY_PROBE_REQUEST_NS );
+  s->inflight  = 1;
+  s->sample_ns = started;
+  /* Put the request on the wire now so the sample starts at send. */
+  if( fd_grpc_client_rxtx_tls( s->grpc, s->conn, s->fd, now, busy ) || s->dead ) return 1;
+  return 0;
+}
+
+static void
+reg_drive_probe( fd_bam_tile_t * ctx,
+                 int *           busy ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  long now = fd_bam_now();
+  if( now-reg->round_start>=FD_BAM_REGISTRY_PROBE_BUDGET_NS ) {
+    reg_round_end( ctx, now );
+    return;
+  }
+
+  /* One poll for every slot still in TCP connect. */
+  struct pollfd pfd[ FD_BAM_REGISTRY_PROBE_FANOUT ];
+  ulong         pidx[ FD_BAM_REGISTRY_PROBE_FANOUT ];
+  ulong         pcnt = 0UL;
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) {
+    fd_bam_registry_slot_t * s = &reg->slots[ i ];
+    if( s->fd<0 || s->io!=FD_BAM_REG_IO_CONNECT ) continue;
+    if( now>=s->deadline ) { slot_done( ctx, s ); continue; }
+    pfd[ pcnt ]  = (struct pollfd){ .fd = s->fd, .events = POLLOUT };
+    pidx[ pcnt ] = i;
+    pcnt++;
+  }
+  if( pcnt ) {
+    int pr = fd_syscall_poll( pfd, (uint)pcnt, 0 );
+    if( FD_UNLIKELY( pr<0 ) ) {
+      FD_LOG_WARNING(( "BAM registry poll failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    } else {
+      for( ulong k=0UL; pr>0 && k<pcnt; k++ ) {
+        if( !pfd[ k ].revents ) continue;
+        fd_bam_registry_slot_t * s = &reg->slots[ pidx[ k ] ];
+        if( reg_tcp_err( s->fd, pfd[ k ].revents ) ) slot_done( ctx, s );
+        else s->io = FD_BAM_REG_IO_TLS;
+      }
+    }
+  }
+
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) {
+    fd_bam_registry_slot_t * s = &reg->slots[ i ];
+    if( s->fd<0 || s->io==FD_BAM_REG_IO_CONNECT ) continue;
+    if( slot_drive( ctx, s, now, busy ) ) slot_done( ctx, s );
+  }
+
+  reg_probe_fill( ctx );
+  if( !reg->probe_active && reg->order_i>=reg->order_cnt ) reg_round_end( ctx, now );
+}
+
+/* reg_pause idles the follower while BAM is disabled: no fetch, probe
+   or dial.  A probe round cut short reruns as soon as BAM is enabled
+   again, and the dialed node gets a fresh CONNECT_GRACE. */
+
+static void
+reg_pause( fd_bam_registry_t * reg ) {
+  if( reg->paused ) return;
+  if( reg->phase==FD_BAM_REG_PROBE ) {
+    reg->ranked_cnt = 0UL;
+    reg->probe_at   = 0L;
+  }
+  reg_close_all( reg );
+  reg->phase  = FD_BAM_REG_IDLE;
+  reg->paused = 1;
+}
+
+static void
+reg_idle( fd_bam_tile_t * ctx,
+          int *           charge_busy,
+          long *          deadline ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  long now = fd_bam_now();
+  int live = reg_live( ctx );
+  if( live && fd_bam_registry_near_leader( ctx->next_leader_slot, reg->replay_slot ) ) {
+    *deadline = now+FD_BAM_REGISTRY_POLL_NS;
+    return;
+  }
+  if( !live ) reg->resync_at = fd_long_min( reg->resync_at, now+FD_BAM_REGISTRY_RESYNC_STALLED_NS );
+  if( now>=reg->resync_at && now>=reg->fetch_after ) {
+    reg_start_fetch( ctx );
+    *charge_busy = 1;
+    *deadline = now;
+    return;
+  }
+  if( !reg->ranked_cnt && reg->node_cnt && now>=reg->probe_at ) {
+    reg_start_round( ctx );
+    *charge_busy = 1;
+    *deadline = now;
+    return;
+  }
+  /* The leader-schedule wait holds the dial, which is no fault of the
+     node, so it does not count toward CONNECT_GRACE. */
+  int hold = fd_bam_tile_waiting_for_leader_slot( ctx );
+  fd_bam_registry_node_t node;
+  if( fd_bam_registry_choose( reg, live, hold, now, &node ) && fd_bam_tile_dial_node( ctx, &node ) ) {
+    reg->stalled_ns  = 0L;
+    reg->dial_rtt_us = reg->ranked[ reg->cursor ].rtt_us;
+    FD_LOG_NOTICE(( "BAM registry selected " FD_IP4_ADDR_FMT ":%hu (%s), probe RTT %lu us",
+                    FD_IP4_ADDR_FMT_ARGS( node.ip4 ), node.grpc_port, node.region, reg->dial_rtt_us ));
+  }
+  *deadline = fd_long_max( reg->resync_at, reg->fetch_after );
+  if( !reg->ranked_cnt && reg->node_cnt ) *deadline = fd_long_min( *deadline, reg->probe_at );
+  *deadline = fd_long_min( *deadline, now+FD_BAM_REGISTRY_POLL_NS );
+}
+
+/* ---- efficient layout -------------------------------------------- */
+
+/* There the follower's sockets sit in the tile's waker set, as the BAM
+   socket does: always readable, writable only while a connect or a
+   send is pending (an idle writable socket would keep the set ready).
+   Closing a socket removes it from the set. */
+
+static void
+reg_epoll( fd_bam_tile_t const * ctx,
+           int                   fd,
+           uchar *               ep,
+           int                   out ) {
+  uchar want = out ? 2 : 1;
+  if( fd<0 || *ep==want ) return;
+  struct epoll_event ev = { .events = EPOLLIN | ( out ? EPOLLOUT : 0U ), .data.fd = fd };
+  if( FD_UNLIKELY( -1==epoll_ctl( FD_WAKER_INNER_FD( ctx->waker_client_idx ), *ep ? EPOLL_CTL_MOD : EPOLL_CTL_ADD, fd, &ev ) ) )
+    FD_LOG_ERR(( "epoll_ctl(BAM registry socket) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+  *ep = want;
+}
+
+static void
+reg_epoll_sync( fd_bam_tile_t * ctx ) {
+  fd_bam_registry_t * reg = &ctx->registry;
+  int out = 0; /* a DNS socket only reads */
+  if( reg->io==FD_BAM_REG_IO_CONNECT ) out = 1;
+  else if( reg->io!=FD_BAM_REG_IO_RESOLVE ) out = reg->f_ssl ? fd_tlsrec_sock_tx_pending( reg->sock ) : !reg->sent;
+  reg_epoll( ctx, reg->fd, &reg->ep, out );
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) {
+    fd_bam_registry_slot_t * s = &reg->slots[ i ];
+    reg_epoll( ctx, s->fd, &s->ep, s->io==FD_BAM_REG_IO_CONNECT ||
+                                   fd_grpc_client_tx_pending( s->grpc ) || fd_grpc_client_tls_tx_pending( s->grpc ) );
+  }
+}
+
+/* reg_mark records what a fetch or probe step can advance besides
+   bytes on a probe channel (slot_drive reports those). */
+
+typedef struct {
+  ulong phase, io, fd, addr_i, http_off, body_len, tx_left, probe_active, order_i;
+} reg_mark_t;
+
+static void
+reg_mark( fd_bam_registry_t const * reg,
+          reg_mark_t *              m ) {
+  m->phase        = reg->phase;
+  m->io           = reg->io;
+  m->fd           = (ulong)(long)reg->fd;
+  m->addr_i       = reg->addr_i;
+  m->http_off     = reg->http_off;
+  m->body_len     = reg->body_len;
+  m->tx_left      = reg->sock->tx_sz-reg->sock->tx_off;
+  m->probe_active = reg->probe_active;
+  m->order_i      = reg->order_i;
+}
+
+/* reg_wake returns when a fetch or probe that made no progress must
+   step again without a socket event: its next timer.  On the efficient
+   layout a probe sample's reply wakes the tile, so the sample includes
+   that wake-up, as jito's includes its async runtime's. */
+
+static long
+reg_wake( fd_bam_registry_t const * reg,
+          long                      now ) {
+  if( reg->phase==FD_BAM_REG_FETCH ) {
+    if( reg->io==FD_BAM_REG_IO_RESOLVE ) return fd_long_min( reg->deadline, reg->dns_send_at );
+    /* Held plaintext does not make the socket readable. */
+    if( reg->f_ssl && reg->io!=FD_BAM_REG_IO_CONNECT &&
+        fd_tlsrec_sock_rx_avail( reg->sock ) && !fd_tlsrec_sock_tx_pending( reg->sock ) ) return now;
+    return reg->deadline;
+  }
+  long dl = reg->round_start+FD_BAM_REGISTRY_PROBE_BUDGET_NS;
+  for( ulong i=0UL; i<reg->slot_cnt; i++ ) {
+    fd_bam_registry_slot_t const * s = &reg->slots[ i ];
+    if( s->fd<0 ) continue;
+    if( fd_grpc_client_tls_rx_pending( s->grpc ) && !fd_grpc_client_tls_tx_pending( s->grpc ) ) return now;
+    if( s->io!=FD_BAM_REG_IO_CONNECT && fd_grpc_client_is_connected( s->grpc ) ) {
+      /* Connected with no call in flight: a call failed to start. */
+      if( !s->inflight ) return now;
+      dl = fd_long_min( dl, s->sample_ns+FD_BAM_REGISTRY_PROBE_REQUEST_NS );
+    } else {
+      dl = fd_long_min( dl, s->deadline );
+    }
+    dl = fd_long_min( dl, fd_grpc_client_next_deadline( s->grpc ) );
+  }
+  return dl;
+}
+
+void
+fd_bam_registry_step( fd_bam_tile_t * ctx,
+                      int *           charge_busy,
+                      long *          deadline ) {
+  *deadline = LONG_MAX;
+  fd_bam_registry_t * reg = &ctx->registry;
+  if( !reg->on ) return;
+  if( FD_UNLIKELY( !FD_VOLATILE_CONST( ctx->enabled ) ) ) {
+    reg_pause( reg );
+    return;
+  }
+  if( FD_UNLIKELY( reg->paused ) ) {
+    reg->paused     = 0;
+    reg->stalled_ns = 0L;
+    reg->stalled_at = fd_bam_now();
+  }
+  if( reg->fd<0 && reg->phase==FD_BAM_REG_IDLE ) {
+    reg_idle( ctx, charge_busy, deadline );
+  } else if( !ctx->waker_fseq ) {
+    /* Nothing reports socket readiness: poll on every step. */
+    int ignored = 0;
+    *charge_busy = 1;
+    *deadline = fd_bam_now();
+    if( reg->phase==FD_BAM_REG_FETCH ) reg_drive_fetch( ctx );
+    else if( reg->phase==FD_BAM_REG_PROBE ) reg_drive_probe( ctx, &ignored );
+    else reg_idle( ctx, charge_busy, deadline );
+  } else {
+    reg_mark_t m0, m1;
+    reg_mark( reg, &m0 );
+    int busy = 0;
+    if( reg->phase==FD_BAM_REG_FETCH ) reg_drive_fetch( ctx );
+    else if( reg->phase==FD_BAM_REG_PROBE ) reg_drive_probe( ctx, &busy );
+    reg_mark( reg, &m1 );
+    busy |= !!memcmp( &m0, &m1, sizeof(reg_mark_t) );
+    long now = fd_bam_now();
+    if( busy ) {
+      *charge_busy = 1;
+      *deadline    = now;
+    } else if( reg->phase==FD_BAM_REG_IDLE ) {
+      reg_idle( ctx, charge_busy, deadline );
+    } else {
+      *deadline = reg_wake( reg, now );
+    }
+  }
+  if( ctx->waker_fseq ) reg_epoll_sync( ctx );
+}

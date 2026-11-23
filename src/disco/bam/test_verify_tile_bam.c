@@ -1,4 +1,4 @@
-/* test_bam_verify_tile covers the verify tile's bam_verif input: verify
+/* test_verify_tile_bam covers the verify tile's bam_verif input: verify
    tiles take it round robin, every BAM frag is published with its
    bam_verif seq plus one as sig (dedup restores bam_verif order), and a
    BAM txn that fails is forwarded as a preprocess_failed marker for

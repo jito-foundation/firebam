@@ -5,6 +5,7 @@
 #include "fuzz_bam_pipeline_stage.h"
 #include "../../flamenco/log_collector/fd_log_collector.h"
 #include "../../flamenco/runtime/fd_blockhashes.h"
+#include "../../flamenco/runtime/fd_system_ids.h"
 #include "../../flamenco/runtime/tests/fd_svm_mini.h"
 #include <sys/mman.h>
 #include <unistd.h>
@@ -14,6 +15,10 @@
 #define BAM_FUZZ_EXECLE_TXNCACHE_LIVE_SLOTS   (8UL)
 #define BAM_FUZZ_EXECLE_TXNCACHE_TXN_PER_SLOT (256UL)
 #define BAM_FUZZ_EXECLE_ACCOUNT_LAMPORTS      (1000000000000000UL)
+
+/* Stands in for the tip programs: it logs and succeeds whatever its
+   accounts and data. */
+FD_IMPORT_BINARY( bam_fuzz_tip_program_elf, "src/ballet/sbpf/fixtures/hello_solana_program.so" );
 
 struct bam_fuzz_execle {
   fd_execle_tile_t * ctx;
@@ -28,6 +33,10 @@ struct bam_fuzz_execle {
 
   bam_fuzz_outs_t    outs;
   ulong              motor_bam_chunk;
+
+  int                crank;          /* pack runs the tip crank */
+  int                tip_programs;   /* deploy the tip program stand-ins */
+  ulong              ib_landed_cnt;  /* initializer bundles committed */
 };
 
 static void
@@ -57,10 +66,11 @@ bam_fuzz_execle_out( bam_fuzz_execle_t * h,
 }
 
 bam_fuzz_execle_t *
-bam_fuzz_execle_new( fd_wksp_t *             wksp,
-                     bam_fuzz_link_t const * in,
-                     bam_fuzz_link_t         out[ BAM_FUZZ_OUT_MAX ],
-                     ulong *                 busy_fseq ) {
+bam_fuzz_execle_new( fd_wksp_t *                 wksp,
+                     bam_fuzz_link_t const *     in,
+                     bam_fuzz_link_t             out[ BAM_FUZZ_OUT_MAX ],
+                     ulong *                     busy_fseq,
+                     bam_fuzz_pack_cfg_t const * cfg ) {
   bam_fuzz_execle_t * h = fd_wksp_alloc_laddr( wksp, alignof(bam_fuzz_execle_t), sizeof(bam_fuzz_execle_t), 1UL );
   FD_TEST( h );
   fd_memset( h, 0, sizeof(*h) );
@@ -106,6 +116,8 @@ bam_fuzz_execle_new( fd_wksp_t *             wksp,
   h->mini = fd_svm_mini_create( wksp, limits );
   FD_TEST( h->mini );
 
+  /* The standalone harness has no replay tile to gate startup on. */
+  ctx->startup_gate->started = 1;
   ctx->busy_fseq        = busy_fseq;
   ctx->pack_in_mem      = in->mem;
   ctx->pack_in_chunk0   = in->chunk0;
@@ -120,8 +132,13 @@ bam_fuzz_execle_new( fd_wksp_t *             wksp,
   }
 
   *ctx->out_poh  = bam_fuzz_execle_out( h, BAM_FUZZ_EXECLE_OUT_MOTOR, wksp, MAX_MICROBLOCK_SZ );
-  *ctx->out_pack = (fd_execle_out_t){ .idx = ULONG_MAX };
   h->motor_bam_chunk = bam_fuzz_execle_out( h, BAM_FUZZ_EXECLE_OUT_MOTOR_BAM, wksp, sizeof(fd_bam_bundle_result_t) ).chunk0;
+  /* As the topology links execle to pack only with use_consumed_cus */
+  *ctx->out_pack = cfg->use_consumed_cus ? bam_fuzz_execle_out( h, BAM_FUZZ_EXECLE_OUT_PACK, wksp, FD_PACK_REBATE_MAX_SZ )
+                                         : (fd_execle_out_t){ .idx = ULONG_MAX };
+  ctx->enable_rebates = ctx->out_pack->idx!=ULONG_MAX;
+  h->crank            = !!cfg->crank;
+  h->tip_programs     = cfg->crank && !cfg->tip_programs_missing;
 
   bam_fuzz_execle_runtime_bind( h );
   fd_memcpy( out, h->outs.link, sizeof(h->outs.link) );
@@ -147,8 +164,12 @@ bam_fuzz_execle_delete( bam_fuzz_execle_t * h ) {
   fd_wksp_free_laddr( h );
 }
 
+/* bam_fuzz_execle_reset_txncache registers the blockhash of every
+   fixture, then blockhash if not NULL, as frozen blocks. */
+
 static fd_txncache_fork_id_t
-bam_fuzz_execle_reset_txncache( bam_fuzz_execle_t * h ) {
+bam_fuzz_execle_reset_txncache( bam_fuzz_execle_t * h,
+                                fd_hash_t const *   blockhash ) {
   fd_txncache_reset( h->txncache );
 
   fd_txncache_fork_id_t parent = { .val = USHORT_MAX };
@@ -157,7 +178,12 @@ bam_fuzz_execle_reset_txncache( bam_fuzz_execle_t * h ) {
     uchar const * payload = bam_fuzz_fixture( i, &payload_sz );
     uchar txn_buf[ FD_TXN_MAX_SZ ];
     FD_TEST( fd_txn_parse( payload, payload_sz, txn_buf, NULL ) );
-    fd_hash_t const * blockhash = (fd_hash_t const *)fd_txn_get_recent_blockhash( (fd_txn_t const *)txn_buf, payload );
+    fd_hash_t const * fixture_blockhash = (fd_hash_t const *)fd_txn_get_recent_blockhash( (fd_txn_t const *)txn_buf, payload );
+    fd_txncache_fork_id_t fork = fd_txncache_attach_child( h->txncache, parent );
+    fd_txncache_finalize_fork( h->txncache, fork, 0UL, fixture_blockhash->uc );
+    parent = fork;
+  }
+  if( FD_UNLIKELY( blockhash ) ) {
     fd_txncache_fork_id_t fork = fd_txncache_attach_child( h->txncache, parent );
     fd_txncache_finalize_fork( h->txncache, fork, 0UL, blockhash->uc );
     parent = fork;
@@ -192,20 +218,38 @@ bam_fuzz_execle_prepare_slot( bam_fuzz_execle_t * h,
     params->mock_validator_cnt    = 1UL;
 
     ulong root_bank_idx = fd_svm_mini_reset( h->mini, params );
-    fd_txncache_fork_id_t txncache_fork = bam_fuzz_execle_reset_txncache( h );
+    if( FD_UNLIKELY( h->tip_programs ) ) {
+      char const * const ids[ 3 ] = { BAM_FUZZ_TIP_PAYMENT_PROGRAM, BAM_FUZZ_TIP_DISTRIBUTION_PROGRAM, BAM_FUZZ_MEMO_PROGRAM };
+      for( ulong i=0UL; i<3UL; i++ ) {
+        /* As genesis deploys them, with the BPF loader */
+        fd_acc_t acc = {0};
+        FD_TEST( fd_base58_decode_32( ids[ i ], acc.pubkey ) );
+        fd_memcpy( acc.owner, &fd_solana_bpf_loader_program_id, sizeof(fd_pubkey_t) );
+        acc.lamports   = BAM_FUZZ_EXECLE_ACCOUNT_LAMPORTS;
+        acc.executable = 1;
+        acc.data_len   = bam_fuzz_tip_program_elf_sz;
+        acc.data       = (uchar *)bam_fuzz_tip_program_elf;
+        fd_svm_mini_put_account_rooted( h->mini, &acc );
+      }
+    }
     fd_bank_t * root_bank = fd_svm_mini_bank( h->mini, root_bank_idx );
     FD_TEST( root_bank );
-    root_bank->txncache_fork_id = txncache_fork;
 
     if( FD_LIKELY( slot>params->root_slot ) ) {
       h->bank_idx = fd_svm_mini_attach_child( h->mini, root_bank_idx, slot );
       h->bank = fd_svm_mini_bank( h->mini, h->bank_idx );
       FD_TEST( h->bank );
-      h->bank->txncache_fork_id = txncache_fork;
     } else {
       h->bank_idx = root_bank_idx;
       h->bank     = root_bank;
     }
+
+    /* Initializer bundles use the leader bank's blockhash, as replay
+       hands it to pack (fd_became_leader_t), the hash of a block that
+       froze before this slot. */
+    fd_txncache_fork_id_t txncache_fork = bam_fuzz_execle_reset_txncache( h, h->crank ? &h->bank->f.poh : NULL );
+    root_bank->txncache_fork_id = txncache_fork;
+    h->bank->txncache_fork_id   = txncache_fork;
 
     FD_TEST( h->bank->f.slot==slot );
     h->bank->f.features.enable_tx_v1 = 0UL;
@@ -263,6 +307,25 @@ bam_fuzz_execle_seed_microblock( bam_fuzz_execle_t *    h,
   for( ulong i=0UL; i<txn_cnt; i++ ) bam_fuzz_execle_seed_txn( h, &txne[ i ] );
 }
 
+ulong
+bam_fuzz_execle_ib_landed_cnt( bam_fuzz_execle_t const * h ) {
+  return h->ib_landed_cnt;
+}
+
+bam_fuzz_res_t
+bam_fuzz_execle_credit( bam_fuzz_execle_t * h ) {
+  bam_fuzz_res_t res = bam_fuzz_outs_begin( &h->outs );
+  /* A batch waits REBATE_BATCH_IDLE_LOOPS idle loops, then drains one
+     frag per loop */
+  for( ulong i=0UL; i<REBATE_BATCH_IDLE_LOOPS+FD_PACK_REBATE_SUM_CAPACITY+2UL && h->ctx->rebate_microblock_cnt; i++ ) {
+    int opt_poll_in = 1;
+    int charge_busy = 0;
+    after_credit( h->ctx, h->outs.stem, &opt_poll_in, &charge_busy );
+  }
+  FD_TEST( !h->ctx->rebate_microblock_cnt );
+  return bam_fuzz_outs_end( &h->outs, res );
+}
+
 bam_fuzz_res_t
 bam_fuzz_execle_frag( bam_fuzz_execle_t *    h,
                       fd_frag_meta_t const * meta,
@@ -278,6 +341,10 @@ bam_fuzz_execle_frag( bam_fuzz_execle_t *    h,
   for( ulong poh_seq=res.out[ BAM_FUZZ_EXECLE_OUT_MOTOR ].lo; poh_seq<h->outs.seqs[ BAM_FUZZ_EXECLE_OUT_MOTOR ]; poh_seq++ ) {
     fd_frag_meta_t const * m = poh->mcache + fd_mcache_line_idx( poh_seq, poh->depth );
     ulong sz = m->sz;
+    fd_txn_p_t const * txn = fd_chunk_to_laddr_const( poh->mem, m->chunk );
+    FD_TEST( sz>=sizeof(fd_txn_p_t) );
+    ulong const landed = FD_TXN_P_FLAGS_INITIALIZER_BUNDLE | FD_TXN_P_FLAGS_EXECUTE_SUCCESS;
+    h->ib_landed_cnt += ( txn->flags & landed )==landed;
     fd_bam_bundle_result_t const * carried = fd_bam_microblock_strip_result( fd_chunk_to_laddr_const( poh->mem, m->chunk ), &sz );
     if( carried ) fd_bam_publish_result( h->outs.stem, BAM_FUZZ_EXECLE_OUT_MOTOR_BAM, motor_bam->mem, &h->motor_bam_chunk,
                                          motor_bam->chunk0, motor_bam->wmark, carried );

@@ -8,6 +8,7 @@
 #include "fd_bam_tile_private.h"
 #include "fuzz_bam_pipeline_stage.h"
 #include "../tiles.h"
+#include "../pack/fd_pack_cost.h"
 #include "test_bam_common.c"
 #include <errno.h>
 #include <limits.h>
@@ -25,6 +26,7 @@ FD_IMPORT_BINARY( bam_fuzz_pack_txn4, "src/disco/pack/fixtures/txn4.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn5, "src/disco/pack/fixtures/txn5.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn6, "src/disco/pack/fixtures/txn6.bin" );
 FD_IMPORT_BINARY( bam_fuzz_pack_txn7, "src/disco/pack/fixtures/txn7.bin" );
+FD_IMPORT_BINARY( bam_fuzz_alut_txn, "src/ballet/txn/fixtures/transaction2.bin" );
 
 /* Stateful BAM pipeline fuzzer.  Stages exercise the real BAM scheduler
    protobuf decode, pending transaction queue, bam_verif publication,
@@ -33,15 +35,23 @@ FD_IMPORT_BINARY( bam_fuzz_pack_txn7, "src/disco/pack/fixtures/txn7.bin" );
    per-input lag of frags), pack tile callbacks through
    pack_execle and pack_bam_*, execle tile callbacks through native
    Firedancer runtime execution, durable feedback queue, and outbound
-   scheduler protobuf result encoding.  It has no model oracle, and all
-   scheduler transactions are real signature-valid fixture bytes. */
+   scheduler protobuf result encoding.  It has no model oracle.
+   Scheduler transactions are real signature-valid fixture bytes,
+   except for members an input poisons (see bam_fuzz_poison_t): a batch
+   only ever delivered with one must not commit.
 
-extern void
-fd_bam_test_receive_ingress_frag( fd_bam_tile_t * ctx,
-                                  ulong           in_idx,
-                                  ulong           sig,
-                                  ulong           chunk,
-                                  ulong           sz );
+   An input is a sequence of 4 byte events of which only the first
+   BAM_FUZZ_MAX_EVENTS count, so run it with -max_len=512:
+
+     make -j BUILDDIR=clang-fuzz-asan CC=clang EXTRAS="fuzz asan" fuzz_bam_pipeline_stateful
+     build/clang-fuzz-asan/fuzz-test/fuzz_bam_pipeline_stateful -max_len=512 corpus/fuzz_bam_pipeline_stateful
+
+   With EXTRAS="fuzz deepasan" (BUILDDIR=clang-fuzz-deepasan) ASan also
+   flags workspace memory that is not allocated, but an input takes
+   about 0.2 s instead of 30 ms: a workspace free poisons the whole
+   free region it merges into, gigabytes once svm-mini's account cache
+   is freed, so execle is freed last.  The workspace is demand-paged
+   anonymous memory and needs no huge pages. */
 
 typedef enum {
   BAM_EVT_SEND_BATCH           = 0,
@@ -54,17 +64,48 @@ typedef enum {
   BAM_EVT_DISCONNECT           = 7,
   BAM_EVT_RECONNECT            = 8,
   BAM_EVT_RESULT_BURST         = 9,
-  BAM_EVT_DRAIN_QUEUE          = 10
+  BAM_EVT_DRAIN_QUEUE          = 10,
+  BAM_EVT_PACK_CONFIG          = 11,
+  BAM_EVT_POISON_MEMBER        = 12
 } bam_evt_kind_t;
 
 /* Corpus records are fixed 4-byte events: kind, a, b, c.  The kind byte is a
-   literal bam_evt_kind_t; invalid kinds are ignored instead of remapped. */
+   literal bam_evt_kind_t; invalid kinds are ignored instead of remapped.
 
-#define BAM_EVT_KIND_CNT 11U
+   BAM_EVT_PACK_CONFIG sets pack's options for the whole input, as the
+   config file does for a run, wherever it appears: the last one wins.
+   Bit 0 of a selects the perf strategy over balanced, bit 1 turns off
+   use_consumed_cus, bit 2 turns on the tip crank and bit 3 leaves the
+   tip programs out of the bank (bam_fuzz_pack_cfg_t).  Without one,
+   pack runs perf without use_consumed_cus or the crank, as the corpus
+   seeds were written for.
+
+   BAM_EVT_POISON_MEMBER sets member b%txn_cnt of the last batch's
+   batch c%batch_cnt to bam_fuzz_poison_t a (a larger a is ignored) and
+   resends the last batch under new seq_ids.  The poison stays with the
+   batch for later replays. */
+
+#define BAM_EVT_KIND_CNT 13U
 #define BAM_FUZZ_MAX_EVENTS 128UL
 #define BAM_FUZZ_MAX_BATCHES FD_BAM_FULL_ATOMIC_BATCHES_PER_STEM_BURST
 #define BAM_FUZZ_PB_BUF_SZ  (64UL*1024UL)
+
+/* Every input peaks at 5.34 GB of workspace, 4.9 GiB of it svm-mini's
+   (its account cache alone takes 4 GiB), and touches about 120 MB. */
 #define BAM_FUZZ_WKSP_FOOTPRINT (8UL<<30)
+
+/* Forcing a result drop fills the result FIFO, and every forced result
+   is later flushed through the result encoder.  An input that empties
+   and refills the FIFO on every event would spend tens of seconds on
+   the same paths, so an input forces at most this many results. */
+#define BAM_FUZZ_FORCED_RESULT_MAX (4UL*FD_BAM_MAX_PENDING_RESULTS)
+
+/* Replay gives pack each leader slot's CU limit, at least
+   FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND, and pack reports what is left
+   of it to BAM as the slot's CU budget.  BAM_EVT_ADVANCE_SLOT picks a
+   limit up to FD_PACK_MAX_COST_PER_BLOCK_UPPER_BOUND in 255 steps. */
+#define BAM_FUZZ_SLOT_CU_LIMIT      ((uint)FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND)
+#define BAM_FUZZ_SLOT_CU_LIMIT_STEP ((uint)( ( FD_PACK_MAX_COST_PER_BLOCK_UPPER_BOUND-FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND )/255UL ))
 
 #define BAM_FUZZ_VERIFY_CNT (3UL)
 
@@ -111,13 +152,74 @@ bam_fuzz_wksp_new_lazy( ulong footprint ) {
   return test_bam_wksp_join_anonymous( mem, footprint, "bam-pipeline-fuzz" );
 }
 
+/* bam_fuzz_result_set holds the (scheduler_gen, slot, seq_id) of every
+   result in the shadow FIFO, so a push checks for a duplicate in O(1).
+   Bit 63 is set in every key, so no key is the null key. */
+
+typedef struct { uint128 key; } bam_fuzz_result_set_t;
+
+#define BAM_FUZZ_RESULT_SET_LG_SLOT_CNT (12)
+#define MAP_NAME              bam_fuzz_result_set
+#define MAP_T                 bam_fuzz_result_set_t
+#define MAP_KEY_T             uint128
+#define MAP_LG_SLOT_CNT       BAM_FUZZ_RESULT_SET_LG_SLOT_CNT
+#define MAP_KEY_NULL          ((uint128)0)
+#define MAP_KEY_INVAL(k)      (!(k))
+#define MAP_KEY_EQUAL(k0,k1)  ((k0)==(k1))
+#define MAP_KEY_EQUAL_IS_SLOW 0
+#define MAP_KEY_HASH(k)       ((uint)fd_ulong_hash( (ulong)(k) ^ fd_ulong_hash( (ulong)((k)>>64) ) ))
+#define MAP_MEMOIZE           0
+#include "../../util/tmpl/fd_map.c"
+
+FD_STATIC_ASSERT( 2UL*FD_BAM_MAX_PENDING_RESULTS<=(1UL<<BAM_FUZZ_RESULT_SET_LG_SLOT_CNT), result_set_sz );
+
+static inline uint128
+bam_fuzz_result_key( fd_bam_bundle_result_t const * res ) {
+  return ( (uint128)res->slot<<64 ) | ( 1UL<<63 ) | ( (ulong)res->scheduler_gen<<32 ) | (ulong)res->seq_id;
+}
+
+/* A poisoned member is caught before execution, each kind at the stage
+   named, and fails its batch. */
+
+typedef enum {
+  BAM_FUZZ_POISON_NONE    = 0,
+  BAM_FUZZ_POISON_BAD_SIG = 1, /* its fixture with a signature bit flipped: verify */
+  BAM_FUZZ_POISON_DUP     = 2, /* a copy of the member before it (member 0: after it): dedup */
+  BAM_FUZZ_POISON_VOTE    = 3, /* a simple vote: BAM ingress */
+  BAM_FUZZ_POISON_JUNK    = 4, /* the first half of its fixture, which does not parse: verify */
+  BAM_FUZZ_POISON_ALUT    = 5  /* a txn loading from lookup tables that do not exist: resolv */
+} bam_fuzz_poison_t;
+
+#define BAM_FUZZ_POISON_CNT 6U
+
 typedef struct {
   uint  seq_id;
   ulong max_schedule_slot;
   uchar txn_cnt;
   uchar revert_on_error;
   uint  payload_seed[ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
+  uchar poison      [ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ]; /* bam_fuzz_poison_t */
 } bam_fuzz_batch_spec_t;
+
+/* bam_fuzz_poison_set holds, keyed by seq_id+1, every batch delivered
+   with a poisoned member, and whether its seq_id was also delivered
+   clean (BAM_EVT_DUP_SEQ reuses one).  An event poisons at most
+   BAM_FUZZ_MAX_BATCHES batches under seq_ids not seen before, so the
+   set stays at most half full. */
+
+typedef struct {
+  ulong key;
+  int   clean;
+} bam_fuzz_poison_set_t;
+
+#define BAM_FUZZ_POISON_SET_LG_SLOT_CNT (11)
+#define MAP_NAME        bam_fuzz_poison_set
+#define MAP_T           bam_fuzz_poison_set_t
+#define MAP_LG_SLOT_CNT BAM_FUZZ_POISON_SET_LG_SLOT_CNT
+#define MAP_MEMOIZE     0
+#include "../../util/tmpl/fd_map.c"
+
+FD_STATIC_ASSERT( 2UL*BAM_FUZZ_MAX_EVENTS*BAM_FUZZ_MAX_BATCHES<=(1UL<<BAM_FUZZ_POISON_SET_LG_SLOT_CNT), poison_set_sz );
 
 typedef struct {
   test_bam_env_t      env[1];
@@ -129,6 +231,7 @@ typedef struct {
   bam_fuzz_resolv_t * resolv;
   bam_fuzz_pack_t *   pack;
   bam_fuzz_execle_t * execle;
+  bam_fuzz_pack_cfg_t pack_cfg[1];
   bam_fuzz_link_t     verify_out[ BAM_FUZZ_VERIFY_CNT ][ BAM_FUZZ_OUT_MAX ];
   bam_fuzz_link_t     dedup_out [ BAM_FUZZ_OUT_MAX ];
   bam_fuzz_link_t     resolv_out[ BAM_FUZZ_OUT_MAX ];
@@ -153,11 +256,14 @@ typedef struct {
   ushort durable_results_head;
   ushort durable_results_tail;
   ushort durable_results_depth;
+  bam_fuzz_result_set_t  durable_result_set[ 1UL<<BAM_FUZZ_RESULT_SET_LG_SLOT_CNT ];
+  bam_fuzz_poison_set_t  poison_set        [ 1UL<<BAM_FUZZ_POISON_SET_LG_SLOT_CNT ];
 
   uint observed_outside_slot;
   uint observed_txn_error;
   uint observed_result_drop;
   ulong execle_output_cnt;
+  ulong forced_result_cnt;
 
   uint   txn_error_checkpoint_first_seq;
   ulong  txn_error_checkpoint_slot;
@@ -202,13 +308,8 @@ static void
 bam_fuzz_shadow_push_result( bam_fuzz_state_t *              f,
                              fd_bam_bundle_result_t const * res ) {
   FD_TEST( f->durable_results_depth < FD_BAM_MAX_PENDING_RESULTS );
-  for( ushort i=0U; i<f->durable_results_depth; i++ ) {
-    ushort idx = (ushort)(((uint)f->durable_results_head + (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
-    fd_bam_bundle_result_t const * pending = &f->durable_results[ idx ];
-    FD_TEST( pending->scheduler_gen!=res->scheduler_gen ||
-             pending->slot         !=res->slot          ||
-             pending->seq_id       !=res->seq_id );
-  }
+  /* No result is queued twice: fails on a key already pending */
+  FD_TEST( bam_fuzz_result_set_insert( f->durable_result_set, bam_fuzz_result_key( res ) ) );
 
   if( FD_UNLIKELY( res->scheduling_error==FD_BAM_SCHED_ERR_OUTSIDE_SLOT ) ) f->observed_outside_slot = 1U;
   if( FD_UNLIKELY( res->transaction_err_count ) ) {
@@ -228,8 +329,27 @@ bam_fuzz_shadow_push_result( bam_fuzz_state_t *              f,
   f->durable_results_depth = (ushort)( f->durable_results_depth + 1U );
 }
 
+/* bam_fuzz_shadow_pop_results removes the cnt oldest shadow results. */
+
 static void
-bam_fuzz_assert_shadow_queue( bam_fuzz_state_t const * f ) {
+bam_fuzz_shadow_pop_results( bam_fuzz_state_t * f,
+                             uint               cnt ) {
+  FD_TEST( cnt<=f->durable_results_depth );
+  for( uint i=0U; i<cnt; i++ ) {
+    fd_bam_bundle_result_t const * res = &f->durable_results[ f->durable_results_head ];
+    bam_fuzz_result_set_t * ele = bam_fuzz_result_set_query( f->durable_result_set, bam_fuzz_result_key( res ), NULL );
+    FD_TEST( ele );
+    bam_fuzz_result_set_remove( f->durable_result_set, ele );
+    f->durable_results_head  = (ushort)(( (uint)f->durable_results_head + 1U ) % FD_BAM_MAX_PENDING_RESULTS);
+    f->durable_results_depth = (ushort)( f->durable_results_depth - 1U );
+  }
+}
+
+/* bam_fuzz_assert_shadow_bounds checks the FIFO's depth and tail
+   against the shadow FIFO. */
+
+static void
+bam_fuzz_assert_shadow_bounds( bam_fuzz_state_t const * f ) {
   fd_bam_tile_t const * state = f->state;
   FD_TEST( state->feedback_queue_depth <= FD_BAM_MAX_PENDING_RESULTS );
   FD_TEST( state->bam_results_head     <  FD_BAM_MAX_PENDING_RESULTS );
@@ -239,6 +359,15 @@ bam_fuzz_assert_shadow_queue( bam_fuzz_state_t const * f ) {
                                    (uint)state->feedback_queue_depth) %
                                   FD_BAM_MAX_PENDING_RESULTS);
   FD_TEST( state->bam_results_tail==expected_tail );
+}
+
+/* bam_fuzz_assert_shadow_queue checks the whole FIFO against the
+   shadow FIFO, entry by entry. */
+
+static void
+bam_fuzz_assert_shadow_queue( bam_fuzz_state_t const * f ) {
+  fd_bam_tile_t const * state = f->state;
+  bam_fuzz_assert_shadow_bounds( f );
 
   for( ushort i=0U; i<f->durable_results_depth; i++ ) {
     ushort state_idx = (ushort)(((uint)state->bam_results_head + (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
@@ -247,6 +376,9 @@ bam_fuzz_assert_shadow_queue( bam_fuzz_state_t const * f ) {
                                        &f->durable_results[ shadow_idx ] );
   }
 }
+
+/* Mirrors the results a scheduler message appended into the shadow
+   FIFO, checking only the bounds, as bam_fuzz_check_enqueue does. */
 
 static void
 bam_fuzz_mirror_queue_growth( bam_fuzz_state_t * f,
@@ -260,12 +392,14 @@ bam_fuzz_mirror_queue_growth( bam_fuzz_state_t * f,
     ushort state_idx = (ushort)(((uint)tail_before + (uint)i) % FD_BAM_MAX_PENDING_RESULTS);
     bam_fuzz_shadow_push_result( f, &state->bam_results[ state_idx ] );
   }
-  bam_fuzz_assert_shadow_queue( f );
+  bam_fuzz_assert_shadow_bounds( f );
 }
 
 /* Checks a single new result's enqueue against the FIFO state from
    before it: dropped when the FIFO was full, else appended verbatim and
-   mirrored into the shadow FIFO. */
+   mirrored into the shadow FIFO.  Only the new tail is checked, so
+   filling the FIFO stays linear; the entries before it are checked
+   whole at the end of every event and wherever the FIFO drains. */
 
 static void
 bam_fuzz_check_enqueue( bam_fuzz_state_t *             f,
@@ -287,7 +421,7 @@ bam_fuzz_check_enqueue( bam_fuzz_state_t *             f,
   FD_TEST( state->bam_results_tail==(ushort)(( (uint)tail_before+1U ) % FD_BAM_MAX_PENDING_RESULTS) );
   bam_fuzz_assert_result_summary_eq( &state->bam_results[ tail_before ], res );
   bam_fuzz_shadow_push_result( f, res );
-  bam_fuzz_assert_shadow_queue( f );
+  bam_fuzz_assert_shadow_bounds( f );
 }
 
 /* bam_fuzz_link_frag returns the frag published at seq on link after
@@ -325,6 +459,11 @@ bam_fuzz_ingest_result_link( bam_fuzz_state_t *      f,
   fd_frag_meta_t const * meta = bam_fuzz_link_frag( link, seq, sizeof(fd_bam_bundle_result_t), sizeof(fd_bam_bundle_result_t) );
   fd_bam_bundle_result_t const * result =
       (fd_bam_bundle_result_t const *)fd_chunk_to_laddr_const( link->mem, meta->chunk );
+
+  if( FD_UNLIKELY( result->execution_success ) ) {
+    bam_fuzz_poison_set_t const * poisoned = bam_fuzz_poison_set_query_const( f->poison_set, (ulong)result->seq_id+1UL, NULL );
+    FD_TEST( !poisoned || poisoned->clean );
+  }
 
   fd_bam_tile_t * state = f->state;
   ushort depth_before = state->feedback_queue_depth;
@@ -370,8 +509,9 @@ bam_fuzz_assert_bam_publish( bam_fuzz_state_t const * f,
     FD_TEST( txnm->block_engine.bundle_txn_cnt==0UL );
   }
 
+  /* A poisoned member may not parse, and BAM forwards it unparsed */
   uchar txn_buf[ FD_TXN_MAX_SZ ];
-  FD_TEST( fd_txn_parse( fd_txn_m_payload_const( txnm ), txnm->payload_sz, txn_buf, NULL ) );
+  FD_TEST( ( !fd_txn_parse( fd_txn_m_payload_const( txnm ), txnm->payload_sz, txn_buf, NULL ) )==( !txnm->txn_t_sz ) );
   return txnm;
 }
 
@@ -408,12 +548,24 @@ bam_fuzz_ingest_pack_outputs( bam_fuzz_state_t *     f,
   for( ulong seq=r.lo; seq<r.hi; seq++ ) {
     fd_frag_meta_t const * meta = bam_fuzz_link_frag( &f->pack_out[ BAM_FUZZ_PACK_OUT_EXECLE ], seq,
                                                       sizeof(fd_microblock_execle_trailer_t)+1UL, MAX_MICROBLOCK_SZ );
+    ulong landed_cnt = bam_fuzz_execle_ib_landed_cnt( f->execle );
     bam_fuzz_res_t execle_res = bam_fuzz_execle_frag( f->execle, meta, seq );
+    if( FD_UNLIKELY( bam_fuzz_execle_ib_landed_cnt( f->execle )!=landed_cnt ) ) bam_fuzz_pack_crank_landed( f->pack );
     bam_fuzz_range_t motor = execle_res.out[ BAM_FUZZ_EXECLE_OUT_MOTOR ];
     bam_fuzz_range_t results = execle_res.out[ BAM_FUZZ_EXECLE_OUT_MOTOR_BAM ];
     f->execle_output_cnt += motor.hi-motor.lo;
     for( ulong result_seq=results.lo; result_seq<results.hi; result_seq++ ) {
       bam_fuzz_ingest_result_link( f, state->motor_bam_in_idx, &f->execle_out[ BAM_FUZZ_EXECLE_OUT_MOTOR_BAM ], result_seq );
+    }
+
+    if( FD_UNLIKELY( f->pack_cfg->use_consumed_cus ) ) {
+      bam_fuzz_range_t rebates = bam_fuzz_execle_credit( f->execle ).out[ BAM_FUZZ_EXECLE_OUT_PACK ];
+      for( ulong rebate_seq=rebates.lo; rebate_seq<rebates.hi; rebate_seq++ ) {
+        fd_frag_meta_t const * rebate = bam_fuzz_link_frag( &f->execle_out[ BAM_FUZZ_EXECLE_OUT_PACK ], rebate_seq,
+                                                            FD_PACK_REBATE_MIN_SZ, FD_PACK_REBATE_MAX_SZ );
+        bam_fuzz_res_t pack_res = bam_fuzz_pack_rebate_frag( f->pack, rebate, rebate_seq, g_bam_fuzz_now );
+        bam_fuzz_ingest_pack_outputs( f, &pack_res );
+      }
     }
   }
 }
@@ -439,23 +591,24 @@ bam_fuzz_sync_pack_leader( bam_fuzz_state_t * f ) {
   ulong        bank_idx;
   bam_fuzz_execle_prepare_slot( f->execle, slot, &banks, &accdb, &bank, &bank_idx );
   bam_fuzz_resolv_prepare_slot( f->resolv, slot, banks, accdb, (fd_bank_t *)bank );
-  bam_fuzz_res_t res = bam_fuzz_pack_set_leader_slot( f->pack, slot, bank, bank_idx, g_bam_fuzz_now );
+  bam_fuzz_res_t res = bam_fuzz_pack_set_leader_slot( f->pack, &f->leader_state, bank, bank_idx, g_bam_fuzz_now );
   bam_fuzz_ingest_pack_outputs( f, &res );
   bam_fuzz_pump_pack( f, 4UL );
 }
 
 /* bam_fuzz_set_leader makes the current slot a leader slot ending
-   slot_ns from now. */
+   slot_ns from now, with a CU limit of cu_limit, that pack enters tick
+   ticks after it began. */
 
 static void
 bam_fuzz_set_leader( bam_fuzz_state_t * f,
                      long               slot_ns,
-                     uint               cu_budget,
+                     uint               cu_limit,
                      ushort             tick ) {
   f->leader_state = (fd_bam_leader_state_t) {
     .slot                     = f->current_slot,
     .slot_end_ns              = g_bam_fuzz_now + slot_ns,
-    .slot_cu_budget_remaining = cu_budget,
+    .slot_cu_budget_remaining = cu_limit,
     .tick                     = tick,
   };
   bam_fuzz_sync_pack_leader( f );
@@ -514,8 +667,9 @@ bam_fuzz_pump_dedup( bam_fuzz_state_t * f ) {
       took++;
       progress = 1;
 
-      fd_frag_meta_t const * bam_meta;
-      fd_txn_m_t const * bam_txnm = bam_fuzz_link_txnm( &f->bam_out, verify_meta->sig-1UL, FD_TPU_PARSED_MTU, &bam_meta );
+      /* Checked as BAM published it, maybe unparsed */
+      fd_frag_meta_t const * bam_meta = bam_fuzz_link_frag( &f->bam_out, verify_meta->sig-1UL, sizeof(fd_txn_m_t), FD_TPU_PARSED_MTU );
+      fd_txn_m_t const * bam_txnm = (fd_txn_m_t const *)fd_chunk_to_laddr_const( f->bam_out.mem, bam_meta->chunk );
       for( ulong dedup_seq=dr.lo; dedup_seq<dr.hi; dedup_seq++ ) {
         fd_frag_meta_t const * dedup_meta;
         fd_txn_m_t const * dedup_txnm = bam_fuzz_link_txnm( &f->dedup_out[ 0 ], dedup_seq, FD_TPU_PARSED_MTU, &dedup_meta );
@@ -661,8 +815,10 @@ bam_fuzz_deliver_specs( bam_fuzz_state_t *            f,
 
   FD_TEST( spec_cnt<=BAM_FUZZ_MAX_BATCHES );
   for( ulong i=0UL; i<spec_cnt; i++ ) {
-    FD_TEST( specs[ i ].txn_cnt<=FD_BAM_MAX_TXN_PER_ATOMIC_BATCH );
-    for( uchar j=0U; j<specs[ i ].txn_cnt; j++ ) {
+    uchar txn_cnt = specs[ i ].txn_cnt;
+    FD_TEST( txn_cnt<=FD_BAM_MAX_TXN_PER_ATOMIC_BATCH );
+    int poisoned = 0;
+    for( uchar j=0U; j<txn_cnt; j++ ) {
       bam_types_Packet * pkt = &packets[ i ][ j ];
       _Bool v1 = specs[ i ].payload_seed[ j ]==UINT_MAX;
       ulong         payload_sz;
@@ -680,7 +836,55 @@ bam_fuzz_deliver_specs( bam_fuzz_state_t *            f,
       pkt->meta.size = payload_sz;
       pkt->meta.has_flags = 1U;
       pkt->meta.flags.revert_on_error = specs[ i ].revert_on_error;
+
+      uchar poison = specs[ i ].poison[ j ];
+      FD_TEST( poison<BAM_FUZZ_POISON_CNT );
+      switch( poison ) {
+        case BAM_FUZZ_POISON_BAD_SIG:
+          pkt->data.bytes[ ((fd_txn_t const *)txn_buf)->signature_off ] ^= (uchar)1;
+          break;
+        case BAM_FUZZ_POISON_VOTE:
+          test_bam_init_simple_vote_packet( pkt, specs[ i ].revert_on_error );
+          break;
+        case BAM_FUZZ_POISON_JUNK:
+          pkt->data.size = (pb_size_t)( payload_sz/2UL );
+          pkt->meta.size = pkt->data.size;
+          break;
+        case BAM_FUZZ_POISON_ALUT:
+          pkt->data.size = (pb_size_t)bam_fuzz_alut_txn_sz;
+          pkt->meta.size = pkt->data.size;
+          fd_memcpy( pkt->data.bytes, bam_fuzz_alut_txn, bam_fuzz_alut_txn_sz );
+          FD_TEST( fd_txn_parse( pkt->data.bytes, pkt->data.size, txn_buf, NULL ) );
+          FD_TEST( ((fd_txn_t const *)txn_buf)->addr_table_adtl_cnt );
+          break;
+        default: /* none, or dup below */
+          break;
+      }
+      /* A member alone cannot repeat another */
+      poisoned |= poison!=BAM_FUZZ_POISON_NONE && !( poison==BAM_FUZZ_POISON_DUP && txn_cnt==1U );
     }
+    /* Once every member is built, so the copy is what BAM receives */
+    int junk[ FD_BAM_MAX_TXN_PER_ATOMIC_BATCH ];
+    for( uchar j=0U; j<txn_cnt; j++ ) junk[ j ] = specs[ i ].poison[ j ]==BAM_FUZZ_POISON_JUNK;
+    for( uchar j=0U; j<txn_cnt; j++ ) {
+      if( FD_LIKELY( specs[ i ].poison[ j ]!=BAM_FUZZ_POISON_DUP || txn_cnt==1U ) ) continue;
+      uchar src = j ? (uchar)( j-1U ) : 1U;
+      packets[ i ][ j ] = packets[ i ][ src ];
+      junk   [ j ]      = junk   [ src ];
+    }
+    for( uchar j=0U; j<txn_cnt; j++ ) {
+      uchar txn_buf[ FD_TXN_MAX_SZ ];
+      FD_TEST( ( !fd_txn_parse( packets[ i ][ j ].data.bytes, packets[ i ][ j ].data.size, txn_buf, NULL ) )==junk[ j ] );
+    }
+
+    ulong key = (ulong)specs[ i ].seq_id + 1UL;
+    bam_fuzz_poison_set_t * known = bam_fuzz_poison_set_query( f->poison_set, key, NULL );
+    if( FD_UNLIKELY( poisoned && !known ) ) {
+      known = bam_fuzz_poison_set_insert( f->poison_set, key );
+      FD_TEST( known );
+      known->clean = 0;
+    }
+    if( FD_UNLIKELY( !poisoned && known ) ) known->clean = 1;
 
     packet_ctx[ i ] = (test_bam_packet_encode_ctx_t) {
       .packets    = packets[ i ],
@@ -847,8 +1051,7 @@ bam_fuzz_drain_result_queue( bam_fuzz_state_t * f,
 
     FD_TEST( state->feedback_queue_depth==(ushort)( (uint)pending-expected_cnt ) );
     FD_TEST( state->bam_results_head==(ushort)(( (uint)head_before+expected_cnt ) % FD_BAM_MAX_PENDING_RESULTS) );
-    f->durable_results_head  = (ushort)(( (uint)f->durable_results_head + expected_cnt ) % FD_BAM_MAX_PENDING_RESULTS);
-    f->durable_results_depth = (ushort)( (uint)f->durable_results_depth - expected_cnt );
+    bam_fuzz_shadow_pop_results( f, expected_cnt );
     bam_fuzz_assert_shadow_queue( f );
   }
 }
@@ -876,6 +1079,10 @@ bam_fuzz_force_result_drop( bam_fuzz_state_t * f,
   bam_fuzz_ensure_scheduler_stream( f );
 
   fd_bam_tile_t * state = f->state;
+  ulong forced_cnt = FD_BAM_MAX_PENDING_RESULTS - (ulong)state->feedback_queue_depth + 1UL;
+  if( FD_UNLIKELY( f->forced_result_cnt+forced_cnt>BAM_FUZZ_FORCED_RESULT_MAX ) ) return;
+  f->forced_result_cnt += forced_cnt;
+
   while( state->feedback_queue_depth<FD_BAM_MAX_PENDING_RESULTS ) {
     bam_fuzz_enqueue_synthetic_result( f, b, c );
   }
@@ -894,7 +1101,7 @@ bam_fuzz_require_outside_slot_path( bam_fuzz_state_t * f,
   bam_fuzz_ensure_scheduler_stream( f );
   bam_fuzz_drain_pending_txns( f, ULONG_MAX );
   bam_fuzz_drain_result_queue( f, ULONG_MAX );
-  bam_fuzz_set_leader( f, 1000000L, 1000000U, (ushort)c );
+  bam_fuzz_set_leader( f, 1000000L, BAM_FUZZ_SLOT_CU_LIMIT, (ushort)c );
 
   f->observed_outside_slot = 0U;
   bam_fuzz_batch_spec_t spec = {
@@ -928,7 +1135,7 @@ bam_fuzz_require_txn_error_path( bam_fuzz_state_t * f,
      both before requiring a fresh execution result. */
   f->current_slot += 4UL;
   g_bam_fuzz_now += (long)4000000L;
-  bam_fuzz_set_leader( f, 1000000L, 1000000U, (ushort)c );
+  bam_fuzz_set_leader( f, 1000000L, BAM_FUZZ_SLOT_CU_LIMIT, (ushort)c );
   FD_TEST( f->state->bam_leader_state.slot==f->current_slot );
 
   f->observed_txn_error = 0U;
@@ -959,7 +1166,7 @@ bam_fuzz_deliver_result_burst( bam_fuzz_state_t * f,
     bam_fuzz_force_result_drop( f, b, c );
   } else {
     if( FD_LIKELY( !( a & 0x20U ) && f->leader_state.slot==ULONG_MAX ) ) {
-      bam_fuzz_set_leader( f, 1000000L, 1000000U, (ushort)c );
+      bam_fuzz_set_leader( f, 1000000L, BAM_FUZZ_SLOT_CU_LIMIT, (ushort)c );
     }
 
     bam_fuzz_ensure_scheduler_stream( f );
@@ -1047,7 +1254,7 @@ bam_fuzz_apply_event( bam_fuzz_state_t * f,
       f->current_slot += delta;
       g_bam_fuzz_now += (long)( delta * 1000000UL );
       if( FD_LIKELY( !( b & 0x80U ) ) ) {
-        bam_fuzz_set_leader( f, 1000000L, 1000000U - (uint)( c * 1000U ), (ushort)( a + b ) );
+        bam_fuzz_set_leader( f, 1000000L, BAM_FUZZ_SLOT_CU_LIMIT + (uint)c*BAM_FUZZ_SLOT_CU_LIMIT_STEP, (ushort)( a + b ) );
       } else {
         f->leader_state = (fd_bam_leader_state_t){ .slot = ULONG_MAX };
         bam_fuzz_sync_pack_leader( f );
@@ -1059,7 +1266,7 @@ bam_fuzz_apply_event( bam_fuzz_state_t * f,
       bam_fuzz_sync_pack_leader( f );
       break;
     case BAM_EVT_LEADER_ON:
-      bam_fuzz_set_leader( f, (long)( 1000000UL + (ulong)a*1000UL ), 1000000U, (ushort)b );
+      bam_fuzz_set_leader( f, (long)( 1000000UL + (ulong)a*1000UL ), BAM_FUZZ_SLOT_CU_LIMIT, (ushort)b );
       break;
     case BAM_EVT_DISCONNECT:
       bam_fuzz_reset_preserving_feedback( f );
@@ -1070,6 +1277,18 @@ bam_fuzz_apply_event( bam_fuzz_state_t * f,
     case BAM_EVT_RESULT_BURST:
       bam_fuzz_deliver_result_burst( f, a, b, c );
       break;
+    case BAM_EVT_PACK_CONFIG: /* applied before the first event */
+      break;
+    case BAM_EVT_POISON_MEMBER: {
+      if( FD_UNLIKELY( a>=BAM_FUZZ_POISON_CNT ) ) break;
+      bam_fuzz_ensure_scheduler_stream( f );
+      if( FD_UNLIKELY( !f->has_last_batch ) ) bam_fuzz_remember_batch( f, a, b, c );
+      bam_fuzz_batch_spec_t * spec = &f->last_batch[ c % f->last_batch_cnt ];
+      spec->poison[ b % spec->txn_cnt ] = a;
+      for( ulong i=0UL; i<f->last_batch_cnt; i++ ) f->last_batch[ i ].seq_id = f->next_seq++;
+      bam_fuzz_deliver_specs( f, f->last_batch, f->last_batch_cnt, 1UL );
+      break;
+    }
     case BAM_EVT_DRAIN_QUEUE:
       bam_fuzz_drain_pending_txns( f, 1UL + (ulong)( b & 7U ) );
       bam_fuzz_drain_result_queue( f, 1UL + (ulong)( a & 15U ) );
@@ -1096,22 +1315,7 @@ LLVMFuzzerInitialize( int *    argc,
   fd_log_level_flush_set( 4 );
   fd_log_level_core_set( 4 ); /* fail fast on errors */
   fd_metrics_register( (ulong *)fd_metrics_new( metrics_scratch, 0UL ) );
-
-  ulong cpu_idx = fd_tile_cpu_id( fd_tile_idx() );
-  if( cpu_idx >= fd_shmem_cpu_cnt() ) cpu_idx = 0UL;
-
-  char const * _page_sz = fd_env_strip_cmdline_cstr ( argc, argv, "--page-sz", NULL, NULL                         );
-  ulong        page_cnt = fd_env_strip_cmdline_ulong( argc, argv, "--page-cnt", NULL, 1048576UL                    );
-  ulong        numa_idx = fd_env_strip_cmdline_ulong( argc, argv, "--numa-idx", NULL, fd_shmem_numa_idx( cpu_idx ) );
-
-  g_bam_fuzz_wksp = _page_sz
-      ? fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ),
-                               page_cnt,
-                               fd_shmem_cpu_idx( numa_idx ),
-                               "bam-pipeline-fuzz",
-                               512UL )
-      : bam_fuzz_wksp_new_lazy( BAM_FUZZ_WKSP_FOOTPRINT );
-  FD_TEST( g_bam_fuzz_wksp );
+  g_bam_fuzz_wksp = bam_fuzz_wksp_new_lazy( BAM_FUZZ_WKSP_FOOTPRINT );
   return 0;
 }
 
@@ -1129,6 +1333,8 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   bam_fuzz_state_t f[1];
   fd_memset( f, 0, sizeof(*f) );
+  FD_TEST( bam_fuzz_result_set_join( bam_fuzz_result_set_new( f->durable_result_set ) )==f->durable_result_set );
+  FD_TEST( bam_fuzz_poison_set_join( bam_fuzz_poison_set_new( f->poison_set ) )==f->poison_set );
   /* The shared unit fixture defaults to a 4 KiB gRPC buffer.  This pipeline
      checks full outbound result batches, which need the production minimum. */
   fd_bam_tile_t * state = f->state = test_bam_env_create_with_grpc_buf_sz( f->env, g_bam_fuzz_wksp, FD_BAM_GRPC_MIN_BUF_SZ )->state;
@@ -1146,10 +1352,23 @@ LLVMFuzzerTestOneInput( uchar const * data,
     dedup_in[ v ] = f->verify_out[ v ][ 0 ];
   }
   f->dedup_lag = 1UL + (ulong)( (seed>>5) % (2UL*BAM_FUZZ_VERIFY_CNT) );
+
+  *f->pack_cfg = (bam_fuzz_pack_cfg_t){ 0 };
+  for( ulong i=0UL, event_cnt=0UL; i+4UL<=size && event_cnt<BAM_FUZZ_MAX_EVENTS; i+=4UL, event_cnt++ ) {
+    if( FD_LIKELY( data[ i ]!=BAM_EVT_PACK_CONFIG ) ) continue;
+    uchar a = data[ i+1UL ];
+    *f->pack_cfg = (bam_fuzz_pack_cfg_t){ .balanced             = !( a & 1U ),
+                                          .use_consumed_cus     = !( a & 2U ),
+                                          .crank                = !!( a & 4U ),
+                                          .tip_programs_missing = !!( a & 8U ) };
+  }
+
   f->dedup  = bam_fuzz_dedup_new ( g_bam_fuzz_wksp, dedup_in, BAM_FUZZ_VERIFY_CNT, f->dedup_out );
   f->resolv = bam_fuzz_resolv_new( g_bam_fuzz_wksp, &f->dedup_out[0], f->resolv_out );
-  f->pack   = bam_fuzz_pack_new  ( g_bam_fuzz_wksp, &f->resolv_out[0], f->pack_out, &f->pack_execle_busy_fseq );
-  f->execle = bam_fuzz_execle_new( g_bam_fuzz_wksp, &f->pack_out[ BAM_FUZZ_PACK_OUT_EXECLE ], f->execle_out, f->pack_execle_busy_fseq );
+  f->pack   = bam_fuzz_pack_new  ( g_bam_fuzz_wksp, &f->resolv_out[0], f->pack_out, &f->pack_execle_busy_fseq, f->pack_cfg,
+                                   f->state->fee_cfg );
+  f->execle = bam_fuzz_execle_new( g_bam_fuzz_wksp, &f->pack_out[ BAM_FUZZ_PACK_OUT_EXECLE ], f->execle_out, f->pack_execle_busy_fseq, f->pack_cfg );
+  if( FD_UNLIKELY( f->pack_cfg->use_consumed_cus ) ) bam_fuzz_pack_join_rebates( f->pack, &f->execle_out[ BAM_FUZZ_EXECLE_OUT_PACK ] );
 
   bam_fuzz_link_t const * motor_bam  = &f->execle_out[ BAM_FUZZ_EXECLE_OUT_MOTOR_BAM ];
   bam_fuzz_link_t const * bam_leader = &f->pack_out  [ BAM_FUZZ_PACK_OUT_BAM_LEADER   ];
@@ -1163,7 +1382,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   f->next_seq = ( seed << 1 ) | 1U;
   f->current_slot = 100UL + (ulong)( seed & 31U );
-  bam_fuzz_set_leader( f, 1000000L, 1000000U, 0U );
+  bam_fuzz_set_leader( f, 1000000L, BAM_FUZZ_SLOT_CU_LIMIT, 0U );
 
   bam_fuzz_ensure_scheduler_stream( f );
 
@@ -1184,11 +1403,14 @@ LLVMFuzzerTestOneInput( uchar const * data,
   bam_fuzz_drain_result_queue( f, ULONG_MAX );
   bam_fuzz_assert_invariants( f );
 
-  bam_fuzz_execle_delete( f->execle );
+  /* Execle goes last: freeing svm-mini's account cache leaves a free
+     region of gigabytes, which deepasan poisons whole on every later
+     free that merges into it. */
   bam_fuzz_pack_delete  ( f->pack   );
   bam_fuzz_resolv_delete( f->resolv );
   bam_fuzz_dedup_delete ( f->dedup  );
   for( ulong v=0UL; v<BAM_FUZZ_VERIFY_CNT; v++ ) bam_fuzz_verify_delete( f->verify[ v ] );
+  bam_fuzz_execle_delete( f->execle );
   test_bam_env_destroy( f->env );
 
   fd_wksp_usage_t usage;

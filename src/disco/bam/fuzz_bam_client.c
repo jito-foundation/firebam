@@ -10,12 +10,15 @@
 #include "../fd_txn_m.h" // FD_TPU_PARSED_MTU
 #include "../../flamenco/gossip/fd_gossip_message.h"
 #include "../../ballet/ed25519/fd_ed25519.h"
+#include "../../third_party/nanopb/pb_decode.h"
 #include "../../third_party/nanopb/pb_encode.h"
 #include "../../waltz/grpc/fd_grpc_client_private.h"
 #include "../../util/net/fd_ip4.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 char const fdctl_version_string[] = "fuzz";
 
@@ -24,12 +27,16 @@ char const fdctl_version_string[] = "fuzz";
 #define BAM_FUZZ_OUT_MAX    (2UL)
 #define BAM_FUZZ_NOW        (1700000000000000000L)
 #define BAM_FUZZ_KEY_MTU    (512UL) /* max sign request size */
+#define BAM_FUZZ_GRPC_BUF_MAX (4096UL) /* gRPC client buffer size (TX frames, nanopb) */
+#define BAM_FUZZ_OUTBOUND_STEP_MAX (8UL) /* bounds the outbound drain in bam_fuzz_exercise_outbound */
 
 /* Simple BAM gRPC fuzzer.  The fuzzer drives ConfigResponse, SchedulerResponse,
    and AuthChallengeResponse decode paths while also exercising the runtime
-   enable/disable control block.  When the tile is considered healthy and
-   enabled, we assert that gossip publishes the TPU sockets learned from
-   the BamConfig protobuf. */
+   enable/disable control block, and decodes the heartbeats, leader states
+   and results the client sends back.  Script inputs step the client
+   while advancing the clock (bam_fuzz_run_script).  When the tile is
+   considered healthy and enabled, we assert that gossip publishes the
+   TPU sockets learned from the BamConfig protobuf. */
 
 static fd_wksp_t * g_wksp;
 static long        bam_fuzz_now = BAM_FUZZ_NOW;
@@ -94,6 +101,11 @@ static struct {
   uchar *          key_resp_dcache;
   void *           key_req_dcache_mem;
   void *           key_resp_dcache_mem;
+
+  uchar identity_pubkey[ 32 ]; /* Derived once from bam_fuzz_identity_private_key */
+
+  int sock_client; /* Client end of the socket a script step attached, or -1 */
+  int sock_peer;   /* Node end of that socket, or -1 */
 
   fd_bam_decoded_multi_batch_t decoded_multi_storage[1];
   fd_bam_tile_t tile_storage[1]; /* Backing storage for tile pointer */
@@ -225,6 +237,15 @@ bam_fuzz_env_init( int *    pargc,
   if( FD_LIKELY( initialized ) ) return;
 
   fd_memset( &bam_fuzz_ctx, 0, sizeof( bam_fuzz_ctx ) );
+  bam_fuzz_ctx.sock_client = -1;
+  bam_fuzz_ctx.sock_peer   = -1;
+
+  fd_sha512_t _sha[1];
+  fd_sha512_t * sha = fd_sha512_join( fd_sha512_new( _sha ) );
+  FD_TEST( sha );
+  FD_TEST( fd_ed25519_public_from_private( bam_fuzz_ctx.identity_pubkey,
+                                           bam_fuzz_identity_private_key,
+                                           sha ) );
 
   ulong cpu_idx = fd_tile_cpu_id( fd_tile_idx() );
   if( cpu_idx>fd_shmem_cpu_cnt() ) cpu_idx = 0UL;
@@ -272,7 +293,7 @@ bam_fuzz_env_init( int *    pargc,
       .out_reliable        = bam_fuzz_ctx.out_reliable
   };
 
-  bam_fuzz_ctx.grpc_buf_max = 4096UL;
+  bam_fuzz_ctx.grpc_buf_max = BAM_FUZZ_GRPC_BUF_MAX;
   ulong grpc_foot = fd_grpc_client_footprint( bam_fuzz_ctx.grpc_buf_max );
   bam_fuzz_ctx.grpc_client_mem = fd_wksp_alloc_laddr( g_wksp, fd_grpc_client_align(), grpc_foot, 1UL );
   FD_TEST( bam_fuzz_ctx.grpc_client_mem );
@@ -285,19 +306,17 @@ static void
 bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
                           uchar const *   data,
                           ulong           size ) {
-  /* Enqueue up to two small results to exercise both committed and not-committed
-     SchedulerMessage encoders without exceeding gRPC buffer limits. */
+  /* Enqueue a committed and a not-committed result, small enough for
+     one SchedulerMessage.  The flush in bam_fuzz_exercise_outbound
+     encodes them. */
 
   uchar seed0 = (uchar)( size ? data[0] : 0U );
   uchar seed1 = (uchar)( size>1 ? data[1] : (uchar)(seed0^0x5aU) );
 
   /* 1) Committed bundle */
   {
-    fd_bam_bundle_result_t res = {0};
-    res.seq_id            = (uint)seed0;
-    res.scheduler_gen     = ctx->scheduler_gen;
-    res.slot              = (ulong)seed0;
-    res.bundle_txn_cnt    = (uchar)( 1U + ( seed0 % FD_PACK_MAX_TXN_PER_BUNDLE ) );
+    fd_bam_bundle_result_t res = fd_bam_result_base( (uint)seed0, ctx->scheduler_gen, (ulong)seed0,
+                                                     (uchar)( 1U + ( seed0 % FD_PACK_MAX_TXN_PER_BUNDLE ) ) );
     res.execution_success = 1U;
     for( uchar i=0U; i<res.bundle_txn_cnt; i++ ) {
       res.sanitize_success[ i ] = 1U;
@@ -308,11 +327,8 @@ bam_fuzz_enqueue_results( fd_bam_tile_t * ctx,
 
   /* 2) Not-committed bundle (vary reason) */
   {
-    fd_bam_bundle_result_t res = {0};
-    res.seq_id            = seed0 | ((uint)seed1<<8);
-    res.scheduler_gen     = ctx->scheduler_gen;
-    res.slot              = (ulong)seed1;
-    res.bundle_txn_cnt    = (uchar)( 1U + ( seed1 % FD_PACK_MAX_TXN_PER_BUNDLE ) );
+    fd_bam_bundle_result_t res = fd_bam_result_base( seed0 | ((uint)seed1<<8), ctx->scheduler_gen, (ulong)seed1,
+                                                     (uchar)( 1U + ( seed1 % FD_PACK_MAX_TXN_PER_BUNDLE ) ) );
 
     uchar reason_sel = (uchar)( (seed1>>3) & 0x3U );
     if( reason_sel==0U ) {
@@ -365,6 +381,227 @@ bam_fuzz_clear_grpc_tx( fd_bam_tile_t * ctx ) {
   *ctx->grpc_client->request_tx_op = (fd_h2_tx_op_t){0};
 }
 
+/* bam_fuzz_rx_builder_heartbeat delivers a BuilderHeartBeat on the
+   scheduler stream, as the node does once it accepts the stream. */
+static void
+bam_fuzz_rx_builder_heartbeat( fd_bam_tile_t * ctx ) {
+  static uchar const heartbeat_payload[] = { 0x0a, 0x04, 0x0a, 0x02, 0x08, 0x01 };
+  fd_bam_client_grpc_callbacks.rx_msg( ctx,
+                                       heartbeat_payload,
+                                       sizeof( heartbeat_payload ),
+                                       FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+}
+
+/* bam_fuzz_tx_result_t is one AtomicTxnBatchResult as the node decodes it. */
+typedef struct {
+  uint                   seq_id;
+  pb_size_t              which_result;
+  bam_types_NotCommitted not_committed;
+  uint                   txn_cnt;
+  uint                   cus_consumed[ FD_PACK_MAX_TXN_PER_BUNDLE ];
+} bam_fuzz_tx_result_t;
+
+/* bam_fuzz_tx_msg_t is the SchedulerMessage the client queued on the
+   scheduler stream, decoded from the HTTP/2 frames in its TX buffer. */
+typedef struct {
+  pb_size_t                    which_msg;  /* SchedulerMessageV0 member, 0 if none was queued */
+  bam_types_ValidatorHeartBeat heart_beat;
+  bam_types_LeaderState        leader_state;
+  ulong                        result_cnt;
+  bam_fuzz_tx_result_t         results[ FD_BAM_RESULTS_PER_MESSAGE ];
+} bam_fuzz_tx_msg_t;
+
+static void
+bam_fuzz_decode_tx_result( pb_istream_t *         stream,
+                           bam_fuzz_tx_result_t * out ) {
+  uint32_t       tag;
+  pb_wire_type_t wire_type;
+  bool           eof = false;
+  while( pb_decode_tag( stream, &wire_type, &tag, &eof ) ) {
+    if( tag==bam_types_AtomicTxnBatchResult_seq_id_tag ) {
+      uint64_t seq_id;
+      FD_TEST( wire_type==PB_WT_VARINT && pb_decode_varint( stream, &seq_id ) );
+      out->seq_id = (uint)seq_id;
+      continue;
+    }
+    pb_istream_t sub;
+    FD_TEST( wire_type==PB_WT_STRING && pb_make_string_substream( stream, &sub ) );
+    if( tag==bam_types_AtomicTxnBatchResult_committed_tag ) {
+      out->which_result = bam_types_AtomicTxnBatchResult_committed_tag;
+      bool sub_eof = false;
+      while( pb_decode_tag( &sub, &wire_type, &tag, &sub_eof ) ) {
+        FD_TEST( tag==bam_types_Committed_transaction_results_tag && wire_type==PB_WT_STRING );
+        FD_TEST( out->txn_cnt<FD_PACK_MAX_TXN_PER_BUNDLE );
+        bam_types_TransactionCommittedResult txn = bam_types_TransactionCommittedResult_init_default;
+        FD_TEST( pb_decode_ex( &sub, bam_types_TransactionCommittedResult_fields, &txn, PB_DECODE_DELIMITED ) );
+        out->cus_consumed[ out->txn_cnt++ ] = txn.cus_consumed;
+      }
+      FD_TEST( sub_eof );
+    } else {
+      FD_TEST( tag==bam_types_AtomicTxnBatchResult_not_committed_tag );
+      out->which_result = bam_types_AtomicTxnBatchResult_not_committed_tag;
+      FD_TEST( pb_decode( &sub, bam_types_NotCommitted_fields, &out->not_committed ) );
+    }
+    FD_TEST( pb_close_string_substream( stream, &sub ) );
+  }
+  FD_TEST( eof );
+}
+
+static bool
+bam_fuzz_decode_tx_result_cb( pb_istream_t *     stream,
+                              pb_field_t const * field,
+                              void **            arg ) {
+  (void)field;
+  bam_fuzz_tx_msg_t * out = *arg;
+  FD_TEST( out->result_cnt<FD_BAM_RESULTS_PER_MESSAGE );
+  bam_fuzz_tx_result_t * res = &out->results[ out->result_cnt++ ];
+  fd_memset( res, 0, sizeof(bam_fuzz_tx_result_t) );
+  bam_fuzz_decode_tx_result( stream, res );
+  return true;
+}
+
+/* bam_fuzz_take_tx pops the HTTP/2 frames the client queued, checks
+   they are well-formed, and decodes the one SchedulerMessage they carry
+   on the scheduler stream into out (which_msg 0 if none, or if flow
+   control held back part of it).  Returns 1 if anything was queued. */
+static int
+bam_fuzz_take_tx( fd_bam_tile_t *     ctx,
+                  bam_fuzz_tx_msg_t * out ) {
+  out->which_msg  = 0;
+  out->result_cnt = 0UL;
+  FD_TEST( ctx->bam_stream );
+
+  uchar          frames[ BAM_FUZZ_GRPC_BUF_MAX ];
+  fd_h2_rbuf_t * rbuf_tx   = fd_grpc_client_rbuf_tx( ctx->grpc_client );
+  ulong          frames_sz = fd_h2_rbuf_used_sz( rbuf_tx );
+  FD_TEST( frames_sz<=sizeof(frames) );
+  fd_h2_rbuf_pop_copy( rbuf_tx, frames, frames_sz );
+  int partial = ctx->grpc_client->request_stream==ctx->bam_stream && ctx->grpc_client->request_tx_op->chunk_sz;
+  bam_fuzz_clear_grpc_tx( ctx );
+
+  uchar msg[ BAM_FUZZ_GRPC_BUF_MAX ];
+  ulong msg_sz    = 0UL;
+  uint  stream_id = ctx->bam_stream->s.stream_id;
+  for( ulong off=0UL; off<frames_sz; ) {
+    fd_h2_frame_hdr_t hdr;
+    FD_TEST( frames_sz-off>=sizeof(fd_h2_frame_hdr_t) );
+    fd_memcpy( &hdr, frames+off, sizeof(fd_h2_frame_hdr_t) );
+    off += sizeof(fd_h2_frame_hdr_t);
+    ulong frame_sz = fd_h2_frame_length( hdr.typlen );
+    uint  type     = fd_h2_frame_type( hdr.typlen );
+    FD_TEST( frame_sz<=frames_sz-off );
+    FD_TEST( type<=FD_H2_FRAME_TYPE_CONTINUATION );
+    if( fd_h2_frame_stream_id( hdr.r_stream_id )==stream_id ) {
+      /* The stream opened earlier and stays open */
+      FD_TEST( type==FD_H2_FRAME_TYPE_DATA && !( hdr.flags & FD_H2_FLAG_END_STREAM ) );
+      fd_memcpy( msg+msg_sz, frames+off, frame_sz );
+      msg_sz += frame_sz;
+    }
+    off += frame_sz;
+  }
+  if( !msg_sz || partial ) return !!frames_sz;
+
+  fd_grpc_hdr_t grpc_hdr;
+  FD_TEST( msg_sz>=sizeof(fd_grpc_hdr_t) );
+  fd_memcpy( &grpc_hdr, msg, sizeof(fd_grpc_hdr_t) );
+  FD_TEST( !grpc_hdr.compressed );
+  FD_TEST( fd_uint_bswap( grpc_hdr.msg_sz )==msg_sz-sizeof(fd_grpc_hdr_t) ); /* one whole message */
+
+  pb_istream_t   stream = pb_istream_from_buffer( msg+sizeof(fd_grpc_hdr_t), msg_sz-sizeof(fd_grpc_hdr_t) );
+  pb_istream_t   v0, sub;
+  uint32_t       tag;
+  pb_wire_type_t wire_type;
+  bool           eof;
+  FD_TEST( pb_decode_tag( &stream, &wire_type, &tag, &eof ) );
+  FD_TEST( tag==bam_api_SchedulerMessage_v0_tag && wire_type==PB_WT_STRING );
+  FD_TEST( pb_make_string_substream( &stream, &v0 ) );
+  FD_TEST( pb_decode_tag( &v0, &wire_type, &tag, &eof ) && wire_type==PB_WT_STRING );
+  FD_TEST( pb_make_string_substream( &v0, &sub ) );
+  out->which_msg = (pb_size_t)tag;
+  switch( tag ) {
+  case bam_api_SchedulerMessageV0_heart_beat_tag:
+    FD_TEST( pb_decode( &sub, bam_types_ValidatorHeartBeat_fields, &out->heart_beat ) );
+    break;
+  case bam_api_SchedulerMessageV0_leader_state_tag:
+    FD_TEST( pb_decode( &sub, bam_types_LeaderState_fields, &out->leader_state ) );
+    break;
+  case bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag: {
+    bam_types_MultipleAtomicTxnBatchResult multi = {
+      .results = { .funcs.decode = bam_fuzz_decode_tx_result_cb, .arg = out }
+    };
+    FD_TEST( pb_decode( &sub, bam_types_MultipleAtomicTxnBatchResult_fields, &multi ) );
+    break;
+  }
+  default: /* The auth proof opens the stream and pongs answer pings: neither is sent here */
+    FD_LOG_ERR(( "unexpected SchedulerMessageV0 member %u", tag ));
+  }
+  FD_TEST( pb_close_string_substream( &v0, &sub ) && !v0.bytes_left );
+  FD_TEST( pb_close_string_substream( &stream, &v0 ) && !stream.bytes_left );
+  return 1;
+}
+
+/* bam_fuzz_step_outbound runs fd_bam_client_step_reconnect on an empty
+   TX path, as after the peer read what the client sent before, and
+   checks the scheduler message it queued: the due validator heartbeat,
+   the pending leader state, or the oldest queued results.  Returns 1 if
+   the step queued anything. */
+static int
+bam_fuzz_step_outbound( fd_bam_tile_t * ctx,
+                        long            now ) {
+  fd_bam_leader_state_t leader         = ctx->bam_leader_state;
+  uint                  leader_pending = ctx->bam_leader_pending;
+  ushort                results_head   = ctx->bam_results_head;
+  ushort                results_depth  = ctx->feedback_queue_depth;
+
+  bam_fuzz_clear_grpc_tx( ctx );
+  (void)fd_bam_client_step_reconnect( ctx, now );
+
+  bam_fuzz_tx_msg_t msg;
+  int queued = bam_fuzz_take_tx( ctx, &msg );
+  switch( msg.which_msg ) {
+  case bam_api_SchedulerMessageV0_heart_beat_tag:
+    FD_TEST( msg.heart_beat.time_sent_microseconds==(ulong)fd_long_max( now/1000L, 0L ) );
+    FD_TEST( ctx->bam_last_validator_heartbeat_ns==now );
+    break;
+  case bam_api_SchedulerMessageV0_leader_state_tag:
+    FD_TEST( leader_pending && !ctx->bam_leader_pending );
+    FD_TEST( msg.leader_state.slot                    ==leader.slot                     );
+    FD_TEST( msg.leader_state.tick                    ==leader.tick                     );
+    FD_TEST( msg.leader_state.slot_cu_budget_remaining==leader.slot_cu_budget_remaining );
+    break;
+  case bam_api_SchedulerMessageV0_multiple_atomic_txn_batch_result_tag: {
+    uint cnt = fd_uint_min( results_depth, FD_BAM_RESULTS_PER_MESSAGE );
+    FD_TEST( msg.result_cnt==cnt );
+    FD_TEST( ctx->feedback_queue_depth==results_depth-cnt );
+    FD_TEST( ctx->bam_results_head==(ushort)( ( results_head+cnt )%FD_BAM_MAX_PENDING_RESULTS ) );
+    for( uint i=0U; i<cnt; i++ ) {
+      fd_bam_bundle_result_t const * res = &ctx->bam_results[ ( results_head+i )%FD_BAM_MAX_PENDING_RESULTS ];
+      bam_fuzz_tx_result_t const *   dec = &msg.results[ i ];
+      FD_TEST( dec->seq_id==res->seq_id );
+      if( res->execution_success ) {
+        FD_TEST( dec->which_result==bam_types_AtomicTxnBatchResult_committed_tag );
+        FD_TEST( dec->txn_cnt==res->bundle_txn_cnt );
+        for( uint j=0U; j<dec->txn_cnt; j++ ) FD_TEST( dec->cus_consumed[ j ]==res->consumed_cus[ j ] );
+      } else {
+        bam_types_NotCommitted const * nc = &dec->not_committed;
+        FD_TEST( dec->which_result==bam_types_AtomicTxnBatchResult_not_committed_tag );
+        FD_TEST( nc->which_reason );
+        if( res->bundle_err==FD_BAM_BUNDLE_ERR_DESER ) {
+          FD_TEST( nc->which_reason==bam_types_NotCommitted_deserialization_error_tag );
+          FD_TEST( nc->reason.deserialization_error.index ==res->deser_index  );
+          FD_TEST( nc->reason.deserialization_error.reason==res->deser_reason );
+        } else if( res->scheduling_error!=FD_BAM_SCHED_ERR_NONE ) {
+          FD_TEST( nc->which_reason==bam_types_NotCommitted_scheduling_error_tag );
+          FD_TEST( nc->reason.scheduling_error==res->scheduling_error );
+        }
+      }
+    }
+    break;
+  }
+  }
+  return queued;
+}
+
 static void
 bam_fuzz_open_scheduler_stream( fd_bam_tile_t * ctx,
                                 uchar const *   data,
@@ -384,6 +621,10 @@ bam_fuzz_open_scheduler_stream( fd_bam_tile_t * ctx,
   }
 
   if( FD_LIKELY( ctx->bam_stream && !ctx->bam_stream_live ) ) {
+    /* The node answers with response headers, which disarm the header
+       deadline, as in fd_grpc_client */
+    ctx->bam_stream->hdrs_received       = 1;
+    ctx->bam_stream->has_header_deadline = 0;
     fd_bam_client_grpc_callbacks.rx_start( ctx, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
   }
 }
@@ -398,10 +639,8 @@ bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
 
   if( FD_UNLIKELY( !ctx->bam_stream || !ctx->bam_stream_live ) ) return;
 
-  /* Discard any queued frames so stream sends don't get stuck behind a full TX ring. */
-  bam_fuzz_clear_grpc_tx( ctx );
-
-  /* Force a heartbeat, a leader-state update, and a couple bundle results. */
+  /* Queue a due validator heartbeat, a leader-state update, and a couple
+     bundle results. */
   long now = fd_bam_now();
   ctx->bam_last_validator_heartbeat_ns = now - (long)10e9;
 
@@ -413,7 +652,130 @@ bam_fuzz_exercise_outbound( fd_bam_tile_t * ctx,
   ctx->bam_leader_pending = 1U;
 
   bam_fuzz_enqueue_results( ctx, data, size );
-  (void)fd_bam_client_step_reconnect( ctx, now );
+
+  /* The heartbeat goes first and the rest waits behind it.  Results also
+     wait until the node accepts the stream with a BuilderHeartBeat. */
+  bam_fuzz_step_outbound( ctx, now );
+  if( !ctx->bam_builder_heartbeat_received ) bam_fuzz_rx_builder_heartbeat( ctx );
+
+  /* Then the leader state and the results go out, one per step */
+  for( ulong i=0UL; i<BAM_FUZZ_OUTBOUND_STEP_MAX && bam_fuzz_step_outbound( ctx, now ); i++ ) {}
+}
+
+/* bam_fuzz_close_sockets closes the socket a script step attached.  The
+   client closes its end itself when it resets. */
+static void
+bam_fuzz_close_sockets( fd_bam_tile_t const * ctx ) {
+  if( bam_fuzz_ctx.sock_client>=0 && ctx->tcp_sock==bam_fuzz_ctx.sock_client ) {
+    FD_TEST( !close( bam_fuzz_ctx.sock_client ) );
+  }
+  if( bam_fuzz_ctx.sock_peer>=0 ) FD_TEST( !close( bam_fuzz_ctx.sock_peer ) );
+  bam_fuzz_ctx.sock_client = -1;
+  bam_fuzz_ctx.sock_peer   = -1;
+}
+
+/* bam_fuzz_script_step runs fd_bam_client_step as the tile does, then
+   checks the deadline the tile would park until.  The harness has no
+   network: the mock connection gets a socket pair whose node end reads
+   and discards what the client sends, and a step that would dial is
+   skipped. */
+static void
+bam_fuzz_script_step( fd_bam_tile_t * ctx ) {
+  long now = fd_bam_now();
+  int  run = 1;
+  if( ctx->tcp_sock<0 ) {
+    if( ctx->tcp_sock_connected ) {
+      bam_fuzz_close_sockets( ctx );
+      int sv[ 2 ];
+      FD_TEST( !socketpair( AF_UNIX, SOCK_STREAM|SOCK_NONBLOCK|SOCK_CLOEXEC, 0, sv ) );
+      bam_fuzz_ctx.sock_client = ctx->tcp_sock = sv[ 0 ];
+      bam_fuzz_ctx.sock_peer   = sv[ 1 ];
+      ctx->is_ssl = 0; /* cleartext HTTP/2, there is no TLS session */
+    } else {
+      run = fd_bam_tile_should_stall( ctx, now ); /* else it may dial */
+    }
+  }
+
+  if( run ) {
+    int charge_busy = 0;
+    fd_bam_client_step( ctx, &charge_busy );
+  }
+  if( bam_fuzz_ctx.sock_peer>=0 ) {
+    uchar buf[ 4096 ];
+    while( recv( bam_fuzz_ctx.sock_peer, buf, sizeof(buf), MSG_DONTWAIT )>0 ) {}
+  }
+
+  /* The tile parks until this deadline (LONG_MAX if there is nothing
+     to wait for), so it cannot be in the past */
+  FD_TEST( fd_bam_client_next_deadline( ctx, now )>=now );
+}
+
+/* bam_fuzz_script_leader stages a leader state from pack, as
+   bam_after_frag does.  slot 255 is no leader slot, end_ms 0 an unknown
+   slot end. */
+static void
+bam_fuzz_script_leader( fd_bam_tile_t * ctx,
+                        uchar           slot,
+                        uchar           end_ms ) {
+  fd_bam_leader_state_t state = {
+    .slot        = slot==UCHAR_MAX ? ULONG_MAX : (ulong)slot,
+    .slot_end_ns = end_ms ? fd_bam_now() + (long)end_ms*(long)1e6 : 0L,
+  };
+  ulong prev_slot = ctx->bam_leader_state.slot;
+  fd_bam_stage_leader_state( ctx, &state );
+  if( prev_slot!=state.slot &&
+      ctx->bam_stream &&
+      ctx->bam_stream_live &&
+      fd_bam_send_leader_state( ctx, &ctx->bam_leader_state ) ) {
+    ctx->bam_leader_pending = 0U;
+  }
+}
+
+/* bam_fuzz_run_script runs the payload of a script input (msg_kind 3
+   with bit5 set) as ops that drive the client over time:
+
+     'c' <ms:u16>              advance the clock
+     's'                       step the client (bam_fuzz_script_step)
+     'l' <slot:u8> <end_ms:u8> stage a leader state (bam_fuzz_script_leader)
+     'r' <len:u16> <len bytes> receive a SchedulerResponse on the stream
+
+   Integers are little endian.  Other bytes are no-ops, and an op cut
+   short by the end of the input is dropped. */
+static void
+bam_fuzz_run_script( fd_bam_tile_t * ctx,
+                     uchar const *   p,
+                     ulong           sz ) {
+  for( ulong off=0UL; off<sz; ) {
+    uchar op  = p[ off++ ];
+    ulong rem = sz-off;
+    switch( op ) {
+    case 'c':
+      if( rem<2UL ) return;
+      bam_fuzz_now += (long)fd_ushort_load_2( p+off )*(long)1e6;
+      off += 2UL;
+      break;
+    case 's':
+      bam_fuzz_script_step( ctx );
+      break;
+    case 'l':
+      if( rem<2UL ) return;
+      bam_fuzz_script_leader( ctx, p[ off ], p[ off+1UL ] );
+      off += 2UL;
+      break;
+    case 'r': {
+      if( rem<2UL ) return;
+      ulong len = fd_ulong_min( (ulong)fd_ushort_load_2( p+off ), rem-2UL );
+      off += 2UL;
+      if( ctx->bam_stream && ctx->bam_stream_live ) {
+        fd_bam_client_grpc_callbacks.rx_msg( ctx, p+off, len, FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+      }
+      off += len;
+      break;
+    }
+    default:
+      break;
+    }
+  }
 }
 
 /* Synthesize an AuthChallengeResponse payload. selector drives length and
@@ -499,7 +861,8 @@ bam_fuzz_assert_auth_state( fd_bam_tile_t *          ctx,
 static void
 bam_fuzz_reset_tile( void ) {
   fd_bam_tile_t * ctx = bam_fuzz_ctx.tile;
-  fd_memset( ctx, 0, sizeof( fd_bam_tile_t ) );
+  bam_fuzz_close_sockets( ctx );
+  fd_bam_tile_ctx_defaults( ctx );
   bam_fuzz_reset_reusable_storage();
   ctx->decoded_multi = bam_fuzz_ctx.decoded_multi_storage;
 
@@ -507,8 +870,6 @@ bam_fuzz_reset_tile( void ) {
   bam_fuzz_ctx.keyswitch->magic = FD_KEYSWITCH_MAGIC;
   bam_fuzz_ctx.keyswitch->state = FD_KEYSWITCH_STATE_COMPLETED;
   ctx->keyswitch = bam_fuzz_ctx.keyswitch;
-
-  ctx->bam_leader_state.slot  = ULONG_MAX;
 
   /* Wiring for publish paths */
   ctx->stem       = &bam_fuzz_ctx.stem;
@@ -567,12 +928,7 @@ bam_fuzz_reset_tile( void ) {
   bam_fuzz_prepare_connected_grpc( ctx );
 
   /* Identity for auth */
-  fd_sha512_t _sha[1];
-  fd_sha512_t * sha = fd_sha512_join( fd_sha512_new( _sha ) );
-  FD_TEST( sha );
-  FD_TEST( fd_ed25519_public_from_private( ctx->bam_identity_pubkey,
-                                           bam_fuzz_identity_private_key,
-                                           sha ) );
+  fd_memcpy( ctx->bam_identity_pubkey, bam_fuzz_ctx.identity_pubkey, 32UL );
   fd_base58_encode_32( ctx->bam_identity_pubkey, NULL, ctx->bam_identity_pubkey_b58 );
 
   /* Keyguard client stubbed with in-memory request/response rings */
@@ -585,8 +941,6 @@ bam_fuzz_reset_tile( void ) {
                           64UL, NULL, ULONG_MAX, ULONG_MAX );
   bam_fuzz_seed_keyguard_response( ctx, NULL );
 
-  ctx->keylog_fd             = -1;
-  ctx->tcp_sock              = -1;
   ctx->connect_deadline      = LONG_MAX;
   ctx->bam_status_logged    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
   ctx->bam_status_recent    = FD_PLUGIN_MSG_BAM_UPDATE_STATUS_DISCONNECTED;
@@ -759,6 +1113,7 @@ LLVMFuzzerInitialize( int *argc,
   fd_log_wallclock_set( bam_fuzz_wallclock, NULL );
   fd_boot( argc, argv );
   fd_log_level_core_set( 4 ); /* fail fast on errors */
+  fd_log_level_stderr_set( 4 ); /* only errors to stderr, FD_TEST failures still print */
   bam_fuzz_env_init( argc, argv );
   atexit( fd_halt );
   return 0;
@@ -778,7 +1133,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   uchar apply_ctrl   = (uchar)( ( selector>>2 ) & 1U );   /* bit2: drive runtime control */
   uchar enable_ok    = (uchar)( ( selector>>3 ) & 1U );   /* bit3: desired enable state */
   uchar stream_ok    = (uchar)( ( selector>>4 ) & 1U );   /* bit4: open scheduler stream */
-  uchar drive_end    = (uchar)( ( selector>>5 ) & 1U );   /* bit5: drive rx_end */
+  uchar drive_end    = (uchar)( ( selector>>5 ) & 1U );   /* bit5: drive rx_end, or run a script with kind 3 */
   uchar drive_to     = (uchar)( ( selector>>6 ) & 1U );   /* bit6: drive timeout */
   uchar structured   = (uchar)( ( selector>>7 ) & 1U );   /* bit7: build structured auth */
   uchar status_selector = size>1 ? data[1] : (uchar)( selector ^ 0x5a ); /* Second byte chooses status; fallback mixes bits for small inputs */
@@ -884,15 +1239,13 @@ LLVMFuzzerTestOneInput( uchar const * data,
     }
   }
 
+  if( msg_kind==3U && drive_end ) bam_fuzz_run_script( ctx, payload, payload_sz );
+
   bam_fuzz_exercise_outbound( ctx, data, size );
   if( msg_kind==0U && stream_ok && ctx->enabled &&
       ctx->bam_config_received && fd_bam_has_effective_contact( ctx ) ) {
-    static uchar const heartbeat_payload[] = { 0x0a, 0x04, 0x0a, 0x02, 0x08, 0x01 };
     FD_TEST( ctx->bam_stream && ctx->bam_stream_live );
-    fd_bam_client_grpc_callbacks.rx_msg( ctx,
-                                         heartbeat_payload,
-                                         sizeof( heartbeat_payload ),
-                                         FD_BAM_CLIENT_REQ_BAM_InitSchedulerStream );
+    bam_fuzz_rx_builder_heartbeat( ctx );
     expect_bam_gossip = (uchar)!fd_mem_iszero( ctx->builder_pubkey, 32UL );
   }
 

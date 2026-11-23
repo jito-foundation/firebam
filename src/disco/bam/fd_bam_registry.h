@@ -1,0 +1,349 @@
+#ifndef HEADER_fd_src_disco_bam_fd_bam_registry_h
+#define HEADER_fd_src_disco_bam_fd_bam_registry_h
+
+/* BAM registry follower.  A --bam-url whose path is not "/" is a node
+   list (jito-solana bam_discovery).  FireBAM GETs that document over
+   HTTP(S) and dials the chosen node with the existing gRPC client. */
+
+#include "fd_bam_tile.h"
+#include "../../waltz/http/fd_url.h"
+#include "../../waltz/grpc/fd_grpc_client.h"
+#include "../../waltz/tls/fd_tls.h"
+#include "../../waltz/tlsrec/fd_tlsrec.h"
+#include "../../waltz/tlsrec/fd_tlsrec_sock.h"
+#include "../../util/rng/fd_rng.h"
+#include "../metrics/fd_metrics.h"
+
+/* jito-solana has no such limits; these sit far above any real
+   registry.  BODY_MAX caps the whole response, headers included, and
+   holds about NODE_CAP nodes of 256 bytes each. */
+#define FD_BAM_REGISTRY_NODE_CAP   (1024UL)
+#define FD_BAM_REGISTRY_BODY_MAX   (1UL<<18)
+#define FD_BAM_REGISTRY_PATH_MAX   (1024UL)
+#define FD_BAM_REGISTRY_ADDR_MAX   (16UL)
+#define FD_BAM_REGISTRY_REDIRECT_MAX (10U)  /* reqwest Policy::default() */
+#define FD_BAM_REGISTRY_PROBE_BUF  (8192UL)
+#define FD_BAM_REGISTRY_MAX_RTT_US (30000UL)
+
+#define FD_BAM_REGISTRY_RESYNC_LIVE_NS    ((long)60e9)
+#define FD_BAM_REGISTRY_RESYNC_STALLED_NS ((long)2e9)
+#define FD_BAM_REGISTRY_CONNECT_GRACE_NS  ((long)20e9)
+#define FD_BAM_REGISTRY_PROBE_COOLDOWN_NS ((long)30e9)
+#define FD_BAM_REGISTRY_FETCH_TIMEOUT_NS  ((long)5e9)
+#define FD_BAM_REGISTRY_PROBE_CONNECT_NS  ((long)500e6)
+#define FD_BAM_REGISTRY_PROBE_REQUEST_NS  ((long)60e6)
+#define FD_BAM_REGISTRY_PROBE_BUDGET_NS   ((long)10e9)
+#define FD_BAM_REGISTRY_PROBE_SAMPLES     (3U)
+/* jito probes 32 nodes at once.  Each slot holds a TLS and a gRPC
+   client (~300 KB), and a reply that lands while the tile handshakes
+   with other slots reads late, so FireBAM probes 8: a round still
+   covers ~160 unreachable nodes (PROBE_CONNECT_NS each) in budget. */
+#define FD_BAM_REGISTRY_PROBE_FANOUT      (8UL)
+#define FD_BAM_REGISTRY_POLL_NS           ((long)1e9)
+#define FD_BAM_REGISTRY_WARN_INTERVAL_NS  ((long)60e9)
+
+/* A healthy session is left alone this many slots either side of our
+   next leader slot: no fetch, probe, or node switch.  A switch needs
+   about 2 s for the new node's first heartbeat, so this leaves it ~2 s
+   to spare before the window. */
+#define FD_BAM_REGISTRY_LEADER_GUARD_SLOTS (10UL)
+
+struct fd_bam_registry_node {
+  uint   ip4;       /* IPv4, FD_IP4_ADDR_FMT order */
+  ushort grpc_port;
+  char   region[ 64 ]; /* decoded; see reg_node for what does not fit */
+};
+
+typedef struct fd_bam_registry_node fd_bam_registry_node_t;
+
+struct fd_bam_registry_rank {
+  fd_bam_registry_node_t node;
+  ulong                  rtt_us;
+};
+
+typedef struct fd_bam_registry_rank fd_bam_registry_rank_t;
+
+/* One in-flight probe: a TLS channel to one node and its RTT samples.
+   fd<0 marks a free slot.  Each slot owns its fd_tls_t because the
+   ephemeral key and SNI live there for the whole handshake. */
+
+struct fd_bam_registry_slot {
+  int                fd;
+  uchar              io;
+  uchar              inflight;
+  uchar              dead;
+  uchar              ep; /* waker set: 0 absent, 1 readable, 2 also writable */
+  uint               samples;
+  ulong              node_i;
+  ulong              best_us;
+  long               deadline;
+  long               sample_ns;
+  fd_grpc_client_t * grpc;
+  fd_grpc_client_metrics_t metrics[1];
+  fd_tls_t           tls[1];
+  fd_tlsrec_conn_t   conn[1];
+};
+
+typedef struct fd_bam_registry_slot fd_bam_registry_slot_t;
+
+/* A repeated failure warns once a minute; reason 0 means the last
+   attempt succeeded. */
+
+struct fd_bam_registry_warn {
+  ulong reason;
+  long  at;
+};
+
+typedef struct fd_bam_registry_warn fd_bam_registry_warn_t;
+
+struct fd_bam_registry {
+  uchar  on;
+  uchar  cert_verify_cfg; /* tiles.bam.tls_cert_verify; kept for direct URLs */
+  uchar  have_dial;
+  uchar  paused;   /* BAM disabled */
+  uchar  ssl;
+  char   url[ FD_URL_MAX ];
+  char   host[ FD_FQDN_BUF_MAX ];
+  ushort host_len;
+  ushort port;
+  char   path[ FD_BAM_REGISTRY_PATH_MAX ];
+  ushort path_len;
+
+  /* Where the current fetch points after redirects. */
+  char   f_host[ FD_FQDN_BUF_MAX ];
+  ushort f_host_len;
+  ushort f_port;
+  char   f_path[ FD_BAM_REGISTRY_PATH_MAX ];
+  ushort f_path_len;
+  uchar  f_ssl;
+  uint   redirects;
+  uint   addrs[ FD_BAM_REGISTRY_ADDR_MAX ];
+  ulong  addr_cnt;
+  ulong  addr_i;
+  uint   dns_ns[ 3 ];    /* MAXNS */
+  ulong  dns_ns_cnt;
+  uchar  dns_query[ 280 ]; /* FD_DNS_QUERY_MTU */
+  int    dns_qlen;
+  long   dns_retry;
+  long   dns_send_at;
+
+  fd_bam_registry_node_t nodes[ FD_BAM_REGISTRY_NODE_CAP ];
+  ulong                  node_cnt;
+  fd_bam_registry_rank_t ranked[ FD_BAM_REGISTRY_NODE_CAP ];
+  ulong                  ranked_cnt;
+  ulong                  cursor;
+  uint                   dial_ip4;
+  ushort                 dial_port;
+
+  long resync_at;
+  long probe_at;
+  ulong replay_slot; /* newest slot replay reported, 0 if none */
+  long stalled_ns; /* time down, not counting leader-schedule waits */
+  long stalled_at; /* when stalled_ns was last advanced */
+  long deadline;
+  long round_start;
+  long fetch_start;
+  long fetch_after; /* jito sleeps POLL_INTERVAL between steps */
+
+  ulong order[ FD_BAM_REGISTRY_NODE_CAP ];
+  ulong order_i;      /* next node to launch */
+  ulong order_cnt;
+  ulong probe_active; /* slots with an open fd */
+  ulong probe_answered;
+
+  uchar phase; /* 0 idle, 1 fetch, 2 probe */
+  uchar io;    /* 0 connect, 1 tls, 2 payload */
+  uchar ep;    /* as in fd_bam_registry_slot_t */
+  uchar sent;  /* the request is all out */
+  int   fd;
+  ulong http_off;
+  ulong body_len;
+  char  body[ FD_BAM_REGISTRY_BODY_MAX+1UL ]; /* a spare byte shows a response over the cap */
+  fd_bam_registry_node_t parsed[ FD_BAM_REGISTRY_NODE_CAP ];
+
+  fd_tls_t           tls[1];
+  fd_chacha_rng_t    rng[1];
+  fd_tlsrec_conn_t   conn[1];
+  fd_tlsrec_sock_t   sock[1];
+  void *                   probe_mem;
+  fd_bam_registry_slot_t * slots;
+  ulong                    slot_cnt;
+
+  char                   why[ 128 ]; /* detail of the current fetch's failure */
+  fd_bam_registry_warn_t fetch_warn[1];
+  fd_bam_registry_warn_t probe_warn[1];
+
+  ulong fetch_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_FETCH_RESULT_CNT ];
+  ulong round_cnt[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_ROUND_RESULT_CNT ];
+  ulong last_round[ FD_METRICS_ENUM_BAM_REGISTRY_PROBE_NODE_RESULT_CNT ];
+  ulong probe_cert_cnt;
+  ulong select_cnt;
+  ulong dial_rtt_us;
+};
+
+typedef struct fd_bam_registry fd_bam_registry_t;
+
+FD_PROTOTYPES_BEGIN
+
+/* fd_bam_registry_is_url returns 1 when the path is longer than "/". */
+
+int
+fd_bam_registry_is_url( fd_url_t const * url );
+
+/* fd_bam_registry_parse reads a registry document into nodes with
+   serde_json's accept/reject rules for jito's ServedNodes (fd_jtok is
+   stricter only inside values serde_json skips, which its own output
+   never has).  Valid IPv6 nodes are skipped.  Returns 0 and sets *cnt
+   on a non-empty IPv4 list.  Returns -2 when the document lists no
+   IPv4 node, -1 when it is malformed or over cap; the caller keeps its
+   cache either way.
+
+   TODO: IPv6 nodes and registry hosts, which jito-solana supports.
+   Needs IPv6 in fd_bam_client, bracketed hosts in fd_url, and IPv6
+   iPAddress SAN matching in fd_x509. */
+
+int
+fd_bam_registry_parse( char const *             json,
+                       ulong                    json_sz,
+                       fd_bam_registry_node_t * nodes,
+                       ulong                    cap,
+                       ulong *                  cnt );
+
+/* fd_bam_registry_http_response reads the response to an HTTP/1.0
+   request in buf[0,*len), *len at most FD_BAM_REGISTRY_BODY_MAX+1.
+   Returns FD_BAM_REGISTRY_HTTP_BODY with buf[0,*len) stripped in place
+   to the body (Content-Length bytes, or up to eof),
+   FD_BAM_REGISTRY_HTTP_REDIRECT with the Location of a 301/302/303/307/
+   308 in loc, FD_BAM_REGISTRY_HTTP_TOO_BIG once the response, headers
+   included, must exceed FD_BAM_REGISTRY_BODY_MAX bytes, 0 if more bytes
+   are needed, and -1 for any other status, a transfer coding, malformed
+   framing, or a Location over loc_max.  With *len over the cap it never
+   returns 0. */
+
+#define FD_BAM_REGISTRY_HTTP_BODY     (1)
+#define FD_BAM_REGISTRY_HTTP_REDIRECT (2)
+#define FD_BAM_REGISTRY_HTTP_TOO_BIG  (-2)
+
+int
+fd_bam_registry_http_response( char *  buf,
+                               ulong * len,
+                               int     eof,
+                               char *  loc,
+                               ulong   loc_max );
+
+/* fd_bam_registry_redirect_target points the fetch at loc: an
+   absolute http(s) URL, or a path on the current host, without the
+   fragment.  Returns -1 for anything else (relative and
+   scheme-relative references, other schemes) and for an oversized
+   host or path. */
+
+int
+fd_bam_registry_redirect_target( fd_bam_registry_t * reg,
+                                 char const *        loc );
+
+/* fd_bam_registry_take_url returns 1 when raw is now the registry
+   target, 0 when raw is a direct node (nothing changed; the caller
+   leaves registry mode once it has accepted the URL), and
+   -1 when its host or path is too long or no system CA bundle was
+   loaded (registry fetches and nodes are always verified). */
+
+int
+fd_bam_registry_take_url( fd_bam_tile_t *  ctx,
+                          char const *     raw,
+                          fd_url_t const * url,
+                          int              is_ssl,
+                          ushort           port,
+                          char *           err,
+                          ulong            err_sz );
+
+/* fd_bam_registry_disable drops registry mode and closes its socket.
+   When cert_verify_cfg is off, the main client stops verifying too. */
+
+void
+fd_bam_registry_disable( fd_bam_tile_t * ctx );
+
+/* fd_bam_registry_step advances one fetch, probe, or idle action, or
+   pauses the follower while BAM is disabled.  *charge_busy is set when
+   the follower needs another step immediately, and *deadline is the
+   next step otherwise.  Without a waker (the performance layout) a
+   fetch or probe polls its sockets on every step.  With one, they are
+   in the tile's waker set and the step reports busy only after
+   progress, so the tile parks until a socket or timer is due. */
+
+void
+fd_bam_registry_step( fd_bam_tile_t * ctx,
+                      int *           charge_busy,
+                      long *          deadline );
+
+/* fd_bam_registry_on_fetch replaces the cached list when any node
+   differs, region included, and drops the ranking.  live is non-zero
+   when the session is CONNECTED_HEALTHY.  Returns 1 if the list
+   changed. */
+
+int
+fd_bam_registry_on_fetch( fd_bam_registry_t *            reg,
+                          fd_bam_registry_node_t const * nodes,
+                          ulong                          cnt,
+                          long                           now,
+                          int                            live,
+                          fd_rng_t *                     rng );
+
+/* fd_bam_registry_finish_round sorts by RTT and drops nodes slower
+   than FD_BAM_REGISTRY_MAX_RTT_US. */
+
+void
+fd_bam_registry_finish_round( fd_bam_registry_t * reg );
+
+/* fd_bam_registry_near_leader returns 1 when replay_slot is within
+   FD_BAM_REGISTRY_LEADER_GUARD_SLOTS of next_leader_slot (ULONG_MAX if
+   unknown).  While we lead, replay reports the current leader slot as
+   the next one. */
+
+FD_FN_CONST static inline int
+fd_bam_registry_near_leader( ulong next_leader_slot,
+                             ulong replay_slot ) {
+  return next_leader_slot!=ULONG_MAX &&
+         next_leader_slot<=fd_ulong_sat_add( replay_slot, FD_BAM_REGISTRY_LEADER_GUARD_SLOTS ) &&
+         replay_slot<=fd_ulong_sat_add( next_leader_slot, FD_BAM_REGISTRY_LEADER_GUARD_SLOTS );
+}
+
+/* fd_bam_registry_choose returns 1 if the caller should dial *out.
+   The dialed node is replaced once it has been down CONNECT_GRACE,
+   not counting time while hold is set (the leader-schedule wait keeps
+   the client from dialing).  Wrapping the cursor clears the ranking
+   but keeps the stall clock, so the next ranking publishes its best
+   node at once. */
+
+int
+fd_bam_registry_choose( fd_bam_registry_t *      reg,
+                        int                      live,
+                        int                      hold,
+                        long                     now,
+                        fd_bam_registry_node_t * out );
+
+/* fd_bam_tile_dial_node returns 1 if the gRPC client was pointed at
+   node, or 0 if it already was. */
+
+int
+fd_bam_tile_dial_node( fd_bam_tile_t *                ctx,
+                       fd_bam_registry_node_t const * node );
+
+/* fd_bam_registry_probe_{align,footprint} size the scratch region for
+   FD_BAM_REGISTRY_PROBE_FANOUT probe slots and their gRPC clients. */
+
+ulong
+fd_bam_registry_probe_align( void );
+
+ulong
+fd_bam_registry_probe_footprint( void );
+
+/* fd_bam_registry_join_probe lays out the probe slots in probe_mem,
+   which must already be set. */
+
+void
+fd_bam_registry_join_probe( fd_bam_tile_t * ctx,
+                            ulong           seed );
+
+FD_PROTOTYPES_END
+
+#endif /* HEADER_fd_src_disco_bam_fd_bam_registry_h */
