@@ -86,6 +86,11 @@ int fd_pack_contains_initializer_bundle( fd_pack_t const *        pack,
    lookahead scan examines. */
 #define FD_PACK_BAM_LOOKAHEAD_TXN_MAX (16UL)
 
+/* Once BAM is enabled, capacity misses on a bundle block FIFO bundle
+   scheduling, so bound retries before parking the bundle aside for the
+   rest of the slot.  Without BAM, bundles keep upstream's budget. */
+#define FD_PACK_BUNDLE_SKIP_CNT (4UL)
+
 /* The BAM_ONLY bit suppresses normal transactions, votes included, and
    filters bundles to BAM work.  BAM_SINGLE, like BUNDLE,
    enables bundle scheduling, but grants worker eligibility only for a
@@ -110,7 +115,8 @@ int fd_pack_contains_initializer_bundle( fd_pack_t const *        pack,
    Every complete predecessor and the candidate must pass
    ready(ready_ctx,...).  Skipped batches remain account
    dependencies, including batches this worker cannot execute.  Initializers,
-   deferred, incomplete and foreign batches remain barriers.  Capacity
+   incomplete and foreign batches remain barriers; deferred batches are
+   parked outside the scan.  Capacity
    failures never authorize lookahead and deferred work is never revived.
    The ordinary successful path does not invoke the callback or scan. */
 ulong
