@@ -253,6 +253,7 @@ fd_pack_compute_cost( fd_txn_t const * txn,
   ulong non_builtin_cnt    = 0UL; /* <= FD_TXN_INSTR_MAX */
   ulong precompile_sig_cnt = 0UL; /* <= FD_TXN_INSTR_MAX * UCHAR_MAX */
   ulong allocated_data     = 0UL; /* in bytes */
+  int   alloc_invalid      = 0;
   fd_acct_addr_t const * addr_base = fd_txn_get_acct_addrs( txn, payload );
 
   fd_compute_budget_program_state_t cbp[1];
@@ -308,8 +309,9 @@ fd_pack_compute_cost( fd_txn_t const * txn,
        Note: This complexity here is pretty gross, but we need a better
        bound for allocated_data than 20MB, and this seems to be the best
        way. */
-#define MAX_ALLOC (20UL*1024UL*1024UL) /* mostly to prevent attacker-induced overflow */
-#define DEFAULT_ALLOC (10UL*1024UL)    /* == MAX_PERMITTED_DATA_INCREASE */
+#define MAX_ALLOC_PER_ACCT (10UL*1024UL*1024UL) /* MAX_PERMITTED_DATA_LENGTH */
+#define MAX_ALLOC          (20UL*1024UL*1024UL) /* MAX_PERMITTED_ACCOUNTS_DATA_ALLOCATIONS_PER_TRANSACTION */
+#define DEFAULT_ALLOC      (10UL*1024UL)        /* == MAX_PERMITTED_DATA_INCREASE */
     else if( FD_UNLIKELY( in_tbl==system_program_row ) ) {
       ulong discriminant = ULONG_MAX;
       uchar const * base = payload + txn->instr[i].data_off;
@@ -317,16 +319,11 @@ fd_pack_compute_cost( fd_txn_t const * txn,
       discriminant = FD_LOAD( uint, base );
       base += sizeof(uint);     data_sz -= sizeof(uint);
       ulong seed_len;
+      ulong space = 0UL;
       switch( discriminant ) {
         case 0UL: /* FD_SYSTEM_PROGRAM_INSTR_CREATE_ACCOUNT */
           if( FD_UNLIKELY( data_sz<8UL+8UL ) ) break;
-          /* Note: here (and below), Agave sets alloc to 0 if any of
-             these instructions request more than 10 MB.  We don't
-             bother with that.  If a transaction has an instruction that
-             requests more than 10 MB and pays a sufficient fee for it,
-             and then fails, that's not a big problem.  We're always
-             computing a conservative estimate. */
-          allocated_data += fd_ulong_min( MAX_ALLOC, FD_LOAD( ulong, base+8UL ) );
+          space = FD_LOAD( ulong, base+8UL );
           break;
         case 3UL: /* FD_SYSTEM_PROGRAM_INSTR_CREATE_ACCOUNT_WITH_SEED */
           if( FD_UNLIKELY( data_sz<32UL+8UL ) ) break;
@@ -335,11 +332,11 @@ fd_pack_compute_cost( fd_txn_t const * txn,
           if( FD_UNLIKELY( data_sz<seed_len ) ) break;
           base += seed_len;     data_sz -= seed_len;
           if( FD_UNLIKELY( data_sz<(8UL+8UL) ) ) break;
-          allocated_data += fd_ulong_min( MAX_ALLOC, FD_LOAD( ulong, base+8UL ) );
+          space = FD_LOAD( ulong, base+8UL );
           break;
         case 8UL: /* FD_SYSTEM_PROGRAM_INSTR_ALLOCATE */
           if( FD_UNLIKELY( data_sz<8UL ) ) break;
-          allocated_data += fd_ulong_min( MAX_ALLOC, FD_LOAD( ulong, base ) );
+          space = FD_LOAD( ulong, base );
           break;
         case 9UL: /* FD_SYSTEM_PROGRAM_INSTR_ALLOCATE_WITH_SEED */
           if( FD_UNLIKELY( data_sz<32UL+8UL ) ) break;
@@ -348,18 +345,22 @@ fd_pack_compute_cost( fd_txn_t const * txn,
           if( FD_UNLIKELY( data_sz<seed_len ) ) break;
           base += seed_len;     data_sz -= seed_len;
           if( FD_UNLIKELY( data_sz<8UL ) ) break;
-          allocated_data += fd_ulong_min( MAX_ALLOC, FD_LOAD( ulong, base ) );
+          space = FD_LOAD( ulong, base );
           break;
         case 13UL: /* create_account_allow_prefund */
           /* Agave returns 0 here until the feature gate has been
              activated.  Rather than feature gate this, we just act
              conservatively. */
           if( FD_UNLIKELY( data_sz<8UL+8UL ) ) break;
-          allocated_data += fd_ulong_min( MAX_ALLOC, FD_LOAD( ulong, base+8UL ) );
+          space = FD_LOAD( ulong, base+8UL );
           break;
         default:
           break;
       }
+      /* Match runtime cost tracker: any System allocation > 10 MiB fails
+         execution and contributes 0 bytes to the block allocation budget. */
+      if( FD_UNLIKELY( space>MAX_ALLOC_PER_ACCT ) ) alloc_invalid = 1;
+      else                                          allocated_data += space;
 #if FD_PACK_COST_USE_TRUE_ALLOC_BOUND
     } else if( FD_UNLIKELY( in_tbl==upgradeable_loader_row ) ) {
       ulong discriminant = ULONG_MAX;
@@ -407,7 +408,8 @@ fd_pack_compute_cost( fd_txn_t const * txn,
      allocation. See
      https://github.com/anza-xyz/agave/blob/2a61a3ecd417b0515c0b2f322d0128394f20626b/cost-model/src/cost_model.rs#L317-L318
    */
-  allocated_data = fd_ulong_min( allocated_data, 20UL*1024UL*1024UL ); /* MAX_PERMITTED_ACCOUNTS_DATA_ALLOCATIONS_PER_TRANSACTION */
+  allocated_data = fd_ulong_if( alloc_invalid, 0UL, fd_ulong_min( allocated_data, MAX_ALLOC ) );
+#undef MAX_ALLOC_PER_ACCT
 #undef MAX_ALLOC
 #undef DEFAULT_ALLOC
 

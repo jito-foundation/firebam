@@ -22,34 +22,101 @@ fd_pack_bam_insert_bundle_prepare( fd_pack_t          * pack,
   return is_bam;
 }
 
-/* Reclaim ordinal bands before an insert past BUNDLE_N without changing
-   bundle or member order, so FIFO order holds where upstream underflows.
-   Pending transactions bound the number of groups, so assign groups
-   descending ordinals from that count, reserving zero for the initializer.
-   Forward iteration visits each group's last member first: use insertion's
-   priority recurrence, without buffering or rebuilding groups.  Treap
-   iteration follows links, which the priority rewrite leaves intact. */
+/* Merge active and deferred bundle treaps by descending old ordinal so
+   reclaiming ordinal bands preserves global FIFO order across both. */
 static void
 fd_pack_rebase_bundle_ordinals( fd_pack_t * pack ) {
-  ulong ordinal = treap_ele_cnt( pack->pending_bundles );
+  ulong ordinal = treap_ele_cnt( pack->pending_bundles ) + treap_ele_cnt( pack->deferred_bundles );
   pack->relative_bundle_idx = ordinal+1UL;
   FD_TEST( pack->relative_bundle_idx<=BUNDLE_N ); /* Pool indices are ushorts. */
-  ulong old_ordinal = ULONG_MAX;
-  ulong prev_reward = 0UL;
-  ulong prev_cost = 0UL;
-  for( treap_fwd_iter_t iter=treap_fwd_iter_init( pack->pending_bundles, pack->pool );
-       !treap_fwd_iter_done( iter ); iter=treap_fwd_iter_next( iter, pack->pool ) ) {
-    fd_pack_ord_txn_t * cur = treap_fwd_iter_ele( iter, pack->pool );
-    ulong group = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
-    if( group!=old_ordinal ) {
-      old_ordinal = group;
-      ulong idx = (cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) ? 0UL : ordinal--;
-      prev_reward = BUNDLE_L_PRIME*(BUNDLE_N-idx)-1UL;
-      prev_cost = 1UL<<32;
+  fd_pack_ord_txn_t * pool = pack->pool;
+  treap_fwd_iter_t iters[ 2 ] = {
+    treap_fwd_iter_init( pack->pending_bundles,  pool ),
+    treap_fwd_iter_init( pack->deferred_bundles, pool )
+  };
+  for(;;) {
+    int p_done = treap_fwd_iter_done( iters[ 0 ] );
+    int d_done = treap_fwd_iter_done( iters[ 1 ] );
+    if( FD_UNLIKELY( p_done & d_done ) ) break;
+
+    ulong pick;
+    if( p_done )      pick = 1UL;
+    else if( d_done ) pick = 0UL;
+    else {
+      fd_pack_ord_txn_t const * p = treap_fwd_iter_ele_const( iters[ 0 ], pool );
+      fd_pack_ord_txn_t const * d = treap_fwd_iter_ele_const( iters[ 1 ], pool );
+      ulong group_p = RC_TO_REL_BUNDLE_IDX( p->rewards, p->compute_est );
+      ulong group_d = RC_TO_REL_BUNDLE_IDX( d->rewards, d->compute_est );
+      pick = (ulong)(group_d > group_p);
     }
-    cur->rewards = (uint)(((ulong)cur->compute_est*(prev_reward+1UL)+prev_cost-1UL)/prev_cost);
-    prev_reward = cur->rewards;
-    prev_cost = cur->compute_est;
+
+    fd_pack_ord_txn_t * cur = treap_fwd_iter_ele( iters[ pick ], pool );
+    ulong group       = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+    ulong idx         = (cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) ? 0UL : ordinal--;
+    ulong prev_reward = BUNDLE_L_PRIME*(BUNDLE_N-idx)-1UL;
+    ulong prev_cost   = 1UL<<32;
+    do {
+      cur->rewards  = (uint)(((ulong)cur->compute_est*(prev_reward+1UL)+prev_cost-1UL)/prev_cost);
+      prev_reward   = cur->rewards;
+      prev_cost     = cur->compute_est;
+      iters[ pick ] = treap_fwd_iter_next( iters[ pick ], pool );
+      if( FD_UNLIKELY( treap_fwd_iter_done( iters[ pick ] ) ) ) break;
+      cur = treap_fwd_iter_ele( iters[ pick ], pool );
+    } while( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )==group );
+  }
+}
+
+static inline treap_rev_iter_t
+fd_pack_peek_bundle_head( fd_pack_t const * pack ) {
+  treap_rev_iter_t p_it = treap_rev_iter_init( pack->pending_bundles,  pack->pool );
+  treap_rev_iter_t d_it = treap_rev_iter_init( pack->deferred_bundles, pack->pool );
+  if( FD_LIKELY( treap_rev_iter_done( d_it ) ) ) return p_it;
+  if( FD_UNLIKELY( treap_rev_iter_done( p_it ) ) ) return d_it;
+  fd_pack_ord_txn_t const * p = treap_rev_iter_ele_const( p_it, pack->pool );
+  fd_pack_ord_txn_t const * d = treap_rev_iter_ele_const( d_it, pack->pool );
+  return (RC_TO_REL_BUNDLE_IDX( d->rewards, d->compute_est ) < RC_TO_REL_BUNDLE_IDX( p->rewards, p->compute_est )) ? d_it : p_it;
+}
+
+static void
+fd_pack_defer_bundle( fd_pack_t *      pack,
+                      treap_t *        src_treap,
+                      treap_rev_iter_t txn0,
+                      ulong            bundle_idx,
+                      int              is_pre_rotation,
+                      int              is_bam ) {
+  fd_pack_ord_txn_t * pool = pack->pool;
+  treap_rev_iter_t next;
+  for( treap_rev_iter_t cur_it=txn0; !treap_rev_iter_done( cur_it ); cur_it=next ) {
+    fd_pack_ord_txn_t * cur = treap_rev_iter_ele( cur_it, pool );
+    if( FD_UNLIKELY( RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est )!=bundle_idx ) ) break;
+    next = treap_rev_iter_next( cur_it, pool );
+
+    /* See fd_pack_schedule_impl for this branchless countdown. */
+    cur->skip = (ushort)(1+fd_ushort_min( (ushort)(pack->compressed_slot_number-1),
+          (ushort)(fd_ushort_min( cur->skip, FD_PACK_BUNDLE_SKIP_CNT )-2) ) );
+    if( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) {
+      if( FD_UNLIKELY( is_bam && cur_it==txn0 ) ) FD_MCNT_INC( PACK, BAM_CAPACITY_DEFERRED, 1UL );
+      if( FD_LIKELY( !is_pre_rotation ) ) {
+        treap_ele_remove( src_treap,              cur, pool );
+        cur->root = FD_ORD_TXN_ROOT_DEFERRED_BUNDLE;
+        treap_ele_insert( pack->deferred_bundles, cur, pool );
+      }
+    }
+  }
+}
+
+static void
+fd_pack_restore_deferred_bundles( fd_pack_t * pack ) {
+  fd_pack_ord_txn_t * pool = pack->pool;
+  treap_fwd_iter_t next;
+  for( treap_fwd_iter_t it=treap_fwd_iter_init( pack->deferred_bundles, pool );
+       !treap_fwd_iter_done( it ); it=next ) {
+    next = treap_fwd_iter_next( it, pool );
+    fd_pack_ord_txn_t * cur = treap_fwd_iter_ele( it, pool );
+    treap_ele_remove( pack->deferred_bundles, cur, pool );
+    cur->root = FD_ORD_TXN_ROOT_PENDING_BUNDLE;
+    cur->skip = FD_PACK_BUNDLE_SKIP_CNT;
+    treap_ele_insert( pack->pending_bundles, cur, pool );
   }
 }
 
@@ -71,24 +138,16 @@ fd_pack_bam_copy_out( fd_txn_e_t       * out,
   if( !out->bam.revert_on_error ) out->txnp->flags &= ~FD_TXN_P_FLAGS_BUNDLE;
 }
 
-/* Returns the first whole bundle eligible for the selected mode. */
+/* Returns the first whole bundle eligible for the selected mode.
+   Deferred bundles live in deferred_bundles, so this never walks them. */
 static inline __attribute__((always_inline)) treap_rev_iter_t
 fd_pack_bundle_candidate( fd_pack_t const * pack,
-                          _Bool             bam_only,
-                          ulong *           skipped_txn_cnt ) {
+                          _Bool             bam_only ) {
   fd_pack_ord_txn_t * pool = pack->pool;
   treap_rev_iter_t   iter = treap_rev_iter_init( pack->pending_bundles, pool );
 
   while( !treap_rev_iter_done( iter ) ) {
     fd_pack_ord_txn_t * cur = treap_rev_iter_ele( iter, pool );
-    /* Deferral marks every member of a bundle alike, so, as upstream,
-       skip deferred transactions one at a time without touching their
-       txn or decoding their bundle. */
-    if( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) {
-      (*skipped_txn_cnt)++;
-      iter = treap_rev_iter_next( iter, pool );
-      continue;
-    }
     _Bool is_ib      = !!(cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE);
     _Bool mode_match = is_ib
                      ? pack->initializer_bundle_bam==bam_only
@@ -99,7 +158,6 @@ fd_pack_bundle_candidate( fd_pack_t const * pack,
        iterator into the middle of a bundle. */
     ulong bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
     do {
-      if( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) (*skipped_txn_cnt)++;
       iter = treap_rev_iter_next( iter, pool );
       if( FD_UNLIKELY( treap_rev_iter_done( iter ) ) ) return iter;
       cur = treap_rev_iter_ele( iter, pool );
@@ -110,22 +168,13 @@ fd_pack_bundle_candidate( fd_pack_t const * pack,
 }
 
 /* Returns the hinted or first eligible bundle for
-   fd_pack_try_schedule_bundle and counts the deferred transactions
-   skipped to reach it. */
+   fd_pack_try_schedule_bundle. */
 static inline __attribute__((always_inline)) treap_rev_iter_t
 fd_pack_bam_first_bundle( fd_pack_t * pack,
                           int         schedule_flags,
                           ulong       bundle_hint ) {
-  ulong skipped_txn_cnt = 0UL;
-  treap_rev_iter_t iter;
-  if( FD_UNLIKELY( bundle_hint!=ULONG_MAX ) ) {
-    skipped_txn_cnt = (bundle_hint>>16) & USHORT_MAX;
-    iter = (treap_rev_iter_t)(bundle_hint & USHORT_MAX);
-  } else {
-    iter = fd_pack_bundle_candidate( pack, !!(schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY), &skipped_txn_cnt );
-  }
-  pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_WRITE_COST_DEFERRED_IDX ] += skipped_txn_cnt;
-  return iter;
+  if( FD_UNLIKELY( bundle_hint!=ULONG_MAX ) ) return (treap_rev_iter_t)(bundle_hint & USHORT_MAX);
+  return fd_pack_bundle_candidate( pack, !!(schedule_flags & FD_PACK_SCHEDULE_BAM_ONLY) );
 }
 
 /* Returns whether the bundle led by txn0 is BAM work, or -1 if
@@ -177,14 +226,13 @@ fd_pack_peek_bundle_candidate( fd_pack_t const * pack,
                                void const **     opt_bundle_meta ) {
   *bundle_hint = ULONG_MAX;
   if( opt_bundle_meta ) *opt_bundle_meta = fd_pack_peek_bundle_meta( pack );
-  ulong skipped = 0UL;
-  treap_rev_iter_t _cur = fd_pack_bundle_candidate( pack, bam_only, &skipped );
+  treap_rev_iter_t _cur = fd_pack_bundle_candidate( pack, bam_only );
   if( FD_UNLIKELY( treap_rev_iter_done( _cur ) ) ) return NULL; /* empty */
 
   fd_pack_ord_txn_t * cur = treap_rev_iter_ele( _cur, pack->pool );
-  /* Pool indices and the number of skipped pool elements each fit in a
-     ushort.  Bit 32 binds the hint to the mode; upper bits bind its lifetime. */
-  *bundle_hint = (ulong)_cur | (skipped<<16) | ((ulong)bam_only<<32) | pack->bundle_hint_generation;
+  /* Pool indices fit in a ushort.  Bit 32 binds the hint to the mode;
+     upper bits bind its lifetime. */
+  *bundle_hint = (ulong)_cur | ((ulong)bam_only<<32) | pack->bundle_hint_generation;
   return cur->txn_e;
 }
 
@@ -241,8 +289,7 @@ fd_pack_bam_independent_candidate( fd_pack_t *          pack,
                        cur->txn_e->bam.batch_idx!=txn_cnt ||
                        cur->txn_e->bam.seq_id!=txn0->bam.seq_id ||
                        cur->txn_e->bam.scheduler_gen!=txn0->bam.scheduler_gen ||
-                       (cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) ||
-                       cur->skip==pack->compressed_slot_number ) ) goto empty;
+                       (cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) ) ) goto empty;
       group[ txn_cnt++ ] = cur;
       scanned++;
       iter = treap_rev_iter_next( iter, pack->pool );
@@ -305,9 +352,9 @@ int
 fd_pack_contains_initializer_bundle( fd_pack_t const *        pack,
                                      fd_ed25519_sig_t const * sig0,
                                      _Bool                    bam_only ) {
-  treap_rev_iter_t iter = treap_rev_iter_init( pack->pending_bundles, pack->pool );
+  treap_rev_iter_t iter = fd_pack_peek_bundle_head( pack );
   if( FD_UNLIKELY( treap_rev_iter_done( iter ) ) ) return 0;
-  fd_txn_p_t const * txn = treap_rev_iter_ele( iter, pack->pool )->txn;
+  fd_txn_p_t const * txn = treap_rev_iter_ele_const( iter, pack->pool )->txn;
   return !!(txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) &&
          pack->initializer_bundle_bam==bam_only &&
          !memcmp( fd_txn_get_signatures( TXN(txn), txn->payload ), sig0, sizeof(fd_ed25519_sig_t) );
@@ -362,7 +409,7 @@ fd_pack_find_bam_bundle( fd_pack_t const *        pack,
                                        pack->pool );
   while( idx!=ULONG_MAX ) {
     fd_pack_ord_txn_t const * ord = pack->pool + idx;
-    if( FD_LIKELY( ord->root==FD_ORD_TXN_ROOT_PENDING_BUNDLE &&
+    if( FD_LIKELY( (ord->root==FD_ORD_TXN_ROOT_PENDING_BUNDLE || ord->root==FD_ORD_TXN_ROOT_DEFERRED_BUNDLE) &&
                    ord->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM &&
                    ord->txn_e->bam.batch_idx==0U &&
                    ( !match_identity ||
@@ -401,20 +448,23 @@ fd_pack_delete_non_bam_bundles( fd_pack_t * pack ) {
   fd_pack_invalidate_bundle_hint( pack );
   fd_pack_ord_txn_t * pool = pack->pool;
   ulong cnt = 0UL;
-  treap_fwd_iter_t iter = treap_fwd_iter_init( pack->pending_bundles, pool );
-  while( !treap_fwd_iter_done( iter ) ) {
-    fd_pack_ord_txn_t * cur = treap_fwd_iter_ele( iter, pool );
-    ulong bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
-    /* Step past the whole bundle before deleting it.  Iteration links
-       are explicit, so deletion leaves the iterator to the next bundle
-       valid. */
-    do {
-      iter = treap_fwd_iter_next( iter, pool );
-    } while( !treap_fwd_iter_done( iter ) &&
-             RC_TO_REL_BUNDLE_IDX( pool[ iter ].rewards, pool[ iter ].compute_est )==bundle_idx );
-    if( FD_LIKELY( cur->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ||
-                   (cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) ) ) continue;
-    cnt += delete_transaction( pack, cur, 1, 0 );
+  treap_t * treaps[ 2 ] = { pack->pending_bundles, pack->deferred_bundles };
+  for( ulong t=0UL; t<2UL; t++ ) {
+    treap_fwd_iter_t iter = treap_fwd_iter_init( treaps[ t ], pool );
+    while( !treap_fwd_iter_done( iter ) ) {
+      fd_pack_ord_txn_t * cur = treap_fwd_iter_ele( iter, pool );
+      ulong bundle_idx = RC_TO_REL_BUNDLE_IDX( cur->rewards, cur->compute_est );
+      /* Step past the whole bundle before deleting it.  Iteration links
+         are explicit, so deletion leaves the iterator to the next bundle
+         valid. */
+      do {
+        iter = treap_fwd_iter_next( iter, pool );
+      } while( !treap_fwd_iter_done( iter ) &&
+               RC_TO_REL_BUNDLE_IDX( pool[ iter ].rewards, pool[ iter ].compute_est )==bundle_idx );
+      if( FD_LIKELY( cur->txn->source_tpu==FD_TXN_M_TPU_SOURCE_BAM ||
+                     (cur->txn->flags & FD_TXN_P_FLAGS_INITIALIZER_BUNDLE) ) ) continue;
+      cnt += delete_transaction( pack, cur, 1, 0 );
+    }
   }
   /* Only Block Engine bundles are pre-rotation bundles. */
   for( ulong i=0UL; i<FD_PACK_PRE_ROTATION_BUNDLE_CAPACITY; i++ ) {

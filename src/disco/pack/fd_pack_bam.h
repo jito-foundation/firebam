@@ -86,6 +86,10 @@ int fd_pack_contains_initializer_bundle( fd_pack_t const *        pack,
    lookahead scan examines. */
 #define FD_PACK_BAM_LOOKAHEAD_TXN_MAX (16UL)
 
+/* Capacity misses on a bundle block FIFO bundle scheduling, so bound
+   retries before parking the bundle aside for the rest of the slot. */
+#define FD_PACK_BUNDLE_SKIP_CNT (4UL)
+
 /* The BAM_ONLY bit suppresses normal transactions, votes included, and
    filters bundles to BAM work.  BAM_SINGLE, like BUNDLE,
    enables bundle scheduling, but grants worker eligibility only for a
