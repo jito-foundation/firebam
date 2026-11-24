@@ -568,7 +568,6 @@ typedef struct fd_pack_penalty_treap fd_pack_penalty_treap_t;
    seem permanent until the end of the slot can actually go away based
    on rebates. */
 #define FD_PACK_SKIP_CNT 50UL
-FD_STATIC_ASSERT( FD_PACK_BUNDLE_SKIP_CNT>=1UL && FD_PACK_BUNDLE_SKIP_CNT<=FD_PACK_SKIP_CNT, bundle_skip_cnt );
 
 /* FD_PACK_PRE_ROTATION_BUNDLE_CAPACITY: the maximum number of the
    bundles that arrived before our leader rotation which we execute
@@ -678,7 +677,8 @@ struct fd_pack_private {
   _Bool initializer_bundle_bam; /* Mode of the sole pending IB */
 
   /* relative_bundle_idx: the number of bundles that have been inserted
-     since the last time pending_bundles was empty.  See the long
+     since the last time pending_bundles and deferred_bundles were
+     empty.  See the long
      comment about encoding this index in the rewards field of each
      transaction in the bundle, and why it is important that this reset
      to 0 as frequently as possible. */
@@ -966,10 +966,10 @@ fd_pack_new( void                   * mem,
 
   /* These treaps can have at most pack_depth elements at any moment,
      but they come from a pool of size pack_depth+extra_depth. */
-  treap_new( (void*)pack->pending,          pack_depth+extra_depth );
-  treap_new( (void*)pack->pending_bundles,  pack_depth+extra_depth );
+  treap_new( (void*)pack->pending,         pack_depth+extra_depth );
+  treap_new( (void*)pack->pending_bundles, pack_depth+extra_depth );
+  treap_new( (void*)pack->next_auction,    pack_depth+extra_depth );
   treap_new( (void*)pack->deferred_bundles, pack_depth+extra_depth );
-  treap_new( (void*)pack->next_auction,     pack_depth+extra_depth );
   for( ulong i=0UL; i<FD_PACK_PRE_ROTATION_BUNDLE_CAPACITY; i++ ) {
     treap_new( (void*)pack->pre_rotation_bundles[ i ].treap, pack_depth+extra_depth );
   }
@@ -1278,7 +1278,7 @@ delete_worst( fd_pack_t * pack,
      Pending                      1.0
      Next auction                 same as pending
      Penalty treap                1.0 at <= 100 transactions, then sqrt(100/N)
-     Pending bundles              inf (since the rewards value is fudged)
+     Pending/deferred bundles     inf (since the rewards value is fudged)
 
      We'll also use M=8. */
 
@@ -1319,10 +1319,11 @@ delete_worst( fd_pack_t * pack,
         multiplier = 1.0f;
         break;
       }
-      case FD_ORD_TXN_ROOT_PENDING_BUNDLE: {
+      case FD_ORD_TXN_ROOT_PENDING_BUNDLE:
+      case FD_ORD_TXN_ROOT_DEFERRED_BUNDLE: {
         /* We don't have a way to tell how much these actually pay in
            rewards, so we just assume they are very high. */
-        treap = pack->pending_bundles;
+        treap = root_idx==FD_ORD_TXN_ROOT_PENDING_BUNDLE ? pack->pending_bundles : pack->deferred_bundles;
         /* We cap rewards at UINT_MAX lamports for estimation, and min
            CUs is about 1000, which means rewards/compute < 5e6.
            FLT_MAX is around 3e38. That means, 1e20*rewards/compute is
@@ -1331,13 +1332,6 @@ delete_worst( fd_pack_t * pack,
            compute is 2 million CUs, 1e20*1/2e6 is still higher than any
            normal transaction. */
         multiplier = 1e20f;
-        break;
-      }
-      case FD_ORD_TXN_ROOT_DEFERRED_BUNDLE: {
-        /* Keep deferred bundles above normal transactions, but evict
-           them before active bundles under pool pressure. */
-        treap      = pack->deferred_bundles;
-        multiplier = 1e14f;
         break;
       }
       case FD_ORD_TXN_ROOT_PRE_ROTATION_BUNDLE( 0 ): {
@@ -1868,7 +1862,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     bundle[ i ]->txnp->flags &= ~(FD_TXN_P_FLAGS_INITIALIZER_BUNDLE | FD_TXN_P_FLAGS_DURABLE_NONCE);
     bundle[ i ]->txnp->flags |= fd_uint_if( initializer_bundle, FD_TXN_P_FLAGS_INITIALIZER_BUNDLE, 0U );
     bundle[ i ]->txnp->flags |= fd_uint_if( is_durable_nonce,   FD_TXN_P_FLAGS_DURABLE_NONCE,      0U );
-    ord->skip       = FD_PACK_BUNDLE_SKIP_CNT;
+    ord->skip       = fd_pack_bundle_skip_cnt( pack );
     ord->expires_at = expires_at;
 
     if( FD_UNLIKELY( is_durable_nonce ) ) {
@@ -1930,7 +1924,7 @@ fd_pack_insert_bundle_fini( fd_pack_t          * pack,
     replaces = 1;
   }
 
-  if( FD_UNLIKELY( !treap_ele_cnt( pack->pending_bundles ) && !treap_ele_cnt( pack->deferred_bundles ) ) ) {
+  if( FD_UNLIKELY( !pending_b_txn_cnt ) ) {
     pack->relative_bundle_idx = 1UL;
   }
 
@@ -2213,9 +2207,8 @@ fd_pack_set_rotation_end_ns( fd_pack_t * pack,
 
 void
 fd_pack_metrics_write( fd_pack_t const * pack ) {
-  ulong pending_regular      = treap_ele_cnt( pack->pending          );
-  ulong pending_bundle       = treap_ele_cnt( pack->pending_bundles  )
-                             + treap_ele_cnt( pack->deferred_bundles );
+  ulong pending_regular      = treap_ele_cnt( pack->pending         );
+  ulong pending_bundle       = treap_ele_cnt( pack->pending_bundles ) + treap_ele_cnt( pack->deferred_bundles );
   for( ulong i=0UL; i<FD_PACK_PRE_ROTATION_BUNDLE_CAPACITY; i++ ) {
     pending_bundle += treap_ele_cnt( pack->pre_rotation_bundles[ i ].treap );
   }
@@ -2891,7 +2884,7 @@ fd_pack_try_schedule_bundle( fd_pack_t  * pack,
     if( FD_UNLIKELY( is_bam && retval==TRY_BUNDLE_HAS_CONFLICTS ) ) FD_MCNT_INC( PACK, BAM_CONFLICT_BLOCKED, 1UL );
 
     if( FD_UNLIKELY( retval==TRY_BUNDLE_DOES_NOT_FIT && (schedule_flags & FD_PACK_SCHEDULE_BUNDLE) ) ) {
-      fd_pack_defer_bundle( pack, is_pre_rotation ? pre_rotation_bundle->treap : pack->pending_bundles, _txn0, bundle_idx, is_pre_rotation, is_bam );
+      if( FD_LIKELY( !is_pre_rotation ) ) fd_pack_defer_bundle( pack, _txn0, bundle_idx, is_bam );
     }
     return retval;
   }
@@ -3313,10 +3306,10 @@ fd_pack_clear_all( fd_pack_t * pack ) {
   pack->pending_smallest->cus         = ULONG_MAX;
   pack->pending_smallest->bytes       = ULONG_MAX;
 
-  release_tree( pack->pending,          pack->signature_map, pack->noncemap, pack->pool );
-  release_tree( pack->pending_bundles,  pack->signature_map, pack->noncemap, pack->pool );
+  release_tree( pack->pending,         pack->signature_map, pack->noncemap, pack->pool );
+  release_tree( pack->pending_bundles, pack->signature_map, pack->noncemap, pack->pool );
+  release_tree( pack->next_auction,    pack->signature_map, pack->noncemap, pack->pool );
   release_tree( pack->deferred_bundles, pack->signature_map, pack->noncemap, pack->pool );
-  release_tree( pack->next_auction,     pack->signature_map, pack->noncemap, pack->pool );
   for( ulong i=0UL; i<FD_PACK_PRE_ROTATION_BUNDLE_CAPACITY; i++ ) {
     release_tree( pack->pre_rotation_bundles[ i ].treap, pack->signature_map, pack->noncemap, pack->pool );
   }
@@ -3648,7 +3641,7 @@ fd_pack_verify( fd_pack_t * pack,
 
       ulong expected_root = (k<4UL) ? (ulong)root_tags[ k ] : ((k<4UL+pre_rotation_bundle_max) ? (ulong)FD_ORD_TXN_ROOT_PRE_ROTATION_BUNDLE( 0 ) : (ulong)FD_ORD_TXN_ROOT_PENALTY( 0 ));
       VERIFY_TEST( (ulong)(cur->root & FD_ORD_TXN_ROOT_TAG_MASK)==expected_root, "treap element had bad root" );
-      VERIFY_TEST( expected_root!=FD_ORD_TXN_ROOT_PENDING_BUNDLE  || (cur->skip>=1 && cur->skip<=FD_PACK_BUNDLE_SKIP_CNT), "pending bundle had bad skip %hu", cur->skip );
+      VERIFY_TEST( expected_root!=FD_ORD_TXN_ROOT_PENDING_BUNDLE  || (cur->skip>=1 && cur->skip<=FD_PACK_SKIP_CNT), "pending bundle had bad skip %hu", cur->skip );
       VERIFY_TEST( expected_root!=FD_ORD_TXN_ROOT_DEFERRED_BUNDLE || cur->skip==pack->compressed_slot_number, "deferred bundle had bad skip %hu", cur->skip );
       if( FD_UNLIKELY( (cur->root & FD_ORD_TXN_ROOT_TAG_MASK)==FD_ORD_TXN_ROOT_PRE_ROTATION_BUNDLE( 0 ) ) ) {
         VERIFY_TEST( (ulong)FD_ORD_TXN_ROOT_PRE_ROTATION_BUNDLE_IDX( cur->root )==k-4UL, "transaction in wrong pre-rotation bundle" );

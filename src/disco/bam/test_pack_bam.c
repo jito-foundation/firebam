@@ -30,6 +30,14 @@ make_transaction1( fd_txn_p_t * txnp,
   test_pack_upstream_make_transaction1( txnp, i, compute, loaded_data_sz, priority, writes, reads, priority_fees, pack_cost_estimate );
 }
 
+/* Upstream's FD_PACK_SKIP_CNT is private to fd_pack.c. */
+#define UPSTREAM_SKIP_CNT (50UL)
+
+static ulong
+bundle_skip_cnt( fd_pack_t const * pack ) {
+  return fd_pack_bam_enabled( pack ) ? FD_PACK_BUNDLE_SKIP_CNT : UPSTREAM_SKIP_CNT;
+}
+
 /* init_all with bundle metadata, optionally with initializer bundles
    ready. */
 static fd_pack_t *
@@ -1568,7 +1576,8 @@ test_deferred_initializer_suppresses_meta( void ) {
     fd_pack_t * pack = init_all_with_meta( 64UL, 2UL, 8UL, sizeof(ulong), 0 );
     fill_write_cost_x( pack, 10000UL, 1000UL );
     insert_ordinal_test_bundle( pack, 600UL, 1UL, bam, bam ? FD_PACK_IB_TYPE_BAM : FD_PACK_IB_TYPE_NORMAL, "X" );
-    for( ulong i=0UL; i<FD_PACK_BUNDLE_SKIP_CNT; i++ )
+    ulong skip_cnt = bundle_skip_cnt( pack );
+    for( ulong i=0UL; i<skip_cnt; i++ )
       FD_TEST( !schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0UL,
                  FD_PACK_SCHEDULE_BUNDLE | (bam ? FD_PACK_SCHEDULE_BAM_ONLY : 0), outcome.results ) );
     insert_ordinal_test_bundle( pack, 700UL, 1UL, bam, FD_PACK_IB_TYPE_NONE, "" );
@@ -1577,6 +1586,16 @@ test_deferred_initializer_suppresses_meta( void ) {
     fd_txn_e_t const * head = fd_pack_peek_bundle_candidate( pack, bam, &hint, &meta );
     FD_TEST( head && candidate_test_txn_id( head->txnp )==700UL ); /* the initializer is deferred */
     FD_TEST( !meta && !fd_pack_peek_bundle_meta( pack ) );
+
+    /* A new initializer replaces the deferred one. */
+    fd_txn_bam_t const fields = { .seq_id=800U, .scheduler_gen=1U };
+    ulong id = 800UL;
+    FD_TEST( insert_test_bundle( pack, id, 1UL, 0U, 5.0, "", "", bam ? &fields : NULL, 0,
+                                 bam ? FD_PACK_IB_TYPE_BAM : FD_PACK_IB_TYPE_NORMAL, &id, NULL )==1UL );
+    FD_TEST( fd_pack_avail_txn_cnt( pack )==2UL );
+    head = fd_pack_peek_bundle_candidate( pack, bam, &hint, NULL );
+    FD_TEST( head && candidate_test_txn_id( head->txnp )==800UL );
+    FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
     fd_pack_delete( fd_pack_leave( pack ) );
   }
 }
@@ -1670,15 +1689,22 @@ test_deferred_bundle_skip_count( void ) {
     fill_write_cost_x( pack, 10000UL, 1000UL );
     int flags = FD_PACK_SCHEDULE_BUNDLE | (bam ? FD_PACK_SCHEDULE_BAM_ONLY : 0);
     insert_ordinal_test_bundle( pack, 600UL, 3UL, bam, FD_PACK_IB_TYPE_NONE, "X" );
-    for( ulong i=0UL; i<FD_PACK_BUNDLE_SKIP_CNT; i++ )
+    /* Without BAM, bundles keep upstream's retry budget. */
+    FD_TEST( bundle_skip_cnt( pack )==(bam ? FD_PACK_BUNDLE_SKIP_CNT : UPSTREAM_SKIP_CNT) );
+    ulong before[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_CNT ], after[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_CNT ];
+    fd_pack_get_sched_metrics( pack, before );
+    ulong hint;
+    for( ulong i=0UL; i<bundle_skip_cnt( pack ); i++ ) {
+      fd_txn_e_t const * head = fd_pack_peek_bundle_candidate( pack, bam, &hint, NULL );
+      FD_TEST( head && candidate_test_txn_id( head->txnp )==600UL );
       FD_TEST( !schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0UL, flags, outcome.results ) );
+    }
+    fd_pack_get_sched_metrics( pack, after );
+    FD_TEST( after[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_WRITE_COST_DEFERRED_IDX ]==before[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_WRITE_COST_DEFERRED_IDX ]+3UL );
     insert_ordinal_test_bundle( pack, 650UL, 2UL, 0, FD_PACK_IB_TYPE_NONE, "" );
     insert_ordinal_test_bundle( pack, 700UL, 1UL, 1, FD_PACK_IB_TYPE_NONE, "" );
-    ulong hint;
     fd_txn_e_t const * head = fd_pack_peek_bundle_candidate( pack, bam, &hint, NULL );
     FD_TEST( head && candidate_test_txn_id( head->txnp )==(bam ? 700UL : 650UL) );
-    FD_TEST( ((hint>>16) & USHORT_MAX)==0UL );
-    ulong before[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_CNT ], after[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_CNT ];
     fd_pack_get_sched_metrics( pack, before );
     FD_TEST( schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0UL, flags, outcome.results )==(bam ? 1UL : 2UL) );
     FD_TEST( candidate_test_txn_id( outcome.results[0].txnp )==(bam ? 700UL : 650UL) );
@@ -2432,14 +2458,15 @@ test_deferred_bundle_rebase_and_delete( void ) {
   FD_TEST( fd_pack_avail_txn_cnt( pack )==1UL );
   FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
 
-  /* Under pool pressure, delete_worst handles deferred_bundles without
-     evicting them ahead of normal transactions. */
+  /* Under pool pressure, deferred bundles are evicted no sooner than
+     active bundles. */
   fd_pack_clear_all( pack );
   fd_pack_set_initializer_bundles_ready( pack );
   fill_write_cost_x( pack, 30000UL, 1000UL );
   for( ulong k=0UL; k<16UL; k++ ) insert_ordinal_test_bundle( pack, 900UL+k, 1UL, 0, FD_PACK_IB_TYPE_NONE, "X" );
-  for( ulong i=0UL; i<16UL*FD_PACK_BUNDLE_SKIP_CNT; i++ )
+  for( ulong i=0UL; i<16UL*bundle_skip_cnt( pack ); i++ )
     FD_TEST( !schedule_slot_ready_bam( pack, FD_PACK_TEST_MAX_COST_PER_BLOCK, 0UL, FD_PACK_SCHEDULE_BUNDLE, outcome.results ) );
+  ulong evicted = fd_pack_bundle_evicted_cnt( pack );
   for( ulong k=0UL; k<48UL; k++ ) {
     fd_txn_e_t * txn = fd_pack_insert_txn_init( pack );
     make_transaction1( txn->txnp, 1000UL+k, 2000U, 32U, 1.0, "Y", "", NULL, NULL );
@@ -2453,6 +2480,7 @@ test_deferred_bundle_rebase_and_delete( void ) {
     FD_TEST( fd_pack_insert_txn_fini( pack, txn, 1000UL, &deleted )>=0 );
     FD_TEST( deleted==1UL );
   }
+  FD_TEST( fd_pack_bundle_evicted_cnt( pack )==evicted );
   FD_TEST( !fd_pack_verify( pack, pack_verify_scratch ) );
   fd_pack_end_block( pack );
   fd_pack_set_initializer_bundles_ready( pack );

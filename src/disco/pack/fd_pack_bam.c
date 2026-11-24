@@ -5,6 +5,12 @@
 
 FD_STATIC_ASSERT( offsetof(fd_txn_e_t,alt_accts)+sizeof(((fd_txn_e_t *)0)->alt_accts)==sizeof(fd_txn_e_t), fd_txn_e_alt_accts_last );
 FD_STATIC_ASSERT( offsetof(fd_pack_t, bundle_evicted_cnt)==FD_PACK_BUNDLE_EVICTED_CNT_OFF, bundle_evicted_cnt_off );
+FD_STATIC_ASSERT( FD_PACK_BUNDLE_SKIP_CNT>=1UL && FD_PACK_BUNDLE_SKIP_CNT<=FD_PACK_SKIP_CNT, bundle_skip_cnt );
+
+static inline ushort
+fd_pack_bundle_skip_cnt( fd_pack_t const * pack ) {
+  return (ushort)fd_ulong_if( pack->bam_enabled, FD_PACK_BUNDLE_SKIP_CNT, FD_PACK_SKIP_CNT );
+}
 
 /* Called by fd_pack_insert_bundle_fini before validating the bundle.
    BAM slot and generation checks retire BAM work, not blockhash age.
@@ -77,14 +83,15 @@ fd_pack_peek_bundle_head( fd_pack_t const * pack ) {
   return (RC_TO_REL_BUNDLE_IDX( d->rewards, d->compute_est ) < RC_TO_REL_BUNDLE_IDX( p->rewards, p->compute_est )) ? d_it : p_it;
 }
 
+/* Spends one capacity-miss retry of the pending bundle led by txn0,
+   parking it in deferred_bundles once the budget is exhausted. */
 static void
 fd_pack_defer_bundle( fd_pack_t *      pack,
-                      treap_t *        src_treap,
                       treap_rev_iter_t txn0,
                       ulong            bundle_idx,
-                      int              is_pre_rotation,
                       int              is_bam ) {
   fd_pack_ord_txn_t * pool = pack->pool;
+  ushort skip_cnt = fd_pack_bundle_skip_cnt( pack );
   treap_rev_iter_t next;
   for( treap_rev_iter_t cur_it=txn0; !treap_rev_iter_done( cur_it ); cur_it=next ) {
     fd_pack_ord_txn_t * cur = treap_rev_iter_ele( cur_it, pool );
@@ -93,14 +100,13 @@ fd_pack_defer_bundle( fd_pack_t *      pack,
 
     /* See fd_pack_schedule_impl for this branchless countdown. */
     cur->skip = (ushort)(1+fd_ushort_min( (ushort)(pack->compressed_slot_number-1),
-          (ushort)(fd_ushort_min( cur->skip, FD_PACK_BUNDLE_SKIP_CNT )-2) ) );
+          (ushort)(fd_ushort_min( cur->skip, skip_cnt )-2) ) );
     if( FD_UNLIKELY( cur->skip==pack->compressed_slot_number ) ) {
       if( FD_UNLIKELY( is_bam && cur_it==txn0 ) ) FD_MCNT_INC( PACK, BAM_CAPACITY_DEFERRED, 1UL );
-      if( FD_LIKELY( !is_pre_rotation ) ) {
-        treap_ele_remove( src_treap,              cur, pool );
-        cur->root = FD_ORD_TXN_ROOT_DEFERRED_BUNDLE;
-        treap_ele_insert( pack->deferred_bundles, cur, pool );
-      }
+      pack->sched_results[ FD_METRICS_ENUM_PACK_TXN_SCHEDULE_RESULT_V_WRITE_COST_DEFERRED_IDX ]++;
+      treap_ele_remove( pack->pending_bundles,  cur, pool );
+      cur->root = FD_ORD_TXN_ROOT_DEFERRED_BUNDLE;
+      treap_ele_insert( pack->deferred_bundles, cur, pool );
     }
   }
 }
@@ -108,6 +114,7 @@ fd_pack_defer_bundle( fd_pack_t *      pack,
 static void
 fd_pack_restore_deferred_bundles( fd_pack_t * pack ) {
   fd_pack_ord_txn_t * pool = pack->pool;
+  ushort skip_cnt = fd_pack_bundle_skip_cnt( pack );
   treap_fwd_iter_t next;
   for( treap_fwd_iter_t it=treap_fwd_iter_init( pack->deferred_bundles, pool );
        !treap_fwd_iter_done( it ); it=next ) {
@@ -115,7 +122,7 @@ fd_pack_restore_deferred_bundles( fd_pack_t * pack ) {
     fd_pack_ord_txn_t * cur = treap_fwd_iter_ele( it, pool );
     treap_ele_remove( pack->deferred_bundles, cur, pool );
     cur->root = FD_ORD_TXN_ROOT_PENDING_BUNDLE;
-    cur->skip = FD_PACK_BUNDLE_SKIP_CNT;
+    cur->skip = skip_cnt;
     treap_ele_insert( pack->pending_bundles, cur, pool );
   }
 }
@@ -324,7 +331,7 @@ fd_pack_bam_independent_candidate( fd_pack_t *          pack,
     }
     if( !blocked ) {
       /* Retire any views obtained by the readiness callback before
-         dispatch.  The head scan already counted deferred skips. */
+         dispatch. */
       fd_pack_invalidate_bundle_hint( pack );
       return (ulong)begin | (1UL<<32) | generation;
     }
